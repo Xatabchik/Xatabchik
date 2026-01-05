@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -244,7 +245,7 @@ EOF
     log_success "✔ Конфигурация Nginx обновлена."
 }
 
-REPO_URL="https://github.com/askhab95soft/Xatabchik.git"
+REPO_URL="https://github.com/Xatabchik/Xatabchik.git"
 PROJECT_DIR="Xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_DIR}.conf"
