@@ -246,7 +246,7 @@ EOF
 }
 
 REPO_URL="https://github.com/Xatabchik/Xatabchik.git"
-PROJECT_DIR="Xatabchik"
+PROJECT_DIR="xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_DIR}.conf"
 
