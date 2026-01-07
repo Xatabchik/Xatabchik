@@ -1,5 +1,5 @@
 services:
-  Xatabchik:
+  xatabchik:
     build: .
     restart: unless-stopped
     ports:
