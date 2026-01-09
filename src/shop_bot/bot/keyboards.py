@@ -704,8 +704,6 @@ def create_support_keyboard(support_user: str | None = None) -> InlineKeyboardMa
 
 def create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🆘 Открыть поддержку", url=SUPPORTdef create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
     username = support_bot_username.lstrip("@")
     deep_link = f"tg://resolve?domain={username}&start=new"
     builder.button(text="🆘 Открыть поддержку", url=deep_link)
