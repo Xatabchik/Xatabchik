@@ -11,7 +11,7 @@ from shop_bot.data_manager.database import get_button_configs
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_URL = "https://t.me/uprav_softmaster95vpn_bot"
+SUPPORT_URL = get_setting("support_bot_username")
 
 
 def _ru_days(n: int) -> str:
@@ -696,14 +696,22 @@ def create_about_keyboard(channel_url: str | None, terms_url: str | None, privac
 def create_support_keyboard(support_user: str | None = None) -> InlineKeyboardMarkup:
     """Кнопка техподдержки (всегда ведёт на фиксированный URL)."""
     builder = InlineKeyboardBuilder()
-    builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=SUPPORT_URL)
+    deep_link = f"tg://resolve?domain={SUPPORT_URL}&start=new"
+    builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=deep_link)
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
 
 def create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🆘 Открыть поддержку", url=SUPPORT_URL)
+    builder.button(text="🆘 Открыть поддержку", url=SUPPORTdef create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    username = support_bot_username.lstrip("@")
+    deep_link = f"tg://resolve?domain={username}&start=new"
+    builder.button(text="🆘 Открыть поддержку", url=deep_link)
+    builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()_URL)
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
