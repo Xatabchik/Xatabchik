@@ -260,6 +260,7 @@ if [[ -f "$NGINX_CONF" ]]; then
     fi
     cd "$PROJECT_DIR"
     log_info "\nШаг 1: обновление исходного кода"
+    git stash save "Auto-backup before update $(date)"
     git pull --ff-only
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
