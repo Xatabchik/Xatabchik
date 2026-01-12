@@ -60,7 +60,12 @@ class BotController:
 
         token = rw_repo.get_setting("telegram_bot_token")
         bot_username = rw_repo.get_setting("telegram_bot_username")
-        admin_id = rw_repo.get_setting("admin_telegram_id")
+        admin_id_raw = rw_repo.get_setting("admin_telegram_id")
+
+        try:
+            admin_id = int(str(admin_id_raw).strip()) if admin_id_raw is not None else None
+        except Exception:
+            admin_id = None
 
         if not all([token, bot_username, admin_id]):
             return {

@@ -462,23 +462,45 @@ async def ensure_user(
 
 
 
-async def list_users(host_name: str, squad_uuid: str | None = None, size: int | None = 500) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {}
-    if size is not None:
-        params["size"] = size
-    if squad_uuid:
-        params["squadUuid"] = squad_uuid
-    response = await _request_for_host(host_name, "GET", "/api/users", params=params, expected_status=(200,))
-    payload = response.json() or {}
-    raw_users = []
-    if isinstance(payload, dict):
-        body = payload.get("response") if isinstance(payload.get("response"), dict) else payload
-        raw_users = body.get("users") or body.get("data") or []
-    if not isinstance(raw_users, list):
-        raw_users = []
-    if squad_uuid:
+async def list_users(
+    host_name: str,
+    squad_uuid: str | None = None,
+    size: int | None = None,
+    *,
+    max_pages: int = 100000,
+) -> list[dict[str, Any]]:
+    """List users from Remnawave.
+
+    IMPORTANT:
+    - Some Remnawave deployments paginate /api/users and may return only the first N records.
+    - Historically the bot used size=500 and then удалял локальные ключи, если они не попадали в первую страницу.
+    - Этот helper пытается забрать *все* страницы (фактически «без лимита»), но с защитой от бесконечных циклов
+      (детект дубликатов + max_pages).
+
+    Args:
+        host_name: Remnawave host name.
+        squad_uuid: If provided, request users for this squad (server-side) and also apply a defensive filter.
+        size: Подсказка размера страницы. Если None — параметр size не отправляется, используется дефолт панели.
+        max_pages: Страховочный лимит числа запросов/страниц (на случай, если API отдаёт бесконечную ленту).
+
+    Returns:
+        A list of user dicts.
+    """
+
+    def _extract_users_from_payload(payload: Any) -> list[dict[str, Any]]:
+        raw_users: Any = []
+        if isinstance(payload, dict):
+            body = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+            raw_users = body.get("users") or body.get("data") or body.get("items") or body.get("list") or []
+        if not isinstance(raw_users, list):
+            return []
+        return [u for u in raw_users if isinstance(u, dict)]
+
+    def _filter_by_squad(users: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not squad_uuid:
+            return users
         filtered: list[dict[str, Any]] = []
-        for user in raw_users:
+        for user in users:
             squads = user.get("activeInternalSquads") or user.get("internalSquads") or []
             if isinstance(squads, list):
                 for item in squads:
@@ -492,7 +514,141 @@ async def list_users(host_name: str, squad_uuid: str | None = None, size: int | 
             elif isinstance(squads, str) and squads == squad_uuid:
                 filtered.append(user)
         return filtered
-    return raw_users
+
+    async def _fetch(params: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        resp = await _request_for_host(host_name, "GET", "/api/users", params=params, expected_status=(200,))
+        payload = resp.json() or {}
+        users = _extract_users_from_payload(payload)
+        return users, len(users)
+
+    # Normalize size hint ("без лимита" достигается пагинацией до последней страницы).
+    # Если size=None — не отправляем size, чтобы не упираться в произвольные верхние ограничения.
+    page_size: int | None
+    base_params: dict[str, Any] = {}
+    if size is None:
+        page_size = None
+    else:
+        try:
+            page_size = int(size)
+        except Exception:
+            page_size = None
+        if page_size is None or page_size <= 0:
+            page_size = None
+        else:
+            base_params["size"] = page_size
+    if squad_uuid:
+        base_params["squadUuid"] = squad_uuid
+
+    all_users: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _uid(u: dict[str, Any]) -> str:
+        return str(u.get("uuid") or u.get("id") or u.get("email") or u.get("accountEmail") or "")
+
+    def _append_new(page_users: list[dict[str, Any]]) -> int:
+        added = 0
+        for u in _filter_by_squad(page_users):
+            ident = _uid(u)
+            if not ident:
+                # If we can't identify, still append but don't use for duplicate detection.
+                all_users.append(u)
+                added += 1
+                continue
+            if ident in seen:
+                continue
+            seen.add(ident)
+            all_users.append(u)
+            added += 1
+        return added
+
+    # 1) First page without any pagination params (most APIs treat it as the first page)
+    first_page_users, first_len = await _fetch(dict(base_params))
+    _append_new(first_page_users)
+
+    if first_len <= 0:
+        return all_users
+
+    # If size wasn't provided, we infer the page size from the first page.
+    if page_size is None:
+        page_size = max(1, first_len)
+
+    # If it clearly fits in one page — return (works reliably only when size is known)
+    if size is not None and first_len < page_size:
+        return all_users
+
+    # 2) Try to detect pagination style: 0-based (page=1 is second page) or 1-based (page=2 is second page)
+    #    If pagination params are ignored, the second request will return duplicates; we detect that.
+    page_param = "page"
+
+    async def _try_paged(start_page: int) -> bool:
+        """Return True if paging seems to work (we got new users)."""
+        params = dict(base_params)
+        params[page_param] = start_page
+        users, _len = await _fetch(params)
+        added = _append_new(users)
+        if added <= 0:
+            return False
+
+        # Continue paging
+        current_page = start_page + 1
+        pages_done = 2  # first page + one paged request
+        while pages_done < max_pages:
+            params = dict(base_params)
+            params[page_param] = current_page
+            users, page_len = await _fetch(params)
+            added2 = _append_new(users)
+            pages_done += 1
+            if page_len < page_size:
+                break
+            if added2 <= 0:
+                break
+            current_page += 1
+        return True
+
+    paged_ok = False
+    # Try 0-based style: page=1 is the next page
+    paged_ok = await _try_paged(1)
+    if not paged_ok:
+        # Try 1-based style: page=2 is the next page
+        paged_ok = await _try_paged(2)
+
+    if paged_ok:
+        return all_users
+
+    # 3) Fallback: try offset-style pagination (offset/skip/from). Different deployments use different names.
+    offset_param_candidates = ("offset", "skip", "from")
+    for offset_param in offset_param_candidates:
+        params = dict(base_params)
+        params[offset_param] = page_size  # next page
+        users, page_len = await _fetch(params)
+        added = _append_new(users)
+        if added <= 0:
+            continue
+
+        # Continue offset paging
+        offset = page_size * 2
+        pages_done = 2
+        while pages_done < max_pages:
+            params = dict(base_params)
+            params[offset_param] = offset
+            users, page_len = await _fetch(params)
+            added2 = _append_new(users)
+            pages_done += 1
+            if page_len < page_size:
+                break
+            if added2 <= 0:
+                break
+            offset += page_size
+        return all_users
+
+    # Pagination seems unsupported/ignored; return what we have (first page).
+    logger.warning(
+        "Remnawave[%s]: /api/users выглядит как ограниченный список (>= %s записей), "
+        "но пагинация не сработала. Возвращаю только первую страницу.",
+        host_name,
+        page_size,
+    )
+    return all_users
 async def delete_user(user_uuid: str) -> bool:
     """Глобальный вариант (устарел): удаление без привязки к хосту.
     Сохраняется для обратной совместимости, но предпочтительно использовать host-specific путь ниже.

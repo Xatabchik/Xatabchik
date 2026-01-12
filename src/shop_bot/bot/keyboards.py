@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import json
 
 from datetime import datetime
 
@@ -11,7 +12,25 @@ from shop_bot.data_manager.database import get_button_configs
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_URL = get_setting("support_bot_username")
+SUPPORT_URL = "https://t.me/rlllllllllla"
+
+
+def _normalize_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith(("http://", "https://", "tg://")):
+        return u
+    # allow 't.me/xxx' or '@user' like values
+    if u.startswith("@"):
+        return f"https://t.me/{u.lstrip('@')}"
+    return "https://" + u.lstrip("/")
+
+
+def _get_notifications_support_url() -> str:
+    """Support URL for inactive usage reminder notifications (admin-configurable)."""
+    custom = _normalize_url(get_setting("inactive_usage_reminder_support_url") or "")
+    return custom or SUPPORT_URL
 
 
 def _ru_days(n: int) -> str:
@@ -109,7 +128,7 @@ def create_admin_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="📢 Рассылка", callback_data="start_broadcast")
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
 
-    builder.adjust(2, 2, 2, 1, 1)
+    builder.adjust(2, 2, 2, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -364,6 +383,7 @@ def create_admin_notifications_settings_keyboard(
     *,
     enabled: bool,
     interval_hours: float,
+    support_url: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Настройки уведомлений о неиспользовании трафика."""
     builder = InlineKeyboardBuilder()
@@ -374,8 +394,16 @@ def create_admin_notifications_settings_keyboard(
     interval_label = f"⏱ Интервал: {interval_hours:g} ч"
     builder.button(text=interval_label, callback_data="admin_inactive_reminder_set_interval")
 
+    # Support URL for the notification keyboard
+    su = (support_url or "").strip()
+    short = su
+    if len(short) > 24:
+        short = short[:21] + "…"
+    label = "🆘 Поддержка: не задана" if not su else f"🆘 Поддержка: {short}"
+    builder.button(text=label, callback_data="admin_inactive_reminder_set_support_url")
+
     builder.button(text="⬅️ Назад", callback_data="admin_settings_menu")
-    builder.adjust(1, 1, 1)
+    builder.adjust(1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -442,10 +470,22 @@ def create_admin_plan_manage_keyboard(plan: dict) -> InlineKeyboardMarkup:
     builder.button(text="💰 Цена", callback_data="admin_plan_edit_price")
     builder.button(text="📶 Трафик (ГБ)", callback_data="admin_plan_edit_traffic")
     builder.button(text="📱 Устройства", callback_data="admin_plan_edit_devices")
+
+    # Toggle showing plan name for users when buying
+    show_name = False
+    try:
+        meta_raw = plan.get("metadata")
+        meta = json.loads(meta_raw) if meta_raw else {}
+        show_name = bool(meta.get("show_name_in_tariffs"))
+    except Exception:
+        show_name = False
+    show_name_label = "🏷 Название в тарифах: ✅" if show_name else "🏷 Название в тарифах: ❌"
+    builder.button(text=show_name_label, callback_data="admin_plan_toggle_show_name")
+
     builder.button(text=toggle_text, callback_data="admin_plan_toggle_active")
     builder.button(text="🗑 Удалить", callback_data="admin_plan_delete")
     builder.button(text="⬅️ Назад", callback_data="admin_plans_back_to_host_menu")
-    builder.adjust(2, 2, 2, 1, 1)
+    builder.adjust(2, 2, 2, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -696,20 +736,14 @@ def create_about_keyboard(channel_url: str | None, terms_url: str | None, privac
 def create_support_keyboard(support_user: str | None = None) -> InlineKeyboardMarkup:
     """Кнопка техподдержки (всегда ведёт на фиксированный URL)."""
     builder = InlineKeyboardBuilder()
-    deep_link = f"tg://resolve?domain={SUPPORT_URL}&start=new"
-    builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=deep_link)
+    builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=SUPPORT_URL)
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
 
 def create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    username = support_bot_username.lstrip("@")
-    deep_link = f"tg://resolve?domain={username}&start=new"
-    builder.button(text="🆘 Открыть поддержку", url=deep_link)
-    builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
-    builder.adjust(1)
-    return builder.as_markup()_URL)
+    builder.button(text="🆘 Открыть поддержку", url=SUPPORT_URL)
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
@@ -718,13 +752,20 @@ def create_inactive_usage_reminder_keyboard(connection_string: str | None) -> In
     """Клавиатура для напоминания, если пользователь не подключил устройство."""
     builder = InlineKeyboardBuilder()
 
-    if connection_string:
-        builder.button(text="🔗 Подключить устройство", url=connection_string)
-    else:
-        # fallback: открыть список ключей
-        builder.button(text="🔗 Подключить устройство", callback_data="manage_keys")
+    show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
+    show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
 
-    builder.button(text="🆘 Поддержка", url=SUPPORT_URL)
+    if show_connect:
+        if connection_string:
+            builder.button(text="🔗 Подключить устройство", url=connection_string)
+        else:
+            # fallback: открыть список ключей
+            builder.button(text="🔗 Подключить устройство", callback_data="manage_keys")
+
+    if show_howto:
+        builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data="howto_vless")
+
+    builder.button(text="🆘 Поддержка", url=_get_notifications_support_url())
     builder.button(text="🏠 Личный кабинет", callback_data="back_to_main_menu")
 
     builder.adjust(1)
@@ -797,21 +838,31 @@ def create_plans_keyboard(plans: list[dict], action: str, host_name: str, key_id
         except Exception:
             price_val = 0.0
 
-        # Без названия тарифа, разделитель '-'
-        builder.button(text=f"{dur_txt} - {price_val:.0f} RUB", callback_data=callback_data)
+        # По настройке тарифа можно показывать название в списке покупок
+        show_name = False
+        try:
+            meta_raw = plan.get('metadata')
+            meta = json.loads(meta_raw) if meta_raw else {}
+            show_name = bool(meta.get('show_name_in_tariffs'))
+        except Exception:
+            show_name = False
+
+        if show_name:
+            pname = str(plan.get('plan_name') or '').strip()
+            if len(pname) > 24:
+                pname = pname[:21] + '…'
+            if pname:
+                builder.button(text=f"{pname} • {dur_txt} - {price_val:.0f} RUB", callback_data=callback_data)
+            else:
+                builder.button(text=f"{dur_txt} - {price_val:.0f} RUB", callback_data=callback_data)
+        else:
+            builder.button(text=f"{dur_txt} - {price_val:.0f} RUB", callback_data=callback_data)
 
     back_callback = "manage_keys" if action == "extend" else "buy_new_key"
     builder.button(text="⬅️ Назад", callback_data=back_callback)
     builder.adjust(1)
     return builder.as_markup()
 
-
-def create_skip_email_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="➡️ Продолжить без почты", callback_data="skip_email")
-    builder.button(text="⬅️ Назад к тарифам", callback_data="back_to_plans")
-    builder.adjust(1)
-    return builder.as_markup()
 
 def create_payment_method_keyboard(
     payment_methods: dict,
@@ -824,6 +875,12 @@ def create_payment_method_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
+    def _label(setting_key: str, fallback: str) -> str:
+        try:
+            val = (get_setting(setting_key) or "").strip()
+        except Exception:
+            val = ""
+        return val or fallback
 
     pm = {
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
@@ -838,7 +895,7 @@ def create_payment_method_keyboard(
 
 
     if show_balance:
-        label = "💼 Оплатить с баланса"
+        label = _label("payment_label_balance", "💼 Оплатить с баланса")
         if main_balance is not None:
             try:
                 label += f" ({main_balance:.0f} RUB)"
@@ -849,33 +906,45 @@ def create_payment_method_keyboard(
 
     if pm.get("yookassa"):
         if (get_setting("sbp_enabled") or '').strip().lower() in ('true','1','on','yes','y'):
-            builder.button(text="🏦 СБП / Банковская карта", callback_data="pay_yookassa")
+            builder.button(text=_label("payment_label_yookassa_sbp", "🏦 СБП / Банковская карта"), callback_data="pay_yookassa")
         else:
-            builder.button(text="🏦 Банковская карта", callback_data="pay_yookassa")
+            builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="pay_yookassa")
 
     if pm.get("platega"):
-        builder.button(text="💳 Platega", callback_data="pay_platega")
+        builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="pay_platega")
 
 
 
     if pm.get("cryptobot"):
-        builder.button(text="💎 Криптовалюта", callback_data="pay_cryptobot")
+        builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="pay_cryptobot")
     elif pm.get("heleket"):
-        builder.button(text="💎 Криптовалюта", callback_data="pay_heleket")
+        builder.button(text=_label("payment_label_heleket", "💎 Криптовалюта"), callback_data="pay_heleket")
     if pm.get("tonconnect"):
         callback_data_ton = "pay_tonconnect"
         logger.info(f"Creating TON button with callback_data: '{callback_data_ton}'")
-        builder.button(text="🪙 TON Connect", callback_data=callback_data_ton)
+        builder.button(text=_label("payment_label_tonconnect", "🪙 TON Connect"), callback_data=callback_data_ton)
     if pm.get("stars"):
-        builder.button(text="⭐ Telegram Stars", callback_data="pay_stars")
+        builder.button(text=_label("payment_label_stars", "⭐ Telegram Stars"), callback_data="pay_stars")
     if pm.get("yoomoney"):
-        builder.button(text="🏦 Банковская карта", callback_data="pay_yoomoney")
+        builder.button(text=_label("payment_label_yoomoney", "🏦 Банковская карта"), callback_data="pay_yoomoney")
 
 
     if not promo_applied:
         builder.button(text="🎟 Ввести промокод", callback_data="enter_promo_code")
 
-    builder.button(text="⬅️ Назад", callback_data="back_to_email_prompt")
+    email_prompt_enabled = (get_setting("payment_email_prompt_enabled") or "false").strip().lower() == "true"
+    if email_prompt_enabled:
+        builder.button(text="⬅️ Назад", callback_data="back_to_email_prompt")
+    else:
+        builder.button(text="⬅️ Назад к тарифам", callback_data="back_to_plans")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_skip_email_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➡️ Продолжить без почты", callback_data="skip_email")
+    builder.button(text="⬅️ Назад к тарифам", callback_data="back_to_plans")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -921,6 +990,13 @@ def create_cryptobot_payment_keyboard(payment_url: str, invoice_id: int | str) -
 def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
+    def _label(setting_key: str, fallback: str) -> str:
+        try:
+            val = (get_setting(setting_key) or "").strip()
+        except Exception:
+            val = ""
+        return val or fallback
+
     pm = {
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
@@ -933,23 +1009,23 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
 
     if pm.get("yookassa"):
         if (get_setting("sbp_enabled") or '').strip().lower() in ('true','1','on','yes','y'):
-            builder.button(text="🏦 СБП / Банковская карта", callback_data="topup_pay_yookassa")
+            builder.button(text=_label("payment_label_yookassa_sbp", "🏦 СБП / Банковская карта"), callback_data="topup_pay_yookassa")
         else:
-            builder.button(text="🏦 Банковская карта", callback_data="topup_pay_yookassa")
+            builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="topup_pay_yookassa")
     if pm.get("platega"):
-        builder.button(text="💳 Platega", callback_data="topup_pay_platega")
+        builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="topup_pay_platega")
 
 
     if pm.get("cryptobot"):
-        builder.button(text="💎 Криптовалюта", callback_data="topup_pay_cryptobot")
+        builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="topup_pay_cryptobot")
     elif pm.get("heleket"):
-        builder.button(text="💎 Криптовалюта", callback_data="topup_pay_heleket")
+        builder.button(text=_label("payment_label_heleket", "💎 Криптовалюта"), callback_data="topup_pay_heleket")
     if pm.get("tonconnect"):
-        builder.button(text="🪙 TON Connect", callback_data="topup_pay_tonconnect")
+        builder.button(text=_label("payment_label_tonconnect", "🪙 TON Connect"), callback_data="topup_pay_tonconnect")
     if pm.get("stars"):
-        builder.button(text="⭐ Telegram Stars", callback_data="topup_pay_stars")
+        builder.button(text=_label("payment_label_stars", "⭐ Telegram Stars"), callback_data="topup_pay_stars")
     if pm.get("yoomoney"):
-        builder.button(text="🏦 Банковская карта", callback_data="topup_pay_yoomoney")
+        builder.button(text=_label("payment_label_yoomoney", "🏦 Банковская карта"), callback_data="topup_pay_yoomoney")
 
     builder.button(text="⬅️ Назад", callback_data="show_profile")
     builder.adjust(1)
@@ -972,8 +1048,14 @@ def create_keys_management_keyboard(keys: list) -> InlineKeyboardMarkup:
 def create_key_info_keyboard(key_id: int, connection_string: str | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
-    if connection_string:
+
+    show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
+    show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
+
+    if show_connect and connection_string:
         builder.button(text="🔗 Подключить устройство", url=connection_string)
+    if show_howto:
+        builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data=f"howto_vless_{key_id}")
     builder.button(text="📱 Показать QR-код", callback_data=f"show_qr_{key_id}")
     builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
@@ -990,10 +1072,10 @@ def create_howto_vless_keyboard() -> InlineKeyboardMarkup:
 
 def create_howto_vless_keyboard_key(key_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="📱 Android", callback_data="howto_android")
-    builder.button(text="📱 iOS", callback_data="howto_ios")
-    builder.button(text="💻 Windows", callback_data="howto_windows")
-    builder.button(text="🐧 Linux", callback_data="howto_linux")
+    builder.button(text="📱 Android", callback_data=f"howto_android_{key_id}")
+    builder.button(text="📱 iOS", callback_data=f"howto_ios_{key_id}")
+    builder.button(text="💻 Windows", callback_data=f"howto_windows_{key_id}")
+    builder.button(text="🐧 Linux", callback_data=f"howto_linux_{key_id}")
     builder.button(text="⬅️ Назад к ключу", callback_data=f"show_key_{key_id}")
     builder.adjust(2, 2, 1)
     return builder.as_markup()

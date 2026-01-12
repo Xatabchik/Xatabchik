@@ -33,41 +33,6 @@ def list_squads(active_only: bool = False) -> list[dict[str, Any]]:
     query += " ORDER BY sort_order ASC, host_name ASC"
     with _connect() as conn:
         cursor = conn.cursor()
-        # Idempotency: webhooks can be delivered more than once.
-        if order_id:
-            try:
-                cursor.execute(
-                    "SELECT code, user_id, applied_amount, order_id, used_at FROM promo_code_usages WHERE order_id = ?",
-                    (order_id,),
-                )
-                existing = cursor.fetchone()
-            except Exception:
-                existing = None
-            if existing:
-                try:
-                    cursor.execute(
-                        """
-                        SELECT code, discount_percent, discount_amount,
-                               usage_limit_total, usage_limit_per_user,
-                               used_total, valid_from, valid_until, is_active
-                        FROM promo_codes
-                        WHERE code = ?
-                        """,
-                        (code_s,),
-                    )
-                    promo_row = cursor.fetchone()
-                except Exception:
-                    promo_row = None
-                if not promo_row:
-                    return None
-                promo = dict(promo_row)
-                promo["already_redeemed"] = True
-                promo["redeemed_by"] = int(existing["user_id"])
-                promo["applied_amount"] = float(existing["applied_amount"] or 0)
-                promo["order_id"] = existing["order_id"]
-                promo["used_at"] = existing["used_at"]
-                return promo
-
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -259,6 +224,7 @@ _LEGACY_FORWARDERS = (
     "create_host",
     "create_pending_transaction",
     "create_payload_pending",
+    "claim_processed_payment",
     "create_plan",
     "create_support_ticket",
     "deduct_from_balance",

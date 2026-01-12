@@ -39,12 +39,12 @@ def get_key_info_text(
     limit = device_limit if device_limit is not None else "—"
 
     return (
-        f"<b>🔑 Ваша подписка: #{key_number}</b>\n\n"
+        f"<b>🔑 Ваша ключ: #{key_number}</b>\n\n"
         f"<blockquote><b>➕ Приобретён:</b> {created_formatted}\n"
         f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n"
-        f"<code>{connection_string}</code>\n\n"
+        f"<code>{html_escape(connection_string)}</code>\n\n"
         f"📱 <b>Вы подключили:</b> {dc}\n\n"
-        f"📦 <b>Тариф подписки:</b>\n"
+        f"📦 <b>Тариф ключа:</b>\n"
         f"<blockquote>📁 <b>Группа:</b> {group}\n"
         f"🕒 <b>Тариф:</b> {tariff}\n"
         f"📱 <b>Лимит устройств:</b> {limit}</blockquote>\n\n"
@@ -57,7 +57,7 @@ def get_purchase_success_text(action: str, key_number: int, expiry_date, connect
     safe_connection_string = html_escape(connection_string or "")
 
     return (
-        f"🎉 <b>Ваша подписка #{key_number} {action_text}!</b>\n\n"
+        f"🎉 <b>Ваш ключ #{key_number} {action_text}!</b>\n\n"
         f"⏳ <b>Он будет действовать до:</b> {expiry_formatted}\n\n"
         f"<code>{safe_connection_string}</code>"
     )

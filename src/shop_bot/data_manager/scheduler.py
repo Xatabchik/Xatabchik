@@ -413,7 +413,7 @@ async def sync_keys_with_panels():
                         )
             else:
                 logger.warning(
-                    "Scheduler: Ключ '%s' (host '%s') отсутствует в Remnawave. Помечаю к удалению в локальной БД.",
+                    "Scheduler: Ключ '%s' (host '%s') отсутствует в Remnawave. Помечаю как отсутствующий (не удаляю) в локальной БД.",
                     raw_email,
                     host_name,
                 )

@@ -618,12 +618,49 @@
 								placeholder="https://t.me/..."
 							/>
 						</div>
+
+						<div class="form-group">
+							<label for="main_menu_promo_text">Текст под ссылками в главном меню:</label>
+							<textarea
+								id="main_menu_promo_text"
+								name="main_menu_promo_text"
+								rows="5"
+								class="form-control"
+								placeholder="🌐 Множество локаций&#10;🚀 Скорость серверов 1 Гбит/с, смена IP&#10;📊 Безлимитный трафик&#10;&#10;Спасибо, что вы с нами!"
+							>{{ settings.main_menu_promo_text or '' }}</textarea>
+							<small class="text-secondary">Поддерживается HTML-разметка Telegram. Оставьте пустым для текста по умолчанию.</small>
+						</div>
+
+						<div class="form-group">
+							<label>Кнопки в карточке ключа:</label>
+							<div class="form-group-checkbox">
+								<input type="hidden" name="key_info_show_connect_device" value="false" />
+								<input type="checkbox" id="key_info_show_connect_device" name="key_info_show_connect_device" value="true" {% if settings.key_info_show_connect_device == 'true' %}checked{% endif %}>
+								<label for="key_info_show_connect_device">Показывать «Подключить устройство»</label>
 							</div>
-						</details>
-					</div>
+							<div class="form-group-checkbox">
+								<input type="hidden" name="key_info_show_howto" value="false" />
+								<input type="checkbox" id="key_info_show_howto" name="key_info_show_howto" value="true" {% if settings.key_info_show_howto == 'true' %}checked{% endif %}>
+								<label for="key_info_show_howto">Показывать «Как использовать»</label>
+							</div>
+							<small class="text-secondary">Можно включить одну или обе кнопки.</small>
+						</div>
+
+						<div class="form-group">
+							<label>Оплата:</label>
+							<div class="form-group-checkbox">
+								<input type="hidden" name="payment_email_prompt_enabled" value="false" />
+								<input type="checkbox" id="payment_email_prompt_enabled" name="payment_email_prompt_enabled" value="true" {% if settings.payment_email_prompt_enabled == 'true' %}checked{% endif %}>
+								<label for="payment_email_prompt_enabled">Запрашивать email перед выбором способа оплаты</label>
+							</div>
+							<small class="text-secondary">Если включено — пользователь увидит шаг ввода email (можно пропустить).</small>
+						</div>
+						</div>
+					</details>
 				</div>
+			</div>
 			</section>
-			<section class="settings-section" id="support-bot" style="width: 100%;">
+			<section class="settings-section" id="support-bot">
                 <div class="card glass">
                     <div class="card-header"><h2 class="card-title">Настройки Support-бота</h2></div>
                     <div class="card-body">
@@ -653,7 +690,7 @@
                     </div>
                 </div>
             </section>
-            			<section class="settings-section" id="referrals" style="width: 100%;">
+            			<section class="settings-section" id="referrals">
 				<div class="card">
 					<div class="card-header"><h2 class="card-title">Настройки Реферальной программы</h2></div>
 					<div class="card-body">
@@ -758,13 +795,33 @@
 				</div>
 			</section>
 
-			<section class="settings-section" id="payments" style="width: 100%;">
+			<section class="settings-section" id="payments">
 				<div class="card">
 					<div class="card-header"><h2 class="card-title">Настройки Платежных Систем</h2></div>
 					<div class="card-body">
 						<details class="rw-drawer rw-drawer-payment">
+							<summary class="rw-drawer-summary"><span>Баланс</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
+							<div class="rw-drawer-body">
+								<div class="mb-3">
+									<label class="form-label" for="payment_label_balance">Название кнопки в боте</label>
+									<input class="form-control" type="text" id="payment_label_balance" name="payment_label_balance" value="{{ settings.payment_label_balance or '' }}" placeholder="💼 Оплатить с баланса" />
+									<div class="form-text text-secondary">Используется при оплате/пополнении с внутреннего баланса.</div>
+								</div>
+							</div>
+						</details>
+
+						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>YooKassa</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_yookassa_card">Название кнопки в боте (карта)</label>
+							<input class="form-control" type="text" id="payment_label_yookassa_card" name="payment_label_yookassa_card" value="{{ settings.payment_label_yookassa_card or '' }}" placeholder="🏦 Банковская карта" />
+						</div>
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_yookassa_sbp">Название кнопки в боте (если включен СБП)</label>
+							<input class="form-control" type="text" id="payment_label_yookassa_sbp" name="payment_label_yookassa_sbp" value="{{ settings.payment_label_yookassa_sbp or '' }}" placeholder="🏦 СБП / Банковская карта" />
+							<div class="form-text text-secondary">Используется в кнопке выбора способа оплаты.</div>
+						</div>
 						<div class="mb-3">
 							<label class="form-label" for="receipt_email">Почта для чеков</label>
 							<input class="form-control" type="text" id="receipt_email" name="receipt_email" value="{{ settings.receipt_email or '' }}" />
@@ -794,6 +851,10 @@
 						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>CryptoBot</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_cryptobot">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_cryptobot" name="payment_label_cryptobot" value="{{ settings.payment_label_cryptobot or '' }}" placeholder="💎 Криптовалюта" />
+						</div>
 						<div class="mb-3 password-wrapper">
 							<label class="form-label" for="cryptobot_token">CryptoBot Token</label>
 							<div class="d-flex gap-2">
@@ -808,6 +869,10 @@
 						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>Heleket</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_heleket">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_heleket" name="payment_label_heleket" value="{{ settings.payment_label_heleket or '' }}" placeholder="💎 Криптовалюта" />
+						</div>
 						<div class="mb-3">
 							<label class="form-label" for="heleket_merchant_id">Heleket Merchant ID</label>
 							<input class="form-control" type="text" id="heleket_merchant_id" name="heleket_merchant_id" value="{{ settings.heleket_merchant_id or '' }}" />
@@ -832,6 +897,10 @@
 						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>Platega</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_platega">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_platega" name="payment_label_platega" value="{{ settings.payment_label_platega or '' }}" placeholder="💳 Platega" />
+						</div>
 						<div class="mb-3">
 							<label class="form-label" for="platega_base_url">Platega Base URL</label>
 							<input class="form-control" type="text" id="platega_base_url" name="platega_base_url" value="{{ settings.platega_base_url or 'https://app.platega.io' }}" />
@@ -862,6 +931,10 @@
 							<summary class="rw-drawer-summary"><span>TonConnect</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
 						<div class="mb-3">
+							<label class="form-label" for="payment_label_tonconnect">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_tonconnect" name="payment_label_tonconnect" value="{{ settings.payment_label_tonconnect or '' }}" placeholder="🪙 TON Connect" />
+						</div>
+						<div class="mb-3">
 							<label class="form-label" for="ton_wallet_address">Ton Wallet</label>
 							<input class="form-control" type="text" id="ton_wallet_address" name="ton_wallet_address" value="{{ settings.ton_wallet_address or '' }}" />
 						</div>
@@ -879,6 +952,10 @@
 						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>Telegram Stars</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_stars">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_stars" name="payment_label_stars" value="{{ settings.payment_label_stars or '' }}" placeholder="⭐ Telegram Stars" />
+						</div>
 						<div class="mb-3">
 							<input type="hidden" name="stars_enabled" value="false" />
 							<div class="form-check">
@@ -898,6 +975,10 @@
 						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>YooMoney</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_yoomoney">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_yoomoney" name="payment_label_yoomoney" value="{{ settings.payment_label_yoomoney or '' }}" placeholder="🏦 Банковская карта" />
+						</div>
 						<div class="mb-3">
 							<input type="hidden" name="yoomoney_enabled" value="false" />
 							<div class="form-check">

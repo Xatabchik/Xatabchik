@@ -1,8 +1,11 @@
 import os
 import logging
 import asyncio
+import threading
 import json
 import hashlib
+import hmac
+import bcrypt
 import html as html_escape
 import base64
 import time
@@ -24,6 +27,9 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 from shop_bot.modules import remnawave_api
 from shop_bot.bot import handlers
 from shop_bot.bot import keyboards
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from shop_bot.support_bot_controller import SupportBotController
 from shop_bot.data_manager import speedtest_runner
@@ -58,6 +64,54 @@ from shop_bot.data_manager.database import update_host_remnawave_settings, get_p
 _bot_controller = None
 _support_bot_controller = SupportBotController()
 
+
+def _dispatch_payment_processing(metadata: dict) -> None:
+    """Fulfill paid orders even when the polling bot loop isn't running.
+
+    If the main bot + EVENT_LOOP are available, schedule into that loop.
+    Otherwise, run in a background thread using a temporary Bot instance.
+    """
+    payment_processor = handlers.process_successful_payment
+
+    loop = None
+    try:
+        loop = current_app.config.get('EVENT_LOOP')
+    except Exception:
+        loop = None
+
+    live_bot = None
+    try:
+        live_bot = _bot_controller.get_bot_instance() if _bot_controller else None
+    except Exception:
+        live_bot = None
+
+    if live_bot and loop and getattr(loop, "is_running", lambda: False)():
+        asyncio.run_coroutine_threadsafe(payment_processor(live_bot, metadata), loop)
+        return
+
+    token = (get_setting("telegram_bot_token") or "").strip()
+    if not token:
+        logger.error("Payment processing: telegram_bot_token is missing; cannot fulfill paid order")
+        return
+
+    def _worker():
+        async def _run():
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                await payment_processor(bot, metadata)
+            finally:
+                try:
+                    await bot.close()
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run(_run())
+        except Exception as e:
+            logger.error(f"Payment processing: background fulfillment failed: {e}", exc_info=True)
+
+    threading.Thread(target=_worker, name="shopbot-payment-fulfillment", daemon=True).start()
+
 ALL_SETTINGS_KEYS = [
     "panel_login",
     "panel_password",
@@ -67,6 +121,8 @@ ALL_SETTINGS_KEYS = [
     "support_user",
     "support_text",
     "channel_url",
+    "channel_link",
+    "chat_link",
     "telegram_bot_token",
     "telegram_bot_username",
     "admin_telegram_id",
@@ -102,6 +158,7 @@ ALL_SETTINGS_KEYS = [
     "support_bot_username",
     "panel_brand_title",
     "main_menu_text",
+    "main_menu_promo_text",
     "howto_intro_text",
     "howto_android_text",
     "howto_ios_text",
@@ -129,13 +186,27 @@ ALL_SETTINGS_KEYS = [
     "yoomoney_enabled",
     "yoomoney_wallet",
     "yoomoney_secret",
+
+    "payment_label_balance",
+    "payment_label_yookassa_card",
+    "payment_label_yookassa_sbp",
+    "payment_label_platega",
+    "payment_label_cryptobot",
+    "payment_label_heleket",
+    "payment_label_tonconnect",
+    "payment_label_stars",
+    "payment_label_yoomoney",
+
     "stars_per_rub",
     "stars_enabled",
     "yoomoney_api_token",
     "yoomoney_client_id",
     "yoomoney_client_secret",
     "yoomoney_redirect_uri",
-    "enable_referral_days_bonus"
+    "key_info_show_connect_device",
+    "key_info_show_howto",
+    "payment_email_prompt_enabled",
+    "enable_referral_days_bonus",
 ]
 
 def create_webhook_app(bot_controller_instance):
@@ -166,6 +237,16 @@ def create_webhook_app(bot_controller_instance):
 
     flask_app.config['SECRET_KEY'] = os.getenv('SHOPBOT_SECRET_KEY') or secrets.token_hex(32)
     flask_app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+
+    flask_app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE=os.getenv("SHOPBOT_SESSION_SAMESITE", "Lax"),
+        SESSION_COOKIE_SECURE=os.getenv("SHOPBOT_SESSION_SECURE", "true").lower() in ("1","true","yes"),
+    )
+    flask_app.config["ENABLE_DEBUG_ENDPOINTS"] = os.getenv("SHOPBOT_ENABLE_DEBUG_ENDPOINTS", "false").lower() in ("1","true","yes")
+    flask_app.config["DEBUG_IP_ALLOWLIST"] = [ip.strip() for ip in os.getenv("SHOPBOT_DEBUG_IP_ALLOWLIST", "127.0.0.1,::1").split(",") if ip.strip()]
+    flask_app.config["TON_WEBHOOK_SECRET"] = os.getenv("SHOPBOT_TON_WEBHOOK_SECRET") or ""
+
 
 
     csrf = CSRFProtect()
@@ -278,14 +359,51 @@ def create_webhook_app(bot_controller_instance):
             return f(*args, **kwargs)
         return decorated_function
 
+    _login_attempts = {}
+
+    def _rate_limit_login(ip: str, limit: int = 10, window_sec: int = 600) -> bool:
+        now = time.time()
+        attempts = _login_attempts.get(ip, [])
+        attempts = [t for t in attempts if now - t < window_sec]
+        if len(attempts) >= limit:
+            _login_attempts[ip] = attempts
+            return False
+        attempts.append(now)
+        _login_attempts[ip] = attempts
+        return True
+
+    def _verify_panel_password(stored: str, provided: str) -> bool:
+        if not stored:
+            return False
+        try:
+            if stored.startswith("$2"):
+                return bool(bcrypt.checkpw(provided.encode("utf-8"), stored.encode("utf-8")))
+        except Exception:
+            pass
+        # legacy/plaintext
+        return compare_digest(str(stored), str(provided))
+
     @flask_app.route('/login', methods=['GET', 'POST'])
     def login_page():
         settings = get_all_settings()
         if request.method == 'POST':
-            if request.form.get('username') == settings.get("panel_login") and \
-               request.form.get('password') == settings.get("panel_password"):
+            ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()
+            if not _rate_limit_login(ip):
+                flash('Слишком много попыток. Подождите несколько минут.', 'danger')
+                return render_template('login.html'), 429
+            username = request.form.get('username') or ''
+            password = request.form.get('password') or ''
+            stored_user = settings.get('panel_login') or ''
+            stored_pass = settings.get('panel_password') or ''
+            if username == stored_user and _verify_panel_password(str(stored_pass), str(password)):
+                # migrate legacy/plaintext password to bcrypt hash
+                if not str(stored_pass).startswith('$2'):
+                    try:
+                        new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                        update_setting('panel_password', new_hash)
+                    except Exception as e:
+                        logger.warning(f'Panel password hash migration failed: {e}')
                 session['logged_in'] = True
-
                 session.permanent = bool(request.form.get('remember_me'))
                 return redirect(url_for('dashboard_page'))
             else:
@@ -515,16 +633,9 @@ def create_webhook_app(bot_controller_instance):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 25, type=int)
         q = (request.args.get('q') or '').strip()
+        sort = (request.args.get('sort') or '').strip()
 
-
-        users, total = get_users_paginated(page=page, per_page=per_page, q=q or None)
-        user_ids = [u['telegram_id'] for u in users]
-
-
-        try:
-            keys_counts = get_keys_counts_for_users(user_ids)
-        except Exception:
-            keys_counts = {}
+        users, total = get_users_paginated(page=page, per_page=per_page, q=q or None, sort=sort or None)
 
         for user in users:
             uid = user['telegram_id']
@@ -534,14 +645,21 @@ def create_webhook_app(bot_controller_instance):
                 user['balance'] = float(user.get('balance') or 0.0)
             except Exception:
                 user['balance'] = 0.0
-            user['keys_count'] = int(keys_counts.get(uid, 0) or 0)
+            try:
+                user['keys_count'] = int(user.get('keys_count') or 0)
+            except Exception:
+                user['keys_count'] = 0
+            try:
+                user['active_keys_count'] = int(user.get('active_keys_count') or 0)
+            except Exception:
+                user['active_keys_count'] = 0
 
 
         from math import ceil
         total_pages = ceil(total / per_page) if per_page else 1
 
         common_data = get_common_template_data()
-        return render_template('users.html', users=users, current_page=page, total_pages=total_pages, q=q, per_page=per_page, **common_data)
+        return render_template('users.html', users=users, current_page=page, total_pages=total_pages, q=q, per_page=per_page, sort=sort, **common_data)
 
 
     @flask_app.route('/users/table.partial')
@@ -550,19 +668,21 @@ def create_webhook_app(bot_controller_instance):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 25, type=int)
         q = (request.args.get('q') or '').strip()
-        users, total = get_users_paginated(page=page, per_page=per_page, q=q or None)
-        user_ids = [u['telegram_id'] for u in users]
-        try:
-            keys_counts = get_keys_counts_for_users(user_ids)
-        except Exception:
-            keys_counts = {}
+        sort = (request.args.get('sort') or '').strip()
+        users, total = get_users_paginated(page=page, per_page=per_page, q=q or None, sort=sort or None)
         for user in users:
-            uid = user['telegram_id']
             try:
                 user['balance'] = float(user.get('balance') or 0.0)
             except Exception:
                 user['balance'] = 0.0
-            user['keys_count'] = int(keys_counts.get(uid, 0) or 0)
+            try:
+                user['keys_count'] = int(user.get('keys_count') or 0)
+            except Exception:
+                user['keys_count'] = 0
+            try:
+                user['active_keys_count'] = int(user.get('active_keys_count') or 0)
+            except Exception:
+                user['active_keys_count'] = 0
         return render_template('partials/users_table.html', users=users)
 
 
@@ -592,10 +712,11 @@ def create_webhook_app(bot_controller_instance):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 25, type=int)
         q = (request.args.get('q') or '').strip()
-        _, total = get_users_paginated(page=page, per_page=per_page, q=q or None)
+        sort = (request.args.get('sort') or '').strip()
+        _, total = get_users_paginated(page=page, per_page=per_page, q=q or None, sort=sort or None)
         from math import ceil
         total_pages = ceil(total / per_page) if per_page else 1
-        return render_template('partials/users_pagination.html', current_page=page, total_pages=total_pages, q=q)
+        return render_template('partials/users_pagination.html', current_page=page, total_pages=total_pages, q=q, per_page=per_page, sort=sort)
 
     @flask_app.route('/users/<int:user_id>/balance/adjust', methods=['POST'])
     @login_required
@@ -1507,7 +1628,12 @@ def create_webhook_app(bot_controller_instance):
         if request.method == 'POST':
 
             if 'panel_password' in request.form and request.form.get('panel_password'):
-                update_setting('panel_password', request.form.get('panel_password'))
+                try:
+                    raw_pass = request.form.get('panel_password') or ''
+                    new_hash = bcrypt.hashpw(raw_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    update_setting('panel_password', new_hash)
+                except Exception as e:
+                    logger.error(f"Не удалось обновить пароль панели: {e}", exc_info=True)
 
 
             
@@ -1515,6 +1641,9 @@ def create_webhook_app(bot_controller_instance):
                 "enable_referrals",
                 "enable_referral_days_bonus",
                 "force_subscription",
+                "key_info_show_connect_device",
+                "key_info_show_howto",
+                "payment_email_prompt_enabled",
                 "monitoring_enabled",
                 "sbp_enabled",
                 "stars_enabled",
@@ -2071,56 +2200,243 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось обновить тариф (возможно, он не найден).', 'danger')
         return redirect(url_for('settings_page', tab='hosts'))
 
+
+
+    def _get_client_ip() -> str:
+        """Best-effort client IP (supports reverse proxy via X-Forwarded-For)."""
+        try:
+            xff = request.headers.get('X-Forwarded-For')
+            if xff:
+                return xff.split(',')[0].strip()
+        except Exception:
+            pass
+        return request.remote_addr or ''
+
+    def _is_ip_allowed(allowlist: list[str]) -> bool:
+        if not allowlist:
+            return False
+        ip = _get_client_ip()
+        return ip in allowlist
+
+    def _debug_endpoints_allowed() -> bool:
+        if not flask_app.config.get('ENABLE_DEBUG_ENDPOINTS'):
+            return False
+        allow = flask_app.config.get('DEBUG_IP_ALLOWLIST') or []
+        return _is_ip_allowed(allow)
+
+    def _http_json(url: str, *, method: str = 'GET', headers: dict | None = None, body: dict | None = None, timeout: int = 20) -> dict:
+        """Minimal JSON HTTP client via urllib (avoids extra deps)."""
+        h = headers or {}
+        data_bytes = None
+        if body is not None:
+            data_bytes = json.dumps(body).encode('utf-8')
+            h = {**h, 'Content-Type': 'application/json'}
+        req = urllib.request.Request(url, data=data_bytes, headers=h, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        return json.loads(raw.decode('utf-8'))
+
+    def _yookassa_get_payment(payment_id: str) -> dict | None:
+        shop_id = (get_setting('yookassa_shop_id') or '').strip()
+        secret_key = (get_setting('yookassa_secret_key') or '').strip()
+        if not shop_id or not secret_key:
+            logger.error('YooKassa webhook: missing yookassa_shop_id/yookassa_secret_key')
+            return None
+        auth = base64.b64encode(f"{shop_id}:{secret_key}".encode('utf-8')).decode('ascii')
+        headers = {'Authorization': f'Basic {auth}'}
+        url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
+        try:
+            return _http_json(url, method='GET', headers=headers, body=None, timeout=20)
+        except Exception as e:
+            logger.error(f"YooKassa webhook: failed to fetch payment {payment_id}: {e}", exc_info=True)
+            return None
+
+    def _cryptobot_verify_signature(raw_body: bytes) -> bool:
+        token = (get_setting('cryptobot_token') or '').strip()
+        if not token:
+            logger.error('CryptoBot webhook: missing cryptobot_token (cannot verify signature)')
+            return False
+        sig = request.headers.get('crypto-pay-api-signature') or request.headers.get('Crypto-Pay-API-Signature')
+        if not sig:
+            logger.warning('CryptoBot webhook: missing crypto-pay-api-signature header')
+            return False
+        secret = hashlib.sha256(token.encode('utf-8')).digest()
+        expected = hashlib.new('sha256')
+        import hmac
+        expected_hex = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
+        return compare_digest(expected_hex, sig)
+
+    def _cryptobot_get_invoice(invoice_id: int) -> dict | None:
+        token = (get_setting('cryptobot_token') or '').strip()
+        if not token:
+            return None
+        headers = {'Crypto-Pay-API-Token': token}
+        url = f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}"
+        try:
+            data = _http_json(url, method='GET', headers=headers, body=None, timeout=20)
+        except Exception as e:
+            logger.error(f"CryptoBot webhook: failed to fetch invoice {invoice_id}: {e}", exc_info=True)
+            return None
+        try:
+            if not isinstance(data, dict) or not data.get('ok'):
+                return None
+            res = data.get('result')
+            items = res.get('items') if isinstance(res, dict) else None
+            if isinstance(items, list) and items:
+                return items[0]
+        except Exception:
+            pass
+        return None
+
+    def _require_ton_webhook_secret() -> bool:
+        secret = (get_setting('ton_webhook_secret') or '').strip() or (flask_app.config.get('TON_WEBHOOK_SECRET') or '').strip()
+        if not secret:
+            logger.error('TON webhook is enabled but ton_webhook_secret is not configured')
+            return False
+        header = (request.headers.get('X-Webhook-Secret') or request.headers.get('X-Ton-Webhook-Secret') or '').strip()
+        if not header:
+            auth = (request.headers.get('Authorization') or '').strip()
+            if auth.lower().startswith('bearer '):
+                header = auth.split(' ', 1)[1].strip()
+        if not header:
+            return False
+        return compare_digest(header, secret)
+
     @csrf.exempt
     @flask_app.route('/yookassa-webhook', methods=['POST'])
     def yookassa_webhook_handler():
-        try:
-            event_json = request.json
-            if event_json.get("event") == "payment.succeeded":
-                metadata = event_json.get("object", {}).get("metadata", {})
-                
-                bot = _bot_controller.get_bot_instance()
-                payment_processor = handlers.process_successful_payment
+        """YooKassa webhook (secure).
 
-                if metadata and bot is not None and payment_processor is not None:
-                    loop = current_app.config.get('EVENT_LOOP')
-                    if loop and loop.is_running():
-                        asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
-                    else:
-                        logger.error("YooKassa вебхук: цикл событий недоступен!")
+        Не доверяем входящему payload. Берём provider payment_id из webhook,
+        затем запрашиваем платеж в YooKassa API по секретному ключу и проверяем:
+        - status == succeeded
+        - amount/currency совпадают с pending
+        - payment_id (internal) ещё не обработан (pending статус + idempotency)
+        """
+        try:
+            payload = request.get_json(silent=True) or {}
+
+            # provider payment id приходит в payload['object']['id']
+            provider_payment_id = None
+            if isinstance(payload, dict):
+                obj = payload.get('object') or {}
+                if isinstance(obj, dict):
+                    provider_payment_id = obj.get('id') or payload.get('payment_id')
+
+            if not provider_payment_id:
+                logger.warning("YooKassa webhook: missing provider payment id")
+                return 'Bad Request', 400
+
+            shop_id = (get_setting('yookassa_shop_id') or '').strip()
+            secret_key = (get_setting('yookassa_secret_key') or '').strip()
+            if not shop_id or not secret_key:
+                logger.error("YooKassa webhook: YooKassa is not configured (shop_id/secret_key)")
+                return 'Misconfigured', 500
+
+            # Validate by calling YooKassa API
+            auth = base64.b64encode(f"{shop_id}:{secret_key}".encode('utf-8')).decode('ascii')
+            url = f"https://api.yookassa.ru/v3/payments/{provider_payment_id}"
+            try:
+                data = _http_json(url, headers={"Authorization": f"Basic {auth}"}, timeout=20)
+            except Exception as e:
+                logger.error(f"YooKassa webhook: failed to fetch payment {provider_payment_id}: {e}", exc_info=True)
+                return 'Error', 502
+
+            if not isinstance(data, dict):
+                logger.error(f"YooKassa webhook: unexpected API response type for {provider_payment_id}: {type(data)}")
+                return 'Error', 502
+
+            status = (data.get('status') or '').strip().lower()
+            if status != 'succeeded':
+                # Не финальный успех — игнорируем.
+                logger.info(f"YooKassa webhook: payment {provider_payment_id} status={status} (ignored)")
+                return 'OK', 200
+
+            amount_obj = data.get('amount') or {}
+            value_str = (amount_obj.get('value') or '').strip()
+            currency = (amount_obj.get('currency') or '').strip().upper()
+            meta = data.get('metadata') or {}
+            if not isinstance(meta, dict):
+                meta = {}
+
+            internal_payment_id = (meta.get('payment_id') or '').strip()
+            if not internal_payment_id:
+                logger.warning(f"YooKassa webhook: payment {provider_payment_id} has no internal payment_id in metadata")
+                return 'OK', 200
+
+            # Сверка ожидаемой суммы/валюты с pending (если есть pending)
+            pending_meta = None
+            try:
+                pending_meta = rw_repo.get_pending_metadata(internal_payment_id)
+            except Exception as e:
+                logger.error(f"YooKassa webhook: failed to read pending for {internal_payment_id}: {e}", exc_info=True)
+
+            if pending_meta:
+                try:
+                    expected_amount = Decimal(str(pending_meta.get('price') or pending_meta.get('amount_rub') or '0')).quantize(Decimal('0.01'))
+                    got_amount = Decimal(value_str).quantize(Decimal('0.01'))
+                except Exception:
+                    logger.warning(f"YooKassa webhook: amount parse error for payment_id={internal_payment_id}: value={value_str}")
+                    return 'OK', 200
+
+                if currency and currency != 'RUB':
+                    logger.warning(f"YooKassa webhook: currency mismatch for {internal_payment_id}: got={currency}, expected=RUB")
+                    return 'OK', 200
+
+                if got_amount != expected_amount:
+                    logger.warning(f"YooKassa webhook: amount mismatch for {internal_payment_id}: got={got_amount}, expected={expected_amount}")
+                    return 'OK', 200
+
+            # Atomically mark pending paid and get metadata (idempotency)
+            metadata = find_and_complete_pending_transaction(internal_payment_id)
+            if not metadata:
+                # already processed / unknown
+                return 'OK', 200
+
+            # Ensure payment_method present
+            metadata.setdefault('payment_method', 'YooKassa')
+            _dispatch_payment_processing(metadata)
+
             return 'OK', 200
         except Exception as e:
             logger.error(f"Ошибка в обработчике вебхука YooKassa: {e}", exc_info=True)
             return 'Error', 500
-        
+
     @csrf.exempt
     @flask_app.route('/test-webhook', methods=['GET', 'POST'])
     def test_webhook():
-        """Тестовый endpoint для проверки работы webhook сервера"""
+        """Тестовый endpoint. В продакшне отключен по умолчанию."""
+        if not _debug_endpoints_allowed():
+            return 'Not Found', 404
         if request.method == 'GET':
             return f"Webhook server is running! Time: {datetime.now()}"
-        else:
-            return f"POST received! Data: {request.get_json() or request.form.to_dict()}"
-    
+        return f"POST received! Data: {request.get_json(silent=True) or request.form.to_dict()}"
+
     @csrf.exempt
     @flask_app.route('/debug-all', methods=['GET', 'POST', 'PUT', 'DELETE'])
     def debug_all_requests():
-        """Endpoint для отладки всех входящих запросов"""
-        print(f"[DEBUG] Received {request.method} request to /debug-all")
-        print(f"[DEBUG] Headers: {dict(request.headers)}")
-        print(f"[DEBUG] Form data: {request.form.to_dict()}")
-        print(f"[DEBUG] JSON data: {request.get_json()}")
-        print(f"[DEBUG] Args: {request.args.to_dict()}")
-        
+        """Опасный debug endpoint: возвращает заголовки/куки/данные. В продакшне отключен по умолчанию."""
+        if not _debug_endpoints_allowed():
+            return 'Not Found', 404
+
+        # Никогда не логируем сюда cookies/authorization в явном виде.
+        try:
+            hdrs = dict(request.headers)
+            for k in list(hdrs.keys()):
+                if k.lower() in ('authorization', 'cookie', 'set-cookie'):
+                    hdrs[k] = '[REDACTED]'
+        except Exception:
+            hdrs = {}
+
         return {
             "method": request.method,
-            "headers": dict(request.headers),
+            "headers": hdrs,
             "form": request.form.to_dict(),
-            "json": request.get_json(),
+            "json": request.get_json(silent=True),
             "args": request.args.to_dict(),
             "timestamp": datetime.now().isoformat()
         }
-    
+
     @csrf.exempt
     @flask_app.route('/yoomoney-webhook', methods=['POST'])
     def yoomoney_webhook_handler():
@@ -2182,14 +2498,9 @@ def create_webhook_app(bot_controller_instance):
                 return 'OK', 200
             
             logger.info(f"✅ Найдены метаданные для платежа {payment_id}: пользователь={metadata.get('user_id')}, сумма={metadata.get('price')}")
-            bot = _bot_controller.get_bot_instance()
-            loop = current_app.config.get('EVENT_LOOP')
-            payment_processor = handlers.process_successful_payment
-            if bot and loop and loop.is_running():
-                asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
-                logger.info(f"🚀 Запущена обработка платежа: {payment_id}")
-            else:
-                logger.error("❌ Бот или цикл событий недоступен")
+            metadata.setdefault('payment_method', 'YooMoney')
+            _dispatch_payment_processing(metadata)
+            logger.info(f"🚀 Запущена обработка платежа: {payment_id}")
             return 'OK', 200
         except Exception as e:
             logger.error(f"💥 Ошибка в webhook ЮMoney: {e}", exc_info=True)
@@ -2234,17 +2545,12 @@ def create_webhook_app(bot_controller_instance):
             if status_raw == 'CONFIRMED':
                 metadata = find_and_complete_pending_transaction(payment_id)
                 if metadata:
-                    bot = _bot_controller.get_bot_instance()
-                    loop = current_app.config.get('EVENT_LOOP')
-                    payment_processor = handlers.process_successful_payment
-                    if bot and loop and loop.is_running():
-                        try:
-                            _handle_promo_after_payment(metadata)
-                        except Exception:
-                            pass
-                        asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
-                    else:
-                        logger.error("Platega webhook: бот или цикл событий недоступен")
+                    metadata.setdefault('payment_method', 'Platega')
+                    try:
+                        _handle_promo_after_payment(metadata)
+                    except Exception:
+                        pass
+                    _dispatch_payment_processing(metadata)
             return 'OK', 200
         except Exception as e:
             logger.error(f"Ошибка в обработчике вебхука Platega: {e}", exc_info=True)
@@ -2253,60 +2559,139 @@ def create_webhook_app(bot_controller_instance):
     @csrf.exempt
     @flask_app.route('/cryptobot-webhook', methods=['POST'])
     def cryptobot_webhook_handler():
+        """Crypto Pay API webhook (secure).
+
+        - Проверяем подпись `crypto-pay-api-signature` (HMAC-SHA256 по сырым байтам тела)
+        - Дополнительно валидируем invoice через API (getInvoices)
+        - Idempotency: если payload это internal payment_id → закрываем pending атомарно.
+          Если payload старого формата → используем processed_payments ключ `cryptobot:<invoice_id>`.
+        """
         try:
-            request_data = request.json
-            
-            if request_data and request_data.get('update_type') == 'invoice_paid':
-                payload_data = request_data.get('payload', {})
-                
-                payload_string = payload_data.get('payload')
-                
-                if not payload_string:
-                    logger.warning("CryptoBot вебхук: Получен оплаченный invoice, но payload пустой.")
+            token = (get_setting('cryptobot_token') or '').strip()
+            if not token:
+                logger.error('CryptoBot webhook: cryptobot_token is not configured')
+                return 'Misconfigured', 500
+
+            raw_body = request.get_data(cache=False) or b''
+            signature = (request.headers.get('crypto-pay-api-signature') or request.headers.get('Crypto-Pay-API-Signature') or '').strip()
+            if not signature:
+                logger.warning('CryptoBot webhook: missing crypto-pay-api-signature header')
+                return 'Forbidden', 403
+
+            # expected signature: HMAC-SHA256(body) with secret = SHA256(app_token)
+            secret = hashlib.sha256(token.encode('utf-8')).digest()
+            expected = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
+            if not compare_digest(expected, signature):
+                logger.warning('CryptoBot webhook: invalid signature')
+                return 'Forbidden', 403
+
+            request_data = request.get_json(silent=True) or {}
+            if not isinstance(request_data, dict):
+                return 'Bad Request', 400
+
+            if request_data.get('update_type') != 'invoice_paid':
+                return 'OK', 200
+
+            payload_obj = request_data.get('payload') or {}
+            if not isinstance(payload_obj, dict):
+                payload_obj = {}
+
+            invoice_id = payload_obj.get('invoice_id')
+            try:
+                invoice_id_int = int(invoice_id)
+            except Exception:
+                invoice_id_int = None
+
+            payload_str = (payload_obj.get('payload') or '').strip()
+            if not payload_str:
+                logger.warning('CryptoBot webhook: invoice_paid but payload is empty')
+                return 'OK', 200
+
+            # Fetch invoice details from Crypto Pay API to validate status/amount
+            invoice = None
+            if invoice_id_int is not None:
+                try:
+                    url = f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id_int}"
+                    resp = _http_json(url, headers={"Crypto-Pay-API-Token": token}, timeout=20)
+                    if isinstance(resp, dict) and resp.get('ok') and isinstance(resp.get('result'), list) and resp['result']:
+                        invoice = resp['result'][0]
+                except Exception as e:
+                    logger.error(f"CryptoBot webhook: failed to fetch invoice {invoice_id_int}: {e}", exc_info=True)
+
+            if isinstance(invoice, dict):
+                status = (invoice.get('status') or '').strip().lower()
+                if status != 'paid':
+                    logger.info(f"CryptoBot webhook: invoice {invoice_id_int} status={status} (ignored)")
                     return 'OK', 200
 
-                parts = payload_string.split(':')
-                if len(parts) < 9:
-                    logger.error(f"CryptoBot вебхук: некорректный формат payload: {payload_string}")
-                    return 'Error', 400
+            # New format: payload == internal payment_id (uuid). Then we have pending with expected price.
+            if ':' not in payload_str:
+                internal_payment_id = payload_str
 
-                metadata = {
-                    "user_id": parts[0],
-                    "months": parts[1],
-                    "price": parts[2],
-                    "action": parts[3],
-                    "key_id": parts[4],
-                    "host_name": parts[5],
-                    "plan_id": parts[6],
-                    "customer_email": parts[7] if parts[7] != 'None' else None,
-                    "payment_method": parts[8]
-                }
+                pending_meta = None
+                try:
+                    pending_meta = rw_repo.get_pending_metadata(internal_payment_id)
+                except Exception:
+                    pending_meta = None
 
-                if len(parts) >= 10:
-                    metadata["promo_code"] = (parts[9] if parts[9] != 'None' else None)
-                if len(parts) >= 11:
-                    metadata["promo_discount"] = parts[10]
-                
-                bot = _bot_controller.get_bot_instance()
-                loop = current_app.config.get('EVENT_LOOP')
-                payment_processor = handlers.process_successful_payment
-
-                if bot and loop and loop.is_running():
-
+                if pending_meta and isinstance(invoice, dict):
                     try:
-                        _handle_promo_after_payment(metadata)
+                        from decimal import Decimal
+                        expected_amount = Decimal(str(pending_meta.get('price') or pending_meta.get('amount_rub') or '0')).quantize(Decimal('0.01'))
+                        got_amount = Decimal(str(invoice.get('amount') or '0')).quantize(Decimal('0.01'))
+                        fiat = (invoice.get('fiat') or '').upper()
                     except Exception:
-                        pass
-                    asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
-                else:
-                    logger.error("CryptoBot вебхук: не удалось обработать платёж — бот или цикл событий не запущены.")
+                        logger.warning(f"CryptoBot webhook: amount parse error for payment_id={internal_payment_id}")
+                        return 'OK', 200
+
+                    if fiat and fiat != 'RUB':
+                        logger.warning(f"CryptoBot webhook: fiat mismatch for {internal_payment_id}: got={fiat}, expected=RUB")
+                        return 'OK', 200
+                    if got_amount != expected_amount:
+                        logger.warning(f"CryptoBot webhook: amount mismatch for {internal_payment_id}: got={got_amount}, expected={expected_amount}")
+                        return 'OK', 200
+
+                metadata = find_and_complete_pending_transaction(internal_payment_id)
+                if not metadata:
+                    return 'OK', 200
+
+                metadata.setdefault('payment_method', 'CryptoBot')
+                _dispatch_payment_processing(metadata)
+                return 'OK', 200
+
+            # Legacy format (colon-separated): keep compatibility but still idempotent via processed_payments
+            parts = payload_str.split(':')
+            if len(parts) < 9:
+                logger.error(f"CryptoBot webhook: invalid legacy payload format: {payload_str}")
+                return 'Bad Request', 400
+
+            metadata = {
+                'user_id': parts[0],
+                'months': parts[1],
+                'price': parts[2],
+                'action': parts[3],
+                'key_id': parts[4],
+                'host_name': parts[5],
+                'plan_id': parts[6],
+                'customer_email': parts[7] if parts[7] != 'None' else None,
+                'payment_method': parts[8],
+            }
+            if len(parts) >= 10:
+                metadata['promo_code'] = (parts[9] if parts[9] != 'None' else None)
+            if len(parts) >= 11:
+                metadata['promo_discount'] = parts[10]
+
+            if invoice_id_int is not None:
+                metadata['payment_id'] = f"cryptobot:{invoice_id_int}"
+
+            _dispatch_payment_processing(metadata)
 
             return 'OK', 200
-            
+
         except Exception as e:
             logger.error(f"Ошибка в обработчике вебхука CryptoBot: {e}", exc_info=True)
             return 'Error', 500
-        
+
     @csrf.exempt
     @flask_app.route('/heleket-webhook', methods=['POST'])
     def heleket_webhook_handler():
@@ -2340,13 +2725,9 @@ def create_webhook_app(bot_controller_instance):
                     _handle_promo_after_payment(metadata)
                 except Exception:
                     pass
-                
-                bot = _bot_controller.get_bot_instance()
-                loop = current_app.config.get('EVENT_LOOP')
-                payment_processor = handlers.process_successful_payment
 
-                if bot and loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
+                metadata.setdefault('payment_method', 'Heleket')
+                _dispatch_payment_processing(metadata)
             
             return 'OK', 200
         except Exception as e:
@@ -2356,34 +2737,63 @@ def create_webhook_app(bot_controller_instance):
     @csrf.exempt
     @flask_app.route('/ton-webhook', methods=['POST'])
     def ton_webhook_handler():
+        """TonAPI webhook (hardened):
+        - requires secret header/token (SHOPBOT_TON_WEBHOOK_SECRET or setting ton_webhook_secret)
+        - optional IP allowlist (SHOPBOT_TON_WEBHOOK_IP_ALLOWLIST)
+        - amount check + idempotency enforced inside find_and_complete_ton_transaction
+        """
         try:
-            data = request.json
+            if not _require_ton_webhook_secret():
+                return 'Forbidden', 403
+
+            # Optional IP allowlist
+            allowlist_raw = (os.getenv('SHOPBOT_TON_WEBHOOK_IP_ALLOWLIST') or '').strip()
+            if allowlist_raw:
+                allow = {ip.strip() for ip in allowlist_raw.split(',') if ip.strip()}
+                if allow and _get_client_ip() not in allow:
+                    logger.warning(f"Ton webhook: rejected by IP allowlist. ip={_get_client_ip()}")
+                    return 'Forbidden', 403
+
+            data = request.get_json(silent=True) or {}
             logger.info(f"Получен вебхук TonAPI: {data}")
 
-            if 'tx_id' in data:
-                account_id = data.get('account_id')
-                for tx in data.get('in_progress_txs', []) + data.get('txs', []):
-                    in_msg = tx.get('in_msg')
-                    if in_msg and in_msg.get('decoded_comment'):
-                        payment_id = in_msg['decoded_comment']
-                        amount_nano = int(in_msg.get('value', 0))
-                        amount_ton = float(amount_nano / 1_000_000_000)
+            # TonAPI webhook payload (tonconsole / rt.tonapi.io) includes txs or in_progress_txs arrays
+            txs = []
+            if isinstance(data, dict):
+                txs.extend(data.get('in_progress_txs', []) or [])
+                txs.extend(data.get('txs', []) or [])
 
-                        metadata = find_and_complete_ton_transaction(payment_id, amount_ton)
-                        
-                        if metadata:
-                            logger.info(f"TON Payment successful for payment_id: {payment_id}")
-                            bot = _bot_controller.get_bot_instance()
-                            loop = current_app.config.get('EVENT_LOOP')
-                            payment_processor = handlers.process_successful_payment
+            for tx in txs:
+                if not isinstance(tx, dict):
+                    continue
+                in_msg = tx.get('in_msg') or {}
+                if not isinstance(in_msg, dict):
+                    continue
+                payment_id = (in_msg.get('decoded_comment') or '').strip()
+                if not payment_id:
+                    continue
 
-                            if bot and loop and loop.is_running():
-                                asyncio.run_coroutine_threadsafe(payment_processor(bot, metadata), loop)
-            
+                try:
+                    amount_nano = int(in_msg.get('value', 0) or 0)
+                except Exception:
+                    amount_nano = 0
+                amount_ton = float(amount_nano / 1_000_000_000)
+
+                metadata = find_and_complete_ton_transaction(payment_id, amount_ton)
+                if not metadata:
+                    continue
+
+                logger.info(f"TON Payment successful for payment_id: {payment_id}")
+                metadata.setdefault('payment_method', 'Ton')
+                _dispatch_payment_processing(metadata)
+
             return 'OK', 200
         except Exception as e:
             logger.error(f"Ошибка в обработчике вебхука TonAPI: {e}", exc_info=True)
             return 'Error', 500
+
+
+
 
 
     def _ym_get_redirect_uri():
@@ -2626,4 +3036,3 @@ def create_webhook_app(bot_controller_instance):
 def _coerce_checkbox(value: str) -> str:
     # HTML checkbox returns "on" when checked; hidden fallback sends "off" always.
     return "true" if str(value).lower() in ("on", "true", "1", "yes") else "false"
-

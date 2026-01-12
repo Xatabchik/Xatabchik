@@ -525,7 +525,9 @@ document.addEventListener('DOMContentLoaded', function () {
         nodes.forEach(node => {
             if (window.disableAutoUpdate) return;
             const url = node.getAttribute('data-fetch-url');
-            //const interval = Number(node.getAttribute('data-fetch-interval')||'8000');
+            const intervalAttr = node.getAttribute('data-fetch-interval');
+            let intervalMs = Number(intervalAttr || '8000');
+            if (!Number.isFinite(intervalMs) || intervalMs <= 0) intervalMs = 8000;
             if (!url) return;
             let timer = null;
             let isFirstLoad = true;
@@ -574,7 +576,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             setTimeout(() => {
                 tick();
-                timer = setInterval(tick, Math.max(4000, interval));
+                timer = setInterval(tick, Math.max(4000, intervalMs));
             }, 1000);
             
             node.addEventListener('soft-update-stop', ()=>{ if (timer){ clearInterval(timer); timer=null; } });

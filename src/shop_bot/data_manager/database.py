@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import json
+import time
 import re
 from typing import Any
 
@@ -154,7 +155,8 @@ def initialize_db():
                     traffic_limit_bytes INTEGER,
                     traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
                     tag TEXT,
-                    description TEXT
+                    description TEXT,
+                    missing_from_server_at TIMESTAMP
                 )
             ''')
 
@@ -338,6 +340,8 @@ def initialize_db():
                 "support_user": None,
                 "support_text": None,
                 "channel_url": None,
+                "channel_link": "https://t.me/strettenvpn",
+                "chat_link": "https://t.me/+QxEKczSfPB85ZmJi",
                 "force_subscription": "true",
                 "receipt_email": "example@example.com",
                 "telegram_bot_token": None,
@@ -382,6 +386,7 @@ def initialize_db():
 
                 "inactive_usage_reminder_enabled": "true",
                 "inactive_usage_reminder_interval_hours": "8",
+                "inactive_usage_reminder_support_url": "",
                 "remnawave_base_url": None,
                 "remnawave_api_token": None,
                 "remnawave_cookies": "{}",
@@ -389,11 +394,19 @@ def initialize_db():
                 "default_extension_days": "30",
 
                 "main_menu_text": None,
+                "main_menu_promo_text": "🌐 Множество локаций\n🚀 Скорость серверов 1 Гбит/с, смена IP\n📊 Безлимитный трафик\n\nСпасибо, что вы с нами!",
                 "howto_intro_text": None,
                 "howto_android_text": None,
                 "howto_ios_text": None,
                 "howto_windows_text": None,
                 "howto_linux_text": None,
+
+                # Key card buttons (key info screen)
+                "key_info_show_connect_device": "true",
+                "key_info_show_howto": "false",
+
+                # Payment flow
+                "payment_email_prompt_enabled": "false",
 
                 "btn_trial_text": None,
                 "btn_profile_text": None,
@@ -412,6 +425,17 @@ def initialize_db():
                 "yoomoney_enabled": "false",
                 "yoomoney_wallet": None,
                 "yoomoney_secret": None,
+
+                # Bot UI labels: payment method names in Telegram buttons
+                "payment_label_balance": "💼 Оплатить с баланса",
+                "payment_label_yookassa_card": "🏦 Банковская карта",
+                "payment_label_yookassa_sbp": "🏦 СБП / Банковская карта",
+                "payment_label_platega": "💳 Platega",
+                "payment_label_cryptobot": "💎 Криптовалюта",
+                "payment_label_heleket": "💎 Криптовалюта",
+                "payment_label_tonconnect": "🪙 TON Connect",
+                "payment_label_stars": "⭐ Telegram Stars",
+                "payment_label_yoomoney": "🏦 Банковская карта",
 
                 "yoomoney_api_token": None,
                 "yoomoney_client_id": None,
@@ -522,6 +546,7 @@ def _rebuild_vpn_keys_table(cursor: sqlite3.Cursor) -> None:
     legacy_markers = {"xui_client_uuid", "expiry_date", "created_date", "connection_string"}
     required = {"remnawave_user_uuid", "email", "expire_at", "created_at", "updated_at"}
     if required.issubset(columns) and not (columns & legacy_markers):
+        _ensure_table_column(cursor, "vpn_keys", "missing_from_server_at", "TIMESTAMP")
         _finalize_vpn_key_indexes(cursor)
         return
 
@@ -543,7 +568,8 @@ def _rebuild_vpn_keys_table(cursor: sqlite3.Cursor) -> None:
             traffic_limit_bytes INTEGER,
             traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
             tag TEXT,
-            description TEXT
+            description TEXT,
+            missing_from_server_at TIMESTAMP
         )
     ''')
     old_columns = _get_table_columns(cursor, "vpn_keys_legacy")
@@ -580,6 +606,7 @@ def _rebuild_vpn_keys_table(cursor: sqlite3.Cursor) -> None:
         f"{traffic_strategy_expr} AS traffic_limit_strategy",
         f"{col('tag')} AS tag",
         f"{col('description')} AS description",
+        f"{col('missing_from_server_at')} AS missing_from_server_at",
     ])
 
     cursor.execute(
@@ -600,7 +627,8 @@ def _rebuild_vpn_keys_table(cursor: sqlite3.Cursor) -> None:
             traffic_limit_bytes,
             traffic_limit_strategy,
             tag,
-            description
+            description,
+            missing_from_server_at
         )
         SELECT
             {select_clause}
@@ -635,7 +663,8 @@ def _ensure_vpn_keys_schema(cursor: sqlite3.Cursor) -> None:
                 traffic_limit_bytes INTEGER,
                 traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
                 tag TEXT,
-                description TEXT
+                description TEXT,
+                missing_from_server_at TIMESTAMP
             )
         ''')
         _finalize_vpn_key_indexes(cursor)
@@ -1602,186 +1631,492 @@ def is_admin(user_id: int) -> bool:
     except Exception:
         return False
 
-
-def create_payload_pending(payment_id: str, user_id: int, amount_rub: float | None, metadata: dict | None) -> bool:
+def _connect_pending_db() -> sqlite3.Connection:
+    """Connection helper for high-contention tables (webhooks/bot)."""
+    conn = sqlite3.connect(DB_FILE, timeout=5.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
     try:
-        print(f"[DEBUG] create_payload_pending called: payment_id={payment_id}, user_id={user_id}, amount_rub={amount_rub}, metadata={metadata}")
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
+    return conn
 
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS pending_transactions (
-                    payment_id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    amount_rub REAL,
-                    metadata TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute(
-                '''
-                INSERT OR REPLACE INTO pending_transactions (payment_id, user_id, amount_rub, metadata, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, COALESCE((SELECT status FROM pending_transactions WHERE payment_id = ?), 'pending'),
-                        COALESCE((SELECT created_at FROM pending_transactions WHERE payment_id = ?), CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
-                '''
-                , (payment_id, int(user_id), float(amount_rub) if amount_rub is not None else None, json.dumps(metadata or {}), payment_id, payment_id)
-            )
-            conn.commit()
-            return True
-    except sqlite3.Error as e:
-        logging.error(f"Failed to create payload pending {payment_id}: {e}")
+
+def _retry_sqlite(work, attempts: int = 5, base_sleep: float = 0.05):
+    for i in range(attempts):
+        try:
+            return work()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and i < attempts - 1:
+                time.sleep(base_sleep * (2 ** i))
+                continue
+            raise
+
+
+def _ensure_pending_tables(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS pending_transactions (
+            payment_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            amount_rub REAL,
+            metadata TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+
+def _ensure_processed_payments_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS processed_payments (
+            payment_id TEXT PRIMARY KEY,
+            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+
+def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) -> bool:
+    """Create/update pending payload metadata.
+
+    Important: does NOT revive already paid rows (keeps status='paid' intact).
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
         return False
 
-def _get_pending_metadata(payment_id: str) -> dict | None:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
+    def _work():
+        with _connect_pending_db() as conn:
             cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
 
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS pending_transactions (
-                    payment_id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    amount_rub REAL,
-                    metadata TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute("SELECT * FROM pending_transactions WHERE payment_id = ?", (payment_id,))
+            cursor.execute(
+                '''
+                INSERT INTO pending_transactions (payment_id, user_id, amount_rub, metadata, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(payment_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    amount_rub = excluded.amount_rub,
+                    metadata = excluded.metadata,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE pending_transactions.status = 'pending'
+                ''',
+                (
+                    pid,
+                    int(user_id),
+                    float(amount_rub) if amount_rub is not None else None,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                ),
+            )
+            return True
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to create payload pending {pid}: {e}")
+        return False
+
+
+def _get_pending_metadata(payment_id: str) -> dict | None:
+    pid = (payment_id or "").strip()
+    if not pid:
+        return None
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
             row = cursor.fetchone()
             if not row:
                 return None
+            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
             try:
-                meta = json.loads(row["metadata"] or "{}")
+                meta = json.loads(raw or "{}")
             except Exception:
                 meta = {}
-
-            meta.setdefault('payment_id', payment_id)
+            meta.setdefault("payment_id", pid)
             return meta
+
+    try:
+        return _retry_sqlite(_work)
     except sqlite3.Error as e:
-        logging.error(f"Failed to read pending transaction {payment_id}: {e}")
+        logging.error(f"Failed to read pending transaction {pid}: {e}")
         return None
 
 
 def get_pending_metadata(payment_id: str) -> dict | None:
-    """Public wrapper to fetch pending metadata by payment_id WITHOUT marking it paid.
-    Returns metadata dict or None if not found.
-    """
+    """Public wrapper to fetch pending metadata by payment_id WITHOUT marking it paid."""
     return _get_pending_metadata(payment_id)
 
 
 def get_pending_status(payment_id: str) -> str | None:
     """Return status of pending transaction: 'pending', 'paid', or None if not found."""
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+    pid = (payment_id or "").strip()
+    if not pid:
+        return None
 
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS pending_transactions (
-                    payment_id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    amount_rub REAL,
-                    metadata TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute("SELECT status FROM pending_transactions WHERE payment_id = ?", (payment_id,))
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute("SELECT status FROM pending_transactions WHERE payment_id = ?", (pid,))
             row = cursor.fetchone()
             if not row:
                 return None
-            return (row[0] or '').strip() or None
+            return (row[0] or "").strip() or None
+
+    try:
+        return _retry_sqlite(_work)
     except sqlite3.Error as e:
-        logging.error(f"Failed to get status for pending {payment_id}: {e}")
+        logging.error(f"Failed to get status for pending {pid}: {e}")
         return None
+
 
 def _complete_pending(payment_id: str) -> bool:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ?",
-                (payment_id,)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        logging.error(f"Failed to complete pending transaction {payment_id}: {e}")
+    pid = (payment_id or "").strip()
+    if not pid:
         return False
 
-def find_and_complete_ton_transaction(payment_id: str, amount_ton: float | None = None) -> dict | None:
-    """Locate pending transaction by payment_id and mark it paid. Return metadata for processing.
-    The amount check is not enforced here; validation should be done on the webhook provider side.
-    """
-    meta = _get_pending_metadata(payment_id)
-    if not meta:
-        return None
-    _complete_pending(payment_id)
-    return meta
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            return cursor.rowcount == 1
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to complete pending transaction {pid}: {e}")
+        return False
+
 
 def find_and_complete_pending_transaction(payment_id: str) -> dict | None:
-    logging.info(f"🔍 Ищем ожидающую транзакцию: {payment_id}")
-    meta = _get_pending_metadata(payment_id)
-    if not meta:
-        logging.warning(f"❌ Ожидающая транзакция не найдена: {payment_id}")
+    """Atomically mark pending transaction as paid and return its metadata.
+
+    Returns None when payment_id is unknown OR already processed.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
         return None
-    
-    user_id = meta.get('user_id', 'неизвестно')
-    amount = meta.get('price', 0)
-    logging.info(f"✅ Найдена ожидающая транзакция: пользователь {user_id}, сумма {amount:.2f} RUB")
-    
-    success = _complete_pending(payment_id)
-    if success:
-        logging.info(f"✅ Транзакция отмечена как оплаченная: {payment_id}")
-    else:
-        logging.error(f"❌ Не удалось отметить транзакцию как оплаченную: {payment_id}")
-    return meta
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            cursor.execute(
+                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            if cursor.rowcount != 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            conn.commit()
+
+            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return meta
+
+    try:
+        return _retry_sqlite(_work)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to complete pending transaction {pid}: {e}")
+        return None
+
 
 def get_latest_pending_for_user(user_id: int) -> dict | None:
-    """Return metadata of the most recent pending transaction for the user (without completing it)."""
+    """Return metadata of the most recent PENDING transaction for the user (without completing it)."""
     try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
+        with _connect_pending_db() as conn:
             cursor = conn.cursor()
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS pending_transactions (
-                    payment_id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    amount_rub REAL,
-                    metadata TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+            _ensure_pending_tables(cursor)
             cursor.execute(
                 """
-                SELECT payment_id, metadata FROM pending_transactions
-                WHERE user_id = ?
-                ORDER BY datetime(created_at) DESC, datetime(updated_at) DESC
+                SELECT payment_id, metadata
+                FROM pending_transactions
+                WHERE user_id = ? AND status = 'pending'
+                ORDER BY updated_at DESC, created_at DESC
                 LIMIT 1
                 """,
-                (int(user_id),)
+                (int(user_id),),
             )
             row = cursor.fetchone()
             if not row:
                 return None
+            pid = row[0] if isinstance(row, (tuple, list)) else row["payment_id"]
+            raw = row[1] if isinstance(row, (tuple, list)) else row["metadata"]
             try:
-                meta = json.loads(row["metadata"] or "{}")
+                meta = json.loads(raw or "{}")
             except Exception:
                 meta = {}
-            meta.setdefault('payment_id', row["payment_id"]) 
+            meta.setdefault("payment_id", pid)
             return meta
     except sqlite3.Error as e:
-        logging.error(f"Failed to read latest pending for user {user_id}: {e}")
+        logging.error(f"Failed to get latest pending for user {user_id}: {e}")
         return None
+
+
+def claim_processed_payment(payment_id: str) -> bool:
+    """Idempotency guard: returns True only once per payment_id."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_processed_payments_table(cursor)
+            cursor.execute(
+                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)",
+                (pid,),
+            )
+            return cursor.rowcount == 1
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to claim processed payment {pid}: {e}")
+        return False
+    if not pid:
+        return None
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            cursor.execute(
+                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            if cursor.rowcount != 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            conn.commit()
+
+            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return meta
+
+    try:
+        return _retry_sqlite(_work)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to complete pending transaction {pid}: {e}")
+        return None
+
+
+def get_latest_pending_for_user(user_id: int) -> dict | None:
+    """Return metadata of the most recent PENDING transaction for the user (without completing it)."""
+    try:
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                """
+                SELECT payment_id, metadata
+                FROM pending_transactions
+                WHERE user_id = ? AND status = 'pending'
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            pid = row[0] if isinstance(row, (tuple, list)) else row["payment_id"]
+            raw = row[1] if isinstance(row, (tuple, list)) else row["metadata"]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return meta
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get latest pending for user {user_id}: {e}")
+        return None
+
+
+def claim_processed_payment(payment_id: str) -> bool:
+    """Idempotency guard: returns True only once per payment_id."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_processed_payments_table(cursor)
+            cursor.execute(
+                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)",
+                (pid,),
+            )
+            return cursor.rowcount == 1
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to claim processed payment {pid}: {e}")
+        return False
+    if not pid:
+        return None
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            cursor.execute(
+                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            if cursor.rowcount != 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            conn.commit()
+
+            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return meta
+
+    try:
+        return _retry_sqlite(_work)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to complete pending transaction {pid}: {e}")
+        return None
+
+
+def get_latest_pending_for_user(user_id: int) -> dict | None:
+    """Return metadata of the most recent PENDING transaction for the user (without completing it)."""
+    try:
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                """
+                SELECT payment_id, metadata
+                FROM pending_transactions
+                WHERE user_id = ? AND status = 'pending'
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            pid = row[0] if isinstance(row, (tuple, list)) else row["payment_id"]
+            raw = row[1] if isinstance(row, (tuple, list)) else row["metadata"]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return meta
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get latest pending for user {user_id}: {e}")
+        return None
+
+
+def claim_processed_payment(payment_id: str) -> bool:
+    """Idempotency guard: returns True only once per payment_id."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_processed_payments_table(cursor)
+            cursor.execute(
+                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)",
+                (pid,),
+            )
+            return cursor.rowcount == 1
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to claim processed payment {pid}: {e}")
+        return False
         
 def get_referrals_for_user(user_id: int) -> list[dict]:
     """Возвращает список пользователей, которых пригласил данный user_id.
@@ -2497,6 +2832,33 @@ def get_plan_by_id(plan_id: int) -> dict | None:
         logging.error(f"Failed to get plan by id '{plan_id}': {e}")
         return None
 
+
+def _parse_json_metadata(raw: str | None) -> dict:
+    try:
+        if not raw:
+            return {}
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+def update_plan_metadata(plan_id: int, metadata: dict | None) -> bool:
+    """Update plan.metadata JSON blob.
+
+    `metadata=None` or empty dict will clear the field.
+    """
+    try:
+        raw = None
+        if metadata:
+            raw = json.dumps(metadata, ensure_ascii=False)
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE plans SET metadata = ? WHERE plan_id = ?", (raw, int(plan_id)))
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to update plan metadata for id {plan_id}: {e}")
+        return False
+
 def delete_plan(plan_id: int):
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -2831,43 +3193,126 @@ def get_total_spent_sum() -> float:
         return 0.0
 
 def create_pending_transaction(payment_id: str, user_id: int, amount_rub: float, metadata: dict) -> int:
+    """Create a pending transaction row in `transactions`.
+
+    Used for TON Connect flows.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return 0
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
             cursor = conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+                cursor.execute("PRAGMA busy_timeout=5000;")
+            except Exception:
+                pass
+
             cursor.execute(
-                "INSERT INTO transactions (payment_id, user_id, status, amount_rub, metadata) VALUES (?, ?, ?, ?, ?)",
-                (payment_id, user_id, 'pending', amount_rub, json.dumps(metadata))
+                "INSERT OR IGNORE INTO transactions (payment_id, user_id, status, amount_rub, metadata) VALUES (?, ?, ?, ?, ?)",
+                (pid, int(user_id), 'pending', float(amount_rub), json.dumps(metadata or {}, ensure_ascii=False))
             )
             conn.commit()
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
     except sqlite3.Error as e:
         logging.error(f"Failed to create pending transaction: {e}")
         return 0
 
+
 def find_and_complete_ton_transaction(payment_id: str, amount_ton: float) -> dict | None:
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM transactions WHERE payment_id = ? AND status = 'pending'", (payment_id,))
-            transaction = cursor.fetchone()
-            if not transaction:
-                logger.warning(f"TON Webhook: Получен платеж для неизвестного или уже обработанного payment_id: {payment_id}")
-                return None
-            
-            
-            cursor.execute(
-                "UPDATE transactions SET status = 'paid', amount_currency = ?, currency_name = 'TON', payment_method = 'TON' WHERE payment_id = ?",
-                (amount_ton, payment_id)
-            )
-            conn.commit()
-            
-            return json.loads(transaction['metadata'])
-    except sqlite3.Error as e:
-        logging.error(f"Failed to complete TON transaction {payment_id}: {e}")
+    """Atomically completes a TON transaction.
+
+    - validates transaction exists and is still pending
+    - enforces amount check against metadata (expected_amount_ton/ton_amount/amount_ton) when present
+    - updates using `WHERE ... AND status='pending'` to ensure idempotency
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
         return None
 
+    try:
+        with sqlite3.connect(DB_FILE, timeout=5.0, isolation_level=None) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+                cursor.execute("PRAGMA busy_timeout=5000;")
+            except Exception:
+                pass
+
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute("SELECT metadata FROM transactions WHERE payment_id = ? AND status = 'pending'", (pid,))
+            row = cursor.fetchone()
+            if not row:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.warning(f"TON Webhook: payment_id unknown or already processed: {pid}")
+                return None
+
+            raw_meta = row['metadata'] if isinstance(row, dict) or hasattr(row, '__getitem__') else None
+            try:
+                meta = json.loads(raw_meta or "{}")
+            except Exception:
+                meta = {}
+
+            expected = meta.get('expected_amount_ton')
+            if expected is None:
+                expected = meta.get('ton_amount')
+            if expected is None:
+                expected = meta.get('amount_ton')
+
+            exp_val = None
+            try:
+                if expected is not None:
+                    exp_val = float(expected)
+            except Exception:
+                exp_val = None
+
+            try:
+                amt_val = float(amount_ton)
+            except Exception:
+                amt_val = None
+
+            if exp_val is not None:
+                if amt_val is None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(f"TON Webhook: missing amount for payment_id={pid}; expected={exp_val}")
+                    return None
+                tol = max(0.001, exp_val * 0.01)
+                if abs(amt_val - exp_val) > tol:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(f"TON Webhook: amount mismatch for payment_id={pid}; got={amt_val}, expected={exp_val}, tol={tol}")
+                    return None
+
+            cursor.execute(
+                "UPDATE transactions SET status = 'paid', amount_currency = ?, currency_name = 'TON', payment_method = 'TON' WHERE payment_id = ? AND status = 'pending'",
+                (amt_val if amt_val is not None else amount_ton, pid)
+            )
+            if cursor.rowcount != 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+            conn.commit()
+            meta.setdefault('payment_id', pid)
+            return meta
+
+    except sqlite3.Error as e:
+        logging.error(f"Failed to complete TON transaction {pid}: {e}")
+        return None
 def log_transaction(username: str, transaction_id: str | None, payment_id: str | None, user_id: int, status: str, amount_rub: float, amount_currency: float | None, currency_name: str | None, payment_method: str, metadata: str):
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -3041,6 +3486,7 @@ def update_key_fields(
     traffic_limit_strategy: str | None = None,
     tag: str | None = None,
     description: str | None = None,
+    missing_from_server_at: Any = _UNSET,
 ) -> bool:
     updates: dict[str, Any] = {}
     if host_name is not None:
@@ -3068,6 +3514,8 @@ def update_key_fields(
         updates["tag"] = tag
     if description is not None:
         updates["description"] = description
+    if missing_from_server_at is not _UNSET:
+        updates["missing_from_server_at"] = missing_from_server_at
     return _apply_key_updates(key_id, updates)
 
 
@@ -3240,9 +3688,16 @@ def update_key_status_from_server(key_email: str, client_data) -> bool:
                 remnawave_user_uuid=remote_uuid,
                 expire_at_ms=expiry_ms,
                 subscription_url=subscription_url,
+                missing_from_server_at=None,
             )
         if existing:
-            return delete_key_by_email(normalized_email)
+            # Не удаляем ключ сразу, т.к. временные сбои Remnawave/пагинация
+            # могут приводить к ложному отсутствию ключа в списке пользователей.
+            # Вместо этого помечаем время, когда ключ последний раз не был найден на сервере.
+            return update_key_fields(
+                existing["key_id"],
+                missing_from_server_at=_now_str(),
+            )
         return True
     except sqlite3.Error as e:
         logging.error("Failed to update key status for %s: %s", key_email, e)
@@ -3331,7 +3786,13 @@ def get_all_users() -> list[dict]:
         logging.error(f"Failed to get all users: {e}")
         return []
 
-def get_users_paginated(page: int = 1, per_page: int = 30, q: str | None = None) -> tuple[list[dict], int]:
+def get_users_paginated(
+    page: int = 1,
+    per_page: int = 30,
+    q: str | None = None,
+    *,
+    sort: str | None = None,
+) -> tuple[list[dict], int]:
     """Вернуть пользователей постранично и общее количество (с учётом фильтра).
 
     Фильтр q ищет по username (LIKE) и по текстовому представлению telegram_id.
@@ -3339,6 +3800,17 @@ def get_users_paginated(page: int = 1, per_page: int = 30, q: str | None = None)
     page = max(1, int(page or 1))
     per_page = max(1, int(per_page or 30))
     offset = (page - 1) * per_page
+
+    sort_key = (sort or "").strip().lower()
+    order_by = "u.registration_date DESC"
+    if sort_key in ("balance", "balance_desc"):
+        order_by = "COALESCE(u.balance, 0) DESC, u.registration_date DESC"
+    elif sort_key in ("balance_asc",):
+        order_by = "COALESCE(u.balance, 0) ASC, u.registration_date DESC"
+    elif sort_key in ("active_keys", "active_keys_desc"):
+        order_by = "active_keys_count DESC, u.registration_date DESC"
+    elif sort_key in ("active_keys_asc",):
+        order_by = "active_keys_count ASC, u.registration_date DESC"
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
@@ -3358,12 +3830,25 @@ def get_users_paginated(page: int = 1, per_page: int = 30, q: str | None = None)
                 total = cursor.fetchone()[0] or 0
 
                 cursor.execute(
-                    """
-                    SELECT *
-                    FROM users
-                    WHERE (username LIKE ?)
-                       OR (CAST(telegram_id AS TEXT) LIKE ?)
-                    ORDER BY registration_date DESC
+                    f"""
+                    SELECT
+                        u.*,
+                        COUNT(k.key_id) AS keys_count,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN k.key_id IS NOT NULL
+                                 AND k.missing_from_server_at IS NULL
+                                 AND k.expire_at IS NOT NULL
+                                 AND datetime(k.expire_at) > CURRENT_TIMESTAMP
+                                THEN 1 ELSE 0
+                            END
+                        ), 0) AS active_keys_count
+                    FROM users u
+                    LEFT JOIN vpn_keys k ON k.user_id = u.telegram_id
+                    WHERE (u.username LIKE ?)
+                       OR (CAST(u.telegram_id AS TEXT) LIKE ?)
+                    GROUP BY u.telegram_id
+                    ORDER BY {order_by}
                     LIMIT ? OFFSET ?
                     """,
                     (q_like, q_like, per_page, offset),
@@ -3372,7 +3857,25 @@ def get_users_paginated(page: int = 1, per_page: int = 30, q: str | None = None)
                 cursor.execute("SELECT COUNT(*) FROM users")
                 total = cursor.fetchone()[0] or 0
                 cursor.execute(
-                    "SELECT * FROM users ORDER BY registration_date DESC LIMIT ? OFFSET ?",
+                    f"""
+                    SELECT
+                        u.*,
+                        COUNT(k.key_id) AS keys_count,
+                        COALESCE(SUM(
+                            CASE
+                                WHEN k.key_id IS NOT NULL
+                                 AND k.missing_from_server_at IS NULL
+                                 AND k.expire_at IS NOT NULL
+                                 AND datetime(k.expire_at) > CURRENT_TIMESTAMP
+                                THEN 1 ELSE 0
+                            END
+                        ), 0) AS active_keys_count
+                    FROM users u
+                    LEFT JOIN vpn_keys k ON k.user_id = u.telegram_id
+                    GROUP BY u.telegram_id
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                    """,
                     (per_page, offset),
                 )
             users = [dict(row) for row in cursor.fetchall()]
