@@ -12,7 +12,7 @@ from shop_bot.data_manager.database import get_button_configs
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_URL = "https://t.me/rlllllllllla"
+SUPPORT_URL = "https://t.me/"
 
 
 def _normalize_url(url: str) -> str:
