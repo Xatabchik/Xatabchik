@@ -10,6 +10,7 @@ import html as html_escape
 import base64
 import time
 import uuid
+from decimal import Decimal
 from hmac import compare_digest
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -2375,8 +2376,13 @@ def create_webhook_app(bot_controller_instance):
                 try:
                     expected_amount = Decimal(str(pending_meta.get('price') or pending_meta.get('amount_rub') or '0')).quantize(Decimal('0.01'))
                     got_amount = Decimal(value_str).quantize(Decimal('0.01'))
-                except Exception:
-                    logger.warning(f"YooKassa webhook: amount parse error for payment_id={internal_payment_id}: value={value_str}")
+                except Exception as e:
+                    # Не падаем: просто не сможем выполнить сверку суммы.
+                    # Ранее здесь часто случался NameError из-за отсутствующего импорта Decimal.
+                    logger.warning(
+                        f"YooKassa webhook: amount parse error for payment_id={internal_payment_id}: value={value_str}; err={e}",
+                        exc_info=True,
+                    )
                     return 'OK', 200
 
                 if currency and currency != 'RUB':
