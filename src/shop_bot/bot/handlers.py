@@ -579,8 +579,8 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
         balance_str = str(balance_val)
 
     # Ссылки (настраиваются в админке)
-    channel_link = (get_setting("channel_link") or "https://t.me/xatabvpn").strip()
-    chat_link = (get_setting("chat_link") or "https://t.me/+6kB4I-diSUEyY2Ey").strip()
+    channel_link = (get_setting("channel_link") or "https://t.me/").strip()
+    chat_link = (get_setting("chat_link") or "https://t.me/").strip()
 
     # Текст главного меню
     promo_text = (get_setting("main_menu_promo_text") or "").strip()
