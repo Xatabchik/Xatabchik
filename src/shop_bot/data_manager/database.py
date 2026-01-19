@@ -123,7 +123,8 @@ def initialize_db():
                     referred_by INTEGER,
                     referral_balance REAL DEFAULT 0,
                     referral_balance_all REAL DEFAULT 0,
-                    referral_start_bonus_received BOOLEAN DEFAULT 0
+                    referral_start_bonus_received BOOLEAN DEFAULT 0,
+                    referral_trial_day_bonus_received BOOLEAN DEFAULT 0
                 )
             ''')
 
@@ -168,7 +169,9 @@ def initialize_db():
                     last_reminder_at TIMESTAMP,
                     last_checked_at TIMESTAMP,
                     last_devices_count INTEGER DEFAULT 0,
-                    last_traffic_bytes INTEGER DEFAULT 0
+                    last_traffic_bytes INTEGER DEFAULT 0,
+                    overlimit_notified_count INTEGER DEFAULT 0,
+                    overlimit_notified_at TIMESTAMP
                 )
             ''')
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_key_usage_monitor_first_seen ON key_usage_monitor(first_seen_usage_at)")
@@ -573,6 +576,7 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "referral_balance": "REAL DEFAULT 0",
         "referral_balance_all": "REAL DEFAULT 0",
         "referral_start_bonus_received": "BOOLEAN DEFAULT 0",
+        "referral_trial_day_bonus_received": "BOOLEAN DEFAULT 0",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
@@ -623,6 +627,15 @@ def _ensure_support_tickets_columns(cursor: sqlite3.Cursor) -> None:
     }
     for column, definition in extras.items():
         _ensure_table_column(cursor, "support_tickets", column, definition)
+
+
+def _ensure_key_usage_monitor_columns(cursor: sqlite3.Cursor) -> None:
+    extras = {
+        "overlimit_notified_count": "INTEGER DEFAULT 0",
+        "overlimit_notified_at": "TIMESTAMP",
+    }
+    for column, definition in extras.items():
+        _ensure_table_column(cursor, "key_usage_monitor", column, definition)
 
 
 def _finalize_vpn_key_indexes(cursor: sqlite3.Cursor) -> None:
@@ -780,6 +793,7 @@ def run_migration():
             _ensure_plans_columns(cursor)
             _ensure_support_tickets_columns(cursor)
             _ensure_vpn_keys_schema(cursor)
+            _ensure_key_usage_monitor_columns(cursor)
             _ensure_ssh_targets_table(cursor)
             _ensure_gift_tokens_table(cursor)
             _ensure_promo_tables(cursor)
@@ -970,6 +984,24 @@ def set_referral_start_bonus_received(user_id: int) -> bool:
             return cursor.rowcount > 0
     except sqlite3.Error as e:
         logging.error(f"Не удалось пометить получение стартового реферального бонуса для пользователя {user_id}: {e}")
+        return False
+
+
+def set_referral_trial_day_bonus_received(user_id: int) -> bool:
+    """Пометить, что за данного пользователя уже начислялся +1 день рефереру за активацию триала."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET referral_trial_day_bonus_received = 1 WHERE telegram_id = ?",
+                (user_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(
+            f"Не удалось пометить начисление +1 дня за триал для пользователя {user_id}: {e}"
+        )
         return False
 
 def update_host_url(host_name: str, new_url: str) -> bool:
@@ -4382,6 +4414,8 @@ def update_key_usage_monitor(
     last_checked_at: str | None = None,
     last_devices_count: int | None = None,
     last_traffic_bytes: int | None = None,
+    overlimit_notified_count: int | None = None,
+    overlimit_notified_at: str | None = None,
 ) -> bool:
     fields = []
     values = []
@@ -4400,6 +4434,12 @@ def update_key_usage_monitor(
     if last_traffic_bytes is not None:
         fields.append("last_traffic_bytes = ?")
         values.append(int(last_traffic_bytes))
+    if overlimit_notified_count is not None:
+        fields.append("overlimit_notified_count = ?")
+        values.append(int(overlimit_notified_count))
+    if overlimit_notified_at is not None:
+        fields.append("overlimit_notified_at = ?")
+        values.append(overlimit_notified_at)
 
     if not fields:
         return False

@@ -12,7 +12,7 @@ from shop_bot.data_manager.database import get_button_configs
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_URL = (get_setting("chat_link")).strip()
+SUPPORT_URL =  (get_setting("support_bot_username") or get_setting("support_user") or "").strip()
 
 
 def _normalize_url(url: str) -> str:

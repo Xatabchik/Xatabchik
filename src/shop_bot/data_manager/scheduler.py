@@ -220,6 +220,240 @@ def _get_inactive_usage_reminder_interval_seconds() -> int:
     return int(_get_inactive_usage_reminder_interval_hours() * 3600)
 
 
+def _parse_origin_meta_from_description(description: str | None) -> dict | None:
+    if not description:
+        return None
+    s = str(description).strip()
+    if not s:
+        return None
+    try:
+        payload = json.loads(s)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _try_int(v) -> int | None:
+    try:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            iv = int(v)
+            return iv
+        s = str(v).strip()
+        if not s:
+            return None
+        iv = int(float(s.replace(",", ".")))
+        return iv
+    except Exception:
+        return None
+
+
+def _resolve_hwid_device_limit_for_key(key: dict, remote_user: dict | None) -> int | None:
+    """Определить допустимый лимит устройств для ключа.
+
+    Приоритет:
+      1) Remnawave поле hwidDeviceLimit (если есть)
+      2) План из vpn_keys.description (origin meta -> plan_id)
+      3) Настройка trial_device_limit (для триала)
+    """
+    # 1) remnawave
+    if isinstance(remote_user, dict):
+        for k in ("hwidDeviceLimit", "hwid_device_limit", "deviceLimit", "device_limit"):
+            limit = _try_int(remote_user.get(k))
+            if limit and limit > 0:
+                return limit
+
+    desc = key.get("description")
+    meta = _parse_origin_meta_from_description(desc)
+    is_trial = False
+    plan_id = None
+    if isinstance(meta, dict):
+        is_trial = bool(meta.get("is_trial"))
+        plan_id = meta.get("plan_id")
+        if plan_id in ("", None):
+            plan_id = None
+
+    # 2) plan hwid_device_limit
+    if plan_id is not None:
+        try:
+            plan = rw_repo.get_plan_by_id(int(plan_id)) or {}
+        except Exception:
+            plan = {}
+        limit = _try_int(plan.get("hwid_device_limit") or plan.get("hwidDeviceLimit"))
+        if limit and limit > 0:
+            return limit
+
+    # 3) trial limit from settings
+    if is_trial or (str(key.get("tag") or "").strip().lower() == "trial"):
+        try:
+            raw = rw_repo.get_setting("trial_device_limit")
+        except Exception:
+            raw = None
+        limit = _try_int(raw)
+        if limit and limit > 0:
+            return limit
+    return None
+
+
+def _extract_device_ids(devices_payload) -> list[str]:
+    ids: list[str] = []
+    if isinstance(devices_payload, list):
+        for item in devices_payload:
+            if isinstance(item, dict):
+                v = (
+                    item.get("deviceId")
+                    or item.get("device_id")
+                    or item.get("id")
+                    or item.get("uuid")
+                    or item.get("hwid")
+                    or item.get("fingerprint")
+                )
+                if v:
+                    ids.append(str(v))
+            elif item is not None:
+                ids.append(str(item))
+    elif isinstance(devices_payload, dict):
+        # иногда ответ может быть объектом с полем списка
+        for k in ("devices", "items", "data", "response"):
+            inner = devices_payload.get(k)
+            if isinstance(inner, list):
+                return _extract_device_ids(inner)
+    # uniq keep order
+    out = []
+    seen = set()
+    for v in ids:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+async def check_device_limit_violations(bot: Bot):
+    """Проверяет превышение лимитов привязанных HWID устройств и уведомляет админов."""
+    try:
+        admin_ids = list(rw_repo.get_admin_ids() or [])
+    except Exception:
+        admin_ids = []
+    if not admin_ids:
+        return
+
+    now = datetime.now()
+    cooldown = timedelta(hours=6)
+
+    all_keys = rw_repo.get_all_keys() or []
+    for key in all_keys:
+        try:
+            key_id = int(key.get("key_id") or 0)
+            user_id = int(key.get("user_id") or 0)
+            if not key_id or not user_id:
+                continue
+
+            expiry_dt = _parse_dt_safe(key.get("expiry_date") or key.get("expire_at"))
+            if expiry_dt and expiry_dt < now:
+                continue
+
+            host_name = (key.get("host_name") or "").strip()
+            email = (key.get("email") or key.get("key_email") or "").strip()
+            if not host_name or not email:
+                continue
+
+            database.ensure_key_usage_monitor_row(key_id, user_id)
+            mon = database.get_key_usage_monitor(key_id) or {}
+
+            remote_user = None
+            try:
+                remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+            except Exception:
+                remote_user = None
+
+            limit = _resolve_hwid_device_limit_for_key(key, remote_user)
+            if not limit or limit <= 0:
+                continue
+
+            user_uuid = (key.get("remnawave_user_uuid") or key.get("xui_client_uuid") or "").strip()
+            if (not user_uuid) and isinstance(remote_user, dict):
+                user_uuid = str(remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid") or "").strip()
+            if not user_uuid:
+                continue
+
+            devices_payload = None
+            try:
+                devices_payload = await remnawave_api.get_hwid_devices_for_user(str(user_uuid), host_name=host_name)
+            except Exception:
+                devices_payload = None
+
+            devices_count = len(devices_payload) if isinstance(devices_payload, list) else 0
+            # обновим статистику
+            try:
+                database.update_key_usage_monitor(
+                    key_id,
+                    last_checked_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+                    last_devices_count=devices_count,
+                )
+            except Exception:
+                pass
+
+            if devices_count <= int(limit):
+                # если ранее было превышение — сбрасываем, чтобы при следующем превышении уведомить снова
+                if (mon.get("overlimit_notified_count") or 0) != 0 or mon.get("overlimit_notified_at"):
+                    try:
+                        database.update_key_usage_monitor(key_id, overlimit_notified_count=0, overlimit_notified_at=None)
+                    except Exception:
+                        pass
+                continue
+
+            last_count = _try_int(mon.get("overlimit_notified_count")) or 0
+            last_dt = _parse_dt_safe(mon.get("overlimit_notified_at"))
+            if devices_count <= last_count and last_dt and (now - last_dt) < cooldown:
+                continue
+
+            # username для удобства
+            uname = None
+            try:
+                urow = rw_repo.get_user(user_id) or {}
+                uname = urow.get("username")
+            except Exception:
+                uname = None
+
+            dev_ids = _extract_device_ids(devices_payload)
+            dev_ids_preview = ""
+            if dev_ids:
+                preview = dev_ids[:10]
+                dev_ids_preview = "\n • " + "\n • ".join(preview)
+                if len(dev_ids) > 10:
+                    dev_ids_preview += f"\n... и еще {len(dev_ids) - 10}"
+
+            text = (
+                "⚠️ <b>Превышен лимит устройств (HWID)</b>\n\n"
+                f"Пользователь: <b>{user_id}</b> {('(@' + str(uname) + ')') if uname else ''}\n"
+                f"Ключ: <code>{email}</code>\n"
+                f"Хост: <b>{host_name}</b>\n"
+                f"Подключено устройств: <b>{devices_count}</b>\n"
+                f"Лимит тарифа: <b>{int(limit)}</b>"
+                + ("\n\n<b>Устройства (первые):</b>" + dev_ids_preview if dev_ids_preview else "")
+            )
+
+            for aid in admin_ids:
+                try:
+                    await bot.send_message(int(aid), text, parse_mode="HTML")
+                except Exception:
+                    pass
+
+            try:
+                database.update_key_usage_monitor(
+                    key_id,
+                    overlimit_notified_count=devices_count,
+                    overlimit_notified_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Scheduler: Ошибка проверки лимитов устройств для key_id={key.get('key_id')}: {e}", exc_info=True)
+
+
 async def check_inactive_usage_reminders(bot: Bot):
     """Если после выдачи ключа у пользователя не было подключенных устройств/трафика — напоминать с заданным интервалом."""
     if not _get_inactive_usage_reminder_enabled():
@@ -519,6 +753,7 @@ async def periodic_subscription_check(bot_controller: BotController):
                 if bot:
                     await check_expiring_subscriptions(bot)
                     await check_inactive_usage_reminders(bot)
+                    await check_device_limit_violations(bot)
                 else:
                     logger.warning("Scheduler: Бот помечен как запущенный, но экземпляр недоступен.")
             else:

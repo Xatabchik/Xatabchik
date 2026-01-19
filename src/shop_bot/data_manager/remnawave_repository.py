@@ -334,6 +334,7 @@ _LEGACY_FORWARDERS = (
     "register_user_if_not_exists",
     "run_migration",
     "set_referral_start_bonus_received",
+    "set_referral_trial_day_bonus_received",
     "set_terms_agreed",
     "set_ticket_status",
     "set_trial_used",

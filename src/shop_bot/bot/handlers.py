@@ -63,6 +63,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_all_users,
     set_terms_agreed,
     set_referral_start_bonus_received,
+    set_referral_trial_day_bonus_received,
     set_trial_used,
     update_user_stats,
     log_transaction,
@@ -214,6 +215,148 @@ def _build_key_origin_meta(
     if note:
         payload["note"] = str(note)
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+async def grant_referrer_day_bonus_for_trial(*, referred_user_id: int, bot: Bot) -> None:
+    """Начислить рефереру +1 день только в момент активации триала рефералом."""
+    try:
+        referred_user_id_i = int(referred_user_id or 0)
+    except Exception:
+        return
+    if not referred_user_id_i:
+        return
+
+    try:
+        user_data = get_user(referred_user_id_i) or {}
+    except Exception:
+        user_data = {}
+
+    referrer_id = user_data.get("referred_by")
+    if not referrer_id:
+        return
+
+    # чтобы не начислять дважды
+    if user_data.get("referral_trial_day_bonus_received"):
+        return
+
+    # глобальный тумблер (оставляем для обратной совместимости)
+    try:
+        enabled = (get_setting("enable_referral_days_bonus") or "false").strip().lower() == "true"
+    except Exception:
+        enabled = False
+    if not enabled:
+        return
+
+    try:
+        referrer_id_i = int(referrer_id)
+    except Exception:
+        return
+    if referrer_id_i <= 0 or referrer_id_i == referred_user_id_i:
+        return
+
+    # выбираем ключ реферера для продления: активный с максимальным сроком, иначе самый дальний
+    ref_keys = []
+    try:
+        ref_keys = get_user_keys(referrer_id_i) or []
+    except Exception:
+        ref_keys = []
+
+    now_utc = datetime.now(timezone.utc)
+
+    def _parse_exp_dt(v) -> datetime | None:
+        if not v:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            # нормализуем ISO
+            ss = s.replace("Z", "+00:00")
+            if " " in ss and "T" not in ss:
+                ss = ss.replace(" ", "T", 1)
+            dt = datetime.fromisoformat(ss)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            # запасной парсер
+            formats = [
+                ("%Y-%m-%d %H:%M:%S", 19),
+                ("%Y-%m-%d %H:%M", 16),
+                ("%Y-%m-%d", 10),
+            ]
+            for fmt, n in formats:
+                try:
+                    dt = datetime.strptime(s[:n], fmt)
+                    return dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+        return None
+
+    scored = []
+    for k in ref_keys:
+        exp_dt = _parse_exp_dt(k.get("expiry_date") or k.get("expire_at"))
+        if exp_dt:
+            scored.append((exp_dt, k))
+
+    active = [pair for pair in scored if pair[0] > now_utc]
+    chosen = None
+    if active:
+        chosen = max(active, key=lambda x: x[0])[1]
+    elif scored:
+        chosen = max(scored, key=lambda x: x[0])[1]
+
+    # host для бонуса
+    bonus_host = None
+    if chosen and chosen.get("host_name"):
+        bonus_host = chosen.get("host_name")
+    if not bonus_host:
+        bonus_host = get_setting("referral_days_bonus_host") or None
+    if not bonus_host:
+        hosts = get_all_hosts() or []
+        if hosts:
+            bonus_host = hosts[0].get("host_name")
+    if not bonus_host:
+        return
+
+    target_email = None
+    if chosen:
+        target_email = chosen.get("key_email") or chosen.get("email")
+    if not target_email:
+        target_email = f"tg{referrer_id_i}+trialref{int(now_utc.timestamp())}@ref.local"
+
+    try:
+        result = await remnawave_api.create_or_update_key_on_host(
+            host_name=str(bonus_host),
+            email=str(target_email),
+            days_to_add=1,
+            description="Бонус за активацию триала рефералом (+1 день)",
+        )
+    except Exception:
+        result = None
+
+    if not result:
+        return
+
+    try:
+        record_key_from_payload(
+            user_id=referrer_id_i,
+            payload=result,
+            host_name=str(bonus_host),
+            description="Referral trial bonus +1 day",
+        )
+    except Exception:
+        pass
+
+    try:
+        set_referral_trial_day_bonus_received(referred_user_id_i)
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(referrer_id_i, "🎁 Вам начислен бонус: +1 день к подписке за то, что ваш реферал активировал триал.")
+    except Exception:
+        pass
 
 
 async def _create_heleket_payment_request(
@@ -723,84 +866,7 @@ def get_user_router() -> Router:
                 
         _before = get_user(user_id)
         register_user_if_not_exists(user_id, username, referrer_id)
-        # --- Referral +1 day bonus processing ---
-        try:
-            # Detect first-time referral assignment
-            _before = _before
-            # Ensure user is created/updated above; fetch after
-            _after = get_user(user_id)
-            if referrer_id and (_before is None or not _before.get('referred_by')) and _after and int(_after.get('referred_by') or 0) == int(referrer_id):
-                if (get_setting("enable_referral_days_bonus") or "false").lower() == "true":
-                    # pick host for bonus: explicit setting -> first available host
-                    bonus_host = get_setting("referral_days_bonus_host") or None
-                    if not bonus_host:
-                        hosts = get_all_hosts() or []
-                        if hosts:
-                            bonus_host = hosts[0].get("host_name")
-                    # Fallback: if still None, do nothing
-                    # resolve email to extend / create
-                    ref_keys = get_user_keys(referrer_id) or []
-                    from datetime import datetime
-                    now_dt = datetime.utcnow()
-                    active_key = None
-                    for k in ref_keys:
-                        exp_str = k.get('expiry_date') or k.get('expire_at')
-                        exp_dt = None
-                        if exp_str:
-                            try:
-                                exp_norm = str(exp_str).replace('Z',' ').replace('/','-')[:19]
-                                for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S'):
-                                    try:
-                                        from datetime import datetime as _dt
-                                        exp_dt = _dt.strptime(exp_norm, fmt)
-                                        break
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                exp_dt = None
-                        if exp_dt and exp_dt > now_dt:
-                            active_key = k
-                            break
-                    if active_key:
-                        target_email = active_key.get('key_email') or active_key.get('email')
-                    else:
-                        import time as _t
-                        target_email = f"tg{referrer_id}+ref{int(_t.time())}@ref.local"
-                    if bonus_host:
-                        # Если есть активный ключ — продлеваем от даты истечения
-                        expiry_ts_ms = None
-                        if active_key:
-                            try:
-                                exp_str2 = active_key.get('expiry_date') or active_key.get('expire_at')
-                                exp_norm2 = str(exp_str2).replace('Z','+00:00').replace(' ','T').replace('/','-')
-                                exp_dt2 = datetime.fromisoformat(exp_norm2)
-                                if exp_dt2.tzinfo is None:
-                                    exp_dt2 = exp_dt2.replace(tzinfo=timezone.utc)
-                                new_dt2 = exp_dt2 + timedelta(days=1)
-                                expiry_ts_ms = int(new_dt2.timestamp() * 1000)
-                            except Exception:
-                                expiry_ts_ms = None
-                        result = await remnawave_api.create_or_update_key_on_host(
-                            email=target_email,
-                            host_name=bonus_host,
-                            expiry_timestamp_ms=expiry_ts_ms if active_key else None,
-                            days_to_add=None if active_key else 1,
-                            description="Бонус за нового реферала (+1 день)",
-                        )
-                        if result:
-                            # sync to local storage
-                            rw_repo.record_key_from_payload(
-                                user_id=referrer_id,
-                                payload=result,
-                                host_name=bonus_host,
-                                description="Referral bonus +1 day",
-                            )
-                            try:
-                                await bot.send_message(referrer_id, "🎁 Вам начислен бонус: +1 день к ключу за нового реферала.")
-                            except Exception as _e:
-                                logger.warning(f"Failed to notify referrer {referrer_id} about day bonus: {_e}")
-        except Exception as e:
-            logger.error(f"Referral day bonus failed for referrer {referrer_id}: {e}", exc_info=True)
+        # Важно: +1 день за реферала начисляем только после того, как реферал активирует триал.
 
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.full_name
@@ -2830,6 +2896,12 @@ def get_user_router() -> Router:
                 return
 
             set_trial_used(user_id)
+
+            # +1 день рефереру начисляем только после успешного создания триал-ключа.
+            try:
+                await grant_referrer_day_bonus_for_trial(referred_user_id=user_id, bot=message.bot)
+            except Exception:
+                pass
 
             # Persist origin info so "🕒 Тариф" shows "триал".
             try:
