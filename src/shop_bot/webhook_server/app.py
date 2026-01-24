@@ -11,6 +11,7 @@ import html as html_escape
 import base64
 import time
 import uuid
+from decimal import Decimal
 from hmac import compare_digest
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -48,7 +49,7 @@ from shop_bot.data_manager.remnawave_repository import (
     add_support_message, set_ticket_status, delete_ticket,
     get_closed_tickets_count, get_all_tickets_count, update_host_subscription_url,
     update_host_url, update_host_name, update_host_ssh_settings, get_latest_speedtest, get_speedtests,
-    get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment,
+    get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment, get_keys_paginated,
     get_balance, adjust_user_balance, get_referrals_for_user,
 
     get_users_paginated, get_keys_counts_for_users,
@@ -66,6 +67,21 @@ from shop_bot.data_manager.database import update_host_remnawave_settings, get_p
 
 _bot_controller = None
 _support_bot_controller = SupportBotController()
+
+def _parse_decimal_amount(value, *, log_prefix: str) -> Decimal | None:
+    try:
+        if value is None:
+            raise ValueError("amount is None")
+        if isinstance(value, str):
+            cleaned = value.strip().replace(",", ".").replace(" ", "")
+        else:
+            cleaned = str(value)
+        if not cleaned:
+            raise ValueError("amount is empty")
+        return Decimal(cleaned).quantize(Decimal("0.01"))
+    except Exception as e:
+        logger.warning(f"{log_prefix}: amount parse error: value={value!r} error={e}")
+        return None
 
 
 def _dispatch_payment_processing(metadata: dict) -> None:
@@ -129,6 +145,8 @@ ALL_SETTINGS_KEYS = [
     "telegram_bot_token",
     "telegram_bot_username",
     "admin_telegram_id",
+    "auto_start_main_bot",
+    "auto_start_support_bot",
     "yookassa_shop_id",
     "yookassa_secret_key",
     "sbp_enabled",
@@ -425,9 +443,13 @@ def create_webhook_app(bot_controller_instance):
         support_bot_status = _support_bot_controller.get_status()
         settings = get_all_settings()
         required_for_start = ['telegram_bot_token', 'telegram_bot_username', 'admin_telegram_id']
-        required_support_for_start = ['support_bot_token', 'support_bot_username', 'admin_telegram_id']
+        required_support_for_start = ['support_bot_token', 'support_bot_username']
         all_settings_ok = all(settings.get(key) for key in required_for_start)
-        support_settings_ok = all(settings.get(key) for key in required_support_for_start)
+        try:
+            admin_ids = rw_repo.get_admin_ids()
+        except Exception:
+            admin_ids = set()
+        support_settings_ok = all(settings.get(key) for key in required_support_for_start) and bool(admin_ids)
         try:
             open_tickets_count = get_open_tickets_count()
             closed_tickets_count = get_closed_tickets_count()
@@ -997,11 +1019,15 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/keys')
     @login_required
     def admin_keys_page():
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 25, type=int)
         keys = []
+        total = 0
         try:
-            keys = get_all_keys()
+            keys, total = get_keys_paginated(page=page, per_page=per_page)
         except Exception:
             keys = []
+            total = 0
         hosts = []
         try:
             hosts = get_all_hosts()
@@ -1012,19 +1038,45 @@ def create_webhook_app(bot_controller_instance):
             users = get_all_users()
         except Exception:
             users = []
+        total_pages = ceil(total / per_page) if per_page else 1
         common_data = get_common_template_data()
-        return render_template('admin_keys.html', keys=keys, hosts=hosts, users=users, **common_data)
+        return render_template(
+            'admin_keys.html',
+            keys=keys,
+            hosts=hosts,
+            users=users,
+            current_page=page,
+            total_pages=total_pages,
+            per_page=per_page,
+            **common_data,
+        )
 
 
     @flask_app.route('/admin/keys/table.partial')
     @login_required
     def admin_keys_table_partial():
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 25, type=int)
         keys = []
         try:
-            keys = get_all_keys()
+            keys, _ = get_keys_paginated(page=page, per_page=per_page)
         except Exception:
             keys = []
         return render_template('partials/admin_keys_table.html', keys=keys)
+
+    @flask_app.route('/admin/keys/pagination.partial')
+    @login_required
+    def admin_keys_pagination_partial():
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 25, type=int)
+        _, total = get_keys_paginated(page=page, per_page=per_page)
+        total_pages = ceil(total / per_page) if per_page else 1
+        return render_template(
+            'partials/admin_keys_pagination.html',
+            current_page=page,
+            total_pages=total_pages,
+            per_page=per_page,
+        )
 
     @flask_app.route('/admin/hosts/<host_name>/plans')
     @login_required
@@ -1052,6 +1104,7 @@ def create_webhook_app(bot_controller_instance):
             Remnawave_uuid = (request.form.get('Remnawave_client_uuid') or '').strip()
             key_email = (request.form.get('key_email') or '').strip()
             expiry = request.form.get('expiry_date') or ''
+            hwid_device_limit_raw = request.form.get('hwid_device_limit')
 
             expiry_ms = int(datetime.fromisoformat(expiry).timestamp() * 1000) if expiry else 0
         except Exception:
@@ -1061,14 +1114,34 @@ def create_webhook_app(bot_controller_instance):
         if not Remnawave_uuid:
             Remnawave_uuid = str(uuid.uuid4())
 
+        if not key_email:
+            try:
+                key_email = rw_repo.generate_key_email_for_user(user_id)
+            except Exception:
+                key_email = f"{user_id}-{int(time.time())}@bot.local"
+
+        hwid_device_limit = None
+        if hwid_device_limit_raw is not None and str(hwid_device_limit_raw).strip() != "":
+            try:
+                hwid_device_limit = max(0, int(float(hwid_device_limit_raw)))
+            except Exception:
+                hwid_device_limit = None
+
         result = None
         try:
-            result = asyncio.run(remnawave_api.create_or_update_key_on_host(host_name, key_email, expiry_timestamp_ms=expiry_ms or None))
+            result = asyncio.run(
+                remnawave_api.create_or_update_key_on_host(
+                    host_name,
+                    key_email,
+                    expiry_timestamp_ms=expiry_ms or None,
+                    hwid_device_limit=hwid_device_limit,
+                )
+            )
         except Exception as e:
             logger.error(f"Не удалось создать/обновить ключ на хосте: {e}")
             result = None
         if not result:
-            flash('Не удалось создать ключ на хосте. Проверьте доступность Remnawave.', 'danger')
+            flash('Не удалось создать ключ на хосте. Проверьте доступность панели.', 'danger')
             return redirect(request.referrer or url_for('admin_keys_page'))
 
 
@@ -1122,6 +1195,7 @@ def create_webhook_app(bot_controller_instance):
         comment = (request.form.get('comment') or '').strip()
         plan_id = request.form.get('plan_id')
         custom_days_raw = request.form.get('custom_days')
+        hwid_device_limit_raw = request.form.get('hwid_device_limit')
         expiry_str = (request.form.get('expiry_date') or '').strip()
         expiry_ms: int | None = None
         if expiry_str:
@@ -1132,6 +1206,7 @@ def create_webhook_app(bot_controller_instance):
                 return jsonify({"ok": False, "error": "invalid_expiry"}), 400
 
         days_total = 0
+        plan_device_limit = None
         if plan_id:
             plan = get_plan_by_id(plan_id)
             if plan:
@@ -1140,11 +1215,24 @@ def create_webhook_app(bot_controller_instance):
                 except Exception:
                     months = 0
                 days_total += months * 30
+                plan_device_limit = plan.get('hwid_device_limit')
         if custom_days_raw:
             try:
                 days_total += max(0, int(custom_days_raw))
             except Exception:
                 pass
+
+        hwid_device_limit = None
+        if hwid_device_limit_raw is not None and str(hwid_device_limit_raw).strip() != "":
+            try:
+                hwid_device_limit = max(0, int(float(hwid_device_limit_raw)))
+            except Exception:
+                hwid_device_limit = None
+        if hwid_device_limit is None and plan_device_limit is not None:
+            try:
+                hwid_device_limit = max(0, int(plan_device_limit))
+            except Exception:
+                hwid_device_limit = None
 
         if mode == 'personal':
             try:
@@ -1154,7 +1242,10 @@ def create_webhook_app(bot_controller_instance):
                 logger.error(f"create_key_ajax_route: неверные параметры персонального режима: {e}")
                 return jsonify({"ok": False, "error": "bad_request"}), 400
             if not key_email:
-                return jsonify({"ok": False, "error": "email_required"}), 400
+                try:
+                    key_email = rw_repo.generate_key_email_for_user(user_id)
+                except Exception:
+                    key_email = f"{user_id}-{int(time.time())}@bot.local"
             target_user = get_user(user_id)
             if not target_user:
                 return jsonify({"ok": False, "error": "user_not_found"}), 404
@@ -1167,6 +1258,7 @@ def create_webhook_app(bot_controller_instance):
                     host_name,
                     key_email,
                     expiry_timestamp_ms=expiry_ms or None,
+                    hwid_device_limit=hwid_device_limit,
                 ))
             except Exception as e:
                 result = None
@@ -1245,6 +1337,7 @@ def create_webhook_app(bot_controller_instance):
                     expiry_timestamp_ms=expiry_ms or None,
                     description=comment or 'Gift key (created via admin panel)',
                     tag='GIFT',
+                    hwid_device_limit=hwid_device_limit,
                 ))
             except Exception as e:
                 logger.error(f"Создание подарочного ключа: ошибка remnawave: {e}")
@@ -1283,19 +1376,7 @@ def create_webhook_app(bot_controller_instance):
         except Exception:
             return jsonify({"ok": False, "error": "invalid user_id"}), 400
         try:
-            user = get_user(user_id) or {}
-            raw_username = (user.get('username') or f'user{user_id}').lower()
-            import re
-            username_slug = re.sub(r"[^a-z0-9._-]", "_", raw_username).strip("_")[:16] or f"user{user_id}"
-            base_local = f"{username_slug}"
-            candidate_local = base_local
-            attempt = 1
-            while True:
-                candidate_email = f"{candidate_local}@bot.local"
-                if not rw_repo.get_key_by_email(candidate_email):
-                    break
-                attempt += 1
-                candidate_local = f"{base_local}-{attempt}"
+            candidate_email = rw_repo.generate_key_email_for_user(user_id)
             return jsonify({"ok": True, "email": candidate_email})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
@@ -1879,6 +1960,8 @@ def create_webhook_app(bot_controller_instance):
                 "key_info_show_connect_device",
                 "key_info_show_howto",
                 "payment_email_prompt_enabled",
+                "auto_start_main_bot",
+                "auto_start_support_bot",
                 "monitoring_enabled",
                 "sbp_enabled",
                 "stars_enabled",
@@ -2607,11 +2690,15 @@ def create_webhook_app(bot_controller_instance):
                 logger.error(f"YooKassa webhook: failed to read pending for {internal_payment_id}: {e}", exc_info=True)
 
             if pending_meta:
-                try:
-                    expected_amount = Decimal(str(pending_meta.get('price') or pending_meta.get('amount_rub') or '0')).quantize(Decimal('0.01'))
-                    got_amount = Decimal(value_str).quantize(Decimal('0.01'))
-                except Exception:
-                    logger.warning(f"YooKassa webhook: amount parse error for payment_id={internal_payment_id}: value={value_str}")
+                expected_amount = _parse_decimal_amount(
+                    pending_meta.get('price') or pending_meta.get('amount_rub') or '0',
+                    log_prefix=f"YooKassa webhook pending payment_id={internal_payment_id}",
+                )
+                got_amount = _parse_decimal_amount(
+                    value_str,
+                    log_prefix=f"YooKassa webhook payment payment_id={internal_payment_id}",
+                )
+                if expected_amount is None or got_amount is None:
                     return 'OK', 200
 
                 if currency and currency != 'RUB':
@@ -3255,6 +3342,327 @@ def create_webhook_app(bot_controller_instance):
         except Exception as e:
             logger.error(f"Error reordering button configs for {menu_type}: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
+
+    # =============================
+    # Franchise (managed clone bots) — web panel
+    # =============================
+
+    def _franchise_db_connect():
+        conn = sqlite3.connect(rw_repo.DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _mask_token(token: str | None) -> str:
+        t = (token or "").strip()
+        if not t:
+            return ""
+        if len(t) <= 12:
+            return t[:3] + "…" + t[-3:]
+        return t[:6] + "…" + t[-4:]
+
+    def _franchise_totals() -> dict:
+        res = {
+            "total_bots": 0,
+            "active_bots": 0,
+            "total_users": 0,
+            "gross_paid_card": 0.0,
+            "commission_total": 0.0,
+            "requested_withdraw": 0.0,
+            "pending_withdraw": 0.0,
+            # Backward/templating compatibility (some templates may refer to *_sum)
+            "pending_withdraw_sum": 0.0,
+            "pending_withdraw_count": 0,
+            "available_total": 0.0,
+        }
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(1), SUM(CASE WHEN COALESCE(is_active,1)=1 THEN 1 ELSE 0 END) FROM managed_bots")
+                row = cur.fetchone() or (0, 0)
+                res["total_bots"] = int(row[0] or 0)
+                res["active_bots"] = int(row[1] or 0)
+
+                cur.execute("SELECT COUNT(1) FROM factory_user_activity")
+                res["total_users"] = int((cur.fetchone() or [0])[0] or 0)
+
+                cur.execute("SELECT COALESCE(SUM(amount_rub),0), COALESCE(SUM(commission_rub),0) FROM partner_commissions")
+                row = cur.fetchone() or (0, 0)
+                res["gross_paid_card"] = float(row[0] or 0)
+                res["commission_total"] = float(row[1] or 0)
+
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(amount_rub),0)
+                    FROM partner_withdraw_requests
+                    WHERE status IN ('pending','approved','paid')
+                    """
+                )
+                res["requested_withdraw"] = float((cur.fetchone() or [0])[0] or 0)
+
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(amount_rub),0), COUNT(1)
+                    FROM partner_withdraw_requests
+                    WHERE status = 'pending'
+                    """
+                )
+                row = cur.fetchone() or (0, 0)
+                res["pending_withdraw"] = float(row[0] or 0)
+                res["pending_withdraw_count"] = int(row[1] or 0)
+
+                # Keep compatibility alias
+                res["pending_withdraw_sum"] = res["pending_withdraw"]
+
+            res["pending_withdraw_sum"] = float(res.get("pending_withdraw") or 0)
+
+            res["available_total"] = max(0.0, res["commission_total"] - res["requested_withdraw"])
+        except Exception:
+            pass
+        return res
+
+    def _franchise_list_bots(q: str | None = None) -> list[dict]:
+        q = (q or "").strip()
+        where = ""
+        params = []
+
+        if q:
+            q_norm = q.lstrip('@').strip()
+            if q_norm.isdigit():
+                # allow searching by internal id, telegram bot id, owner telegram id
+                where = "WHERE mb.id = ? OR mb.telegram_bot_user_id = ? OR mb.owner_telegram_id = ?"
+                v = int(q_norm)
+                params.extend([v, v, v])
+            else:
+                where = "WHERE COALESCE(mb.username,'') LIKE ?"
+                params.append(f"%{q_norm}%")
+
+        sql = f"""
+            SELECT
+                mb.id,
+                mb.telegram_bot_user_id,
+                mb.username,
+                mb.owner_telegram_id,
+                mb.referrer_bot_id,
+                mb.is_active,
+                mb.created_at,
+                (SELECT COUNT(1) FROM factory_user_activity fua WHERE fua.bot_id = mb.id) AS users_count,
+                (SELECT COALESCE(SUM(messages_count),0) FROM factory_user_activity fua WHERE fua.bot_id = mb.id) AS messages_total,
+                (SELECT COALESCE(SUM(amount_rub),0) FROM partner_commissions pc WHERE pc.bot_id = mb.id) AS gross_paid_card,
+                (SELECT COALESCE(SUM(commission_rub),0) FROM partner_commissions pc WHERE pc.bot_id = mb.id) AS commission_total,
+                (SELECT COALESCE(SUM(amount_rub),0) FROM partner_withdraw_requests pw WHERE pw.bot_id = mb.id AND pw.status IN ('pending','approved','paid')) AS requested_withdraw,
+                (SELECT COALESCE(SUM(amount_rub),0) FROM partner_withdraw_requests pw WHERE pw.bot_id = mb.id AND pw.status = 'pending') AS pending_withdraw,
+                (SELECT COUNT(1) FROM partner_withdraw_requests pw WHERE pw.bot_id = mb.id AND pw.status = 'pending') AS pending_withdraw_count,
+                mb.token
+            FROM managed_bots mb
+            {where}
+            ORDER BY mb.id DESC
+            LIMIT 300
+        """
+
+        bots = []
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute(sql, params)
+                rows = cur.fetchall() or []
+                for r in rows:
+                    d = dict(r)
+                    d["is_active"] = bool(int(d.get("is_active") or 0))
+                    d["token_masked"] = _mask_token(d.get("token"))
+                    try:
+                        d["available"] = max(0.0, float(d.get("commission_total") or 0) - float(d.get("requested_withdraw") or 0))
+                    except Exception:
+                        d["available"] = 0.0
+                    bots.append(d)
+        except Exception:
+            bots = []
+        return bots
+
+    def _franchise_get_bot(bot_id: int) -> dict | None:
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM managed_bots WHERE id = ? LIMIT 1", (int(bot_id),))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                d["is_active"] = bool(int(d.get("is_active") or 0))
+                d["token_masked"] = _mask_token(d.get("token"))
+                return d
+        except Exception:
+            return None
+
+    def _franchise_bot_stats(bot_id: int) -> dict:
+        res = {
+            "users_count": 0,
+            "messages_total": 0,
+            "gross_paid_card": 0.0,
+            "commission_total": 0.0,
+            "requested_withdraw": 0.0,
+            "pending_withdraw": 0.0,
+            "pending_withdraw_count": 0,
+            "available": 0.0,
+        }
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(1), COALESCE(SUM(messages_count),0) FROM factory_user_activity WHERE bot_id = ?", (int(bot_id),))
+                row = cur.fetchone() or (0, 0)
+                res["users_count"] = int(row[0] or 0)
+                res["messages_total"] = int(row[1] or 0)
+
+                cur.execute("SELECT COALESCE(SUM(amount_rub),0), COALESCE(SUM(commission_rub),0) FROM partner_commissions WHERE bot_id = ?", (int(bot_id),))
+                row = cur.fetchone() or (0, 0)
+                res["gross_paid_card"] = float(row[0] or 0)
+                res["commission_total"] = float(row[1] or 0)
+
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(amount_rub),0)
+                    FROM partner_withdraw_requests
+                    WHERE bot_id = ? AND status IN ('pending','approved','paid')
+                    """,
+                    (int(bot_id),),
+                )
+                res["requested_withdraw"] = float((cur.fetchone() or [0])[0] or 0)
+
+                cur.execute(
+                    """
+                    SELECT COALESCE(SUM(amount_rub),0), COUNT(1)
+                    FROM partner_withdraw_requests
+                    WHERE bot_id = ? AND status = 'pending'
+                    """,
+                    (int(bot_id),),
+                )
+                row = cur.fetchone() or (0, 0)
+                res["pending_withdraw"] = float(row[0] or 0)
+                res["pending_withdraw_count"] = int(row[1] or 0)
+
+            res["available"] = max(0.0, res["commission_total"] - res["requested_withdraw"])
+        except Exception:
+            pass
+        return res
+
+    @flask_app.route('/franchise')
+    @login_required
+    def franchise_page():
+        q = (request.args.get('q') or '').strip()
+        totals = _franchise_totals()
+        bots = _franchise_list_bots(q=q)
+        common_data = get_common_template_data()
+        return render_template('franchise.html', totals=totals, bots=bots, q=q, **common_data)
+
+    @flask_app.route('/franchise/bot/<int:bot_id>')
+    @login_required
+    def franchise_bot_page(bot_id: int):
+        bot = _franchise_get_bot(bot_id)
+        if not bot:
+            flash('Бот не найден.', 'warning')
+            return redirect(url_for('franchise_page'))
+
+        stats = _franchise_bot_stats(bot_id)
+        activity = []
+        commissions = []
+        withdraws = []
+
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT user_id, first_seen, last_seen, messages_count
+                    FROM factory_user_activity
+                    WHERE bot_id = ?
+                    ORDER BY last_seen DESC
+                    LIMIT 200
+                    """,
+                    (int(bot_id),),
+                )
+                activity = [dict(r) for r in (cur.fetchall() or [])]
+
+                cur.execute(
+                    """
+                    SELECT id, payment_id, user_id, amount_rub, commission_percent, commission_rub, payment_method, created_at
+                    FROM partner_commissions
+                    WHERE bot_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                    """,
+                    (int(bot_id),),
+                )
+                commissions = [dict(r) for r in (cur.fetchall() or [])]
+
+                cur.execute(
+                    """
+                    SELECT id, owner_telegram_id, amount_rub, status, comment, bank, requisite_type, requisite_value, created_at
+                    FROM partner_withdraw_requests
+                    WHERE bot_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                    """,
+                    (int(bot_id),),
+                )
+                withdraws = [dict(r) for r in (cur.fetchall() or [])]
+        except Exception:
+            activity, commissions, withdraws = [], [], []
+
+        common_data = get_common_template_data()
+        return render_template(
+            'franchise_bot.html',
+            bot=bot,
+            stats=stats,
+            activity=activity,
+            commissions=commissions,
+            withdraw_requests=withdraws,
+            withdraws=withdraws,
+            **common_data,
+        )
+
+    @flask_app.route('/franchise/bot/<int:bot_id>/toggle', methods=['POST'])
+    @login_required
+    def franchise_toggle_bot_route(bot_id: int):
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COALESCE(is_active,1) FROM managed_bots WHERE id = ? LIMIT 1", (int(bot_id),))
+                row = cur.fetchone()
+                if not row:
+                    flash('Бот не найден.', 'warning')
+                    return redirect(url_for('franchise_page'))
+                current = int(row[0] or 0)
+                new_val = 0 if current == 1 else 1
+                cur.execute("UPDATE managed_bots SET is_active = ? WHERE id = ?", (new_val, int(bot_id)))
+                conn.commit()
+        except Exception:
+            flash('Не удалось обновить статус бота.', 'danger')
+            return redirect(request.referrer or url_for('franchise_page'))
+
+        flash('Статус бота обновлён.', 'success')
+        return redirect(request.referrer or url_for('franchise_page'))
+
+    @flask_app.route('/franchise/withdraw/<int:req_id>/status', methods=['POST'])
+    @login_required
+    def franchise_withdraw_status_route(req_id: int):
+        status = (request.form.get('status') or '').strip().lower()
+        if status not in {'pending', 'approved', 'paid', 'rejected'}:
+            flash('Некорректный статус.', 'warning')
+            return redirect(request.referrer or url_for('franchise_page'))
+
+        try:
+            with _franchise_db_connect() as conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE partner_withdraw_requests SET status = ? WHERE id = ?", (status, int(req_id)))
+                conn.commit()
+                if cur.rowcount <= 0:
+                    flash('Заявка не найдена.', 'warning')
+                    return redirect(request.referrer or url_for('franchise_page'))
+        except Exception:
+            flash('Не удалось обновить статус заявки.', 'danger')
+            return redirect(request.referrer or url_for('franchise_page'))
+
+        flash('Статус заявки обновлён.', 'success')
+        return redirect(request.referrer or url_for('franchise_page'))
 
     @flask_app.route('/button-constructor')
     @login_required

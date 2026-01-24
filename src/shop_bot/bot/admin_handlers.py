@@ -5841,23 +5841,10 @@ def get_admin_router() -> Router:
             return
 
         user = get_user(user_id) or {}
-        username = (user.get('username') or f'user{user_id}').lower()
-        username_slug = re.sub(r"[^a-z0-9._-]", "_", username).strip("_")[:16] or f"user{user_id}"
-        base_local = f"gift_{username_slug}"
-        candidate_local = base_local
-        attempt = 1
-        while True:
-            candidate_email = f"{candidate_local}@bot.local"
-            existing = rw_repo.get_key_by_email(candidate_email)
-            if not existing:
-                break
-            attempt += 1
-            candidate_local = f"{base_local}-{attempt}"
-            if attempt > 100:
-                candidate_local = f"{base_local}-{int(time.time())}"
-                candidate_email = f"{candidate_local}@bot.local"
-                break
-        generated_email = candidate_email
+        try:
+            generated_email = rw_repo.generate_key_email_for_user(user_id)
+        except Exception:
+            generated_email = f"{user_id}-{int(time.time())}@bot.local"
 
 
         try:
@@ -5867,7 +5854,7 @@ def get_admin_router() -> Router:
             logging.error(f"Gift flow: failed to create client on host '{host_name}' for user {user_id}: {e}")
 
         if not host_resp or not host_resp.get("client_uuid") or not host_resp.get("expiry_timestamp_ms"):
-            await message.answer("❌ Не удалось выдать ключ на сервере. Проверьте настройки хоста и доступность панели Remnawave.")
+            await message.answer("❌ Не удалось выдать ключ на сервере. Проверьте настройки хоста и доступность панели.")
             await state.clear()
             await show_admin_menu(message)
             return
@@ -7151,4 +7138,3 @@ def get_admin_router() -> Router:
         await callback.message.edit_text("\n".join(txt), parse_mode='HTML', reply_markup=kb.as_markup())
 
     return admin_router
-

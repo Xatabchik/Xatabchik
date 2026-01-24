@@ -8,6 +8,7 @@ import hashlib
 import json
 import base64
 import asyncio
+import time
 
 from html import escape as html_escape
 
@@ -145,6 +146,134 @@ CRYPTO_BOT_TOKEN = get_setting("cryptobot_token")
 PENDING_GIFTS: dict[int, dict] = {}
 logger = logging.getLogger(__name__)
 
+errors = {
+    "A019": "username уже занят",
+    "400": "неверные данные",
+    "404": "ресурс не найден",
+}
+
+
+def _classify_key_creation_error(exc: Exception | None) -> tuple[str, str, str]:
+    raw = str(exc) if exc else ""
+    status = None
+    detail = raw
+    try:
+        m = re.search(r"request failed:\s*(\d+)\s*(.*)", raw, flags=re.IGNORECASE)
+        if m:
+            status = m.group(1)
+            detail = (m.group(2) or "").strip() or raw
+    except Exception:
+        pass
+
+    detail_l = (detail or "").lower()
+    if "username" in detail_l and any(word in detail_l for word in ("already", "exists", "occupied", "taken", "занят")):
+        code = "A019"
+    elif status in errors:
+        code = status
+    else:
+        code = status or "400"
+    description = errors.get(code, "неизвестная ошибка")
+    short_detail = (detail or "").strip()
+    if len(short_detail) > 200:
+        short_detail = short_detail[:200] + "..."
+    return code, description, short_detail
+
+
+def _format_key_action_label(action: str | None, *, price: float | None = None, key_id: int | None = None) -> str:
+    action_s = (action or "").strip().lower()
+    if action_s == "new":
+        return f"покупка тарифа {price:.0f} RUB" if price is not None else "покупка тарифа"
+    if action_s == "extend":
+        if price is not None:
+            return f"продление ключа #{key_id or '—'} ({price:.0f} RUB)"
+        return f"продление ключа #{key_id or '—'}"
+    if action_s == "trial":
+        return "пробный ключ"
+    if action_s == "gift":
+        return f"подарочный ключ {price:.0f} RUB" if price is not None else "подарочный ключ"
+    return action or "операция"
+
+
+def _log_key_creation_error(user_id: int, action_label: str, code: str, detail: str) -> None:
+    ts = datetime.utcnow().isoformat()
+    logger.error(
+        "Key creation error: time=%s user_id=%s action=%s code=%s detail=%s",
+        ts,
+        user_id,
+        action_label,
+        code,
+        detail,
+    )
+
+
+async def _notify_admins_key_creation_error(
+    bot: Bot,
+    *,
+    user_id: int,
+    code: str,
+    description: str,
+    action_label: str,
+) -> None:
+    try:
+        admin_ids = list(rw_repo.get_admin_ids() or [])
+    except Exception:
+        admin_ids = []
+    if not admin_ids:
+        return
+    text = (
+        "🚨 Ошибка создания ключа\n"
+        f"👤 ID: {user_id}\n"
+        f"🔢 Код: {code}\n"
+        f"📝 Описание: {description}\n"
+        f"📋 Действие: {action_label}"
+    )
+    for aid in admin_ids:
+        try:
+            await bot.send_message(int(aid), text)
+        except Exception:
+            continue
+
+
+async def _notify_user_key_creation_error(
+    bot: Bot,
+    *,
+    user_id: int,
+    code: str,
+    refund: bool = True,
+) -> None:
+    lines = ["❌ Не удалось создать ключ."]
+    if refund:
+        lines.append("Оформили возврат, деньги придут обратно.")
+    lines.append(f"Код ошибки: {code}")
+    lines.append("Попробуй позже или напиши в поддержку.")
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="\n".join(lines),
+            reply_markup=keyboards.create_support_keyboard(),
+        )
+    except Exception:
+        pass
+
+
+async def _handle_key_creation_failure(
+    bot: Bot,
+    *,
+    user_id: int,
+    action_label: str,
+    exc: Exception | None,
+    refund: bool = True,
+) -> None:
+    code, description, detail = _classify_key_creation_error(exc)
+    _log_key_creation_error(user_id, action_label, code, detail)
+    await _notify_user_key_creation_error(bot, user_id=user_id, code=code, refund=refund)
+    await _notify_admins_key_creation_error(
+        bot,
+        user_id=user_id,
+        code=code,
+        description=description,
+        action_label=action_label,
+    )
 
 def _format_duration_label(months: int | None, duration_days: int | None) -> str:
     try:
@@ -1156,10 +1285,18 @@ def get_user_router() -> Router:
             if receipt:
                 payment_payload['receipt'] = receipt
             payment = Payment.create(payment_payload, uuid.uuid4())
+            try:
+                provider_payment_id = getattr(payment, "id", None)
+                if provider_payment_id:
+                    metadata2 = dict(metadata)
+                    metadata2["yookassa_payment_id"] = str(provider_payment_id)
+                    create_payload_pending(payment_id, int(user_id), float(price_float_for_metadata), metadata2)
+            except Exception as e:
+                logger.warning(f"YooKassa topup: не удалось сохранить provider id для {payment_id}: {e}")
             await state.clear()
             await callback.message.edit_text(
                 "Нажмите на кнопку ниже для оплаты:",
-                reply_markup=keyboards.create_payment_keyboard(payment.confirmation.confirmation_url)
+                reply_markup=keyboards.create_yookassa_payment_keyboard(payment.confirmation.confirmation_url, payment_id)
             )
         except Exception as e:
             logger.error(f"Не удалось создать платеж пополнения YooKassa: {e}", exc_info=True)
@@ -1587,6 +1724,98 @@ def get_user_router() -> Router:
             return
 
         await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+
+    @user_router.callback_query(F.data.startswith("check_yookassa:"))
+    async def check_yookassa_payment_handler(callback: types.CallbackQuery, bot: Bot):
+        try:
+            pid = callback.data.split(":", 1)[1]
+        except Exception:
+            await callback.answer("Некорректный идентификатор платежа.", show_alert=True)
+            return
+
+        status = ""
+        try:
+            status = (get_pending_status(pid) or "").lower()
+        except Exception as e:
+            logger.error(f"YooKassa manual check: failed to read local status for {pid}: {e}")
+        if status == "paid":
+            await callback.answer("✅ Оплата уже подтверждена. Профиль/баланс скоро обновится.", show_alert=True)
+            return
+
+        pending_meta = None
+        try:
+            pending_meta = get_pending_metadata(pid)
+        except Exception as e:
+            logger.error(f"YooKassa manual check: failed to read pending metadata for {pid}: {e}")
+
+        if not pending_meta:
+            await callback.answer("❌ Платёж не найден. Попробуйте позже.", show_alert=True)
+            return
+
+        provider_payment_id = (pending_meta.get("yookassa_payment_id") or "").strip()
+        if not provider_payment_id:
+            await callback.answer("⚠️ Не удалось проверить оплату. Попробуйте позже.", show_alert=True)
+            return
+
+        shop_id = (get_setting("yookassa_shop_id") or "").strip()
+        secret_key = (get_setting("yookassa_secret_key") or "").strip()
+        if not shop_id or not secret_key:
+            await callback.answer("⚠️ YooKassa не настроен. Обратитесь к администратору.", show_alert=True)
+            return
+
+        Configuration.account_id = shop_id
+        Configuration.secret_key = secret_key
+
+        try:
+            payment = Payment.find_one(provider_payment_id)
+        except Exception as e:
+            logger.error(f"YooKassa manual check: failed to fetch payment {provider_payment_id}: {e}", exc_info=True)
+            await callback.answer("⚠️ Не удалось проверить оплату через YooKassa. Попробуйте позже.", show_alert=True)
+            return
+
+        remote_status = (getattr(payment, "status", "") or "").lower()
+        if remote_status != "succeeded":
+            if remote_status == "canceled":
+                await callback.answer("❌ Платёж отменён.", show_alert=True)
+                return
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        amount_obj = getattr(payment, "amount", None)
+        if isinstance(amount_obj, dict):
+            value_str = amount_obj.get("value")
+            currency = (amount_obj.get("currency") or "").upper()
+        else:
+            value_str = getattr(amount_obj, "value", None)
+            currency = (getattr(amount_obj, "currency", "") or "").upper()
+
+        try:
+            expected_amount = Decimal(str(pending_meta.get('price') or pending_meta.get('amount_rub') or '0')).quantize(Decimal('0.01'))
+            got_amount = Decimal(str(value_str or '0')).quantize(Decimal('0.01'))
+        except Exception as e:
+            logger.warning(f"YooKassa manual check: amount parse error for {pid}: value={value_str} error={e}")
+            await callback.answer("⚠️ Не удалось проверить сумму оплаты. Попробуйте позже.", show_alert=True)
+            return
+
+        if currency and currency != "RUB":
+            logger.warning(f"YooKassa manual check: currency mismatch for {pid}: got={currency}, expected=RUB")
+            await callback.answer("❌ Валюта платежа не совпадает. Обратитесь в поддержку.", show_alert=True)
+            return
+        if got_amount != expected_amount:
+            logger.warning(f"YooKassa manual check: amount mismatch for {pid}: got={got_amount}, expected={expected_amount}")
+            await callback.answer("❌ Сумма платежа не совпадает. Обратитесь в поддержку.", show_alert=True)
+            return
+
+        metadata = find_and_complete_pending_transaction(pid)
+        if not metadata:
+            await callback.answer("✅ Оплата подтверждена, но транзакция уже обработана.", show_alert=True)
+            return
+        try:
+            await process_successful_payment(bot, metadata)
+            await callback.answer("✅ Оплата получена! Обрабатываю…", show_alert=True)
+        except Exception as e:
+            logger.error(f"YooKassa manual check: process_successful_payment failed: {e}", exc_info=True)
+            await callback.answer("⚠️ Оплата получена, но обработка не завершена. Напишите в поддержку.", show_alert=True)
 
     @user_router.callback_query(F.data.startswith("check_pending:"))
     async def check_pending_payment_handler(callback: types.CallbackQuery, bot: Bot):
@@ -2845,22 +3074,10 @@ def get_user_router() -> Router:
 
         try:
 
-            user_data = get_user(user_id) or {}
-            raw_username = (user_data.get('username') or f'user{user_id}').lower()
-            username_slug = re.sub(r"[^a-z0-9._-]", "_", raw_username).strip("_")[:16] or f"user{user_id}"
-            base_local = f"trial_{username_slug}"
-            candidate_local = base_local
-            attempt = 1
-            while True:
-                candidate_email = f"{candidate_local}@bot.local"
-                if not rw_repo.get_key_by_email(candidate_email):
-                    break
-                attempt += 1
-                candidate_local = f"{base_local}-{attempt}"
-                if attempt > 100:
-                    candidate_local = f"{base_local}-{int(datetime.now().timestamp())}"
-                    candidate_email = f"{candidate_local}@bot.local"
-                    break
+            try:
+                candidate_email = rw_repo.generate_key_email_for_user(user_id)
+            except Exception:
+                candidate_email = f"{user_id}-{int(datetime.now().timestamp())}@bot.local"
 
             # --- Trial limits (optional) ---
             traffic_limit_bytes = None
@@ -2883,16 +3100,41 @@ def get_user_router() -> Router:
             except Exception:
                 hwid_device_limit = None
 
-            result = await remnawave_api.create_or_update_key_on_host(
-                host_name=host_name,
-                email=candidate_email,
-                days_to_add=int(get_setting("trial_duration_days")),
-                traffic_limit_bytes=traffic_limit_bytes,
-                traffic_limit_strategy='NO_RESET' if traffic_limit_bytes is not None else None,
-                hwid_device_limit=hwid_device_limit,
-            )
+            try:
+                result = await remnawave_api.create_or_update_key_on_host(
+                    host_name=host_name,
+                    email=candidate_email,
+                    days_to_add=int(get_setting("trial_duration_days")),
+                    traffic_limit_bytes=traffic_limit_bytes,
+                    traffic_limit_strategy='NO_RESET' if traffic_limit_bytes is not None else None,
+                    hwid_device_limit=hwid_device_limit,
+                    raise_on_error=True,
+                )
+            except Exception as exc:
+                await _handle_key_creation_failure(
+                    message.bot,
+                    user_id=user_id,
+                    action_label=_format_key_action_label("trial"),
+                    exc=exc,
+                    refund=False,
+                )
+                try:
+                    await message.edit_text("❌ Не удалось создать ключ.")
+                except Exception:
+                    pass
+                return
             if not result:
-                await message.edit_text("❌ Не удалось создать пробный ключ. Ошибка на сервере.")
+                await _handle_key_creation_failure(
+                    message.bot,
+                    user_id=user_id,
+                    action_label=_format_key_action_label("trial"),
+                    exc=RuntimeError("trial key creation returned empty response"),
+                    refund=False,
+                )
+                try:
+                    await message.edit_text("❌ Не удалось создать ключ.")
+                except Exception:
+                    pass
                 return
 
             set_trial_used(user_id)
@@ -3969,12 +4211,20 @@ def get_user_router() -> Router:
                 payment_payload['receipt'] = receipt
 
             payment = Payment.create(payment_payload, uuid.uuid4())
+            try:
+                provider_payment_id = getattr(payment, "id", None)
+                if provider_payment_id:
+                    metadata2 = dict(metadata)
+                    metadata2["yookassa_payment_id"] = str(provider_payment_id)
+                    create_payload_pending(payment_id, int(user_id), float(price_float_for_metadata), metadata2)
+            except Exception as e:
+                logger.warning(f"YooKassa: не удалось сохранить provider id для {payment_id}: {e}")
             
             await state.clear()
             
             await callback.message.edit_text(
                 "Нажмите на кнопку ниже для оплаты:",
-                reply_markup=keyboards.create_payment_keyboard(payment.confirmation.confirmation_url)
+                reply_markup=keyboards.create_yookassa_payment_keyboard(payment.confirmation.confirmation_url, payment_id)
             )
         except Exception as e:
             logger.error(f"Failed to create YooKassa payment: {e}", exc_info=True)
@@ -4424,26 +4674,64 @@ def get_user_router() -> Router:
         days_to_add = int(pending.get("days_to_add") or 0)
         if days_to_add <= 0:
             days_to_add = _compute_days_to_add(months, duration_days)
-        recipient_email = f"{text}@gift.local"
+        recipient_user = None
+        try:
+            recipient_user = get_user_by_username(text)
+        except Exception:
+            recipient_user = None
+        recipient_email = None
+        if recipient_user and recipient_user.get("telegram_id"):
+            try:
+                recipient_id = int(recipient_user["telegram_id"])
+            except Exception:
+                recipient_id = None
+            if recipient_id:
+                try:
+                    recipient_email = rw_repo.generate_key_email_for_user(recipient_id)
+                except Exception:
+                    recipient_email = f"{recipient_id}-{int(time.time())}@bot.local"
+        if not recipient_email:
+            recipient_email = f"gift-{uuid.uuid4().hex[:8]}@bot.local"
         
         try:
             result = await remnawave_api.create_or_update_key_on_host(
                 host_name=host_name,
                 email=recipient_email,
                 days_to_add=int(days_to_add),
-                description=f"Gift for @{text} from {message.from_user.id}"
+                description=f"Gift for @{text} from {message.from_user.id}",
+                raise_on_error=True,
             )
-        except Exception as e:
-            logger.error(f"Gift: Remnawave error: {e}", exc_info=True)
-            result = None
+        except Exception as exc:
+            try:
+                price = float(pending.get("price") or 0.0)
+            except Exception:
+                price = None
+            await _handle_key_creation_failure(
+                message.bot,
+                user_id=message.from_user.id,
+                action_label=_format_key_action_label("gift", price=price),
+                exc=exc,
+                refund=True,
+            )
+            return
         
         if not result:
-            await message.reply("⚠️ Не удалось создать ключ для получателя. Попробуйте ещё раз или обратитесь в поддержку.")
+            try:
+                price = float(pending.get("price") or 0.0)
+            except Exception:
+                price = None
+            await _handle_key_creation_failure(
+                message.bot,
+                user_id=message.from_user.id,
+                action_label=_format_key_action_label("gift", price=price),
+                exc=RuntimeError("gift key creation returned empty response"),
+                refund=True,
+            )
             return
         
         # Привязываем ключ к локальному аккаунту получателя, если он уже пользовался ботом
         try:
-            ru = get_user_by_username(text)
+            ru = recipient_user or get_user_by_username(text)
             if ru and ru.get('telegram_id'):
                 rw_repo.record_key_from_payload(
                     user_id=int(ru['telegram_id']),
@@ -5377,23 +5665,10 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         result = None
 
         if action == "new":
-
-            user_data = get_user(user_id) or {}
-            raw_username = (user_data.get('username') or f'user{user_id}').lower()
-            username_slug = re.sub(r"[^a-z0-9._-]", "_", raw_username).strip("_")[:16] or f"user{user_id}"
-            base_local = f"{username_slug}"
-            candidate_local = base_local
-            attempt = 1
-            while True:
-                candidate_email = f"{candidate_local}@bot.local"
-                if not rw_repo.get_key_by_email(candidate_email):
-                    break
-                attempt += 1
-                candidate_local = f"{base_local}-{attempt}"
-                if attempt > 100:
-                    candidate_local = f"{base_local}-{int(datetime.now().timestamp())}"
-                    candidate_email = f"{candidate_local}@bot.local"
-                    break
+            try:
+                candidate_email = rw_repo.generate_key_email_for_user(user_id)
+            except Exception:
+                candidate_email = f"{user_id}-{int(time.time())}@bot.local"
         elif action == "gift":
             pass
         else:
@@ -5514,19 +5789,45 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             except Exception:
                 expiry_timestamp_ms = None
 
-        result = await remnawave_api.create_or_update_key_on_host(
-            host_name=host_name,
-            email=candidate_email,
-            days_to_add=int(days_to_add),
-            expiry_timestamp_ms=expiry_timestamp_ms,
-            traffic_limit_bytes=traffic_limit_bytes,
-            traffic_limit_strategy=traffic_limit_strategy,
-            hwid_device_limit=hwid_device_limit,
-        )
-        if action != "gift":
-            if not result:
-                await processing_message.edit_text("❌ Не удалось создать/обновить ключ на панели Remnawave.")
-                return
+        try:
+            result = await remnawave_api.create_or_update_key_on_host(
+                host_name=host_name,
+                email=candidate_email,
+                days_to_add=int(days_to_add),
+                expiry_timestamp_ms=expiry_timestamp_ms,
+                traffic_limit_bytes=traffic_limit_bytes,
+                traffic_limit_strategy=traffic_limit_strategy,
+                hwid_device_limit=hwid_device_limit,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            action_label = _format_key_action_label(action, price=price, key_id=key_id)
+            await _handle_key_creation_failure(
+                bot,
+                user_id=user_id,
+                action_label=action_label,
+                exc=exc,
+                refund=True,
+            )
+            try:
+                await processing_message.edit_text("❌ Не удалось создать ключ.")
+            except Exception:
+                pass
+            return
+        if action != "gift" and not result:
+            action_label = _format_key_action_label(action, price=price, key_id=key_id)
+            await _handle_key_creation_failure(
+                bot,
+                user_id=user_id,
+                action_label=action_label,
+                exc=RuntimeError("key creation returned empty response"),
+                refund=True,
+            )
+            try:
+                await processing_message.edit_text("❌ Не удалось создать ключ.")
+            except Exception:
+                pass
+            return
 
         if action == "new":
             key_id = rw_repo.record_key_from_payload(

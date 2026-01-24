@@ -258,6 +258,31 @@ def delete_key_by_email(email: str) -> bool:
     return database.delete_key_by_email(email)
 
 
+def generate_key_email_for_user(user_id: int, *, domain: str = "bot.local") -> str:
+    """Generate a unique key email based on Telegram ID + key number."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        raise ValueError("user_id must be int")
+    if uid <= 0:
+        raise ValueError("user_id must be positive")
+    try:
+        next_number = int(database.get_next_key_number(uid))
+    except Exception:
+        next_number = 1
+    if next_number < 1:
+        next_number = 1
+
+    number = next_number
+    for _ in range(1000):
+        candidate = f"{uid}-{number}@{domain}"
+        if not database.get_key_by_email(candidate):
+            return candidate
+        number += 1
+
+    return f"{uid}-{int(datetime.utcnow().timestamp())}@{domain}"
+
+
 
 
 _LEGACY_FORWARDERS = (
@@ -299,6 +324,7 @@ _LEGACY_FORWARDERS = (
     "get_host",
     "get_keys_for_host",
     "get_keys_for_user",
+    "get_keys_paginated",
     "get_latest_speedtest",
     "get_next_key_number",
     "get_open_tickets_count",

@@ -11,6 +11,7 @@ except Exception:
     colorama_available = False
 
 from shop_bot.webhook_server.app import create_webhook_app
+from shop_bot.webhook_server import app as webhook_app
 from shop_bot.data_manager.scheduler import periodic_subscription_check
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.bot_controller import BotController
@@ -106,6 +107,9 @@ def main():
 
     bot_controller = BotController()
     flask_app = create_webhook_app(bot_controller)
+
+    def _is_true(value) -> bool:
+        return str(value).strip().lower() in ("true", "1", "on", "yes", "y")
     
     async def shutdown(sig: signal.Signals, loop: asyncio.AbstractEventLoop):
         logger.info(f"Получен сигнал: {sig.name}. Запускаю завершение работы...")
@@ -122,6 +126,10 @@ def main():
         loop = asyncio.get_running_loop()
         bot_controller.set_loop(loop)
         flask_app.config['EVENT_LOOP'] = loop
+        try:
+            webhook_app._support_bot_controller.set_loop(loop)
+        except Exception:
+            pass
         
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig, loop)))
@@ -136,6 +144,41 @@ def main():
             
         logger.info("Приложение запущено. Бота можно стартовать из веб-панели.")
         
+        try:
+            auto_main = _is_true(rw_repo.get_setting("auto_start_main_bot") or "false")
+            auto_support = _is_true(rw_repo.get_setting("auto_start_support_bot") or "false")
+
+            token = (rw_repo.get_setting("telegram_bot_token") or "").strip()
+            bot_username = (rw_repo.get_setting("telegram_bot_username") or "").strip()
+            admin_id_raw = (rw_repo.get_setting("admin_telegram_id") or "").strip()
+            try:
+                admin_id_ok = int(admin_id_raw) > 0
+            except Exception:
+                admin_id_ok = False
+            main_ready = bool(token and bot_username and admin_id_ok)
+
+            support_token = (rw_repo.get_setting("support_bot_token") or "").strip()
+            support_username = (rw_repo.get_setting("support_bot_username") or "").strip()
+            try:
+                admin_ids = rw_repo.get_admin_ids()
+            except Exception:
+                admin_ids = set()
+            support_ready = bool(support_token and support_username and admin_ids)
+
+            if auto_main and main_ready:
+                res = bot_controller.start()
+                logger.info("Автозапуск основного бота: %s", res.get("message"))
+            elif auto_main:
+                logger.warning("Автозапуск основного бота пропущен: не хватает настроек.")
+
+            if auto_support and support_ready:
+                res = webhook_app._support_bot_controller.start()
+                logger.info("Автозапуск support-бота: %s", res.get("message"))
+            elif auto_support:
+                logger.warning("Автозапуск support-бота пропущен: не хватает настроек.")
+        except Exception as e:
+            logger.warning("Не удалось выполнить автозапуск ботов: %s", e)
+
         asyncio.create_task(periodic_subscription_check(bot_controller))
 
 

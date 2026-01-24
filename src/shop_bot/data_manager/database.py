@@ -441,6 +441,8 @@ def initialize_db():
                 "receipt_email": "example@example.com",
                 "telegram_bot_token": None,
                 "telegram_bot_username": None,
+                "auto_start_main_bot": "false",
+                "auto_start_support_bot": "false",
                 "trial_enabled": "true",
                 "trial_duration_days": "3",
                 "trial_traffic_limit_gb": "0",
@@ -1663,6 +1665,38 @@ def get_all_keys() -> list[dict]:
     except sqlite3.Error as e:
         logging.error(f"Failed to get all keys: {e}")
         return []
+
+
+def get_keys_paginated(page: int = 1, per_page: int = 25) -> tuple[list[dict], int]:
+    try:
+        page_i = max(1, int(page))
+    except Exception:
+        page_i = 1
+    try:
+        per_i = max(1, int(per_page))
+    except Exception:
+        per_i = 25
+    offset = (page_i - 1) * per_i
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM vpn_keys")
+            total = cursor.fetchone()[0] or 0
+            cursor.execute(
+                """
+                SELECT *
+                FROM vpn_keys
+                ORDER BY COALESCE(created_at, updated_at, key_id) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (per_i, offset),
+            )
+            rows = cursor.fetchall()
+            return [_normalize_key_row(row) for row in rows], int(total)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get paginated keys: {e}")
+        return [], 0
 
 
 def get_keys_for_user(user_id: int) -> list[dict]:

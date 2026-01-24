@@ -633,6 +633,20 @@
 								required
 							/>
 						</div>
+						<div class="form-group">
+							<label>Автозапуск:</label>
+							<div class="form-group-checkbox">
+								<input type="hidden" name="auto_start_main_bot" value="false" />
+								<input type="checkbox" id="auto_start_main_bot" name="auto_start_main_bot" value="true" {% if settings.auto_start_main_bot == 'true' %}checked{% endif %} {% if not all_settings_ok %}disabled{% endif %}>
+								<label for="auto_start_main_bot">Автозапуск основного бота</label>
+							</div>
+							<div class="form-group-checkbox">
+								<input type="hidden" name="auto_start_support_bot" value="false" />
+								<input type="checkbox" id="auto_start_support_bot" name="auto_start_support_bot" value="true" {% if settings.auto_start_support_bot == 'true' %}checked{% endif %} {% if not support_settings_ok %}disabled{% endif %}>
+								<label for="auto_start_support_bot">Автозапуск support-бота</label>
+							</div>
+							<small class="text-secondary">Автозапуск доступен только при заполненных обязательных полях.</small>
+						</div>
 
 						<div class="form-group">
 							<label for="channel_link">Ссылка на канал (для раздела «Ссылки»):</label>

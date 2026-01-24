@@ -713,16 +713,23 @@ async def create_or_update_key_on_host(
     traffic_limit_bytes: int | None = None,
     traffic_limit_strategy: str | None = None,
     hwid_device_limit: int | None = None,
+    raise_on_error: bool = False,
 ) -> dict | None:
     """Legacy совместимость: создаёт/обновляет пользователя Remnawave и возвращает данные по ключу."""
     try:
         squad = rw_repo.get_squad(host_name)
         if not squad:
+            msg = f"Host '{host_name}' not found"
             logger.error("Remnawave: не найден сквад/хост '%s'", host_name)
+            if raise_on_error:
+                raise RemnawaveAPIError(msg)
             return None
         squad_uuid = (squad.get('squad_uuid') or '').strip()
         if not squad_uuid:
+            msg = f"Host '{host_name}' has no squad_uuid"
             logger.error("Remnawave: сквад '%s' не имеет squad_uuid", host_name)
+            if raise_on_error:
+                raise RemnawaveAPIError(msg)
             return None
 
         if expiry_timestamp_ms is not None:
@@ -790,8 +797,12 @@ async def create_or_update_key_on_host(
         }
     except RemnawaveAPIError as exc:
         logger.error("Remnawave: ошибка create_or_update_key_on_host %s/%s: %s", host_name, email, exc)
+        if raise_on_error:
+            raise
     except Exception:
         logger.exception("Remnawave: непредвиденная ошибка create_or_update_key_on_host для %s/%s", host_name, email)
+        if raise_on_error:
+            raise
     return None
 
 

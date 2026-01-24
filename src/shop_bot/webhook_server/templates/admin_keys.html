@@ -62,7 +62,7 @@
 
       <div class="mode-section mode-personal col-12 col-md-4">
         <label class="form-label" for="key_email">Email ключа</label>
-        <input class="form-control rounded-3" type="email" id="key_email" name="key_email" placeholder="user@bot.local" readonly />
+        <input class="form-control rounded-3" type="email" id="key_email" name="key_email" placeholder="123456789-1@bot.local" readonly />
       </div>
 
       <div class="col-12 col-md-4">
@@ -82,6 +82,10 @@
         <label class="form-label" for="custom_days">Дней</label>
         <input class="form-control rounded-3" type="number" id="custom_days" min="1" placeholder="например, 30" />
       </div>
+      <div class="col-12 col-md-2">
+        <label class="form-label" for="hwid_device_limit">Количество устройств</label>
+        <input class="form-control rounded-3" type="number" id="hwid_device_limit" name="hwid_device_limit" min="0" placeholder="0 = без лимита" />
+      </div>
 
       <div class="mode-section mode-personal col-12 col-md-4">
         <label class="form-label" for="expiry_date">Истекает</label>
@@ -96,7 +100,7 @@
 
       <div class="mode-section mode-gift col-12 d-none">
         <div class="alert alert-info rounded-3">
-          Будет создан <b>подарочный ключ</b> на выбранном хосте Remnawave. Email для ключа сгенерируется автоматически и отобразится после создания.
+          Будет создан <b>подарочный ключ</b> на выбранном сервере. Email для ключа сгенерируется автоматически и отобразится после создания.
         </div>
       </div>
 
@@ -144,7 +148,7 @@
             <th class="w-1"><i class="ti ti-settings me-1"></i> Действия</th>
           </tr>
         </thead>
-        <tbody id="keys-tbody" data-fetch-url="{{ url_for('admin_keys_table_partial') }}" data-fetch-interval="10000">
+        <tbody id="keys-tbody" data-fetch-url="{{ url_for('admin_keys_table_partial', page=current_page, per_page=per_page) }}" data-fetch-interval="10000">
           {% for k in keys %}
           <tr>
             <td>#{{ k.key_id }}</td>
@@ -183,6 +187,9 @@
         </tbody>
       </table>
     </div>
+    <ul id="keys-pagination" class="pagination" data-src="{{ url_for('admin_keys_pagination_partial', page=current_page, per_page=per_page) }}">
+      {% include 'partials/admin_keys_pagination.html' %}
+    </ul>
   </div>
 </div>
 
@@ -198,7 +205,7 @@
   </div>
   <div id="toastErr" class="toast align-items-center text-bg-danger border-0 mt-2" role="alert" aria-live="assertive" aria-atomic="true">
     <div class="d-flex">
-      <div class="toast-body">Ошибка при выдаче ключа. Проверьте данные и доступность Remnawave.</div>
+      <div class="toast-body">Ошибка при выдаче ключа. Проверьте данные и доступность панели.</div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
     </div>
   </div>
@@ -227,7 +234,7 @@
     });
 
     const STORAGE_KEY = 'admin_keys_form';
-    const stateFields = ['mode','user_id','host_name','key_email','plan_select','custom_days','expiry_date','token','activation_limit','token_expires','comment'];
+    const stateFields = ['mode','user_id','host_name','key_email','plan_select','custom_days','expiry_date','hwid_device_limit','token','activation_limit','token_expires','comment'];
     function saveState(){
       const state = {};
       stateFields.forEach(name => {
@@ -288,6 +295,24 @@
         if (!resp.ok) return;
         const html = await resp.text();
         if (html && html !== el.innerHTML) { el.innerHTML = html; }
+      }catch(_){ }
+    }
+
+    async function refreshKeysPagination(){
+      try{
+        const pag = document.getElementById('keys-pagination');
+        if (!pag) return;
+        const tbody = document.getElementById('keys-tbody');
+        const purl = new URL(pag.getAttribute('data-src'), window.location.origin);
+        if (tbody) {
+          const turl = new URL(tbody.getAttribute('data-fetch-url'), window.location.origin);
+          purl.searchParams.set('page', turl.searchParams.get('page') || '1');
+          purl.searchParams.set('per_page', turl.searchParams.get('per_page') || '25');
+        }
+        const resp = await fetch(purl.toString(), { headers: { 'Accept': 'text/html' }, cache: 'no-store', credentials: 'same-origin' });
+        if (!resp.ok) return;
+        const html = await resp.text();
+        if (html) { pag.innerHTML = html; }
       }catch(_){ }
     }
 
@@ -586,7 +611,10 @@
           // Динамически добавим строку в таблицу ключей без перезагрузки
           try {
             const tbody = document.querySelector('table.table tbody');
-            if (tbody) {
+            const fetchUrl = tbody?.getAttribute('data-fetch-url') || '';
+            const url = fetchUrl ? new URL(fetchUrl, window.location.origin) : null;
+            const currentPage = url ? (url.searchParams.get('page') || '1') : '1';
+            if (tbody && currentPage === '1') {
               const mode = String(document.getElementById('create_mode')?.value||'personal');
               const uid = mode === 'gift' ? '—' : String(document.getElementById('user_id')?.value||'');
               const host = String(document.getElementById('host_name')?.value||'');
@@ -614,6 +642,7 @@
           } catch(_){}
           // Также сразу подтянем серверный partial, чтобы таблица была в актуальном состоянии
           try { await refreshContainerById('keys-tbody'); } catch(_){ }
+          try { await refreshKeysPagination(); } catch(_){ }
         } else {
           try { window.showToast('danger', 'Не удалось создать ключ'); } catch(_){ }
         }
@@ -656,6 +685,40 @@
       });
     }
     applyMode(restoredState.mode || (modeInput?.value || 'personal'));
+
+    // Пагинация без перезагрузки страницы
+    (function(){
+      const tbody = document.getElementById('keys-tbody');
+      const pag = document.getElementById('keys-pagination');
+      if (!tbody || !pag) return;
+      pag.addEventListener('click', async function(e){
+        const a = e.target.closest('a.page-link');
+        if (!a) return;
+        e.preventDefault();
+        const url = new URL(a.getAttribute('href'), window.location.origin);
+        try{
+          const turl = new URL(tbody.getAttribute('data-fetch-url'), window.location.origin);
+          turl.searchParams.set('page', url.searchParams.get('page') || '1');
+          turl.searchParams.set('per_page', url.searchParams.get('per_page') || turl.searchParams.get('per_page') || '25');
+          const resp = await fetch(turl.toString(), { headers: { 'Accept':'text/html' }, credentials: 'same-origin' });
+          const html = await resp.text();
+          if (html){ tbody.innerHTML = html; }
+
+          const purl = new URL(pag.getAttribute('data-src'), window.location.origin);
+          purl.searchParams.set('page', turl.searchParams.get('page') || '1');
+          purl.searchParams.set('per_page', turl.searchParams.get('per_page') || '25');
+          const presp = await fetch(purl.toString(), { headers: { 'Accept':'text/html' }, credentials: 'same-origin' });
+          const phtml = await presp.text();
+          if (phtml) pag.innerHTML = phtml;
+
+          tbody.setAttribute('data-fetch-url', turl.pathname + '?' + turl.searchParams.toString());
+          try {
+            const pg = turl.searchParams.get('page') || '1';
+            history.replaceState(null,'', '/admin/keys?page=' + encodeURIComponent(pg));
+          } catch(_){ }
+        } catch(_){ }
+      });
+    })();
 
     submitBtn.addEventListener('click', doSubmit);
   })();
@@ -872,5 +935,3 @@
   })();
 </script>
 {% endblock %}
-
-
