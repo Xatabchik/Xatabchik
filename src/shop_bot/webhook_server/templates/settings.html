@@ -35,6 +35,7 @@
       <li class="nav-item"><a class="nav-link" href="#hosts"><i class="ti ti-server me-1"></i> Хосты/Тарифы</a></li>
       <li class="nav-item"><a class="nav-link" href="#referrals"><i class="ti ti-users-group me-1"></i> Рефералы</a></li>
       <li class="nav-item"><a class="nav-link" href="#trial"><i class="ti ti-gift me-1"></i> Триал</a></li>
+      <li class="nav-item"><a class="nav-link" href="#franchise"><i class="ti ti-briefcase me-1"></i> Франшиза</a></li>
       <li class="nav-item"><a class="nav-link" href="#content"><i class="ti ti-file-text me-1"></i> Контент</a></li>
       <li class="nav-item"><a class="nav-link" href="#monitoring"><i class="ti ti-chart-line me-1"></i> Мониторинг</a></li>
     </ul>
@@ -855,6 +856,48 @@
 						<div class="mb-3">
 							<label class="form-label" for="trial_device_limit">Ограничение устройств (HWID, 0 — без лимита)</label>
 							<input class="form-control" type="number" id="trial_device_limit" name="trial_device_limit" value="{{ settings.trial_device_limit or '0' }}" />
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section class="settings-section" id="franchise">
+				<div class="card">
+					<div class="card-header">
+						<h2 class="card-title">
+							<i class="ti ti-briefcase me-2"></i>
+							Настройки Франшизы
+						</h2>
+					</div>
+					<div class="card-body">
+						<div class="mb-3">
+							<div class="form-check">
+								<input type="hidden" name="franchise_enabled" value="off">
+								<input class="form-check-input" type="checkbox" id="franchise_enabled" name="franchise_enabled" value="true" {% if settings.franchise_enabled == 'true' or settings.franchise_enabled == '1' %}checked{% endif %}>
+								<label class="form-check-label" for="franchise_enabled">Включить создание клонов ботов пользователями</label>
+							</div>
+						</div>
+						<div class="form-text text-secondary mb-4">
+							Когда франшиза включена, пользователи видят кнопку «🤖 Создать бота» и могут создавать свои клоны этого бота. 
+							Когда отключена, кнопка скрывается от всех пользователей.
+						</div>
+
+						<hr class="my-4">
+
+						<div class="mb-3">
+							<label class="form-label" for="franchise_commission_percent">Процент комиссии (%) для франшизников</label>
+							<input class="form-control pill-md" type="number" id="franchise_commission_percent" name="franchise_commission_percent" 
+								value="{{ settings.franchise_commission_percent or '35.0' }}" 
+								min="0" max="100" step="0.1" placeholder="35.0">
+							<small class="form-text text-secondary">Какой процент от каждого платежа клиента получит владелец клона. По умолчанию: 35%</small>
+						</div>
+
+						<div class="mb-3">
+							<label class="form-label" for="franchise_min_withdraw_rub">Минимум для вывода денег (₽)</label>
+							<input class="form-control pill-md" type="number" id="franchise_min_withdraw_rub" name="franchise_min_withdraw_rub" 
+								value="{{ settings.franchise_min_withdraw_rub or '1500.0' }}" 
+								min="1" step="0.01" placeholder="1500.0">
+							<small class="form-text text-secondary">Минимальная сумма, которую франшизник может вывести. По умолчанию: 1500 ₽</small>
 						</div>
 					</div>
 				</div>

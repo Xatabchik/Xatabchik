@@ -87,6 +87,7 @@ from shop_bot.modules import remnawave_api
 from shop_bot.data_manager.database import get_latest_pending_for_user, get_user_by_username
 from shop_bot.data_manager.database import delete_key_by_id
 from shop_bot.data_manager.database import _get_pending_metadata
+from shop_bot.data_manager.database import get_franchise_min_withdraw, get_franchise_percent_default
 
 TELEGRAM_BOT_USERNAME = None
 PAYMENT_METHODS = None
@@ -3018,23 +3019,32 @@ def get_user_router() -> Router:
                         pass
 
         return removed
-
-    @user_router.callback_query(F.data == "manage_keys")
+    # Меняем фильтр: теперь ловим и точный текст, и начало текста для страниц
+    @user_router.callback_query(F.data.in_({"manage_keys"}) | F.data.startswith("keys_page_"))
     @registration_required
     async def manage_keys_handler(callback: types.CallbackQuery):
         await callback.answer()
         user_id = callback.from_user.id
+        # Определяем текущую страницу. Если нажали "manage_keys", это 0.
+        # Если нажали "keys_page_N", вытаскиваем число N.
+        page = 0
+        if callback.data.startswith("keys_page_"):
+            page = int(callback.data.split("_")[-1])
 
-        # Синхронизируемся с Remnawave, чтобы удалённые на панели ключи исчезали и в боте.
-        try:
-            await sync_user_keys_with_remnawave(user_id)
-        except Exception:
-            pass
+        # Синхронизацию делаем только при первом входе (на 0-й странице), 
+        # чтобы не тормозить перелистывание.
+        if page == 0:
+            try:
+                await sync_user_keys_with_remnawave(user_id)
+            except Exception:
+                pass
 
         user_keys = get_user_keys(user_id)
+        
         await callback.message.edit_text(
             "Ваши ключи:" if user_keys else "У вас пока нет ключей.",
-            reply_markup=keyboards.create_keys_management_keyboard(user_keys)
+            # Передаем вычисленную страницу в клавиатуру
+            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=page)
         )
 
     @user_router.callback_query(F.data == "get_trial")
@@ -5172,10 +5182,10 @@ def get_user_router() -> Router:
             f"Бот: @{info.get('username') or 'без_username'}\n"
             f"Пользователей: <b>{users}</b>\n\n"
             f"Оплачено картой: <b>{gross:.2f} ₽</b>\n"
-            f"Ваш процент: <b>35%</b>\n"
+            f"Ваш процент: <b>{get_franchise_percent_default():.1f}%</b>\n"
             f"Ваш доход: <b>{com_total:.2f} ₽</b>\n"
             f"Доступно к выводу: <b>{avail:.2f} ₽</b>\n\n"
-            "ℹ️ Минимальная сумма вывода: <b>1500 ₽</b>\n"
+            f"ℹ️ Минимальная сумма вывода: <b>{get_franchise_min_withdraw():.0f} ₽</b>\n"
         )
         await cb.message.edit_text(text, reply_markup=_kb_partner_cabinet(), disable_web_page_preview=True)
         await fast_callback_answer(cb)
@@ -5212,8 +5222,8 @@ def get_user_router() -> Router:
         await cb.message.edit_text(
             "💸 <b>Вывод средств</b>\n\n"
             f"Доступно: <b>{avail:.2f} ₽</b>\n"
-            "Минимум: <b>1500 ₽</b>\n\n"
-            "Введите сумму для вывода числом (например: <code>1500</code>):",
+            f"Минимум: <b>{get_franchise_min_withdraw():.0f} ₽</b>\n\n"
+            f"Введите сумму для вывода числом (например: <code>{get_franchise_min_withdraw():.0f}</code>):",
             reply_markup=_kb_partner_withdraw(),
         )
         await fast_callback_answer(cb)
@@ -5253,7 +5263,7 @@ def get_user_router() -> Router:
         try:
             amount = float(raw)
         except Exception:
-            await message.answer("Не понял сумму. Пришлите число, например <code>1500</code>.")
+            await message.answer(f"Не понял сумму. Пришлите число, например <code>{get_franchise_min_withdraw():.0f}</code>.")
             return
 
         # Attach payout requisites snapshot to the withdraw request

@@ -228,7 +228,42 @@ ALL_SETTINGS_KEYS = [
     "key_info_show_howto",
     "payment_email_prompt_enabled",
     "enable_referral_days_bonus",
+    "franchise_enabled",
+    "franchise_commission_percent",
+    "franchise_min_withdraw_rub",
 ]
+
+
+# === Franchise settings management (module level) ===
+
+def franchise_settings() -> bool:
+    """
+    Возвращает текущее состояние франшизы.
+    True = включена, False = выключена
+    """
+    try:
+        val = (get_setting('franchise_enabled') or 'false').strip().lower()
+        return val in ('1', 'true', 'yes', 'on')
+    except Exception:
+        return False
+
+
+def toggle_franchise_settings() -> bool:
+    """
+    Переключает состояние франшизы (ВКЛ/ВЫКЛ).
+    Возвращает новое состояние: True = включена, False = выключена
+    """
+    try:
+        current = (get_setting('franchise_enabled') or 'false').strip().lower()
+        current_enabled = current in ('1', 'true', 'yes', 'on')
+        new_value = 'false' if current_enabled else 'true'
+        rw_repo.update_setting('franchise_enabled', new_value)
+        return new_value == 'true'
+    except Exception:
+        return False
+
+# === End Franchise settings ===
+
 
 def create_webhook_app(bot_controller_instance):
     global _bot_controller
@@ -466,7 +501,8 @@ def create_webhook_app(bot_controller_instance):
             "open_tickets_count": open_tickets_count,
             "closed_tickets_count": closed_tickets_count,
             "all_tickets_count": all_tickets_count,
-            "brand_title": settings.get('panel_brand_title') or 'Remnawave Control',
+            "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
+            "franchise_enabled": franchise_settings(),
         }
 
     @flask_app.route('/brand-title', methods=['POST'])
@@ -1967,6 +2003,7 @@ def create_webhook_app(bot_controller_instance):
                 "stars_enabled",
                 "trial_enabled",
                 "yoomoney_enabled",
+                "franchise_enabled",
             ]
             for checkbox_key in checkbox_keys:
                 values = request.form.getlist(checkbox_key) or ['off']

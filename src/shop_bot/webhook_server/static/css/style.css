@@ -1107,19 +1107,6 @@ body::after {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    
-    background:
-        
-        conic-gradient(from var(--aurora-rot, 0deg) at 50% 50%,
-          color-mix(in oklab, var(--primary-color) 12%, transparent) 0deg,
-          color-mix(in oklab, #3e8cc9 12%, transparent) 120deg,
-          color-mix(in oklab, #3ec996 10%, transparent) 240deg,
-          color-mix(in oklab, var(--primary-color) 12%, transparent) 360deg
-        ),
-        
-        radial-gradient(900px 700px at var(--aurora-x1, 20%) var(--aurora-y1, 20%), color-mix(in oklab, var(--accent-1) 90%, transparent) 0%, transparent 60%),
-        radial-gradient(1100px 800px at var(--aurora-x2, 80%) var(--aurora-y2, 30%), color-mix(in oklab, var(--accent-2) 90%, transparent) 0%, transparent 64%),
-        radial-gradient(1000px 700px at var(--aurora-x3, 60%) var(--aurora-y3, 75%), color-mix(in oklab, var(--accent-3) 90%, transparent) 0%, transparent 64%);
     z-index: 0; 
 }
 

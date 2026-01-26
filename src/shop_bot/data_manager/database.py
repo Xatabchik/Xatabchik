@@ -539,6 +539,11 @@ def initialize_db():
                 "yoomoney_client_secret": None,
                 "yoomoney_redirect_uri": None,
                 "stars_per_rub": "1",
+
+                # Franchise settings
+                "franchise_enabled": "false",
+                "franchise_commission_percent": "35.0",
+                "franchise_min_withdraw_rub": "1500.0",
             }
             run_migration()
             for key, value in default_settings.items():
@@ -4495,8 +4500,26 @@ def update_key_usage_monitor(
 # Franchise (managed clone bots)
 # =============================
 
-FRANCHISE_PERCENT_DEFAULT = 35.0
-FRANCHISE_MIN_WITHDRAW_RUB = 1500.0
+# Константы больше не используются, значения берутся из настроек
+# DEPRECATED: FRANCHISE_PERCENT_DEFAULT = 35.0
+# DEPRECATED: FRANCHISE_MIN_WITHDRAW_RUB = 1500.0
+
+def get_franchise_percent_default() -> float:
+    """Получить процент комиссии франшизы из настроек."""
+    try:
+        val = (get_setting('franchise_commission_percent') or '35.0').strip()
+        return float(val)
+    except Exception:
+        return 35.0
+
+
+def get_franchise_min_withdraw() -> float:
+    """Получить минимум для вывода франшизников из настроек."""
+    try:
+        val = (get_setting('franchise_min_withdraw_rub') or '1500.0').strip()
+        return float(val)
+    except Exception:
+        return 1500.0
 
 
 def resolve_factory_bot_id(telegram_bot_user_id: int | None) -> int:
@@ -4693,7 +4716,7 @@ def accrue_partner_commission(
     if amt <= 0:
         return False
 
-    p = float(percent if percent is not None else FRANCHISE_PERCENT_DEFAULT)
+    p = float(percent if percent is not None else get_franchise_percent_default())
     if p <= 0:
         return False
 
@@ -4729,7 +4752,7 @@ def get_partner_cabinet(bot_id: int) -> dict:
         "total_users": 0,
         "gross_paid_card": 0.0,
         "commission_total": 0.0,
-        "commission_percent": FRANCHISE_PERCENT_DEFAULT,
+        "commission_percent": get_franchise_percent_default(),
         "requested_withdraw": 0.0,
         "available": 0.0,
     }
@@ -4984,8 +5007,9 @@ def create_withdraw_request(
     if b <= 0:
         return False, "Вывод доступен только во клонах."
 
-    if amt < FRANCHISE_MIN_WITHDRAW_RUB:
-        return False, f"Минимальная сумма вывода: {FRANCHISE_MIN_WITHDRAW_RUB:.0f} RUB."
+    min_withdraw = get_franchise_min_withdraw()
+    if amt < min_withdraw:
+        return False, f"Минимальная сумма вывода: {min_withdraw:.0f} RUB."
 
     stats = get_partner_cabinet(b)
     available = float(stats.get("available", 0.0) or 0.0)

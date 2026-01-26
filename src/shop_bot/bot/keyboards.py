@@ -73,7 +73,7 @@ def create_main_menu_keyboard(
 
     # Franchise: partner cabinet button (shown only in managed clones for the owner)
     if show_partner_cabinet:
-        builder.button(text="📊 Личный кабинет", callback_data="partner_cabinet")
+        builder.button(text="� Личный кабинет", callback_data="partner_cabinet")
     
     builder.button(text=(get_setting("btn_profile_text") or "👤 Мой профиль"), callback_data="show_profile")
 
@@ -99,7 +99,10 @@ def create_main_menu_keyboard(
 
     # Franchise: create clone bot
     if show_create_bot:
-        builder.button(text="🤖 Создать бота", callback_data="factory_create_bot")
+        # Ленивый импорт для избежания циклической зависимости
+        from shop_bot.webhook_server.app import franchise_settings
+        if franchise_settings():
+            builder.button(text="💼 Создать клон", callback_data="factory_create_bot")
     
 
     builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), callback_data="show_help")
@@ -178,6 +181,7 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🖥 Хосты", callback_data="admin_hosts_menu")
     builder.button(text="💳 Платежки", callback_data="admin_payments_menu")
     builder.button(text="👥 Рефералка", callback_data="admin_referral")
+    builder.button(text="💼 Франшиза", callback_data="admin_franchise")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
@@ -294,6 +298,25 @@ def create_admin_referral_settings_keyboard(
     builder.button(text="⬅️ Назад", callback_data="admin_settings_menu")
 
     builder.adjust(2, 1, 2, 2, 1, 1)
+    return builder.as_markup()
+
+
+def create_admin_franchise_settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру настроек франшизы"""
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопка переключения статуса
+    status_text = "🟢 Выключить франшизу" if enabled else "🔴 Включить франшизу"
+    builder.button(text=status_text, callback_data="admin_franchise_toggle")
+    
+    # Кнопки для настроек
+    builder.button(text="💰 Установить % комиссии", callback_data="admin_franchise_set_percent")
+    builder.button(text="💳 Установить минимум вывода", callback_data="admin_franchise_set_min_withdraw")
+    
+    # Кнопка "Назад"
+    builder.button(text="⬅️ Назад в админку", callback_data="admin_settings_menu")
+    
+    builder.adjust(1, 2, 1)
     return builder.as_markup()
 
 
@@ -617,19 +640,41 @@ def create_admin_user_actions_keyboard(user_id: int, is_banned: bool | None = No
     builder.adjust(2, 2, 2, 1, 2)
     return builder.as_markup()
 
-def create_admin_user_keys_keyboard(user_id: int, keys: list[dict]) -> InlineKeyboardMarkup:
+def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if keys:
-        for k in keys:
+    items_per_page = 8  # В админке можно чуть больше, кнопки короче
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for k in current_keys:
             kid = k.get('key_id')
             host = k.get('host_name') or '—'
             email = k.get('key_email') or '—'
+            # Ваш оригинальный формат заголовка
             title = f"#{kid} • {host} • {email[:20]}"
             builder.button(text=title, callback_data=f"admin_edit_key_{kid}")
     else:
         builder.button(text="Ключей нет", callback_data="noop")
-    builder.button(text="⬅️ Назад", callback_data=f"admin_view_user_{user_id}")
+
     builder.adjust(1)
+
+    # Кнопки навигации (только если страниц больше одной)
+    nav_buttons = []
+    if page > 0:
+        # Используем префикс admin_user_keys_ для совместимости с хендлером ниже
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Пред.", callback_data=f"admin_user_keys_{user_id}_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="След. ➡️", callback_data=f"admin_user_keys_{user_id}_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка возврата
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_view_user_{user_id}"))
+    
     return builder.as_markup()
 
 def create_admin_key_actions_keyboard(key_id: int, user_id: int | None = None) -> InlineKeyboardMarkup:
@@ -1066,18 +1111,44 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
     builder.adjust(1)
     return builder.as_markup()
 
-def create_keys_management_keyboard(keys: list) -> InlineKeyboardMarkup:
+def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if keys:
-        for i, key in enumerate(keys):
+    items_per_page = 5  # Оставляем по 5, так как текст кнопок очень длинный
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for i, key in enumerate(current_keys):
+            # Рассчитываем номер для отображения (чтобы на 2 стр. было Ключ #6 и т.д.)
+            num = start_idx + i + 1
             expiry_date = datetime.fromisoformat(key['expiry_date'])
             status_icon = "✅" if expiry_date > datetime.now() else "❌"
             host_name = key.get('host_name', 'Неизвестный хост')
-            button_text = f"{status_icon} Ключ #{i+1} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            
+            # Твой оригинальный текст
+            button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
             builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
-    builder.button(text=(get_setting("btn_buy_key_text") or "🛒 Купить ключ"), callback_data="buy_new_key")
-    builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
+
     builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"keys_page_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"keys_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопки меню
+    builder.row(
+        InlineKeyboardButton(text=(get_setting("btn_buy_key_text") or "🛒 Купить ключ"), callback_data="buy_new_key"),
+        InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
+    )
+    
     return builder.as_markup()
 
 def create_key_info_keyboard(key_id: int, connection_string: str | None = None) -> InlineKeyboardMarkup:
@@ -1328,32 +1399,37 @@ def create_dynamic_keyboard(
                 ]
 
             if show_create_bot and "factory_create_bot" not in existing_callbacks:
-                # Place the "Create bot" button ABOVE the "Admin" button (if it exists in config).
-                admin_rows: list[int] = []
-                for cfg in button_configs:
-                    cb = cfg.get("callback_data")
-                    bid = cfg.get("button_id")
-                    if cb == "admin_menu" or bid == "admin":
-                        try:
-                            admin_rows.append(int(cfg.get("row_position", 0) or 0))
-                        except Exception:
-                            pass
+                # Ленивый импорт для избежания циклической зависимости
+                from shop_bot.webhook_server.app import franchise_settings as franchise_enabled
+                
+                # Проверяем, включена ли франшиза
+                if franchise_enabled():
+                    # Place the "Create bot" button ABOVE the "Admin" button (if it exists in config).
+                    admin_rows: list[int] = []
+                    for cfg in button_configs:
+                        cb = cfg.get("callback_data")
+                        bid = cfg.get("button_id")
+                        if cb == "admin_menu" or bid == "admin":
+                            try:
+                                admin_rows.append(int(cfg.get("row_position", 0) or 0))
+                            except Exception:
+                                pass
 
-                target_row = (min(admin_rows) - 1) if admin_rows else (max_row + 1)
+                    target_row = (min(admin_rows) - 1) if admin_rows else (max_row + 1)
 
-                button_configs = list(button_configs) + [
-                    {
-                        "button_id": "factory_create_bot",
-                        "text": "🤖 Создать бота",
-                        "callback_data": "factory_create_bot",
-                        "url": None,
-                        "row_position": target_row,
-                        "column_position": 0,
-                        "sort_order": 1000,
-                        "button_width": 1,
-                        "is_active": 1,
-                    }
-                ]
+                    button_configs = list(button_configs) + [
+                        {
+                            "button_id": "factory_create_bot",
+                            "text": "🤖 Создать бота",
+                            "callback_data": "factory_create_bot",
+                            "url": None,
+                            "row_position": target_row,
+                            "column_position": 0,
+                            "sort_order": 1000,
+                            "button_width": 1,
+                            "is_active": 1,
+                        }
+                    ]
 
         # Группировка админ-меню:
         # - «Система» -> тест скорости / мониторинг / бэкап / восстановление
