@@ -91,6 +91,11 @@ def _mask_secret(value: str | None) -> str:
         return "•" * len(v)
     return f"{v[:2]}•••{v[-2:]}"
 
+class AdminSettings(StatesGroup):
+    waiting_for_captcha_attempts = State()
+    waiting_for_captcha_timeout = State()
+    waiting_for_captcha_message = State()
+
 class Broadcast(StatesGroup):
     waiting_for_message = State()
     waiting_for_button_option = State()
@@ -5397,6 +5402,160 @@ def get_admin_router() -> Router:
         except Exception:
             await callback.message.answer(text, reply_markup=kb.as_markup())
 
+    @admin_router.callback_query(F.data.startswith("admin_search_user_keys_"))
+    async def admin_search_user_keys_handler(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        await callback.answer()
+        
+        try:
+            user_id = int(callback.data.split("_")[-1])
+        except (IndexError, ValueError):
+            await callback.answer("❌ Ошибка в данных", show_alert=True)
+            return
+        
+        # Сохраняем user_id в state для использования в обработчике ввода
+        await state.update_data(search_user_id=user_id)
+        await state.set_state("admin_search_user_keys_state")
+        
+        await callback.message.edit_text(
+            "🔍 Введите email ключа для поиска:",
+            reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
+        )
+
+    @admin_router.message(StateFilter("admin_search_user_keys_state"))
+    async def admin_search_user_keys_input_handler(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            await message.answer("У вас нет прав.")
+            return
+        
+        search_query = message.text.strip()
+        
+        if not search_query:
+            await message.answer("❌ Пожалуйста, введите email для поиска")
+            return
+        
+        # Получаем user_id из state
+        data = await state.get_data()
+        user_id = data.get('search_user_id')
+        
+        if not user_id:
+            await message.answer("❌ Ошибка. Попробуйте снова.")
+            await state.clear()
+            return
+        
+        # Импортируем функцию поиска
+        from shop_bot.data_manager.remnawave_repository import search_user_keys_by_email
+        
+        found_keys = search_user_keys_by_email(user_id, search_query)
+        
+        if not found_keys:
+            await message.answer(
+                "❌ Ключи не найдены. Попробуйте другой email.",
+                reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
+            )
+            return
+        
+        # Сохраняем результаты в state
+        await state.update_data(search_results=found_keys)
+        
+        await message.answer(
+            f"🔍 Найдено {len(found_keys)} ключ(ей):",
+            reply_markup=keyboards.create_admin_search_keys_results_keyboard(found_keys, page=0, user_id=user_id)
+        )
+
+    @admin_router.callback_query(F.data.startswith("admin_search_keys_page_"))
+    async def admin_search_keys_page_handler(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        await callback.answer()
+        
+        # Получаем номер страницы
+        try:
+            page = int(callback.data.split("_")[-1])
+        except (IndexError, ValueError):
+            await callback.answer("❌ Ошибка в данных", show_alert=True)
+            return
+        
+        # Получаем результаты из state
+        data = await state.get_data()
+        search_results = data.get('search_results', [])
+        user_id = data.get('search_user_id')
+        
+        if not search_results:
+            await callback.answer("❌ Результаты поиска потеряны. Попробуйте снова.", show_alert=True)
+            return
+        
+        await callback.message.edit_reply_markup(
+            reply_markup=keyboards.create_admin_search_keys_results_keyboard(search_results, page=page, user_id=user_id)
+        )
+
+    @admin_router.callback_query(F.data == "admin_search_all_keys")
+    async def admin_search_all_keys_handler(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        await callback.answer()
+        
+        # Для общего поиска не сохраняем user_id
+        await state.set_state("admin_search_all_keys_state")
+        
+        await callback.message.edit_text(
+            "🔍 Введите email ключа для поиска во всех ключах:",
+            reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
+        )
+
+    @admin_router.message(StateFilter("admin_search_all_keys_state"))
+    async def admin_search_all_keys_input_handler(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            await message.answer("У вас нет прав.")
+            return
+        
+        search_query = message.text.strip()
+        
+        if not search_query:
+            await message.answer("❌ Пожалуйста, введите email для поиска")
+            return
+        
+        # Импортируем функцию поиска
+        from shop_bot.data_manager.remnawave_repository import search_all_keys_by_email
+        
+        found_keys = search_all_keys_by_email(search_query)
+        
+        if not found_keys:
+            await message.answer(
+                "❌ Ключи не найдены. Попробуйте другой email.",
+                reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
+            )
+            return
+        
+        # Сохраняем результаты в state
+        await state.update_data(search_results=found_keys)
+        
+        await message.answer(
+            f"🔍 Найдено {len(found_keys)} ключ(ей):",
+            reply_markup=keyboards.create_admin_search_keys_results_keyboard(found_keys, page=0, user_id=None)
+        )
+
+    @admin_router.callback_query(F.data == "admin_cancel_search_keys")
+    async def admin_cancel_search_keys_handler(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        await callback.answer()
+        await state.clear()
+        
+        await callback.message.edit_text(
+            "❌ Поиск отменён.",
+            reply_markup=keyboards.create_admin_cancel_keyboard()
+        )
+
     @admin_router.callback_query(F.data.startswith("admin_edit_key_"))
     async def admin_edit_key(callback: types.CallbackQuery):
         if not is_admin(callback.from_user.id):
@@ -5412,11 +5571,13 @@ def get_admin_router() -> Router:
         if not key:
             await callback.message.answer("❌ Ключ не найден")
             return
+        conn_str = key.get('subscription_url') or key.get('connection_string') or '—'
         text = (
             f"🔑 <b>Ключ #{key_id}</b>\n"
             f"Хост: {key.get('host_name') or '—'}\n"
             f"Email: {key.get('key_email') or '—'}\n"
-            f"Истекает: {key.get('expiry_date') or '—'}\n"
+            f"Истекает: {key.get('expiry_date') or '—'}\n\n"
+            f"<code>{html_escape.escape(conn_str)}</code>\n\n"
         )
         try:
             await callback.message.edit_text(
@@ -5533,11 +5694,13 @@ def get_admin_router() -> Router:
         await state.clear()
 
         new_key = rw_repo.get_key_by_id(key_id)
+        conn_str = new_key.get('subscription_url') or new_key.get('connection_string') or '—'
         text = (
             f"🔑 <b>Ключ #{key_id}</b>\n"
             f"Хост: {new_key.get('host_name') or '—'}\n"
             f"Email: {new_key.get('key_email') or '—'}\n"
-            f"Истекает: {new_key.get('expiry_date') or '—'}\n"
+            f"Истекает: {new_key.get('expiry_date') or '—'}\n\n"
+            f"<code>{html_escape.escape(conn_str)}</code>\n\n"
         )
         await message.answer(f"✅ Ключ продлён на {days} дн.")
         await message.answer(text, reply_markup=keyboards.create_admin_key_actions_keyboard(key_id, int(new_key.get('user_id')) if new_key and new_key.get('user_id') else None))
@@ -5726,11 +5889,13 @@ def get_admin_router() -> Router:
         key = rw_repo.get_key_by_id(key_id)
         if not key:
             return
+        conn_str = key.get('subscription_url') or key.get('connection_string') or '—'
         text = (
             f"🔑 <b>Ключ #{key_id}</b>\n"
             f"Хост: {key.get('host_name') or '—'}\n"
             f"Email: {key.get('key_email') or '—'}\n"
-            f"Истекает: {key.get('expiry_date') or '—'}\n"
+            f"Истекает: {key.get('expiry_date') or '—'}\n\n"
+            f"<code>{html_escape.escape(conn_str)}</code>\n\n"
         )
         try:
             await callback.message.edit_text(
@@ -7284,5 +7449,195 @@ def get_admin_router() -> Router:
         kb.adjust(2)
         
         await callback.message.edit_text("\n".join(txt), parse_mode='HTML', reply_markup=kb.as_markup())
+
+    # =============================
+    # Captcha settings (Admin)
+    # =============================
+    
+    @admin_router.callback_query(F.data == "admin_captcha_settings")
+    async def admin_captcha_settings_handler(callback: types.CallbackQuery):
+        """Показать страницу настроек капчи."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        
+        captcha_enabled = get_setting("captcha_enabled") == "true"
+        captcha_type = get_setting("captcha_type") or "math"
+        max_attempts = get_setting("captcha_max_attempts") or "3"
+        timeout = get_setting("captcha_timeout_minutes") or "15"
+        
+        text = (
+            "🤖 <b>Система капчи</b>\n\n"
+            f"<b>Статус:</b> {'✅ Включена' if captcha_enabled else '❌ Отключена'}\n"
+            f"<b>Тип:</b> {captcha_type}\n"
+            f"<b>Макс. попыток:</b> {max_attempts}\n"
+            f"<b>Timeout (мин):</b> {timeout}\n\n"
+            "Выберите действие:"
+        )
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text=f"{'✅ Отключить' if captcha_enabled else '❌ Включить'}", 
+                      callback_data="admin_captcha_toggle")
+        builder.button(text="📝 Тип капчи", callback_data="admin_captcha_type")
+        builder.button(text="🔢 Макс. попыток", callback_data="admin_captcha_attempts")
+        builder.button(text="⏱️ Timeout", callback_data="admin_captcha_timeout")
+        builder.button(text="💬 Сообщение", callback_data="admin_captcha_message")
+        builder.button(text="⬅️ Назад", callback_data="admin_settings_menu")
+        builder.adjust(2)
+        
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+        except Exception:
+            await callback.message.answer(text, reply_markup=builder.as_markup())
+    
+    @admin_router.callback_query(F.data == "admin_captcha_toggle")
+    async def admin_captcha_toggle_handler(callback: types.CallbackQuery):
+        """Включить/отключить капчу."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        current = get_setting("captcha_enabled") == "true"
+        new_value = "false" if current else "true"
+        rw_repo.update_setting("captcha_enabled", new_value)
+        
+        await callback.answer(f"✅ Капча {'отключена' if not current else 'включена'}", show_alert=True)
+        await admin_captcha_settings_handler(callback)
+    
+    @admin_router.callback_query(F.data == "admin_captcha_type")
+    async def admin_captcha_type_handler(callback: types.CallbackQuery):
+        """Выбрать тип капчи."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        
+        current = get_setting("captcha_type") or "math"
+        
+        text = "📝 <b>Выберите тип капчи:</b>\n\n1️⃣ <b>Математическая</b> - решение примера (45+27=?)\n2️⃣ <b>Кнопочная</b> - выбор правильного смайлика"
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Математическая" if current == "math" else "❌ Математическая", 
+                      callback_data="admin_captcha_type_set:math")
+        builder.button(text="✅ Кнопочная" if current == "button" else "❌ Кнопочная", 
+                      callback_data="admin_captcha_type_set:button")
+        builder.button(text="⬅️ Назад", callback_data="admin_captcha_settings")
+        builder.adjust(2)
+        
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+        except Exception:
+            await callback.message.answer(text, reply_markup=builder.as_markup())
+    
+    @admin_router.callback_query(F.data.startswith("admin_captcha_type_set:"))
+    async def admin_captcha_type_set_handler(callback: types.CallbackQuery):
+        """Установить тип капчи."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        
+        captcha_type = callback.data.split(":", 1)[1]
+        rw_repo.update_setting("captcha_type", captcha_type)
+        
+        type_name = "математическая" if captcha_type == "math" else "кнопочная"
+        await callback.answer(f"✅ Тип капчи установлен: {type_name}", show_alert=True)
+        await admin_captcha_settings_handler(callback)
+    
+    @admin_router.callback_query(F.data == "admin_captcha_attempts")
+    async def admin_captcha_attempts_handler(callback: types.CallbackQuery, state: FSMContext):
+        """Установить максимальное количество попыток."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        
+        current = get_setting("captcha_max_attempts") or "3"
+        text = f"🔢 <b>Текущее значение:</b> {current} попыток\n\n<b>Введите новое значение (целое число от 1 до 10):</b>"
+        
+        await state.set_state(AdminSettings.waiting_for_captcha_attempts)
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="⬅️ Отмена", callback_data="admin_captcha_settings").as_markup())
+    
+    @admin_router.message(AdminSettings.waiting_for_captcha_attempts)
+    async def admin_captcha_attempts_input_handler(message: types.Message, state: FSMContext):
+        """Обработать ввод количества попыток."""
+        if not is_admin(message.from_user.id):
+            await message.answer("У вас нет прав.")
+            return
+        
+        try:
+            value = int(message.text.strip())
+            if value < 1 or value > 10:
+                await message.answer("Значение должно быть от 1 до 10.")
+                return
+            
+            rw_repo.update_setting("captcha_max_attempts", str(value))
+            await message.answer(f"✅ Максимум попыток установлено: {value}")
+            await state.clear()
+        except ValueError:
+            await message.answer("Пожалуйста, введите целое число.")
+    
+    @admin_router.callback_query(F.data == "admin_captcha_timeout")
+    async def admin_captcha_timeout_handler(callback: types.CallbackQuery, state: FSMContext):
+        """Установить timeout капчи."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        
+        current = get_setting("captcha_timeout_minutes") or "15"
+        text = f"⏱️ <b>Текущее значение:</b> {current} минут\n\n<b>Введите новое значение (от 5 до 120 минут):</b>"
+        
+        await state.set_state(AdminSettings.waiting_for_captcha_timeout)
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="⬅️ Отмена", callback_data="admin_captcha_settings").as_markup())
+    
+    @admin_router.message(AdminSettings.waiting_for_captcha_timeout)
+    async def admin_captcha_timeout_input_handler(message: types.Message, state: FSMContext):
+        """Обработать ввод timeout."""
+        if not is_admin(message.from_user.id):
+            await message.answer("У вас нет прав.")
+            return
+        
+        try:
+            value = int(message.text.strip())
+            if value < 5 or value > 120:
+                await message.answer("Значение должно быть от 5 до 120 минут.")
+                return
+            
+            rw_repo.update_setting("captcha_timeout_minutes", str(value))
+            await message.answer(f"✅ Timeout капчи установлено: {value} минут")
+            await state.clear()
+        except ValueError:
+            await message.answer("Пожалуйста, введите целое число.")
+    
+    @admin_router.callback_query(F.data == "admin_captcha_message")
+    async def admin_captcha_message_handler(callback: types.CallbackQuery, state: FSMContext):
+        """Установить кастомное сообщение к капче."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        
+        current = get_setting("captcha_message") or "👤 Привет! Ты выглядишь как бот. Пройди простую капчу..."
+        text = f"💬 <b>Текущее сообщение:</b>\n{current}\n\n<b>Введите новое сообщение (до 200 символов):</b>"
+        
+        await state.set_state(AdminSettings.waiting_for_captcha_message)
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="⬅️ Отмена", callback_data="admin_captcha_settings").as_markup())
+    
+    @admin_router.message(AdminSettings.waiting_for_captcha_message)
+    async def admin_captcha_message_input_handler(message: types.Message, state: FSMContext):
+        """Обработать ввод сообщения."""
+        if not is_admin(message.from_user.id):
+            await message.answer("У вас нет прав.")
+            return
+        
+        msg = message.text.strip()
+        if len(msg) > 200:
+            await message.answer("Сообщение должно быть не более 200 символов.")
+            return
+        
+        rw_repo.update_setting("captcha_message", msg)
+        await message.answer("✅ Сообщение капчи обновлено")
+        await state.clear()
 
     return admin_router

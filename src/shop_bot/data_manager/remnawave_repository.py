@@ -358,6 +358,8 @@ _LEGACY_FORWARDERS = (
     "is_admin",
     "log_transaction",
     "register_user_if_not_exists",
+    "search_user_keys_by_email",
+    "search_all_keys_by_email",
     "run_migration",
     "set_referral_start_bonus_received",
     "set_referral_trial_day_bonus_received",
@@ -834,3 +836,14 @@ def redeem_promo_code(code: str, user_id: int, *, applied_amount: float, order_i
             if str(e).startswith("FOREIGN KEY constraint failed"):
                 return None
             raise
+
+# ===== Key Search Functions =====
+
+def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
+    """Поиск ключей пользователя по key_email."""
+    return database.search_user_keys_by_email(user_id, search_query)
+
+
+def search_all_keys_by_email(search_query: str) -> list[dict]:
+    """Поиск всех ключей (администраторам) по key_email."""
+    return database.search_all_keys_by_email(search_query)

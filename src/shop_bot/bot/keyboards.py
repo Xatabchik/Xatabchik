@@ -1,8 +1,10 @@
 import logging
 import hashlib
 import json
+import random
 
 from datetime import datetime
+
 
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -184,9 +186,10 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💼 Франшиза", callback_data="admin_franchise")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
+    builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
-    builder.adjust(2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -672,6 +675,10 @@ def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 
     if nav_buttons:
         builder.row(*nav_buttons)
 
+    # Кнопка поиска (показываем, если ключей > 10)
+    if len(keys) > 10:
+        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data=f"admin_search_user_keys_{user_id}"))
+
     # Кнопка возврата
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_view_user_{user_id}"))
     
@@ -1143,11 +1150,106 @@ def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboard
     if nav_buttons:
         builder.row(*nav_buttons)
 
+    # Кнопка поиска (показываем, если ключей > 10)
+    if len(keys) > 10:
+        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data="search_my_keys"))
+
     # Кнопки меню
     builder.row(
         InlineKeyboardButton(text=(get_setting("btn_buy_key_text") or "🛒 Купить ключ"), callback_data="buy_new_key"),
         InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     )
+    
+    return builder.as_markup()
+
+def create_search_keys_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для отмены поиска ключей пользователя."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel_search_keys")
+    return builder.as_markup()
+
+def create_search_keys_results_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура с результатами поиска ключей."""
+    builder = InlineKeyboardBuilder()
+    items_per_page = 5
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for i, key in enumerate(current_keys):
+            num = start_idx + i + 1
+            expiry_date = datetime.fromisoformat(key['expiry_date'])
+            status_icon = "✅" if expiry_date > datetime.now() else "❌"
+            host_name = key.get('host_name', 'Неизвестный хост')
+            button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
+
+    builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"search_keys_page_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"search_keys_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_search_keys"))
+    
+    return builder.as_markup()
+
+def create_admin_search_keys_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для отмены поиска ключей администратором."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="admin_cancel_search_keys")
+    return builder.as_markup()
+
+def create_admin_search_keys_results_keyboard(keys: list, page: int = 0, user_id: int | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура с результатами поиска ключей (для админа)."""
+    builder = InlineKeyboardBuilder()
+    items_per_page = 5
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for i, key in enumerate(current_keys):
+            num = start_idx + i + 1
+            key_id = key.get('key_id')
+            email = (key.get('key_email') or '—')
+            host_name = key.get('host_name', 'Неизвестный хост')
+            
+            try:
+                expiry_date = datetime.fromisoformat(key['expiry_date'])
+                expiry_str = expiry_date.strftime('%d.%m.%Y')
+            except Exception:
+                expiry_str = '—'
+            
+            button_text = f"#{key_id} • {email[:20]} • {host_name}"
+            builder.button(text=button_text, callback_data=f"admin_edit_key_{key_id}")
+
+    builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_search_keys_page_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"admin_search_keys_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка отмены (если это поиск в списке конкретного пользователя, возвращаем к нему)
+    if user_id is not None:
+        builder.row(InlineKeyboardButton(text="⬅️ К пользователю", callback_data=f"admin_view_user_{user_id}"))
+    else:
+        builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel_search_keys"))
     
     return builder.as_markup()
 
@@ -1340,6 +1442,10 @@ def create_admin_keys_for_host_keyboard(
     if have_next:
         builder.button(text="Вперёд ➡️", callback_data=f"admin_hostkeys_page_{page+1}")
 
+    # Кнопка поиска (показываем, если ключей > 10)
+    if total > 10:
+        builder.button(text="🔍 Найти ключ", callback_data="admin_search_all_keys")
+
     builder.button(text="⬅️ К выбору хоста", callback_data="admin_hostkeys_back_to_hosts")
     builder.button(text="⬅️ В админ-меню", callback_data="admin_menu")
 
@@ -1347,6 +1453,8 @@ def create_admin_keys_for_host_keyboard(
     tail = []
     if have_prev or have_next:
         tail.append(2 if (have_prev and have_next) else 1)
+    if total > 10:
+        tail.append(1)
     tail.append(2)
     builder.adjust(*(rows + tail if rows else tail))
     return builder.as_markup()
@@ -1708,4 +1816,33 @@ def create_broadcast_actions_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="⬅️ Назад (ссылка)", callback_data="broadcast_btn_type_url")
     builder.button(text="❌ Отмена", callback_data="cancel_broadcast")
     builder.adjust(2)
+    return builder.as_markup()
+
+# =============================
+# Captcha keyboards
+# =============================
+
+def create_math_captcha_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для математической капчи с текстовым полем."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    return builder.as_markup()
+
+
+def create_button_captcha_keyboard(emoji_options: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для капчи с выбором кнопки (смайлик или текст).
+    
+    Args:
+        emoji_options: список опций для выбора (если None, используются случайные)
+    """
+    if not emoji_options:
+        # Стандартные опции
+        all_emojis = ["😊", "👍", "🔥", "❤️", "⭐", "✅", "🐱", "🤖", "😂", "🎉", "💪", "🚀"]
+        emoji_options = random.sample(all_emojis, min(4, len(all_emojis)))
+    
+    builder = InlineKeyboardBuilder()
+    for emoji in emoji_options:
+        builder.button(text=emoji, callback_data=f"captcha_answer:{emoji}")
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    builder.adjust(4)
     return builder.as_markup()

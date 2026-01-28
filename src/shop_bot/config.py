@@ -1,4 +1,5 @@
 from html import escape as html_escape
+from datetime import datetime
 
 CHOOSE_PLAN_MESSAGE = "Выберите подходящий тариф:"
 CHOOSE_PAYMENT_METHOD_MESSAGE = "Выберите удобный способ оплаты:"
@@ -20,16 +21,37 @@ def get_vpn_active_text(days_left, hours_left):
     )
 
 def get_key_info_text(
-    key_number,
-    expiry_date,
-    created_date,
-    connection_string,
+    key,
+    key_number: int = 0,
     *,
     devices_connected: int | None = None,
     plan_group: str | None = None,
     plan_name: str | None = None,
     device_limit: int | None = None,
 ):
+    # Получаем все данные из объекта ключа через .get()
+    expiry_date_str = key.get('expiry_date')
+    created_date_str = key.get('created_date')
+    connection_string = key.get('connection_string') or key.get('subscription_url') or ""
+    key_email = key.get('key_email') or "—"
+    
+    # Парсим даты если они строки
+    try:
+        if isinstance(expiry_date_str, str):
+            expiry_date = datetime.fromisoformat(expiry_date_str)
+        else:
+            expiry_date = expiry_date_str
+    except Exception:
+        expiry_date = datetime.now()
+    
+    try:
+        if isinstance(created_date_str, str):
+            created_date = datetime.fromisoformat(created_date_str)
+        else:
+            created_date = created_date_str
+    except Exception:
+        created_date = datetime.now()
+    
     expiry_formatted = expiry_date.strftime('%d.%m.%Y в %H:%M')
     created_formatted = created_date.strftime('%d.%m.%Y в %H:%M')
 
@@ -39,8 +61,9 @@ def get_key_info_text(
     limit = device_limit if device_limit is not None else "—"
 
     return (
-        f"<b>🔑 Ваша ключ: #{key_number}</b>\n\n"
-        f"<blockquote><b>➕ Приобретён:</b> {created_formatted}\n"
+        f"<b>🔑 Ваш ключ: #{key_number}</b>\n\n"
+        f"<blockquote><b>📧 Email:</b> {key_email}\n"
+        f"<b>➕ Приобретён:</b> {created_formatted}\n"
         f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n"
         f"<code>{html_escape(connection_string)}</code>\n\n"
         f"📱 <b>Вы подключили:</b> {dc}\n\n"
