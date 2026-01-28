@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}Статистика{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-print-none mb-4">
+  <div class="row align-items-center">
+    <div class="col">
+      <h1 class="page-title mb-1">Статистика</h1>
+      <div class="text-secondary">Общая информация и аналитика системы</div>
+    </div>
+  </div>
+</div>
+
+<div class="stats-cards">
+  <div class="stats-card">
+    <div class="stats-card-title">
+      <i class="ti ti-users me-2"></i>
+      КЛИЕНТЫ
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Всего:</span><span class="stats-val">{{ metrics.clients_total }}</span></div>
+      <div class="stats-row"><span>Активных:</span><span class="stats-val">{{ metrics.clients_active }}</span></div>
+      <div class="stats-row"><span>Без подписки:</span><span class="stats-val">{{ metrics.clients_no_sub }}</span></div>
+      <div class="stats-row"><span>Новые сегодня:</span><span class="stats-val">{{ metrics.clients_today_new }}</span></div>
+    </div>
+  </div>
+
+  <div class="stats-card">
+    <div class="stats-card-title">
+      <i class="ti ti-currency-ruble me-2"></i>
+      ОПЛАТЫ
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Всего:</span><span class="stats-val">{{ metrics.payments_total }}</span></div>
+      <div class="stats-row"><span>Общее:</span><span class="stats-val">{{ "%.2f"|format(metrics.payments_sum) }}</span></div>
+      <div class="stats-row"><span>За сегодня:</span><span class="stats-val">{{ metrics.payments_today }}</span></div>
+      <div class="stats-row"><span>Сумма:</span><span class="stats-val">{{ "%.2f"|format(metrics.payments_today_sum) }}</span></div>
+    </div>
+  </div>
+
+  <div class="stats-card">
+    <div class="stats-card-title">
+      <i class="ti ti-users-group me-2"></i>
+      РЕФЕРАЛЫ
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Всего:</span><span class="stats-val">{{ metrics.referrals_total }}</span></div>
+      <div class="stats-row"><span>За сегодня:</span><span class="stats-val">{{ metrics.referrals_today }}</span></div>
+    </div>
+  </div>
+
+  <div class="stats-card">
+    <div class="stats-card-title">
+      <i class="ti ti-server me-2"></i>
+      СЕРВЕРЫ
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Всего:</span><span class="stats-val">{{ metrics.servers_total }}</span></div>
+      <div class="stats-row"><span>Доступно:</span><span class="stats-val">{{ metrics.servers_active }}</span></div>
+      <div class="stats-row"><span>Отключено:</span><span class="stats-val">{{ metrics.servers_disabled }}</span></div>
+    </div>
+  </div>
+
+  <div class="stats-card">
+    <div class="stats-card-title">
+      <i class="ti ti-gift me-2"></i>
+      ПОДАРКИ
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Всего:</span><span class="stats-val">{{ metrics.gifts_total }}</span></div>
+      <div class="stats-row"><span>Использовано:</span><span class="stats-val">{{ metrics.gifts_used }}</span></div>
+      <div class="stats-row"><span>Активаций:</span><span class="stats-val">{{ metrics.gifts_activations }}</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="charts-grid">
+  <div class="chart-card">
+    <div class="chart-card-title">
+      <i class="ti ti-user-plus me-2"></i>
+      ПРИРОСТ КЛИЕНТОВ ЗА МЕСЯЦ
+    </div>
+    <div class="chart-wrap"><canvas id="chartUsers"></canvas></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-card-title">
+      <i class="ti ti-key me-2"></i>
+      ПРИРОСТ ПОДПИСОК ЗА МЕСЯЦ
+    </div>
+    <div class="chart-wrap"><canvas id="chartKeys"></canvas></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-card-title">
+      <i class="ti ti-currency-ruble me-2"></i>
+      ОПЛАТЫ ЗА НЕДЕЛЮ
+    </div>
+    <div class="chart-wrap"><canvas id="chartPayments"></canvas></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-card-title">
+      <i class="ti ti-users-group me-2"></i>
+      РЕФЕРАЛЫ ЗА МЕСЯЦ
+    </div>
+    <div class="chart-wrap"><canvas id="chartReferrals"></canvas></div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-card-title">
+      <i class="ti ti-chart-pie me-2"></i>
+      ПОПУЛЯРНОСТЬ ТАРИФОВ
+    </div>
+    <div class="chart-wrap"><canvas id="chartPlans"></canvas></div>
+  </div>
+</div>
+
+<script id="statistics-chart-data" type="application/json">{{ chart_data | tojson }}</script>
+<script>
+  (function(){
+    const raw = document.getElementById('statistics-chart-data');
+    if (!raw) return;
+    let data = {};
+    try { data = JSON.parse(raw.textContent || '{}'); } catch(e){ data = {}; }
+
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#ff8a00';
+    const muted = 'rgba(255,255,255,.55)';
+    const grid = 'rgba(255,255,255,.08)';
+
+    function baseOpts(){
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { mode: 'index', intersect: false }
+        },
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { ticks: { color: muted }, grid: { color: 'transparent' } },
+          y: { ticks: { color: muted }, grid: { color: grid } }
+        }
+      };
+    }
+
+    function line(ctx, labels, values, color){
+      return new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: color,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.35
+          }]
+        },
+        options: baseOpts()
+      });
+    }
+
+    function bar(ctx, labels, values, color){
+      const opts = baseOpts();
+      opts.scales.x.grid.color = 'transparent';
+      return new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{ data: values, backgroundColor: color, borderRadius: 8 }]
+        },
+        options: opts
+      });
+    }
+
+    // Users / Keys (30 days)
+    const users = data.users || {};
+    const keys = data.keys || {};
+    const labels30 = data.labels30 || [];
+    const usersSeries = labels30.map(d => Number(users[d] || 0));
+    const keysSeries  = labels30.map(d => Number(keys[d] || 0));
+
+    const elUsers = document.getElementById('chartUsers');
+    const elKeys = document.getElementById('chartKeys');
+    if (elUsers) line(elUsers.getContext('2d'), labels30, usersSeries, accent);
+    if (elKeys)  line(elKeys.getContext('2d'), labels30, keysSeries, 'rgba(0, 255, 180, .9)');
+
+    // Payments (7 days)
+    const labels7 = data.labels7 || [];
+    const payMap = data.payments || {};
+    const paySeries = labels7.map(d => Number(payMap[d] || 0));
+    const elPay = document.getElementById('chartPayments');
+    if (elPay) bar(elPay.getContext('2d'), labels7, paySeries, 'rgba(255, 138, 0, .6)');
+
+    // Referrals (30 days)
+    const refMap = data.referrals || {};
+    const refSeries = labels30.map(d => Number(refMap[d] || 0));
+    const elRef = document.getElementById('chartReferrals');
+    if (elRef) line(elRef.getContext('2d'), labels30, refSeries, 'rgba(0, 170, 255, .9)');
+
+    // Plans popularity
+    const plans = data.plans || { labels: [], values: [] };
+    const elPlans = document.getElementById('chartPlans');
+    if (elPlans) bar(elPlans.getContext('2d'), plans.labels || [], plans.values || [], 'rgba(116, 192, 252, .65)');
+  })();
+</script>
+
+{% endblock %}
