@@ -1,8 +1,10 @@
 import logging
 import hashlib
 import json
+import random
 
 from datetime import datetime
+
 
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -184,9 +186,10 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💼 Франшиза", callback_data="admin_franchise")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
+    builder.button(text="� Капча", callback_data="admin_captcha_settings")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
-    builder.adjust(2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -1813,4 +1816,33 @@ def create_broadcast_actions_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="⬅️ Назад (ссылка)", callback_data="broadcast_btn_type_url")
     builder.button(text="❌ Отмена", callback_data="cancel_broadcast")
     builder.adjust(2)
+    return builder.as_markup()
+
+# =============================
+# Captcha keyboards
+# =============================
+
+def create_math_captcha_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для математической капчи с текстовым полем."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    return builder.as_markup()
+
+
+def create_button_captcha_keyboard(emoji_options: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для капчи с выбором кнопки (смайлик или текст).
+    
+    Args:
+        emoji_options: список опций для выбора (если None, используются случайные)
+    """
+    if not emoji_options:
+        # Стандартные опции
+        all_emojis = ["😊", "👍", "🔥", "❤️", "⭐", "✅", "🐱", "🤖", "😂", "🎉", "💪", "🚀"]
+        emoji_options = random.sample(all_emojis, min(4, len(all_emojis)))
+    
+    builder = InlineKeyboardBuilder()
+    for emoji in emoji_options:
+        builder.button(text=emoji, callback_data=f"captcha_answer:{emoji}")
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    builder.adjust(4)
     return builder.as_markup()

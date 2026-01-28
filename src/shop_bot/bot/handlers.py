@@ -82,6 +82,13 @@ from shop_bot.config import (
 )
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.data_manager import database
+from shop_bot.data_manager.captcha_utils import (
+    create_captcha_challenge,
+    check_captcha_answer,
+    get_active_captcha_challenge,
+    has_passed_captcha,
+    mark_user_passed_captcha,
+)
 from shop_bot.factory_bot.runtime import get_service
 from shop_bot.modules import remnawave_api
 from shop_bot.data_manager.database import get_latest_pending_for_user, get_user_by_username
@@ -786,6 +793,9 @@ class KeyPurchase(StatesGroup):
     waiting_for_host_selection = State()
     waiting_for_plan_selection = State()
 
+class Captcha(StatesGroup):
+    waiting_for_answer = State()
+
 class Onboarding(StatesGroup):
     waiting_for_subscription_and_agreement = State()
 
@@ -822,6 +832,48 @@ class FranchiseStates(StatesGroup):
 def is_valid_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
     return re.match(pattern, email) is not None
+
+async def show_captcha(message: types.Message, state: FSMContext, user_id: int):
+    """Показывает капчу пользователю."""
+    captcha_type = get_setting("captcha_type") or "math"
+    captcha_message = get_setting("captcha_message") or "👤 Привет! Ты выглядишь как бот. Пройди простую капчу чтобы подтвердить что ты человек.\n\n"
+    timeout_minutes = int(get_setting("captcha_timeout_minutes") or "15")
+    
+    # Создаём капча-вызов
+    challenge = create_captcha_challenge(user_id, captcha_type, timeout_minutes)
+    
+    if not challenge:
+        await message.answer("❌ Ошибка при создании капчи. Попробуйте позже.")
+        return
+    
+    challenge_id = challenge.get("id")
+    question = challenge.get("question")
+    
+    await state.set_state(Captcha.waiting_for_answer)
+    await state.update_data(captcha_challenge_id=challenge_id, captcha_type=captcha_type)
+    
+    if captcha_type == "button":
+        # Капча с выбором смайлика - извлекаем правильный ответ из вопроса
+        correct_answer = challenge.get("correct_answer")
+        # Создаём клавиатуру с вариантами
+        all_emojis = ["😊", "👍", "🔥", "❤️", "⭐", "✅", "🐱", "🤖", "😂", "🎉", "💪", "🚀"]
+        import random
+        options = random.sample(all_emojis, 4)
+        if correct_answer not in options:
+            options[random.randint(0, 3)] = correct_answer
+        random.shuffle(options)
+        
+        await message.answer(
+            captcha_message + question,
+            reply_markup=keyboards.create_button_captcha_keyboard(options)
+        )
+    else:
+        # Математическая капча
+        await message.answer(
+            captcha_message + question + "\n\n💬 Введите ответ цифрой:",
+            reply_markup=keyboards.create_math_captcha_keyboard()
+        )
+
 
 async def show_main_menu(message: types.Message, edit_message: bool = False):
     user_id = message.chat.id
@@ -985,6 +1037,21 @@ def get_user_router() -> Router:
         username = message.from_user.username or message.from_user.full_name
         referrer_id = None
 
+        # Проверяем, нужна ли капча
+        captcha_enabled = get_setting("captcha_enabled") == "true"
+        user_exists = get_user(user_id) is not None
+        
+        # Капча нужна только новым пользователям при первой регистрации
+        if captcha_enabled and not user_exists:
+            # Сначала регистрируем пользователя (без согласия с условиями)
+            register_user_if_not_exists(user_id, username, None)
+            
+            # Если капча уже пройдена - пропускаем
+            if not has_passed_captcha(user_id):
+                # Показываем капчу
+                await show_captcha(message, state, user_id)
+                return
+
         if command.args and command.args.startswith('ref_'):
             try:
                 potential_referrer_id = int(command.args.split('_')[1])
@@ -1124,6 +1191,166 @@ def get_user_router() -> Router:
     @user_router.message(Onboarding.waiting_for_subscription_and_agreement)
     async def onboarding_fallback_handler(message: types.Message):
         await message.answer("Пожалуйста, выполните требуемые действия и нажмите на кнопку в сообщении выше.")
+
+    # =============================
+    # Captcha handlers
+    # =============================
+    
+    @user_router.message(Captcha.waiting_for_answer)
+    async def captcha_answer_handler(message: types.Message, state: FSMContext):
+        """Обработчик текстового ответа на математическую капчу."""
+        user_id = message.from_user.id
+        
+        try:
+            data = await state.get_data()
+            challenge_id = data.get("captcha_challenge_id")
+            captcha_type = data.get("captcha_type", "math")
+            
+            if not challenge_id:
+                await message.answer("❌ Сессия капчи истекла. Напишите /start для новой попытки.")
+                await state.clear()
+                return
+            
+            user_answer = message.text
+            success, msg = check_captcha_answer(challenge_id, user_answer)
+            
+            if success:
+                # Капча пройдена
+                mark_user_passed_captcha(user_id, challenge_id)
+                await message.answer(msg)
+                
+                # Продолжаем onboarding
+                await state.clear()
+                
+                # Выполняем логику регистрации с согласием
+                terms_url = get_setting("terms_url")
+                privacy_url = get_setting("privacy_url")
+                channel_url = get_setting("channel_url")
+                
+                if not channel_url and (not terms_url or not privacy_url):
+                    set_terms_agreed(user_id)
+                    # Переходим прямо в главное меню
+                    await show_main_menu(message)
+                else:
+                    # Показываем экран приветствия с согласием
+                    is_subscription_forced = get_setting("force_subscription") == "true"
+                    show_welcome_screen = (is_subscription_forced and channel_url) or (terms_url and privacy_url)
+                    
+                    if not show_welcome_screen:
+                        set_terms_agreed(user_id)
+                        await show_main_menu(message)
+                    else:
+                        welcome_parts = ["<b>Добро пожаловать!</b>\n"]
+                        if is_subscription_forced and channel_url:
+                            welcome_parts.append(f"🔗 <a href='{channel_url}'>Подпишись на канал</a>\n")
+                        if terms_url and privacy_url:
+                            welcome_parts.append(f"📋 Прочитай <a href='{terms_url}'>Условия</a> и <a href='{privacy_url}'>Политику</a>\n")
+                        welcome_parts.append("\nПосле этого нажмите кнопку ниже.")
+                        final_text = "\n".join(welcome_parts)
+                        await message.answer(
+                            final_text,
+                            reply_markup=keyboards.create_welcome_keyboard(
+                                channel_url=channel_url,
+                                is_subscription_forced=is_subscription_forced
+                            ),
+                            disable_web_page_preview=True
+                        )
+                        await state.set_state(Onboarding.waiting_for_subscription_and_agreement)
+            else:
+                # Неправильный ответ
+                await message.answer(msg)
+        
+        except Exception as e:
+            logger.error(f"Error in captcha_answer_handler: {e}", exc_info=True)
+            await message.answer("❌ Ошибка при проверке ответа. Попробуйте снова.")
+    
+    @user_router.callback_query(Captcha.waiting_for_answer, F.data.startswith("captcha_answer:"))
+    async def captcha_button_answer_handler(callback: types.CallbackQuery, state: FSMContext):
+        """Обработчик ответа на капчу с выбором кнопки."""
+        user_id = callback.from_user.id
+        user_answer = callback.data.split(":", 1)[1]
+        
+        try:
+            data = await state.get_data()
+            challenge_id = data.get("captcha_challenge_id")
+            
+            if not challenge_id:
+                await callback.answer("❌ Сессия капчи истекла. Напишите /start для новой попытки.", show_alert=True)
+                await state.clear()
+                return
+            
+            success, msg = check_captcha_answer(challenge_id, user_answer)
+            
+            if success:
+                # Капча пройдена
+                mark_user_passed_captcha(user_id, challenge_id)
+                await callback.answer(msg, show_alert=True)
+                
+                # Продолжаем onboarding
+                await state.clear()
+                
+                # Выполняем логику регистрации с согласием
+                terms_url = get_setting("terms_url")
+                privacy_url = get_setting("privacy_url")
+                channel_url = get_setting("channel_url")
+                
+                if not channel_url and (not terms_url or not privacy_url):
+                    set_terms_agreed(user_id)
+                    # Редактируем или отправляем главное меню
+                    try:
+                        await show_main_menu(callback.message, edit_message=True)
+                    except Exception:
+                        await show_main_menu(callback.message, edit_message=False)
+                else:
+                    # Показываем экран приветствия с согласием
+                    is_subscription_forced = get_setting("force_subscription") == "true"
+                    show_welcome_screen = (is_subscription_forced and channel_url) or (terms_url and privacy_url)
+                    
+                    if not show_welcome_screen:
+                        set_terms_agreed(user_id)
+                        try:
+                            await show_main_menu(callback.message, edit_message=True)
+                        except Exception:
+                            await show_main_menu(callback.message, edit_message=False)
+                    else:
+                        welcome_parts = ["<b>Добро пожаловать!</b>\n"]
+                        if is_subscription_forced and channel_url:
+                            welcome_parts.append(f"🔗 <a href='{channel_url}'>Подпишись на канал</a>\n")
+                        if terms_url and privacy_url:
+                            welcome_parts.append(f"📋 Прочитай <a href='{terms_url}'>Условия</a> и <a href='{privacy_url}'>Политику</a>\n")
+                        welcome_parts.append("\nПосле этого нажмите кнопку ниже.")
+                        final_text = "\n".join(welcome_parts)
+                        try:
+                            await callback.message.edit_text(
+                                final_text,
+                                reply_markup=keyboards.create_welcome_keyboard(
+                                    channel_url=channel_url,
+                                    is_subscription_forced=is_subscription_forced
+                                )
+                            )
+                        except Exception:
+                            await callback.message.answer(
+                                final_text,
+                                reply_markup=keyboards.create_welcome_keyboard(
+                                    channel_url=channel_url,
+                                    is_subscription_forced=is_subscription_forced
+                                )
+                            )
+                        await state.set_state(Onboarding.waiting_for_subscription_and_agreement)
+            else:
+                # Неправильный ответ
+                await callback.answer(msg, show_alert=True)
+        
+        except Exception as e:
+            logger.error(f"Error in captcha_button_answer_handler: {e}", exc_info=True)
+            await callback.answer("❌ Ошибка при проверке ответа. Попробуйте снова.", show_alert=True)
+    
+    @user_router.callback_query(Captcha.waiting_for_answer, F.data == "cancel_captcha")
+    async def cancel_captcha_handler(callback: types.CallbackQuery, state: FSMContext):
+        """Отмена капчи."""
+        await callback.answer("❌ Капча отменена. Напишите /start для новой попытки.")
+        await state.clear()
+        await callback.message.delete()
 
     @user_router.message(F.text == "🏠 Главное меню")
     @registration_required

@@ -425,6 +425,32 @@ def initialize_db():
             except Exception:
                 pass
 
+            # === Captcha system ===
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS captcha_challenges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    challenge_type TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    correct_answer TEXT NOT NULL,
+                    attempts INTEGER DEFAULT 0,
+                    max_attempts INTEGER DEFAULT 3,
+                    passed INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expired_at TIMESTAMP
+                )
+            ''')
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_captcha_challenges_user_time ON captcha_challenges(user_id, created_at DESC)")
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_captcha_status (
+                    user_id INTEGER PRIMARY KEY,
+                    passed_at TIMESTAMP,
+                    challenge_id INTEGER,
+                    FOREIGN KEY (challenge_id) REFERENCES captcha_challenges (id)
+                )
+            ''')
+
             default_settings = {
     "enable_referral_days_bonus": "true",
                 "panel_login": "admin",
@@ -504,6 +530,13 @@ def initialize_db():
 
                 # Payment flow
                 "payment_email_prompt_enabled": "false",
+
+                # Captcha settings
+                "captcha_enabled": "true",
+                "captcha_type": "math",  # math, button
+                "captcha_max_attempts": "3",
+                "captcha_timeout_minutes": "15",
+                "captcha_message": "👤 Привет! Ты выглядишь как бот. Пройди простую капчу чтобы подтвердить что ты человек.\n\n",
 
                 "btn_trial_text": None,
                 "btn_profile_text": None,
