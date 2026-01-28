@@ -7640,3 +7640,4 @@ def get_admin_router() -> Router:
         await message.answer("✅ Сообщение капчи обновлено")
         await state.clear()
 
+    return admin_router
