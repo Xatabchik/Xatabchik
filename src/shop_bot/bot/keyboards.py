@@ -2,8 +2,10 @@ import logging
 import hashlib
 import json
 import random
+import random
 
 from datetime import datetime
+
 
 
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -76,6 +78,7 @@ def create_main_menu_keyboard(
     # Franchise: partner cabinet button (shown only in managed clones for the owner)
     if show_partner_cabinet:
         builder.button(text="� Личный кабинет", callback_data="partner_cabinet")
+        builder.button(text="� Личный кабинет", callback_data="partner_cabinet")
     
     builder.button(text=(get_setting("btn_profile_text") or "👤 Мой профиль"), callback_data="show_profile")
 
@@ -101,6 +104,10 @@ def create_main_menu_keyboard(
 
     # Franchise: create clone bot
     if show_create_bot:
+        # Ленивый импорт для избежания циклической зависимости
+        from shop_bot.webhook_server.app import franchise_settings
+        if franchise_settings():
+            builder.button(text="💼 Создать клон", callback_data="factory_create_bot")
         # Ленивый импорт для избежания циклической зависимости
         from shop_bot.webhook_server.app import franchise_settings
         if franchise_settings():
@@ -184,11 +191,14 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💳 Платежки", callback_data="admin_payments_menu")
     builder.button(text="👥 Рефералка", callback_data="admin_referral")
     builder.button(text="💼 Франшиза", callback_data="admin_franchise")
+    builder.button(text="💼 Франшиза", callback_data="admin_franchise")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
     builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
+    builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
+    builder.adjust(2, 2, 2, 2, 2, 1)
     builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
@@ -301,6 +311,25 @@ def create_admin_referral_settings_keyboard(
     builder.button(text="⬅️ Назад", callback_data="admin_settings_menu")
 
     builder.adjust(2, 1, 2, 2, 1, 1)
+    return builder.as_markup()
+
+
+def create_admin_franchise_settings_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    """Создаёт клавиатуру настроек франшизы"""
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопка переключения статуса
+    status_text = "🟢 Выключить франшизу" if enabled else "🔴 Включить франшизу"
+    builder.button(text=status_text, callback_data="admin_franchise_toggle")
+    
+    # Кнопки для настроек
+    builder.button(text="💰 Установить % комиссии", callback_data="admin_franchise_set_percent")
+    builder.button(text="💳 Установить минимум вывода", callback_data="admin_franchise_set_min_withdraw")
+    
+    # Кнопка "Назад"
+    builder.button(text="⬅️ Назад в админку", callback_data="admin_settings_menu")
+    
+    builder.adjust(1, 2, 1)
     return builder.as_markup()
 
 
@@ -644,7 +673,16 @@ def create_admin_user_actions_keyboard(user_id: int, is_banned: bool | None = No
     return builder.as_markup()
 
 def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
+def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    items_per_page = 8  # В админке можно чуть больше, кнопки короче
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for k in current_keys:
     items_per_page = 8  # В админке можно чуть больше, кнопки короче
     
     start_idx = page * items_per_page
@@ -657,12 +695,33 @@ def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 
             host = k.get('host_name') or '—'
             email = k.get('key_email') or '—'
             # Ваш оригинальный формат заголовка
+            # Ваш оригинальный формат заголовка
             title = f"#{kid} • {host} • {email[:20]}"
             builder.button(text=title, callback_data=f"admin_edit_key_{kid}")
     else:
         builder.button(text="Ключей нет", callback_data="noop")
 
+
     builder.adjust(1)
+
+    # Кнопки навигации (только если страниц больше одной)
+    nav_buttons = []
+    if page > 0:
+        # Используем префикс admin_user_keys_ для совместимости с хендлером ниже
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Пред.", callback_data=f"admin_user_keys_{user_id}_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="След. ➡️", callback_data=f"admin_user_keys_{user_id}_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка поиска (показываем, если ключей > 10)
+    if len(keys) > 10:
+        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data=f"admin_search_user_keys_{user_id}"))
+
+    # Кнопка возврата
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_view_user_{user_id}"))
+    
 
     # Кнопки навигации (только если страниц больше одной)
     nav_buttons = []
@@ -1119,7 +1178,18 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
     return builder.as_markup()
 
 def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
+def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    items_per_page = 5  # Оставляем по 5, так как текст кнопок очень длинный
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for i, key in enumerate(current_keys):
+            # Рассчитываем номер для отображения (чтобы на 2 стр. было Ключ #6 и т.д.)
+            num = start_idx + i + 1
     items_per_page = 5  # Оставляем по 5, так как текст кнопок очень длинный
     
     start_idx = page * items_per_page
@@ -1136,9 +1206,34 @@ def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboard
             
             # Твой оригинальный текст
             button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            
+            # Твой оригинальный текст
+            button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
             builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
 
+
     builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"keys_page_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"keys_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка поиска (показываем, если ключей > 10)
+    if len(keys) > 10:
+        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data="search_my_keys"))
+
+    # Кнопки меню
+    builder.row(
+        InlineKeyboardButton(text=(get_setting("btn_buy_key_text") or "🛒 Купить ключ"), callback_data="buy_new_key"),
+        InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
+    )
+    
 
     # Кнопки пагинации
     nav_buttons = []
@@ -1369,6 +1464,26 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
             
             builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
     
+    
+    # Добавляем кнопки для удаления подключённых устройств
+    if devices_list:
+        for device in devices_list:
+            hwid = device.get('hwid', '')
+            device_model = device.get('deviceModel') or "Устройство"
+            platform = device.get('platform')
+            
+            # Формируем название для кнопки
+            if platform and platform.strip():
+                device_name = f"{platform} ({device_model})"
+            else:
+                device_name = device_model
+            
+            button_text = f"❌ Удалить: {device_name}"
+            if len(button_text) > 64:  # Telegram limit
+                button_text = f"❌ Удалить {platform or 'устройство'}"
+            
+            builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
+    
     builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
     return builder.as_markup()
@@ -1397,6 +1512,10 @@ def create_back_to_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     return builder.as_markup()
 
+def create_profile_keyboard(
+    show_notification_toggle: bool = False,
+    notifications_enabled: bool = True
+) -> InlineKeyboardMarkup:
 def create_profile_keyboard(
     show_notification_toggle: bool = False,
     notifications_enabled: bool = True
@@ -1562,6 +1681,10 @@ def create_admin_keys_for_host_keyboard(
     if total > 10:
         builder.button(text="🔍 Найти ключ", callback_data="admin_search_all_keys")
 
+    # Кнопка поиска (показываем, если ключей > 10)
+    if total > 10:
+        builder.button(text="🔍 Найти ключ", callback_data="admin_search_all_keys")
+
     builder.button(text="⬅️ К выбору хоста", callback_data="admin_hostkeys_back_to_hosts")
     builder.button(text="⬅️ В админ-меню", callback_data="admin_menu")
 
@@ -1569,6 +1692,8 @@ def create_admin_keys_for_host_keyboard(
     tail = []
     if have_prev or have_next:
         tail.append(2 if (have_prev and have_next) else 1)
+    if total > 10:
+        tail.append(1)
     if total > 10:
         tail.append(1)
     tail.append(2)
@@ -1638,9 +1763,38 @@ def create_dynamic_keyboard(
                                 admin_rows.append(int(cfg.get("row_position", 0) or 0))
                             except Exception:
                                 pass
+                # Ленивый импорт для избежания циклической зависимости
+                from shop_bot.webhook_server.app import franchise_settings as franchise_enabled
+                
+                # Проверяем, включена ли франшиза
+                if franchise_enabled():
+                    # Place the "Create bot" button ABOVE the "Admin" button (if it exists in config).
+                    admin_rows: list[int] = []
+                    for cfg in button_configs:
+                        cb = cfg.get("callback_data")
+                        bid = cfg.get("button_id")
+                        if cb == "admin_menu" or bid == "admin":
+                            try:
+                                admin_rows.append(int(cfg.get("row_position", 0) or 0))
+                            except Exception:
+                                pass
 
                     target_row = (min(admin_rows) - 1) if admin_rows else (max_row + 1)
+                    target_row = (min(admin_rows) - 1) if admin_rows else (max_row + 1)
 
+                    button_configs = list(button_configs) + [
+                        {
+                            "button_id": "factory_create_bot",
+                            "text": "🤖 Создать бота",
+                            "callback_data": "factory_create_bot",
+                            "url": None,
+                            "row_position": target_row,
+                            "column_position": 0,
+                            "sort_order": 1000,
+                            "button_width": 1,
+                            "is_active": 1,
+                        }
+                    ]
                     button_configs = list(button_configs) + [
                         {
                             "button_id": "factory_create_bot",
@@ -1934,6 +2088,34 @@ def create_broadcast_actions_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(2)
     return builder.as_markup()
 
+# =============================
+# Captcha keyboards
+# =============================
+
+def create_math_captcha_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для математической капчи с текстовым полем."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    return builder.as_markup()
+
+
+def create_button_captcha_keyboard(emoji_options: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для капчи с выбором кнопки (смайлик или текст).
+    
+    Args:
+        emoji_options: список опций для выбора (если None, используются случайные)
+    """
+    if not emoji_options:
+        # Стандартные опции
+        all_emojis = ["😊", "👍", "🔥", "❤️", "⭐", "✅", "🐱", "🤖", "😂", "🎉", "💪", "🚀"]
+        emoji_options = random.sample(all_emojis, min(4, len(all_emojis)))
+    
+    builder = InlineKeyboardBuilder()
+    for emoji in emoji_options:
+        builder.button(text=emoji, callback_data=f"captcha_answer:{emoji}")
+    builder.button(text="❌ Отмена", callback_data="cancel_captcha")
+    builder.adjust(4)
+    return builder.as_markup()
 # =============================
 # Captcha keyboards
 # =============================
