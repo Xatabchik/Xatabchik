@@ -339,6 +339,61 @@ async def get_hwid_devices_for_user(user_uuid: str, *, host_name: str | None = N
         return None
 
 
+async def delete_hwid_device(user_uuid: str, hwid: str, *, host_name: str | None = None) -> bool:
+    """Удалить одно HWID-устройство пользователя через API.
+    
+    Args:
+        user_uuid: UUID пользователя в Remnawave
+        hwid: Hardware ID удаляемого устройства
+        host_name: Имя хоста (если нужна привязка к конкретному хосту)
+    
+    Returns:
+        True если успешно удалено, False в случае ошибки
+    """
+    if not user_uuid or not hwid:
+        return False
+    
+    try:
+        payload = {
+            "userUuid": str(user_uuid).strip(),
+            "hwid": str(hwid).strip(),
+        }
+        
+        if host_name:
+            response = await _request_for_host(
+                host_name,
+                "POST",
+                "/api/hwid/devices/delete",
+                json_payload=payload,
+                expected_status=(200, 204, 404),
+            )
+        else:
+            response = await _request(
+                "POST",
+                "/api/hwid/devices/delete",
+                json_payload=payload,
+                expected_status=(200, 204, 404),
+            )
+        
+        if response.status_code == 404:
+            logger.warning("Remnawave: устройство %s пользователя %s не найдено (возможно, уже удалено)", hwid, user_uuid)
+            return True
+        
+        if response.status_code in (200, 204):
+            logger.info("Remnawave: устройство %s пользователя %s успешно удалено", hwid, user_uuid)
+            return True
+        
+        logger.error("Remnawave: ошибка удаления устройства %s (HTTP %s)", hwid, response.status_code)
+        return False
+        
+    except RemnawaveAPIError as e:
+        logger.error("Remnawave: ошибка API при удалении устройства %s: %s", hwid, e)
+        return False
+    except Exception:
+        logger.exception("Remnawave: непредвиденная ошибка при удалении устройства %s", hwid)
+        return False
+
+
 async def ensure_user(
     *,
     host_name: str,

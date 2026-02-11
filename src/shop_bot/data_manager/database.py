@@ -617,6 +617,7 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "referral_balance_all": "REAL DEFAULT 0",
         "referral_start_bonus_received": "BOOLEAN DEFAULT 0",
         "referral_trial_day_bonus_received": "BOOLEAN DEFAULT 0",
+        "subscription_expiry_notifications_enabled": "BOOLEAN DEFAULT 1",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
@@ -2875,11 +2876,12 @@ def initialize_default_button_configs():
                 ("my_keys", "🔑 Мои ключи ({len(user_keys)})", "manage_keys", 1, 1, 2, 1),
                 ("buy_key", "🛒 Купить ключ", "buy_new_key", 2, 0, 3, 1),
                 ("topup", "💳 Пополнить баланс", "top_up_start", 2, 1, 4, 1),
-                ("referral", "🤝 Реферальная программа", "show_referral_program", 3, 0, 5, 2),
-                ("support", "🆘 Поддержка", "show_help", 4, 0, 6, 1),
-                ("about", "ℹ️ О проекте", "show_about", 4, 1, 7, 1),
-                ("speed", "⚡ Скорость", "user_speedtest_last", 5, 0, 8, 1),
-                ("howto", "❓ Как использовать", "howto_vless", 5, 1, 9, 1),
+                ("gift_new_key", "🎁 Подарить", "gift_new_key", 3, 0, 5, 2),
+                ("referral", "🤝 Реферальная программа", "show_referral_program", 3, 1, 6, 2),
+                ("support", "🆘 Поддержка", "show_help", 4, 0, 7, 1),
+                ("about", "ℹ️ О проекте", "show_about", 4, 1, 8, 1),
+                ("speed", "⚡ Скорость", "user_speedtest_last", 5, 0, 9, 1),
+                ("howto", "❓ Как использовать", "howto_vless", 5, 1, 10, 1),
                 ("admin", "⚙️ Админка", "admin_menu", 6, 0, 10, 2),
             ]
             
@@ -3339,6 +3341,49 @@ def set_terms_agreed(telegram_id: int):
             logging.info(f"Пользователь {telegram_id} согласился с условиями.")
     except sqlite3.Error as e:
         logging.error(f"Failed to set terms agreed for user {telegram_id}: {e}")
+
+def is_subscription_expiry_notifications_enabled(telegram_id: int) -> bool:
+    """Проверить, включены ли уведомления об истечении срока ключа."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT subscription_expiry_notifications_enabled FROM users WHERE telegram_id = ?",
+                (telegram_id,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return True  # По умолчанию включены
+            return bool(row[0])
+    except sqlite3.Error as e:
+        logging.error(f"Failed to check notification status for user {telegram_id}: {e}")
+        return True  # По умолчанию включены при ошибке
+
+def toggle_subscription_expiry_notifications(telegram_id: int) -> bool:
+    """Переключить статус уведомлений об истечении срока. Возвращает новое состояние."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            # Получаем текущее состояние
+            cursor.execute(
+                "SELECT subscription_expiry_notifications_enabled FROM users WHERE telegram_id = ?",
+                (telegram_id,)
+            )
+            row = cursor.fetchone()
+            current_state = row[0] if row else 1
+            new_state = 1 - current_state  # Переключаем
+            
+            # Обновляем
+            cursor.execute(
+                "UPDATE users SET subscription_expiry_notifications_enabled = ? WHERE telegram_id = ?",
+                (new_state, telegram_id)
+            )
+            conn.commit()
+            logging.info(f"Пользователь {telegram_id}: уведомления об истечении ключей {'включены' if new_state else 'отключены'}")
+            return bool(new_state)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to toggle notification status for user {telegram_id}: {e}")
+        return True
 
 def update_user_stats(telegram_id: int, amount_spent: float, months_purchased: int):
     try:

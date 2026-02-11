@@ -1253,7 +1253,7 @@ def create_admin_search_keys_results_keyboard(keys: list, page: int = 0, user_id
     
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None) -> InlineKeyboardMarkup:
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
 
@@ -1265,6 +1265,26 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None) 
     if show_howto:
         builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data=f"howto_vless_{key_id}")
     builder.button(text="📱 Показать QR-код", callback_data=f"show_qr_{key_id}")
+    
+    # Добавляем кнопки для удаления подключённых устройств
+    if devices_list:
+        for device in devices_list:
+            hwid = device.get('hwid', '')
+            device_model = device.get('deviceModel') or "Устройство"
+            platform = device.get('platform')
+            
+            # Формируем название для кнопки
+            if platform and platform.strip():
+                device_name = f"{platform} ({device_model})"
+            else:
+                device_name = device_model
+            
+            button_text = f"❌ Удалить: {device_name}"
+            if len(button_text) > 64:  # Telegram limit
+                button_text = f"❌ Удалить {platform or 'устройство'}"
+            
+            builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
+    
     builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
     return builder.as_markup()
@@ -1293,10 +1313,19 @@ def create_back_to_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     return builder.as_markup()
 
-def create_profile_keyboard() -> InlineKeyboardMarkup:
+def create_profile_keyboard(
+    show_notification_toggle: bool = False,
+    notifications_enabled: bool = True
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
     builder.button(text=(get_setting("btn_referral_text") or "🤝 Реферальная программа"), callback_data="show_referral_program")
+    
+    # Кнопка для переключения уведомлений об истечении ключей
+    if show_notification_toggle:
+        button_text = "🔔 Отключить уведомления" if notifications_enabled else "🔕 Включить уведомления"
+        builder.button(text=button_text, callback_data="toggle_expiry_notifications")
+    
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()

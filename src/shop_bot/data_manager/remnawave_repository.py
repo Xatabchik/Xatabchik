@@ -382,6 +382,8 @@ _LEGACY_FORWARDERS = (
     "update_setting",
     "update_ticket_subject",
     "update_ticket_thread_info",
+    "is_subscription_expiry_notifications_enabled",
+    "toggle_subscription_expiry_notifications",
     "update_user_stats",
 
     "get_all_ssh_targets",

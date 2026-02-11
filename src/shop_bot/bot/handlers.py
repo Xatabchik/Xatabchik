@@ -1431,7 +1431,38 @@ def get_user_router() -> Router:
             f"\n🤝 <b>Рефералы:</b> {referral_count}"
             f"\n💰 <b>Заработано по рефералке (всего):</b> {total_ref_earned:.2f} RUB"
         )
-        await callback.message.edit_text(final_text, reply_markup=keyboards.create_profile_keyboard())
+        
+        # Показываем кнопку уведомлений только если ключей больше 10
+        show_notification_toggle = len(user_keys) > 10 if user_keys else False
+        notifications_enabled = True
+        if show_notification_toggle:
+            try:
+                notifications_enabled = rw_repo.is_subscription_expiry_notifications_enabled(user_id)
+            except Exception:
+                notifications_enabled = True
+        
+        await callback.message.edit_text(
+            final_text,
+            reply_markup=keyboards.create_profile_keyboard(
+                show_notification_toggle=show_notification_toggle,
+                notifications_enabled=notifications_enabled
+            )
+        )
+
+    @user_router.callback_query(F.data == "toggle_expiry_notifications")
+    @registration_required
+    async def toggle_expiry_notifications_handler(callback: types.CallbackQuery):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            new_state = rw_repo.toggle_subscription_expiry_notifications(user_id)
+            state_text = "✅ Уведомления включены" if new_state else "❌ Уведомления отключены"
+            await callback.answer(state_text, show_alert=True)
+            # Обновляем профиль пользователя
+            await profile_handler_callback(callback)
+        except Exception as e:
+            logger.error(f"Ошибка при переключении уведомлений для {user_id}: {e}")
+            await callback.answer("❌ Ошибка при переключении уведомлений", show_alert=True)
 
     @user_router.callback_query(F.data == "top_up_start")
     @registration_required
@@ -2981,6 +3012,56 @@ def get_user_router() -> Router:
         return _count_any(hwid_payload)
 
 
+    async def _get_devices_list(key_data: dict, user_payload: dict | None) -> list[dict]:
+        """Получить полный список подключённых HWID-устройств с информацией о каждом.
+        
+        Возвращает список словарей вида:
+        {
+            'hwid': 'device_id',
+            'platform': 'iOS' или None,
+            'osVersion': '16.0' или None,
+            'deviceModel': 'iPhone 12' или None,
+            'userAgent': '...' или None,
+        }
+        """
+        if not isinstance(user_payload, dict):
+            return []
+        
+        user_uuid = user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
+        host_name = (key_data or {}).get("host_name")
+        
+        if not user_uuid:
+            return []
+        
+        try:
+            hwid_payload = await remnawave_api.get_hwid_devices_for_user(user_uuid, host_name=host_name)
+        except Exception:
+            return []
+        
+        if not hwid_payload:
+            return []
+        
+        # Пытаемся извлечь список устройств из ответа
+        devices = []
+        
+        # Стандартные места где могут быть устройства
+        possible_containers = [
+            hwid_payload if isinstance(hwid_payload, list) else None,
+            hwid_payload.get("devices") if isinstance(hwid_payload, dict) else None,
+            hwid_payload.get("response") if isinstance(hwid_payload, dict) else None,
+            hwid_payload.get("data") if isinstance(hwid_payload, dict) else None,
+            hwid_payload.get("items") if isinstance(hwid_payload, dict) else None,
+        ]
+        
+        for container in possible_containers:
+            if isinstance(container, list):
+                devices = [d for d in container if isinstance(d, dict)]
+                if devices:
+                    break
+        
+        return devices
+
+
         
     def _get_tariff_info_for_key(key_data: dict, user_payload: dict | None = None) -> tuple[str, str, int]:
         """Подбирает данные тарифа для отображения в 'Мои ключи'.
@@ -3559,6 +3640,7 @@ def get_user_router() -> Router:
             
             user_payload = details.get('user') if isinstance(details, dict) else None
             devices_connected = await _get_connected_devices_count(key_data, user_payload)
+            devices_list = await _get_devices_list(key_data, user_payload)
             plan_group, plan_name, device_limit = _get_tariff_info_for_key(key_data, user_payload)
             final_text = get_key_info_text(
                 key_data,
@@ -3571,7 +3653,7 @@ def get_user_router() -> Router:
             
             await callback.message.edit_text(
                 text=final_text,
-                reply_markup=keyboards.create_key_info_keyboard(key_id_to_show, connection_string)
+                reply_markup=keyboards.create_key_info_keyboard(key_id_to_show, connection_string, devices_list=devices_list)
             )
         except Exception as e:
             logger.error(f"Error showing key {key_id_to_show}: {e}")
@@ -3745,6 +3827,92 @@ def get_user_router() -> Router:
             await callback.message.answer_photo(photo=qr_code_file)
         except Exception as e:
             logger.error(f"Error showing QR for key {key_id}: {e}")
+
+    @user_router.callback_query(F.data.startswith("delete_device_"))
+    @registration_required
+    async def delete_device_handler(callback: types.CallbackQuery):
+        """Обработчик удаления HWID-устройства с ключа."""
+        try:
+            await callback.answer("Удаляю устройство...")
+        except Exception:
+            pass
+        
+        # Парсим callback data вида: delete_device_{key_id}_{hwid}
+        parts = callback.data[len("delete_device_"):].split("_", 1)
+        if len(parts) != 2:
+            await callback.answer("❌ Некорректные данные устройства", show_alert=True)
+            return
+        
+        try:
+            key_id = int(parts[0])
+        except ValueError:
+            await callback.answer("❌ Некорректный идентификатор ключа", show_alert=True)
+            return
+        
+        hwid = parts[1]
+        
+        # Проверяем что ключ принадлежит пользователю
+        key_data = rw_repo.get_key_by_id(key_id)
+        if not key_data or key_data['user_id'] != callback.from_user.id:
+            await callback.answer("❌ Ключ не найден или вам недоступен", show_alert=True)
+            return
+        
+        try:
+            # Получаем user_uuid из ключа
+            user_uuid = key_data.get('remnawave_user_uuid') or key_data.get('xui_client_uuid')
+            if not user_uuid:
+                # Пытаемся получить из Remnawave
+                details = await remnawave_api.get_key_details_from_host(key_data)
+                if details and isinstance(details.get('user'), dict):
+                    user_uuid = details['user'].get('uuid') or details['user'].get('userUuid')
+            
+            if not user_uuid:
+                await callback.answer("❌ Не удалось получить информацию об аккаунте", show_alert=True)
+                return
+            
+            # Пытаемся удалить устройство через API
+            host_name = key_data.get('host_name')
+            success = await remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name)
+            
+            if success:
+                await callback.answer("✅ Устройство успешно удалено!", show_alert=True)
+                
+                # Обновляем экран с информацией о ключе
+                try:
+                    details = await remnawave_api.get_key_details_from_host(key_data)
+                    if details and isinstance(details.get('user'), dict):
+                        user_payload = details['user']
+                        devices_list = await _get_devices_list(key_data, user_payload)
+                        devices_connected = await _get_connected_devices_count(key_data, user_payload)
+                        
+                        plan_group, plan_name, device_limit = _get_tariff_info_for_key(key_data, user_payload)
+                        
+                        all_user_keys = get_user_keys(callback.from_user.id)
+                        key_number = next((i + 1 for i, k in enumerate(all_user_keys) if k['key_id'] == key_id), 0)
+                        
+                        final_text = get_key_info_text(
+                            key_data,
+                            key_number,
+                            devices_connected=devices_connected,
+                            plan_group=plan_group,
+                            plan_name=plan_name,
+                            device_limit=device_limit,
+                        )
+                        
+                        # Обновляем сообщение
+                        await callback.message.edit_text(
+                            text=final_text,
+                            reply_markup=keyboards.create_key_info_keyboard(key_id, devices_list=devices_list)
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not refresh key info after device deletion: {e}")
+                    # Всё равно уведомляем пользователя о успехе
+            else:
+                await callback.answer("❌ Не удалось удалить устройство. Попробуйте позже.", show_alert=True)
+        
+        except Exception as e:
+            logger.error(f"Error deleting device {hwid} from key {key_id}: {e}", exc_info=True)
+            await callback.answer("❌ Произошла ошибка при удалении устройства", show_alert=True)
 
     @user_router.callback_query(F.data.startswith("howto_vless_"))
     @registration_required
@@ -5862,6 +6030,12 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             logger.error(f"💥 Ошибка при пополнении баланса для пользователя {user_id}: {e}", exc_info=True)
             ok = False
         
+        # Обновляем total_spent при пополнении баланса (учитываем как инвестицию в сервис)
+        try:
+            update_user_stats(user_id, float(price), 0)  # Добавляем потраченные деньги, 0 месяцев
+            logger.info(f"📊 Обновлены статистика пользователя {user_id}: +{float(price):.2f} RUB в total_spent")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось обновить статистику пользователя {user_id}: {e}")
 
         try:
 
