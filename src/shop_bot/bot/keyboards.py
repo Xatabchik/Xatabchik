@@ -186,7 +186,7 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💼 Франшиза", callback_data="admin_franchise")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
-    builder.button(text="� Капча", callback_data="admin_captcha_settings")
+    builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
     builder.adjust(2, 2, 2, 2, 2, 1)
@@ -1253,9 +1253,93 @@ def create_admin_search_keys_results_keyboard(keys: list, page: int = 0, user_id
     
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None) -> InlineKeyboardMarkup:
+def create_gifts_management_keyboard(gifts: list, page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура для управления неактивными подарками."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
+    items_per_page = 5
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_gifts = gifts[start_idx:end_idx]
+
+    if current_gifts:
+        for i, gift in enumerate(current_gifts):
+            num = start_idx + i + 1
+            gift_id = gift.get('gift_id')
+            host_name = gift.get('host_name', 'Неизвестный хост')
+            is_activated = gift.get('is_activated', False)
+            status_icon = "✅" if is_activated else "⏳"
+            
+            button_text = f"{status_icon} Подарок #{num} ({host_name})"
+            builder.button(text=button_text, callback_data=f"show_gift_{gift_id}")
+
+    builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gifts_page_{page-1}"))
+    if end_idx < len(gifts):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"gifts_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка меню
+    builder.row(InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu"))
+    
+    return builder.as_markup()
+
+def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = False, connection_string: str | None = None, devices_list: list | None = None, gift_link: str | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для информации о подарке (как обычный ключ, но без продления)."""
+    builder = InlineKeyboardBuilder()
+    
+    # Если подарок не активирован и есть ссылка, добавляем кнопку для отправки ссылки
+    if not is_activated and gift_link:
+        builder.button(text="🎁 Отправить ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+    
+    show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
+    show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
+
+    if show_connect and connection_string:
+        builder.button(text="🔗 Подключить устройство", url=connection_string)
+    if show_howto:
+        builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data=f"howto_vless_{key_id}")
+    builder.button(text="📱 Показать QR-код", callback_data=f"show_qr_{key_id}")
+    
+    # Добавляем кнопки для удаления подключённых устройств
+    if devices_list:
+        for device in devices_list:
+            hwid = device.get('hwid', '')
+            device_model = device.get('deviceModel') or "Устройство"
+            platform = device.get('platform')
+            
+            # Формируем название для кнопки
+            if platform and platform.strip():
+                device_name = f"{platform} ({device_model})"
+            else:
+                device_name = device_model
+            
+            button_text = f"❌ Удалить: {device_name}"
+            if len(button_text) > 64:  # Telegram limit
+                button_text = f"❌ Удалить {platform or 'устройство'}"
+            
+            builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
+    
+    # Кнопка удаления подарка (если не активирован)
+    if not is_activated:
+        builder.button(text="🗑️ Удалить подарок", callback_data=f"delete_gift_{gift_id}")
+    
+    builder.button(text="⬅️ Назад к подаркам", callback_data="show_inactive_gifts")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
+    # Для подарочных ключей не показываем кнопку продления
+    if not gift_code:
+        builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
 
     show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
     show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
@@ -1265,6 +1349,26 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None) 
     if show_howto:
         builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data=f"howto_vless_{key_id}")
     builder.button(text="📱 Показать QR-код", callback_data=f"show_qr_{key_id}")
+    
+    # Добавляем кнопки для удаления подключённых устройств
+    if devices_list:
+        for device in devices_list:
+            hwid = device.get('hwid', '')
+            device_model = device.get('deviceModel') or "Устройство"
+            platform = device.get('platform')
+            
+            # Формируем название для кнопки
+            if platform and platform.strip():
+                device_name = f"{platform} ({device_model})"
+            else:
+                device_name = device_model
+            
+            button_text = f"❌ Удалить: {device_name}"
+            if len(button_text) > 64:  # Telegram limit
+                button_text = f"❌ Удалить {platform or 'устройство'}"
+            
+            builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
+    
     builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
     return builder.as_markup()
@@ -1293,10 +1397,22 @@ def create_back_to_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     return builder.as_markup()
 
-def create_profile_keyboard() -> InlineKeyboardMarkup:
+def create_profile_keyboard(
+    show_notification_toggle: bool = False,
+    notifications_enabled: bool = True
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
     builder.button(text=(get_setting("btn_referral_text") or "🤝 Реферальная программа"), callback_data="show_referral_program")
+    
+    # Кнопка для просмотра неактивных подарков
+    builder.button(text="🎁 Мои подарки", callback_data="show_inactive_gifts")
+    
+    # Кнопка для переключения уведомлений об истечении ключей
+    if show_notification_toggle:
+        button_text = "🔔 Отключить уведомления" if notifications_enabled else "🔕 Включить уведомления"
+        builder.button(text=button_text, callback_data="toggle_expiry_notifications")
+    
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()

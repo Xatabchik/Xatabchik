@@ -127,6 +127,15 @@ async def check_expiring_subscriptions(bot: Bot):
                     notified_users.setdefault(user_id, {}).setdefault(key_id, set())
                     
                     if hours_mark not in notified_users[user_id][key_id]:
+                        # Проверяем, включены ли уведомления для пользователя
+                        try:
+                            if not rw_repo.is_subscription_expiry_notifications_enabled(user_id):
+                                logger.debug(f"Scheduler: Уведомления отключены для пользователя {user_id}, ключ {key_id}")
+                                notified_users[user_id][key_id].add(hours_mark)
+                                break
+                        except Exception as e:
+                            logger.warning(f"Scheduler: Ошибка проверки статуса уведомлений для {user_id}: {e}")
+                        
                         await send_subscription_notification(bot, user_id, key_id, hours_mark, expiry_date)
                         notified_users[user_id][key_id].add(hours_mark)
                     break 
