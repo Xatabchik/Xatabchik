@@ -1372,7 +1372,7 @@ def create_webhook_app(bot_controller_instance):
                     candidate_email,
                     expiry_timestamp_ms=expiry_ms or None,
                     description=comment or 'Gift key (created via admin panel)',
-                    tag='GIFT',
+                    tag='user_gift',
                     hwid_device_limit=hwid_device_limit,
                 ))
             except Exception as e:

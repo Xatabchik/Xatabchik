@@ -818,6 +818,22 @@ def _ensure_vpn_keys_schema(cursor: sqlite3.Cursor) -> None:
     _rebuild_vpn_keys_table(cursor)
 
 
+def _migrate_gift_tags(cursor: sqlite3.Cursor) -> None:
+    """Обновить старые теги 'gift' и 'GIFT' на новый стандарт 'user_gift'."""
+    try:
+        cursor.execute(
+            "UPDATE vpn_keys SET tag = 'user_gift' WHERE tag IN ('gift', 'GIFT')"
+        )
+        affected = cursor.rowcount
+        if affected > 0:
+            logging.info(f"Обновлено {affected} записей: 'gift'/'GIFT' → 'user_gift'")
+        else:
+            logging.debug("Записей с тегом 'gift'/'GIFT' не найдено")
+    except Exception as e:
+        logging.warning(f"Ошибка при миграции тегов подарков: {e}")
+
+
+
 def run_migration():
     if not DB_FILE.exists():
         logging.error("Файл базы данных отсутствует, миграция пропущена.")
@@ -834,6 +850,7 @@ def run_migration():
             _ensure_plans_columns(cursor)
             _ensure_support_tickets_columns(cursor)
             _ensure_vpn_keys_schema(cursor)
+            _migrate_gift_tags(cursor)  # Обновить старые теги подарков на новый стандарт
             _ensure_key_usage_monitor_columns(cursor)
             _ensure_ssh_targets_table(cursor)
             _ensure_gift_tokens_table(cursor)
@@ -5381,3 +5398,18 @@ def get_gift_code_by_key_id(key_id: int) -> str | None:
     except Exception as e:
         logger.error(f"Failed to get gift code for key {key_id}: {e}")
         return None
+
+def get_gift_info_by_key_id(key_id: int) -> tuple[int | None, str | None]:
+    """Получить ID и код подарка по ID ключа. Возвращает (gift_id, gift_code) или (None, None)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT gift_id, gift_code FROM user_gifts WHERE key_id = ? AND is_activated = 0", (int(key_id),))
+            row = cur.fetchone()
+            if row:
+                return row['gift_id'], row['gift_code']
+            return None, None
+    except Exception as e:
+        logger.error(f"Failed to get gift info for key {key_id}: {e}")
+        return None, None

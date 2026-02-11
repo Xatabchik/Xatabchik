@@ -393,6 +393,7 @@ _LEGACY_FORWARDERS = (
     "get_user_gift",
     "get_gift_by_code",
     "get_gift_code_by_key_id",
+    "get_gift_info_by_key_id",
     "get_user_inactive_gifts",
     "activate_user_gift",
     "delete_user_gift",

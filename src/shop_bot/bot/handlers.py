@@ -12,7 +12,7 @@ import time
 
 from html import escape as html_escape
 
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from hmac import compare_digest
 from functools import wraps
 from io import BytesIO
@@ -538,7 +538,7 @@ async def _activate_gift_directly(message: types.Message, bot: Bot, user_id: int
                         key_id,
                         user_id=user_id,
                         email=new_email,
-                        tag="",  # Убираем тег "gift" чтобы ключ появился в списке ключей
+                        tag="",  # Убираем тег "user_gift" чтобы ключ появился в списке ключей
                     )
                     
                     success_msg = (
@@ -957,7 +957,13 @@ async def show_captcha(message: types.Message, state: FSMContext, user_id: int):
 async def show_main_menu(message: types.Message, edit_message: bool = False):
     user_id = message.chat.id
     user_db_data = get_user(user_id)
-    user_keys = get_user_keys(user_id)
+    all_user_keys = get_user_keys(user_id)
+    # Объединяем обычные ключи и подарки для передачи в клавиатуру
+    user_keys = all_user_keys
+    try:
+        gifts_count = len(rw_repo.get_user_inactive_gifts(user_id) or [])
+    except Exception:
+        gifts_count = 0
     
     trial_available = not (user_db_data and user_db_data.get('trial_used'))
     is_admin_flag = is_admin(user_id)
@@ -1050,6 +1056,7 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
             is_admin_flag,
             show_create_bot=show_create_bot,
             show_partner_cabinet=show_partner_cabinet,
+            gifts_count=gifts_count,
         )
     except Exception as e:
         logger.warning(f"Не удалось создать динамическую клавиатуру, используем статическую: {e}")
@@ -1059,6 +1066,7 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
             is_admin_flag,
             show_create_bot=show_create_bot,
             show_partner_cabinet=show_partner_cabinet,
+            gifts_count=gifts_count,
         )
 
     if edit_message:
@@ -1548,6 +1556,12 @@ def get_user_router() -> Router:
         
         # Показываем кнопку уведомлений только если ключей больше 10
         show_notification_toggle = len(user_keys) > 10 if user_keys else False
+        try:
+            gifts_count = len(rw_repo.get_user_inactive_gifts(user_id) or [])
+        except Exception:
+            gifts_count = len(
+                [k for k in (user_keys or []) if str(k.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+            )
         notifications_enabled = True
         if show_notification_toggle:
             try:
@@ -1559,7 +1573,8 @@ def get_user_router() -> Router:
             final_text,
             reply_markup=keyboards.create_profile_keyboard(
                 show_notification_toggle=show_notification_toggle,
-                notifications_enabled=notifications_enabled
+                notifications_enabled=notifications_enabled,
+                gifts_count=gifts_count,
             )
         )
 
@@ -1768,15 +1783,22 @@ def get_user_router() -> Router:
                 await callback.answer("❌ Не удалось сформировать ссылку подарка", show_alert=True)
                 return
             
-            # Отправляем ссылку пользователю
-            await callback.message.answer(
+            # Формируем URL с текстом для поделиться
+            share_text = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+            share_url = f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}"
+            
+            # Создаём клавиатуру с кнопкой поделиться
+            builder = InlineKeyboardBuilder()
+            builder.button(text="📤 Поделиться подарком", url=share_url)
+            builder.button(text="⬅️ Назад", callback_data=f"show_gift_{gift_id}")
+            
+            await callback.message.edit_text(
                 f"🎁 <b>Ссылка активации подарка:</b>\n\n"
                 f"<code>{html_escape(gift_link)}</code>\n\n"
-                f"<i>Отправьте эту ссылку получателю подарка</i>"
+                f"<i>Нажмите кнопку ниже, чтобы поделиться подарком</i>",
+                reply_markup=builder.as_markup()
             )
             
-            await callback.answer("✅ Ссылка отправлена", show_alert=False)
-        
         except Exception as e:
             logger.error(f"Error sending gift link {gift_id}: {e}", exc_info=True)
             await callback.answer("❌ Произошла ошибка при отправке ссылки", show_alert=True)
@@ -3686,8 +3708,8 @@ def get_user_router() -> Router:
                 pass
 
         all_user_keys = get_user_keys(user_id)
-        # Исключаем подарочные ключи (tag="gift") из списка
-        user_keys = [key for key in all_user_keys if key.get('tag') != 'gift']
+        # Исключаем подарочные ключи (tag="user_gift") из списка
+        user_keys = [key for key in all_user_keys if key.get('tag') != 'user_gift']
         
         await callback.message.edit_text(
             "Ваши ключи:" if user_keys else "У вас пока нет ключей.",
@@ -3929,7 +3951,7 @@ def get_user_router() -> Router:
             return
         
         # Не показываем подарочные ключи в "Мои ключи"
-        if key_data.get('tag') == 'gift':
+        if key_data.get('tag') == 'user_gift':
             await callback.message.edit_text("❌ Это подарочный ключ. Используйте раздел 'Мои подарки' для управления им.")
             return
             
@@ -3968,7 +3990,7 @@ def get_user_router() -> Router:
             plan_group, plan_name, device_limit = _get_tariff_info_for_key(key_data, user_payload)
             
             # Получаем информацию о подарке, если это подарок
-            gift_code = rw_repo.get_gift_code_by_key_id(key_id_to_show)
+            gift_id, gift_code = rw_repo.get_gift_info_by_key_id(key_id_to_show)
             domain = (get_setting("domain") or "").strip()
             
             final_text = get_key_info_text(
@@ -3984,7 +4006,7 @@ def get_user_router() -> Router:
             
             await callback.message.edit_text(
                 text=final_text,
-                reply_markup=keyboards.create_key_info_keyboard(key_id_to_show, connection_string, devices_list=devices_list, gift_code=gift_code)
+                reply_markup=keyboards.create_key_info_keyboard(key_id_to_show, connection_string, devices_list=devices_list, gift_code=gift_code, gift_id=gift_id)
             )
         except Exception as e:
             logger.error(f"Error showing key {key_id_to_show}: {e}")
@@ -4108,7 +4130,7 @@ def get_user_router() -> Router:
                     plan_group, plan_name, device_limit = _get_tariff_info_for_key(updated_key, user_payload)
                     
                     # Получаем информацию о подарке, если это подарок
-                    gift_code = rw_repo.get_gift_code_by_key_id(key_id)
+                    gift_id, gift_code = rw_repo.get_gift_info_by_key_id(key_id)
                     domain = (get_setting("domain") or "").strip()
                     
                     final_text = get_key_info_text(
@@ -4123,7 +4145,7 @@ def get_user_router() -> Router:
                     )
                     await callback.message.edit_text(
                         text=final_text,
-                        reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code)
+                        reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code, gift_id=gift_id)
                     )
                 else:
 
@@ -4229,7 +4251,7 @@ def get_user_router() -> Router:
                         key_number = next((i + 1 for i, k in enumerate(all_user_keys) if k['key_id'] == key_id), 0)
                         
                         # Получаем информацию о подарке, если это подарок
-                        gift_code = rw_repo.get_gift_code_by_key_id(key_id)
+                        gift_id, gift_code = rw_repo.get_gift_info_by_key_id(key_id)
                         domain = (get_setting("domain") or "").strip()
                         
                         final_text = get_key_info_text(
@@ -4246,7 +4268,7 @@ def get_user_router() -> Router:
                         # Обновляем сообщение
                         await callback.message.edit_text(
                             text=final_text,
-                            reply_markup=keyboards.create_key_info_keyboard(key_id, devices_list=devices_list, gift_code=gift_code)
+                            reply_markup=keyboards.create_key_info_keyboard(key_id, devices_list=devices_list, gift_code=gift_code, gift_id=gift_id)
                         )
                 except Exception as e:
                     logger.warning(f"Could not refresh key info after device deletion: {e}")
@@ -6479,7 +6501,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                         f"💼 Баланс пополнен на {float(price):.2f} RUB.\n"
                         f"Текущий баланс: {current_balance:.2f} RUB."
                     ),
-                    reply_markup=keyboards.create_profile_keyboard()
+                    reply_markup=keyboards.create_profile_keyboard(gifts_count=gifts_count)
                 )
             else:
                 await bot.send_message(
@@ -6707,7 +6729,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                         user_id=user_id,
                         payload=result,
                         host_name=host_name,
-                        tag="gift",  # Специальный тег для подарков
+                        tag="user_gift",  # Специальный тег для подарков
                         description=origin_desc,
                     )
                     
@@ -6727,9 +6749,9 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                             # Формируем ссылку для активации подарка
                             domain = (get_setting("domain") or "").strip()
                             if domain:
-                                gift_link = f"{domain.rstrip('/')}/claim/gift/{gift_code_unique}"
+                                gift_link = f"{domain.rstrip('/')}/start?start=gift_{gift_code_unique}"
                             else:
-                                gift_link = f"https://t.me/{{bot_username}}?start=gift_{gift_code_unique}"
+                                gift_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code_unique}" if TELEGRAM_BOT_USERNAME else None
                             
                             # Отправляем информацию пользователю
                             gift_message = (
@@ -6744,7 +6766,16 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                                 "Пока подарок не активирован, вы можете его использовать или видеть в разделе 'Неактивные подарки'."
                             )
                             
-                            await processing_message.edit_text(gift_message)
+                            # Формируем клавиатуру с кнопкой поделиться
+                            share_keyboard_builder = InlineKeyboardBuilder()
+                            if gift_link:
+                                share_text = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+                                share_url = f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}"
+                                share_keyboard_builder.button(text="📤 Поделиться подарком", url=share_url)
+                            share_keyboard_builder.button(text="⬅️ Назад в меню", callback_data="back_to_main_menu")
+                            share_keyboard_builder.adjust(1)
+                            
+                            await processing_message.edit_text(gift_message, reply_markup=share_keyboard_builder.as_markup())
                         else:
                             await processing_message.edit_text("❌ Не удалось создать запись о подарке.")
                             return
@@ -6966,7 +6997,10 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         key_number = next((i + 1 for i, key in enumerate(all_user_keys) if key['key_id'] == key_id), len(all_user_keys))
 
         # Получаем информацию о подарке для этого ключа, если это подарок
-        gift_code = rw_repo.get_gift_code_by_key_id(key_id) if action == 'gift' else None
+        if action == 'gift':
+            gift_id, gift_code = rw_repo.get_gift_info_by_key_id(key_id)
+        else:
+            gift_id, gift_code = None, None
         domain = (get_setting("domain") or "").strip()
 
         final_text = get_purchase_success_text(
@@ -6976,10 +7010,25 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             connection_string=connection_string or ""
         )
         
+        # Для подарков добавляем ссылку активации выше ссылки подписки
+        if gift_code:
+            if domain:
+                gift_activation_link = f"{domain.rstrip('/')}/start?start=gift_{gift_code}"
+            else:
+                gift_activation_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code}" if TELEGRAM_BOT_USERNAME else None
+            
+            if gift_activation_link:
+                # Добавляем ссылку активации перед ссылкой подписки
+                final_text = final_text.replace(
+                    f"<code>{html_escape(connection_string or '')}</code>",
+                    f"🎁 <b>Ссылка активации подарка:</b>\n<code>{gift_activation_link}</code>\n\n"
+                    f"📱 <b>Ссылка подписки:</b>\n<code>{html_escape(connection_string or '')}</code>"
+                )
+        
         await bot.send_message(
             chat_id=user_id,
             text=final_text,
-            reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code)
+            reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code, gift_id=gift_id)
         )
 
         try:
