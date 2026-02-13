@@ -28,6 +28,10 @@ def get_key_info_text(
     plan_group: str | None = None,
     plan_name: str | None = None,
     device_limit: int | None = None,
+    gift_code: str | None = None,
+    domain: str | None = None,
+    is_gift_activated: bool = False,
+    gift_link: str | None = None,
 ):
     # Получаем все данные из объекта ключа через .get()
     expiry_date_str = key.get('expiry_date')
@@ -60,19 +64,31 @@ def get_key_info_text(
     tariff = plan_name or "—"
     limit = device_limit if device_limit is not None else "—"
 
-    return (
-        f"<b>🔑 Ваш ключ: #{key_number}</b>\n\n"
-        f"<blockquote><b>📧 Email:</b> {key_email}\n"
-        f"<b>➕ Приобретён:</b> {created_formatted}\n"
-        f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n"
-        f"<code>{html_escape(connection_string)}</code>\n\n"
-        f"📱 <b>Вы подключили:</b> {dc}\n\n"
-        f"📦 <b>Тариф ключа:</b>\n"
-        f"<blockquote>📁 <b>Группа:</b> {group}\n"
-        f"🕒 <b>Тариф:</b> {tariff}\n"
-        f"📱 <b>Лимит устройств:</b> {limit}</blockquote>\n\n"
-        f"<i>Подключите свое устройство по кнопкам ниже👇</i>\n\n"
-    )
+    text_parts = [
+        f"<b>🔑 Ваш ключ: #{key_number}</b>\n\n",
+        f"<blockquote><b>📧 Email:</b> {key_email}\n",
+        f"<b>➕ Приобретён:</b> {created_formatted}\n",
+        f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n",
+    ]
+    
+    # Добавляем ссылку активации подарка отдельным блоком
+    if gift_link and not is_gift_activated:
+        text_parts.append(
+            f"🎁 <b>Ссылка активации подарка:</b>\n"
+            f"<code>{html_escape(gift_link)}</code>\n\n"
+        )
+    
+    text_parts.extend([
+        f"<code>{html_escape(connection_string)}</code>\n\n",
+        f"📱 <b>Вы подключили:</b> {dc}\n\n",
+        f"📦 <b>Тариф ключа:</b>\n",
+        f"<blockquote>📁 <b>Группа:</b> {group}\n",
+        f"🕒 <b>Тариф:</b> {tariff}\n",
+        f"📱 <b>Лимит устройств:</b> {limit}</blockquote>\n\n",
+        f"<i>Подключите свое устройство по кнопкам ниже👇</i>\n\n",
+    ])
+    
+    return "".join(text_parts)
 
 def get_purchase_success_text(action: str, key_number: int, expiry_date, connection_string: str):
     action_text = "обновлен" if action == "extend" else "готов"

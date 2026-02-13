@@ -3,6 +3,7 @@
   <p align="center">
     <a href="#%EF%B8%8F-установка-под-ключ">Установка и обновление</a> •
     <a href="#-%D0%B1%D0%B0%D0%B3%D0%B8-%D0%B8-%D0%BF%D1%80%D0%B5%D0%B4%D0%BB%D0%BE%D0%B6%D0%B5%D0%BD%D0%B8%D1%8F">Баги и предложения</a> •
+    <a href="https://hostoff.link/invite/CODEA9517418">Рекомендуемый хостинг</a> •
   </p>
   <p align="center">
     <a href="https://github.com/Xatabchik/Xatabchik/releases" target="_blank">
@@ -47,56 +48,68 @@
 
   <br>
 
+  ### Веб‑панель
+
   <table>
     <tr>
       <td align="center" valign="top">
         <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" width="480" alt="Dashboard"/></a><br>
-        <sub>Панель — Дашборд</sub>
+        <sub>Дашборд</sub>
       </td>
       <td align="center" valign="top">
         <a href="docs/screenshots/settings.png"><img src="docs/screenshots/settings.png" width="480" alt="Settings"/></a><br>
-        <sub>Панель — Настройки</sub>
+        <sub>Настройки</sub>
       </td>
     </tr>
     <tr>
       <td align="center" valign="top">
-        <a href="docs/screenshots/referrals.png"><img src="docs/screenshots/referrals.png" width="480" alt="Referrals"/></a><br>
-        <sub>Рефералы</sub>
+        <a href="docs/screenshots/statistic.png"><img src="docs/screenshots/statistic.png" width="480" alt="Statistics"/></a><br>
+        <sub>Статистика и рефералы</sub>
       </td>
       <td align="center" valign="top">
-        <a href="docs/screenshots/speedtests.png"><img src="docs/screenshots/speedtests.png" width="480" alt="Speedtests"/></a><br>
-        <sub>Спидтесты</sub>
+        <a href="docs/screenshots/monitor.png"><img src="docs/screenshots/monitor.png" width="480" alt="System Monitor"/></a><br>
+        <sub>Мониторинг системы</sub>
       </td>
     </tr>
+    <tr>
+      <td align="center" valign="top">
+        <a href="docs/screenshots/button_design.png"><img src="docs/screenshots/button_design.png" width="480" alt="Button Constructor"/></a><br>
+        <sub>Конструктор кнопок</sub>
+      </td>
+      <td align="center" valign="top">
+        <a href="docs/screenshots/preview.png"><img src="docs/screenshots/preview.png" width="480" alt="Menu Preview"/></a><br>
+        <sub>Предпросмотр меню</sub>
+      </td>
+    </tr>
+  </table>
+
+  ### Бот (Telegram)
+
+  <table>
     <tr>
       <td align="center" valign="top">
         <a href="docs/screenshots/bot-main-menu.png"><img src="docs/screenshots/bot-main-menu.png" width="360" alt="Bot Main Menu"/></a><br>
-        <sub>Бот — Главное меню</sub>
+        <sub>Главное меню</sub>
+      </td>
+      <td align="center" valign="top">
+        <a href="docs/screenshots/bot-user-menu.png"><img src="docs/screenshots/bot-user-menu.png" width="360" alt="Bot User Menu"/></a><br>
+        <sub>Меню пользователя</sub>
       </td>
       <td align="center" valign="top">
         <a href="docs/screenshots/bot-admin-menu.png"><img src="docs/screenshots/bot-admin-menu.png" width="360" alt="Bot Admin Menu"/></a><br>
-        <sub>Бот — Админ‑меню</sub>
+        <sub>Админ‑меню</sub>
       </td>
     </tr>
     <tr>
       <td align="center" valign="top">
         <a href="docs/screenshots/bot-settings.png"><img src="docs/screenshots/bot-settings.png" width="360" alt="Bot Settings"/></a><br>
-        <sub>Бот — Настройки/Помощь</sub>
+        <sub>Настройки</sub>
       </td>
       <td align="center" valign="top">
-        <a href="docs/screenshots/button_design.png"><img src="docs/screenshots/button_design.png" width="480" alt="Button Constructor"/></a><br>
-        <sub>Панель — Конструктор кнопок</sub>
+        <a href="docs/screenshots/help.png"><img src="docs/screenshots/help.png" width="360" alt="Bot Help"/></a><br>
+        <sub>Справка и поддержка</sub>
       </td>
-    </tr>
-    <tr>
-      <td align="center" valign="top">
-        <a href="docs/screenshots/monitor.png"><img src="docs/screenshots/monitor.png" width="480" alt="System Monitor"/></a><br>
-        <sub>Панель — Мониторинг системы</sub>
-      </td>
-      <td align="center" valign="top">
-        <a href="docs/screenshots/preview.png"><img src="docs/screenshots/preview.png" width="360" alt="Menu Preview"/></a><br>
-        <sub>Предпросмотр меню</sub>
-      </td>
+      <td></td>
     </tr>
   </table>
 

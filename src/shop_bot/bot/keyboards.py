@@ -67,6 +67,7 @@ def create_main_menu_keyboard(
     *,
     show_create_bot: bool = True,
     show_partner_cabinet: bool = False,
+    gifts_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
@@ -79,7 +80,21 @@ def create_main_menu_keyboard(
     
     builder.button(text=(get_setting("btn_profile_text") or "👤 Мой профиль"), callback_data="show_profile")
 
-    keys_count = len(user_keys) if user_keys else 0
+    # Подсчитываем только обычные ключи без подарочных (tag != 'user_gift')
+    regular_keys = [
+        k for k in (user_keys or [])
+        if str(k.get('tag') or '').strip().lower() not in ('user_gift', 'gift')
+    ]
+    keys_count = len(regular_keys)
+    
+    # Подсчитываем подарки (tag == 'user_gift')
+    if gifts_count is None:
+        gift_keys = [
+            k for k in (user_keys or [])
+            if str(k.get('tag') or '').strip().lower() in ('user_gift', 'gift')
+        ]
+        gifts_count = len(gift_keys)
+    
     buy_text = (get_setting("btn_buy_key_text") or "🛒 Купить ключ")
 
     # Если у пользователя нет ни одного ключа, вместо «Мои ключи» показываем «Купить ключ».
@@ -94,6 +109,11 @@ def create_main_menu_keyboard(
 
     if add_separate_buy_button:
         builder.button(text=buy_text, callback_data="buy_new_key")
+    
+    # Показываем кнопку подарков со счётчиком, если они есть
+    if gifts_count > 0:
+        builder.button(text=f"🎁 Мои подарки ({gifts_count})", callback_data="show_inactive_gifts")
+    
     builder.button(text=(get_setting("btn_gift_key_text") or "🎁 Подарить"), callback_data="gift_new_key")
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
     
@@ -1253,9 +1273,93 @@ def create_admin_search_keys_results_keyboard(keys: list, page: int = 0, user_id
     
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None) -> InlineKeyboardMarkup:
+def create_gifts_management_keyboard(gifts: list, page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура для управления неактивными подарками."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
+    items_per_page = 5
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_gifts = gifts[start_idx:end_idx]
+
+    if current_gifts:
+        for i, gift in enumerate(current_gifts):
+            num = start_idx + i + 1
+            gift_id = gift.get('gift_id')
+            host_name = gift.get('host_name', 'Неизвестный хост')
+            is_activated = gift.get('is_activated', False)
+            status_icon = "✅" if is_activated else "⏳"
+            
+            button_text = f"{status_icon} Подарок #{num} ({host_name})"
+            builder.button(text=button_text, callback_data=f"show_gift_{gift_id}")
+
+    builder.adjust(1)
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gifts_page_{page-1}"))
+    if end_idx < len(gifts):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"gifts_page_{page+1}"))
+    
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    # Кнопка меню
+    builder.row(InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu"))
+    
+    return builder.as_markup()
+
+def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = False, connection_string: str | None = None, devices_list: list | None = None, gift_link: str | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура для информации о подарке (как обычный ключ, но без продления)."""
+    builder = InlineKeyboardBuilder()
+    
+    # Если подарок не активирован и есть ссылка, добавляем кнопку для отправки ссылки
+    if not is_activated and gift_link:
+        builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+    
+    show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
+    show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
+
+    if show_connect and connection_string:
+        builder.button(text="🔗 Подключить устройство", url=connection_string)
+    if show_howto:
+        builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data=f"howto_vless_{key_id}")
+    builder.button(text="📱 Показать QR-код", callback_data=f"show_qr_{key_id}")
+    
+    # Добавляем кнопки для удаления подключённых устройств
+    if devices_list:
+        for device in devices_list:
+            hwid = device.get('hwid', '')
+            device_model = device.get('deviceModel') or "Устройство"
+            platform = device.get('platform')
+            
+            # Формируем название для кнопки
+            if platform and platform.strip():
+                device_name = f"{platform} ({device_model})"
+            else:
+                device_name = device_model
+            
+            button_text = f"❌ Удалить: {device_name}"
+            if len(button_text) > 64:  # Telegram limit
+                button_text = f"❌ Удалить {platform or 'устройство'}"
+            
+            builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
+    
+    # Кнопка удаления подарка (если не активирован)
+    if not is_activated:
+        builder.button(text="🗑️ Удалить подарок", callback_data=f"delete_gift_{gift_id}")
+    
+    builder.button(text="⬅️ Назад к подаркам", callback_data="show_inactive_gifts")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    
+    # Для подарочных ключей не показываем кнопку продления
+    if not gift_code:
+        builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
 
     show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
     show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
@@ -1285,7 +1389,15 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
             
             builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
     
-    builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
+    # Кнопка отправки ссылки подарка (если это подарочный ключ)
+    if gift_code and gift_id:
+        builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+    
+    # Если это подарочный ключ, показываем кнопку "К списку подарков", иначе "Назад к списку ключей"
+    if gift_code:
+        builder.button(text="⬅️ К списку подарков", callback_data="show_inactive_gifts")
+    else:
+        builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
     return builder.as_markup()
 def create_howto_vless_keyboard() -> InlineKeyboardMarkup:
@@ -1315,11 +1427,16 @@ def create_back_to_menu_keyboard() -> InlineKeyboardMarkup:
 
 def create_profile_keyboard(
     show_notification_toggle: bool = False,
-    notifications_enabled: bool = True
+    notifications_enabled: bool = True,
+    gifts_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
     builder.button(text=(get_setting("btn_referral_text") or "🤝 Реферальная программа"), callback_data="show_referral_program")
+    
+    # Кнопка для просмотра неактивных подарков
+    gifts_label = f"🎁 Мои подарки ({gifts_count})" if gifts_count is not None else "🎁 Мои подарки"
+    builder.button(text=gifts_label, callback_data="show_inactive_gifts")
     
     # Кнопка для переключения уведомлений об истечении ключей
     if show_notification_toggle:
@@ -1505,6 +1622,7 @@ def create_dynamic_keyboard(
     *,
     show_create_bot: bool = True,
     show_partner_cabinet: bool = False,
+    gifts_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     """Create a keyboard based on database configuration"""
     try:
@@ -1664,6 +1782,7 @@ def create_dynamic_keyboard(
                     is_admin,
                     show_create_bot=show_create_bot,
                     show_partner_cabinet=show_partner_cabinet,
+                    gifts_count=gifts_count,
                 )
             elif menu_type == "admin_menu":
                 return create_admin_menu_keyboard()
@@ -1683,7 +1802,18 @@ def create_dynamic_keyboard(
         # Главный нюанс главного меню:
         # - если у пользователя 0 ключей, показываем «Купить ключ» вместо «Мои ключи»
         # - чтобы не было дубля, скрываем отдельную кнопку покупки (если она есть в конфиге)
-        keys_count = len(user_keys) if user_keys else 0
+        # - исключаем подарки из счётчика
+        regular_keys = [
+            k for k in (user_keys or [])
+            if str(k.get('tag') or '').strip().lower() not in ('user_gift', 'gift')
+        ]
+        if gifts_count is None:
+            gift_keys = [
+                k for k in (user_keys or [])
+                if str(k.get('tag') or '').strip().lower() in ('user_gift', 'gift')
+            ]
+            gifts_count = len(gift_keys)
+        keys_count = len(regular_keys)
         buy_text_setting = (get_setting("btn_buy_key_text") or "🛒 Купить ключ")
         replaced_my_keys_with_buy = False
         
@@ -1736,8 +1866,13 @@ def create_dynamic_keyboard(
                         continue
 
 
-                if menu_type == "main_menu" and user_keys is not None and "({len(user_keys)})" in text:
-                    text = text.replace("({len(user_keys)})", f"({keys_count})")
+                if menu_type == "main_menu" and user_keys is not None:
+                    if "({len(user_keys)})" in text:
+                        text = text.replace("({len(user_keys)})", f"({keys_count})")
+                    if "({gifts_count})" in text:
+                        text = text.replace("({gifts_count})", f"({gifts_count})")
+                    if "{gifts_count}" in text:
+                        text = text.replace("{gifts_count}", str(gifts_count))
 
                 if url:
                     row_buttons_objs.append(InlineKeyboardButton(text=text, url=url))
@@ -1784,6 +1919,7 @@ def create_dynamic_main_menu_keyboard(
     *,
     show_create_bot: bool = True,
     show_partner_cabinet: bool = False,
+    gifts_count: int | None = None,
 ) -> InlineKeyboardMarkup:
     """Create main menu keyboard using dynamic configuration"""
     return create_dynamic_keyboard(
@@ -1793,6 +1929,7 @@ def create_dynamic_main_menu_keyboard(
         is_admin,
         show_create_bot=show_create_bot,
         show_partner_cabinet=show_partner_cabinet,
+        gifts_count=gifts_count,
     )
 
 def create_dynamic_admin_menu_keyboard() -> InlineKeyboardMarkup:

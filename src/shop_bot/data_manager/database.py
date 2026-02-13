@@ -818,6 +818,22 @@ def _ensure_vpn_keys_schema(cursor: sqlite3.Cursor) -> None:
     _rebuild_vpn_keys_table(cursor)
 
 
+def _migrate_gift_tags(cursor: sqlite3.Cursor) -> None:
+    """Обновить старые теги 'gift' и 'GIFT' на новый стандарт 'user_gift'."""
+    try:
+        cursor.execute(
+            "UPDATE vpn_keys SET tag = 'user_gift' WHERE tag IN ('gift', 'GIFT')"
+        )
+        affected = cursor.rowcount
+        if affected > 0:
+            logging.info(f"Обновлено {affected} записей: 'gift'/'GIFT' → 'user_gift'")
+        else:
+            logging.debug("Записей с тегом 'gift'/'GIFT' не найдено")
+    except Exception as e:
+        logging.warning(f"Ошибка при миграции тегов подарков: {e}")
+
+
+
 def run_migration():
     if not DB_FILE.exists():
         logging.error("Файл базы данных отсутствует, миграция пропущена.")
@@ -834,9 +850,11 @@ def run_migration():
             _ensure_plans_columns(cursor)
             _ensure_support_tickets_columns(cursor)
             _ensure_vpn_keys_schema(cursor)
+            _migrate_gift_tags(cursor)  # Обновить старые теги подарков на новый стандарт
             _ensure_key_usage_monitor_columns(cursor)
             _ensure_ssh_targets_table(cursor)
             _ensure_gift_tokens_table(cursor)
+            _ensure_user_gifts_table(cursor)
             _ensure_promo_tables(cursor)
 
             try:
@@ -1421,6 +1439,30 @@ def _ensure_gift_tokens_table(cursor: sqlite3.Cursor) -> None:
     )
     _ensure_index(cursor, "idx_gift_token_claims_token", "gift_token_claims", "token")
     _ensure_index(cursor, "idx_gift_token_claims_user", "gift_token_claims", "user_id")
+
+
+def _ensure_user_gifts_table(cursor: sqlite3.Cursor) -> None:
+    """Миграция для таблицы неактивированных пользовательских подарков."""
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_gifts (
+            gift_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_user_id INTEGER NOT NULL,
+            key_id INTEGER,
+            host_name TEXT NOT NULL,
+            plan_id INTEGER,
+            gift_code TEXT UNIQUE NOT NULL,
+            is_activated BOOLEAN DEFAULT 0,
+            activated_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            activated_at TIMESTAMP,
+            expires_at TIMESTAMP
+        )
+        """
+    )
+    _ensure_index(cursor, "idx_user_gifts_from_user", "user_gifts", "from_user_id")
+    _ensure_index(cursor, "idx_user_gifts_gift_code", "user_gifts", "gift_code")
+    _ensure_index(cursor, "idx_user_gifts_is_activated", "user_gifts", "is_activated")
 
 
 def _ensure_promo_tables(cursor: sqlite3.Cursor) -> None:
@@ -3716,6 +3758,7 @@ def _apply_key_updates(key_id: int, updates: dict[str, Any]) -> bool:
 def update_key_fields(
     key_id: int,
     *,
+    user_id: int | None = None,
     host_name: str | None = None,
     squad_uuid: str | None = None,
     remnawave_user_uuid: str | None = None,
@@ -3730,6 +3773,8 @@ def update_key_fields(
     missing_from_server_at: Any = _UNSET,
 ) -> bool:
     updates: dict[str, Any] = {}
+    if user_id is not None:
+        updates["user_id"] = user_id
     if host_name is not None:
         updates["host_name"] = normalize_host_name(host_name)
     if squad_uuid is not None:
@@ -5151,3 +5196,220 @@ def create_withdraw_request(
     except Exception as e:
         logger.error(f"create_withdraw_request failed: {e}")
         return False, "Ошибка при создании заявки."
+
+
+# ============================================
+# Функции для работы с пользовательскими подарками
+# ============================================
+
+def create_user_gift(
+    from_user_id: int,
+    host_name: str,
+    plan_id: int | None = None,
+    gift_code: str | None = None,
+    expires_in_days: int | None = None,
+) -> dict | None:
+    """Создать неактивированный подарок от одного пользователя.
+    
+    Returns: dict with gift_id and gift_code on success, None on error.
+    """
+    import uuid
+    
+    try:
+        from_user_id = int(from_user_id)
+        host_name = str(host_name).strip()
+        plan_id = int(plan_id) if plan_id else None
+        
+        if not gift_code:
+            gift_code = str(uuid.uuid4())[:12]
+        
+        expires_at = None
+        if expires_in_days:
+            expires_at = (datetime.utcnow() + timedelta(days=int(expires_in_days))).isoformat()
+        
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            
+            cur.execute(
+                """
+                INSERT INTO user_gifts (from_user_id, host_name, plan_id, gift_code, is_activated, expires_at)
+                VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (from_user_id, host_name, plan_id, gift_code, expires_at),
+            )
+            conn.commit()
+            
+            gift_id = cur.lastrowid
+            return {
+                "gift_id": gift_id,
+                "gift_code": gift_code,
+            }
+    except sqlite3.IntegrityError:
+        logger.error(f"Gift code {gift_code} already exists")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to create user gift: {e}")
+        return None
+
+
+def get_user_gift(gift_id: int) -> dict | None:
+    """Получить информацию о подарке по ID."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM user_gifts WHERE gift_id = ?", (int(gift_id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Failed to get user gift {gift_id}: {e}")
+        return None
+
+
+def get_gift_by_code(gift_code: str) -> dict | None:
+    """Получить информацию о подарке по коду."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM user_gifts WHERE gift_code = ?", (str(gift_code).strip(),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Failed to get gift by code {gift_code}: {e}")
+        return None
+
+
+def get_user_inactive_gifts(from_user_id: int) -> list[dict]:
+    """Получить список неактивированных подарков пользователя."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM user_gifts WHERE from_user_id = ? AND is_activated = 0 ORDER BY created_at DESC",
+                (int(from_user_id),),
+            )
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get inactive gifts for user {from_user_id}: {e}")
+        return []
+
+
+def activate_user_gift(
+    gift_code: str,
+    activated_by_user_id: int,
+) -> tuple[bool, dict | None]:
+    """Активировать подарок для пользователя.
+    
+    Returns: (success, gift_data)
+    """
+    try:
+        gift = get_gift_by_code(gift_code)
+        if not gift:
+            return False, None
+        
+        gift_id = gift.get("gift_id")
+        if gift.get("is_activated"):
+            return False, gift  # Already activated
+        
+        expires_at = gift.get("expires_at")
+        if expires_at:
+            if datetime.fromisoformat(expires_at) < datetime.utcnow():
+                return False, gift  # Expired
+        
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE user_gifts
+                SET is_activated = 1, activated_by_user_id = ?, activated_at = ?
+                WHERE gift_code = ?
+                """,
+                (int(activated_by_user_id), _now_str(), gift_code),
+            )
+            conn.commit()
+        
+        gift["is_activated"] = True
+        gift["activated_by_user_id"] = int(activated_by_user_id)
+        gift["activated_at"] = _now_str()
+        
+        logging.info(f"Gift {gift_code} activated by user {activated_by_user_id}")
+        return True, gift
+        
+    except Exception as e:
+        logger.error(f"Failed to activate gift {gift_code}: {e}")
+        return False, None
+
+
+def delete_user_gift(gift_id: int) -> bool:
+    """Удалить подарок."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM user_gifts WHERE gift_id = ?", (int(gift_id),))
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete gift {gift_id}: {e}")
+        return False
+
+
+def link_key_to_gift(gift_id: int, key_id: int) -> bool:
+    """Связать созданный ключ с подарком."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE user_gifts SET key_id = ? WHERE gift_id = ?",
+                (int(key_id), int(gift_id)),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to link key {key_id} to gift {gift_id}: {e}")
+        return False
+
+
+def get_gift_code_by_key_id(key_id: int) -> str | None:
+    """Получить код подарка по ID ключа."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT gift_code FROM user_gifts WHERE key_id = ?", (int(key_id),))
+            row = cur.fetchone()
+            return row['gift_code'] if row else None
+    except Exception as e:
+        logger.error(f"Failed to get gift code for key {key_id}: {e}")
+        return None
+
+def get_gift_code_by_key_id(key_id: int) -> str | None:
+    """Получить код подарка по ID ключа."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT gift_code FROM user_gifts WHERE key_id = ? AND is_activated = 0", (int(key_id),))
+            row = cur.fetchone()
+            return row['gift_code'] if row else None
+    except Exception as e:
+        logger.error(f"Failed to get gift code for key {key_id}: {e}")
+        return None
+
+def get_gift_info_by_key_id(key_id: int) -> tuple[int | None, str | None]:
+    """Получить ID и код подарка по ID ключа. Возвращает (gift_id, gift_code) или (None, None)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT gift_id, gift_code FROM user_gifts WHERE key_id = ? AND is_activated = 0", (int(key_id),))
+            row = cur.fetchone()
+            if row:
+                return row['gift_id'], row['gift_code']
+            return None, None
+    except Exception as e:
+        logger.error(f"Failed to get gift info for key {key_id}: {e}")
+        return None, None

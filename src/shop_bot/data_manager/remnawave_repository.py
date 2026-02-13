@@ -226,6 +226,7 @@ def record_key_from_payload(
 def update_key(
     key_id: int,
     *,
+    user_id: int | None = None,
     host_name: str | None = None,
     squad_uuid: str | None = None,
     remnawave_user_uuid: str | None = None,
@@ -240,6 +241,7 @@ def update_key(
 ) -> bool:
     return database.update_key_fields(
         key_id,
+        user_id=user_id,
         host_name=host_name,
         squad_uuid=squad_uuid,
         remnawave_user_uuid=remnawave_user_uuid,
@@ -385,6 +387,17 @@ _LEGACY_FORWARDERS = (
     "is_subscription_expiry_notifications_enabled",
     "toggle_subscription_expiry_notifications",
     "update_user_stats",
+
+    # User gifts (неактивированные подарки)
+    "create_user_gift",
+    "get_user_gift",
+    "get_gift_by_code",
+    "get_gift_code_by_key_id",
+    "get_gift_info_by_key_id",
+    "get_user_inactive_gifts",
+    "activate_user_gift",
+    "delete_user_gift",
+    "link_key_to_gift",
 
     "get_all_ssh_targets",
     "get_ssh_target",
