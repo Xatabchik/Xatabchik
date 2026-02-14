@@ -70,7 +70,7 @@ class ManagedBotsService:
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"Ошибка при опросе менеджера бота bot_id={bot_id}: {e}", exc_info=True)
+                logger.error(f"Ошибка при запуске менеджера бота bot_id={bot_id}: {e}", exc_info=True)
             finally:
                 try:
                     await bot.session.close()
