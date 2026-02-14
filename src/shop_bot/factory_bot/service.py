@@ -23,7 +23,7 @@ class ManagedBotsService:
 
 
     def get_bot(self, bot_id: int):
-        """Return Bot instance for bot_id if it's started."""
+        """Возвращает экземпляр Bot для bot_id, если он запущен."""
         return self._bots.get(int(bot_id))
 
     async def start_all(self):
@@ -35,7 +35,7 @@ class ManagedBotsService:
             try:
                 await self.start_bot(bot_id)
             except Exception as e:
-                logger.error(f"Failed to start bot_id={bot_id}: {e}", exc_info=True)
+                logger.error(f"Ошибка при запуске bot_id={bot_id}: {e}", exc_info=True)
 
     async def start_bot(self, bot_id: int):
         bot_id = int(bot_id)
@@ -49,34 +49,34 @@ class ManagedBotsService:
         if not token:
             return
 
-        # Each managed bot is a full shop-bot frontend that works on the same backend/DB.
-        # It only adds partner cabinet UI (shown conditionally) and accrues partner commission.
+        # Каждый управляемый бот - это полноценный фронтенд shop-bot, работающий на одной backend/БД.
+        # Он только добавляет UI партнерского кабинета (показывается условно) и начисляет партнерскую комиссию.
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         dp = Dispatcher()
 
-        # ban + stats middleware
+        # Middleware для бана и статистики
         dp.message.middleware(BanMiddleware())
         dp.message.middleware(FactoryStatsMiddleware())
         dp.callback_query.middleware(BanMiddleware())
         dp.callback_query.middleware(FactoryStatsMiddleware())
 
-        # Use the same user router as the main bot.
+        # Используем тот же пользовательский роутер, что и основной бот.
         dp.include_router(get_user_router())
 
         async def runner():
-            logger.info(f"Managed bot started: bot_id={bot_id} (@{info.get('username')})")
+            logger.info(f"Менеджер бота запущен: bot_id={bot_id} (@{info.get('username')})")
             try:
                 await dp.start_polling(bot)
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"Managed bot polling error bot_id={bot_id}: {e}", exc_info=True)
+                logger.error(f"Ошибка при опросе менеджера бота bot_id={bot_id}: {e}", exc_info=True)
             finally:
                 try:
                     await bot.session.close()
                 except Exception:
                     pass
-                logger.info(f"Managed bot stopped: bot_id={bot_id}")
+                logger.info(f"Менеджер бота остановлен: bot_id={bot_id}")
 
         task = asyncio.create_task(runner(), name=f"managed-bot-{bot_id}")
         self._tasks[bot_id] = task
@@ -89,5 +89,5 @@ class ManagedBotsService:
         await asyncio.gather(*self._tasks.values(), return_exceptions=True)
         self._tasks.clear()
         self._dispatchers.clear()
-        # bots closed in runner finally
+        # боты закрываются в finally блоке runner
         self._bots.clear()
