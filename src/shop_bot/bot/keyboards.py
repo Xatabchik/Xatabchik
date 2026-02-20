@@ -204,12 +204,13 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="💳 Платежки", callback_data="admin_payments_menu")
     builder.button(text="👥 Рефералка", callback_data="admin_referral")
     builder.button(text="💼 Франшиза", callback_data="admin_franchise")
+    builder.button(text="🧩 Модули", callback_data="admin_modules")
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
     builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
-    builder.adjust(2, 2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1, 1)
     return builder.as_markup()
 
 
@@ -822,12 +823,15 @@ def create_broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
 
 def create_about_keyboard(channel_url: str | None, terms_url: str | None, privacy_url: str | None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if channel_url:
-        builder.button(text="📰 Наш канал", url=channel_url)
-    if terms_url:
-        builder.button(text="📄 Условия использования", url=terms_url)
-    if privacy_url:
-        builder.button(text="🔒 Политика конфиденциальности", url=privacy_url)
+    channel = _normalize_url(channel_url or "")
+    terms = _normalize_url(terms_url or "")
+    privacy = _normalize_url(privacy_url or "")
+    if channel:
+        builder.button(text="📰 Наш канал", url=channel)
+    if terms:
+        builder.button(text="📄 Условия использования", url=terms)
+    if privacy:
+        builder.button(text="🔒 Политика конфиденциальности", url=privacy)
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()

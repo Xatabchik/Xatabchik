@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Модули{% endblock %}
+{% block content %}
+
+<div class="page-header d-print-none mb-4">
+  <div class="row align-items-center">
+    <div class="col">
+      <h1 class="page-title mb-1">Модули</h1>
+      <div class="text-secondary">Управление расширениями бота и панели</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% if modules %}
+    <div class="table-responsive">
+      <table class="table table-vcenter table-hover">
+        <thead>
+          <tr>
+            <th>Модуль</th>
+            <th>Версия</th>
+            <th>Статус</th>
+            <th>Описание</th>
+            <th class="text-end">Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in modules %}
+          <tr>
+            <td>
+              <div class="fw-bold">{{ m.name }}</div>
+              <div class="text-secondary small">{{ m.id }}</div>
+            </td>
+            <td>{{ m.version or "—" }}</td>
+            <td>
+              {% if m.status == 'enabled' %}
+                <span class="badge bg-green-lt">Включен</span>
+              {% elif m.status == 'error' %}
+                <span class="badge bg-red-lt">Ошибка</span>
+              {% else %}
+                <span class="badge bg-yellow-lt">Отключен</span>
+              {% endif %}
+              {% if m.error_message %}
+                <div class="text-danger small mt-1">{{ m.error_message }}</div>
+              {% endif %}
+            </td>
+            <td>{{ m.description or "—" }}</td>
+            <td class="text-end">
+              <div class="d-inline-flex gap-2 flex-wrap justify-content-end">
+                {% if m.status != 'enabled' %}
+                <form action="{{ url_for('module_enable_route', module_id=m.id) }}" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                  <button type="submit" class="btn btn-success btn-sm">Включить</button>
+                </form>
+                {% else %}
+                <form action="{{ url_for('module_disable_route', module_id=m.id) }}" method="post">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                  <button type="submit" class="btn btn-warning btn-sm">Отключить</button>
+                </form>
+                {% endif %}
+
+                {% if m.has_settings %}
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('module_settings_page', module_id=m.id) }}">Настройки</a>
+                {% endif %}
+
+                <form action="{{ url_for('module_delete_route', module_id=m.id) }}" method="post" data-confirm="Удалить модуль и его данные?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Удалить</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-secondary">Модули не найдены.</div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

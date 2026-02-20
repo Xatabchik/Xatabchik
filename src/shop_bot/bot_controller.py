@@ -14,6 +14,7 @@ from shop_bot.bot import handlers
 from shop_bot.factory_bot.service import ManagedBotsService
 from shop_bot.factory_bot.middleware import FactoryStatsMiddleware
 from shop_bot.factory_bot.runtime import set_service
+from shop_bot.core.module_loader import get_global_module_loader
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,10 @@ class BotController:
             
             self._dp.include_router(user_router)
             self._dp.include_router(admin_router)
+
+            module_loader = get_global_module_loader()
+            module_loader.discover_modules()
+            module_loader.set_dispatcher(self._dp)
 
             # Start all managed clone bots on the same event loop
             try:

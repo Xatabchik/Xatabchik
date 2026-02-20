@@ -75,6 +75,10 @@
 							<i class="ti ti-settings me-2"></i>
 							<span>Настройки</span>
 						</a>
+						<a href="{{ url_for('modules_page') }}" class="nav-link {% if request.endpoint in ['modules_page', 'module_settings_page'] %}active{% endif %}">
+							<i class="ti ti-puzzle me-2"></i>
+							<span>Модули</span>
+						</a>
 						<a href="{{ url_for('button_constructor_page') }}" class="nav-link {% if request.endpoint == 'button_constructor_page' %}active{% endif %}">
 							<i class="ti ti-tools me-2"></i>
 							<span>Конструктор кнопок</span>
@@ -89,6 +93,18 @@
 							<span>Франшиза</span></a>
 						{% endif %}
 					</div>
+
+					{% if module_menu_items %}
+					<div class="nav-section">
+						<div class="nav-section-title">Модули</div>
+						{% for item in module_menu_items %}
+						<a href="{{ item.url }}" class="nav-link">
+							<i class="ti ti-{{ item.icon or 'plug' }} me-2"></i>
+							<span>{{ item.label }}</span>
+						</a>
+						{% endfor %}
+					</div>
+					{% endif %}
 				</nav>
 
 				<div class="sidebar-footer">
@@ -154,6 +170,7 @@
 							<ul>
 								<li><a href="{{ url_for('statistics_page') }}">Статистика</a></li>
 								<li><a href="{{ url_for('settings_page') }}">Настройки</a></li>
+								<li><a href="{{ url_for('modules_page') }}">Модули</a></li>
 								<li><a href="{{ url_for('button_constructor_page') }}">Конструктор кнопок</a></li>
 								<li><a href="{{ url_for('monitor_page') }}">Мониторинг</a></li>
 								{% if franchise_enabled %}<li><a href="/franchise">Франшиза</a></li>{% endif %}

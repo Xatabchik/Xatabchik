@@ -64,6 +64,7 @@ from shop_bot.data_manager.database import (
     delete_button_config, reorder_button_configs
 )
 from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id
+from shop_bot.core.module_loader import get_global_module_loader
 
 _bot_controller = None
 _support_bot_controller = SupportBotController()
@@ -289,6 +290,10 @@ def create_webhook_app(bot_controller_instance):
         template_folder='templates',
         static_folder='static'
     )
+
+    module_loader = get_global_module_loader()
+    module_loader.discover_modules()
+    module_loader.set_flask_app(flask_app)
     
 
     flask_app.config['SECRET_KEY'] = os.getenv('SHOPBOT_SECRET_KEY') or secrets.token_hex(32)
@@ -503,6 +508,7 @@ def create_webhook_app(bot_controller_instance):
             "all_tickets_count": all_tickets_count,
             "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
             "franchise_enabled": franchise_settings(),
+            "module_menu_items": module_loader.get_menu_items(),
         }
 
     @flask_app.route('/brand-title', methods=['POST'])
@@ -2057,6 +2063,108 @@ def create_webhook_app(bot_controller_instance):
 
         common_data = get_common_template_data()
         return render_template('settings.html', settings=current_settings, hosts=hosts, ssh_targets=ssh_targets, backups=backups, **common_data)
+
+
+    def _as_bool(value: str | None) -> bool:
+        return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+    def _get_module_info(module_id: str) -> dict | None:
+        for item in module_loader.list_modules():
+            if item.get("id") == module_id:
+                return item
+        return None
+
+    def _build_module_settings_form(module_id: str) -> list[dict]:
+        schema = module_loader.get_settings_schema(module_id)
+        if not schema:
+            return []
+        values = module_loader.get_settings_values(module_id)
+        items: list[dict] = []
+        for item in schema:
+            key = item.get("key")
+            if not key:
+                continue
+            full_key = f"{module_id}_{key}"
+            raw_value = values.get(full_key)
+            if raw_value is None:
+                raw_value = item.get("default")
+            field_type = (item.get("type") or "text").strip().lower()
+            if field_type == "boolean":
+                value = _as_bool(raw_value)
+            else:
+                value = "" if raw_value is None else raw_value
+            items.append({
+                "key": key,
+                "full_key": full_key,
+                "label": item.get("label") or key,
+                "type": field_type,
+                "value": value,
+            })
+        return items
+
+    @flask_app.route('/modules/', methods=['GET'])
+    @login_required
+    def modules_page():
+        modules = module_loader.list_modules()
+        common_data = get_common_template_data()
+        return render_template('modules.html', modules=modules, **common_data)
+
+    @flask_app.route('/modules/<module_id>/enable', methods=['POST'])
+    @login_required
+    def module_enable_route(module_id: str):
+        ok, message = module_loader.enable_module(module_id)
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('modules_page'))
+
+    @flask_app.route('/modules/<module_id>/disable', methods=['POST'])
+    @login_required
+    def module_disable_route(module_id: str):
+        ok, message = module_loader.disable_module(module_id)
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('modules_page'))
+
+    @flask_app.route('/modules/<module_id>/delete', methods=['POST'])
+    @login_required
+    def module_delete_route(module_id: str):
+        ok, message = module_loader.delete_module(module_id)
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('modules_page'))
+
+    @flask_app.route('/modules/<module_id>/settings', methods=['GET', 'POST'])
+    @login_required
+    def module_settings_page(module_id: str):
+        module_info = _get_module_info(module_id)
+        if not module_info:
+            flash('Модуль не найден.', 'danger')
+            return redirect(url_for('modules_page'))
+        if request.method == 'POST':
+            schema = module_loader.get_settings_schema(module_id)
+            for item in schema:
+                key = item.get("key")
+                if not key:
+                    continue
+                full_key = f"{module_id}_{key}"
+                field_type = (item.get("type") or "text").strip().lower()
+                if field_type == "boolean":
+                    value = 'true' if _as_bool(request.form.get(full_key)) else 'false'
+                else:
+                    value = request.form.get(full_key, "")
+                update_setting(full_key, value)
+            flash('Настройки модуля сохранены.', 'success')
+            return redirect(url_for('module_settings_page', module_id=module_id))
+
+        settings_items = _build_module_settings_form(module_id)
+        if not settings_items:
+            flash('У этого модуля нет настроек.', 'warning')
+            return redirect(url_for('modules_page'))
+
+        common_data = get_common_template_data()
+        return render_template(
+            'module_settings.html',
+            module=module_info,
+            settings_items=settings_items,
+            **common_data,
+        )
 
 
     @flask_app.route('/admin/ssh-targets/create', methods=['POST'])

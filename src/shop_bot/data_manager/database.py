@@ -198,6 +198,17 @@ def initialize_db():
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS modules_registry (
+                    module_id     TEXT PRIMARY KEY,
+                    name          TEXT,
+                    version       TEXT,
+                    status        TEXT DEFAULT 'disabled',
+                    enabled_at    TIMESTAMP,
+                    error_message TEXT,
+                    metadata      TEXT
+                )
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS button_configs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     menu_type TEXT NOT NULL,
@@ -591,6 +602,8 @@ def initialize_db():
             
 
             update_existing_my_keys_button()
+
+            ensure_main_menu_gift_button()
 
 
             ensure_admin_plans_button()
@@ -2733,6 +2746,43 @@ def update_existing_my_keys_button():
             conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to update button configurations: {e}")
+
+
+def ensure_main_menu_gift_button() -> None:
+    """Ensure that the main menu has the gift button in button configs."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT 1 FROM button_configs WHERE menu_type = 'main_menu' AND button_id = 'gift_new_key' LIMIT 1"
+            )
+            if cursor.fetchone():
+                return
+
+            cursor.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) FROM button_configs WHERE menu_type = 'main_menu'"
+            )
+            next_sort = int(cursor.fetchone()[0] or 0) + 1
+
+            cursor.execute(
+                "SELECT COALESCE(MAX(row_position), 0) FROM button_configs WHERE menu_type = 'main_menu'"
+            )
+            row_pos = int(cursor.fetchone()[0] or 0) + 1
+
+            cursor.execute(
+                """
+                INSERT INTO button_configs
+                    (menu_type, button_id, text, callback_data, row_position, column_position, sort_order, button_width, is_active)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                ("main_menu", "gift_new_key", "🎁 Подарить", "gift_new_key", row_pos, 0, next_sort, 2),
+            )
+            conn.commit()
+            logging.info("Inserted missing main_menu button: gift_new_key")
+    except sqlite3.Error as e:
+        logging.error(f"Failed to ensure main menu gift button: {e}")
 
 
 def ensure_admin_plans_button():
