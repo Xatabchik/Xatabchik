@@ -11,6 +11,29 @@
   </div>
 </div>
 
+<!-- Upload Module Card -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title">📦 Загрузить новый модуль</h3>
+  </div>
+  <div class="card-body">
+    <form action="{{ url_for('module_upload_route') }}" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+      <div class="row">
+        <div class="col-auto">
+          <div class="input-group">
+            <input type="file" name="module_file" class="form-control pill" accept=".zip" required />
+            <button type="submit" class="btn btn-primary">Загрузить и установить</button>
+          </div>
+          <small class="text-secondary d-block mt-2">
+            Ожидается ZIP архив с модулем. Модуль будет автоматически распакован и включен.
+          </small>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-body">
     {% if modules %}

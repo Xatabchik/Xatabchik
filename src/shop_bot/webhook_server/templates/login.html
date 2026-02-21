@@ -9,6 +9,42 @@
 			rel="stylesheet"
 			href="{{ url_for('static', filename='css/style.css') }}"
 		/>
+		<style>
+			/* Compact design for login form */
+			#login-form .form-group label {
+				font-size: 0.85rem !important;
+				font-weight: 500 !important;
+				margin-bottom: 0.25rem !important;
+			}
+
+			#login-form input[type="text"],
+			#login-form input[type="password"] {
+				font-size: 0.85rem !important;
+				padding: 0.4rem 0.75rem !important;
+				border-radius: 0.5rem !important;
+			}
+
+			#login-form input[type="checkbox"] {
+				width: 1.25rem !important;
+				height: 1.25rem !important;
+			}
+
+			#login-form .button-primary {
+				font-size: 0.85rem !important;
+				padding: 0.4rem 0.75rem !important;
+				border-radius: 0.5rem !important;
+			}
+
+			#login-form .toggle-password {
+				width: 1.5rem !important;
+				height: 1.5rem !important;
+				padding: 0.25rem !important;
+			}
+
+			#login-form .form-group {
+				margin-bottom: 0.75rem !important;
+			}
+		</style>
 	</head>
 	<body class="login-page">
 		<div class="login-container">
@@ -19,7 +55,7 @@
 			<div class="flash flash-{{ category }}">{{ message }}</div>
 			{% endfor %} {% endif %} {% endwith %}
 
-			<form method="post">
+			<form method="post" id="login-form">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 				<div class="form-group">
 					<label for="username">Логин:</label>

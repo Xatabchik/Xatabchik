@@ -17,36 +17,34 @@
     </h3>
   </div>
   <div class="card-body">
-    <form action="{{ url_for('create_key_ajax_route') }}" method="post" class="row g-3" id="create-key-form" autocomplete="off">
+    <form action="{{ url_for('create_key_ajax_route') }}" method="post" class="row g-2" id="create-key-form" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
       <input type="hidden" name="mode" id="create_mode" value="personal" />
       <div class="col-12">
-        <label class="form-label mb-2">Тип ключа</label>
+        <label class="form-label mb-1 small">Тип ключа</label>
         <div class="btn-group w-100" role="group" id="mode_switch">
-          <button type="button" class="btn btn-outline-primary active" data-mode="personal">
-            <i class="ti ti-user me-1"></i>
-            Персональный ключ
+          <button type="button" class="btn btn-sm btn-outline-primary active" data-mode="personal">
+            <i class="ti ti-user"></i>
+            <span class="ms-1">Персональный ключ</span>
           </button>
-          <button type="button" class="btn btn-outline-primary" data-mode="gift">
-            <i class="ti ti-gift me-1"></i>
-            Подарочный ключ
+          <button type="button" class="btn btn-sm btn-outline-primary" data-mode="gift">
+            <i class="ti ti-gift"></i>
+            <span class="ms-1">Подарочный ключ</span>
           </button>
         </div>
       </div>
 
       <div class="mode-section mode-personal col-12 col-md-4">
-        <label class="form-label" for="user_id">Пользователь</label>
-        <div class="input-group">
-          <input class="form-control rounded-3" id="user_id" name="user_id" placeholder="ID или @username" />
-        </div>
+        <label class="form-label small" for="user_id">Пользователь</label>
+        <input class="form-control form-control-sm" id="user_id" name="user_id" placeholder="ID или @username" />
       </div>
 
       <div class="col-12 col-md-4">
-        <label class="form-label" for="host_name">Хост</label>
+        <label class="form-label small" for="host_name">Хост</label>
         <div class="soft-select" id="host_softselect" data-target="host_name">
-          <button type="button" class="soft-select-toggle" id="host_name_toggle">Выберите хост...</button>
+          <button type="button" class="soft-select-toggle soft-select-toggle-sm" id="host_name_toggle">Выберите хост...</button>
           <div class="soft-select-menu" id="host_name_menu"></div>
-          <select class="form-select rounded-3 select-soft" id="host_name" name="host_name" required>
+          <select class="form-select form-select-sm select-soft" id="host_name" name="host_name" required>
             <option value="" selected disabled>Выберите хост...</option>
             {% for h in hosts %}
             <option value="{{ h.host_name }}" data-inbound="{{ h.host_inbound_id }}">{{ h.host_name }}</option>
@@ -56,45 +54,45 @@
       </div>
 
       <div class="col-12 col-md-2">
-        <label class="form-label" for="inbound_id">Inbound ID</label>
-        <input class="form-control rounded-3" type="text" id="inbound_id" placeholder="—" readonly />
+        <label class="form-label small" for="inbound_id">Inbound ID</label>
+        <input class="form-control form-control-sm" type="text" id="inbound_id" placeholder="—" readonly />
       </div>
 
       <div class="mode-section mode-personal col-12 col-md-4">
-        <label class="form-label" for="key_email">Email ключа</label>
-        <input class="form-control rounded-3" type="email" id="key_email" name="key_email" placeholder="123456789-1@bot.local" readonly />
+        <label class="form-label small" for="key_email">Email ключа</label>
+        <input class="form-control form-control-sm" type="email" id="key_email" name="key_email" placeholder="123456789-1@bot.local" readonly />
       </div>
 
       <div class="col-12 col-md-4">
-        <label class="form-label" for="plan_select">Тариф</label>
-        <div class="input-group">
+        <label class="form-label small" for="plan_select">Тариф</label>
+        <div class="input-group input-group-sm">
           <div class="soft-select flex-grow-1" id="plan_softselect" data-target="plan_select">
-            <button type="button" class="soft-select-toggle" id="plan_select_toggle">— Не выбран —</button>
+            <button type="button" class="soft-select-toggle soft-select-toggle-sm" id="plan_select_toggle">— Не выбран —</button>
             <div class="soft-select-menu" id="plan_select_menu"></div>
-            <select class="form-select rounded-3 select-soft" id="plan_select">
+            <select class="form-select form-select-sm select-soft" id="plan_select">
               <option value="">— Не выбран —</option>
             </select>
           </div>
-          <span class="input-group-text rounded-3 fw-semibold text-white bg-purple" id="plan_price" style="border:0;">— RUB</span>
+          <span class="input-group-text fw-semibold text-white bg-purple" id="plan_price" style="border:0; font-size: 0.85rem;">— RUB</span>
         </div>
       </div>
       <div class="col-12 col-md-2">
-        <label class="form-label" for="custom_days">Дней</label>
-        <input class="form-control rounded-3" type="number" id="custom_days" min="1" placeholder="например, 30" />
+        <label class="form-label small" for="custom_days">Дней</label>
+        <input class="form-control form-control-sm" type="number" id="custom_days" min="1" placeholder="30" />
       </div>
       <div class="col-12 col-md-2">
-        <label class="form-label" for="hwid_device_limit">Количество устройств</label>
-        <input class="form-control rounded-3" type="number" id="hwid_device_limit" name="hwid_device_limit" min="0" placeholder="0 = без лимита" />
+        <label class="form-label small" for="hwid_device_limit">Кол-во устройств</label>
+        <input class="form-control form-control-sm" type="number" id="hwid_device_limit" name="hwid_device_limit" min="0" placeholder="0" />
       </div>
 
       <div class="mode-section mode-personal col-12 col-md-4">
-        <label class="form-label" for="expiry_date">Истекает</label>
-        <div class="d-flex flex-wrap align-items-stretch gap-2 gp-presets">
-          <input class="form-control rounded-3 expiry-input" type="text" id="expiry_date" name="expiry_date" placeholder="Выберите дату" />
-          <button class="btn btn-outline-secondary rounded-3" type="button" data-preset="30">+30</button>
-          <button class="btn btn-outline-secondary rounded-3" type="button" data-preset="90">+90</button>
-          <button class="btn btn-outline-secondary rounded-3" type="button" data-preset="180">+180</button>
-          <button class="btn btn-outline-secondary rounded-3" type="button" data-preset="365">+365</button>
+        <label class="form-label small" for="expiry_date">Истекает</label>
+        <div class="d-flex flex-wrap align-items-stretch gap-1 gp-presets">
+          <input class="form-control form-control-sm expiry-input" type="text" id="expiry_date" name="expiry_date" placeholder="Выберите дату" style="flex:1; min-width: 140px;" />
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-preset="30">+30</button>
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-preset="90">+90</button>
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-preset="180">+180</button>
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-preset="365">+365</button>
         </div>
       </div>
 
@@ -105,12 +103,12 @@
       </div>
 
       <div class="col-12">
-        <label class="form-label" for="comment">Комментарий</label>
-        <textarea class="form-control rounded-3" id="comment" name="comment" rows="2" placeholder="Необязательный комментарий"></textarea>
+        <label class="form-label small" for="comment">Комментарий</label>
+        <textarea class="form-control form-control-sm" id="comment" name="comment" rows="2" placeholder="Необязательный комментарий"></textarea>
       </div>
 
       <div class="col-12">
-        <button type="button" class="btn btn-primary w-100" id="btn-submit-create">
+        <button type="button" class="btn btn-primary" id="btn-submit-create" style="height: 38px;">
           <i class="ti ti-plus me-1"></i>
           Создать ключ
         </button>

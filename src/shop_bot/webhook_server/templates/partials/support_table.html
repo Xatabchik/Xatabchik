@@ -1,37 +1,101 @@
 {% for t in tickets %}
-<tr>
-  <td>#{{ t.ticket_id }}</td>
-  <td>{{ t.user_id }}</td>
-  <td>{{ t.subject or 'Без темы' }}</td>
-  <td>
-    {% if t.status == 'open' %}
-      <span class="status-dot status-dot-animated bg-green"></span>
-      <span class="badge bg-green ms-1">Открыт</span>
-    {% else %}
-      <span class="status-dot"></span>
-      <span class="badge ms-1">Закрыт</span>
-    {% endif %}
-  </td>
-  <td>{{ t.updated_at }}</td>
-  <td>
-    <div class="btn-list">
-      <a class="btn btn-sm btn-primary" href="{{ url_for('support_ticket_page', ticket_id=t.ticket_id) }}" title="Открыть" data-bs-toggle="tooltip" aria-label="Открыть">
-        <i class="ti ti-mail-opened me-1"></i>
-        Открыть
+<div class="card support-ticket-card mb-3">
+  <div class="card-body">
+    <!-- Верхняя часть: ID и информация -->
+    <div class="support-ticket-header">
+      <!-- ID слева -->
+      <div class="support-ticket-id">
+        #{{ t.ticket_id }}
+      </div>
+      
+      <!-- Информация -->
+      <div class="support-ticket-info">
+        <h4 class="support-ticket-subject">
+          {{ t.subject or 'Без темы' }}
+        </h4>
+        <div class="support-ticket-meta">
+          <span class="meta-item">
+            <i class="ti ti-user me-1"></i>
+            {{ t.user_id }}
+          </span>
+          <span class="meta-divider">•</span>
+          <span class="meta-item">
+            <i class="ti ti-clock me-1"></i>
+            {{ t.updated_at }}
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Нижняя часть: кнопки и статус -->
+    <div class="support-ticket-footer">
+      <!-- Статус -->
+      {% if t.status == 'open' %}
+        <span class="badge badge-success-soft">
+          <span class="status-dot status-dot-animated bg-green"></span>
+          Открыт
+        </span>
+      {% else %}
+        <span class="badge badge-secondary-soft">
+          <span class="status-dot bg-secondary"></span>
+          Закрыт
+        </span>
+      {% endif %}
+      
+      <!-- Кнопка Посмотреть -->
+      <a class="btn btn-primary btn-sm support-btn-view" 
+         href="{{ url_for('support_ticket_page', ticket_id=t.ticket_id) }}" 
+         title="Просмотреть обращение"
+         data-bs-toggle="tooltip">
+        <i class="ti ti-eye"></i>
+        <span class="btn-text">Посмотреть</span>
       </a>
+      
+      <!-- Кнопка Закрыть/Открыть -->
+      <form method="post"
+            action="{{ url_for('support_ticket_page', ticket_id=t.ticket_id) }}"
+            style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        {% if t.status == 'open' %}
+        <button type="submit" 
+                name="action"
+                value="close"
+                class="btn btn-secondary btn-sm support-btn-toggle" 
+                title="Закрыть обращение"
+                data-bs-toggle="tooltip">
+          <i class="ti ti-lock"></i>
+          <span class="btn-text">Закрыть</span>
+        </button>
+        {% else %}
+        <button type="submit" 
+                name="action"
+                value="open"
+                class="btn btn-success btn-sm support-btn-toggle" 
+                title="Открыть обращение"
+                data-bs-toggle="tooltip">
+          <i class="ti ti-lock-open"></i>
+          <span class="btn-text">Открыть</span>
+        </button>
+        {% endif %}
+      </form>
+      
+      <!-- Кнопка Удалить -->
       <form method="post"
             action="{{ url_for('delete_support_ticket_route', ticket_id=t.ticket_id) }}"
             style="display:inline-block"
-            data-confirm="Удалить тикет #{{ t.ticket_id }}? Это действие необратимо."
+            data-confirm="Удалить обращение #{{ t.ticket_id }}? Это действие необратимо."
             data-ajax="delete"
             data-refresh-target="support-tbody">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit" class="btn btn-sm btn-outline-danger" title="Удалить" data-bs-toggle="tooltip" aria-label="Удалить">
-          <i class="ti ti-trash me-1"></i>
-          Удалить
+        <button type="submit" 
+                class="btn btn-outline-danger btn-sm support-btn-delete" 
+                title="Удалить обращение"
+                data-bs-toggle="tooltip">
+          <i class="ti ti-trash"></i>
+          <span class="btn-text">Удалить</span>
         </button>
       </form>
     </div>
-  </td>
-</tr>
+  </div>
+</div>
 {% endfor %}

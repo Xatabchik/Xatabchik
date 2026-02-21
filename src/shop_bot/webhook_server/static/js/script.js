@@ -1069,6 +1069,32 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     setupMobileSidebarDrawer();
+
+    // Support tickets search
+    const supportSearch = document.getElementById('support-search');
+    if (supportSearch) {
+        supportSearch.addEventListener('input', function(e) {
+            const query = e.target.value.toLowerCase().trim();
+            const ticketCards = document.querySelectorAll('.support-ticket-card');
+            
+            ticketCards.forEach(card => {
+                if (!query) {
+                    card.style.display = '';
+                    return;
+                }
+                
+                const ticketId = card.querySelector('.support-ticket-id')?.textContent.toLowerCase() || '';
+                const ticketSubject = card.querySelector('.support-ticket-subject')?.textContent.toLowerCase() || '';
+                const ticketMeta = card.querySelector('.support-ticket-meta')?.textContent.toLowerCase() || '';
+                
+                const matches = ticketId.includes(query) || 
+                               ticketSubject.includes(query) || 
+                               ticketMeta.includes(query);
+                
+                card.style.display = matches ? '' : 'none';
+            });
+        });
+    }
 });
 // Отключение автоматической перезагрузки
 (function() {

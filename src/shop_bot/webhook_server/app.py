@@ -302,7 +302,7 @@ def create_webhook_app(bot_controller_instance):
     flask_app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE=os.getenv("SHOPBOT_SESSION_SAMESITE", "Lax"),
-        SESSION_COOKIE_SECURE=os.getenv("SHOPBOT_SESSION_SECURE", "true").lower() in ("1","true","yes"),
+        SESSION_COOKIE_SECURE=os.getenv("SHOPBOT_SESSION_SECURE", "false").lower() in ("1","true","yes"),
     )
     flask_app.config["ENABLE_DEBUG_ENDPOINTS"] = os.getenv("SHOPBOT_ENABLE_DEBUG_ENDPOINTS", "false").lower() in ("1","true","yes")
     flask_app.config["DEBUG_IP_ALLOWLIST"] = [ip.strip() for ip in os.getenv("SHOPBOT_DEBUG_IP_ALLOWLIST", "127.0.0.1,::1").split(",") if ip.strip()]
@@ -406,10 +406,40 @@ def create_webhook_app(bot_controller_instance):
 
     @flask_app.context_processor
     def inject_current_year():
-
+        """Inject common variables into all templates"""
+        bot_status = _bot_controller.get_status()
+        support_bot_status = _support_bot_controller.get_status()
+        settings = get_all_settings()
+        required_for_start = ['telegram_bot_token', 'telegram_bot_username', 'admin_telegram_id']
+        required_support_for_start = ['support_bot_token', 'support_bot_username']
+        all_settings_ok = all(settings.get(key) for key in required_for_start)
+        try:
+            admin_ids = rw_repo.get_admin_ids()
+        except Exception:
+            admin_ids = set()
+        support_settings_ok = all(settings.get(key) for key in required_support_for_start) and bool(admin_ids)
+        try:
+            open_tickets_count = get_open_tickets_count()
+            closed_tickets_count = get_closed_tickets_count()
+            all_tickets_count = get_all_tickets_count()
+        except Exception:
+            open_tickets_count = 0
+            closed_tickets_count = 0
+            all_tickets_count = 0
+        
         return {
             'current_year': datetime.utcnow().year,
-            'csrf_token': generate_csrf
+            'csrf_token': generate_csrf,
+            "bot_status": bot_status,
+            "all_settings_ok": all_settings_ok,
+            "support_bot_status": support_bot_status,
+            "support_settings_ok": support_settings_ok,
+            "open_tickets_count": open_tickets_count,
+            "closed_tickets_count": closed_tickets_count,
+            "all_tickets_count": all_tickets_count,
+            "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
+            "franchise_enabled": franchise_settings(),
+            "module_menu_items": module_loader.get_menu_items(),
         }
 
     def login_required(f):
@@ -446,6 +476,10 @@ def create_webhook_app(bot_controller_instance):
 
     @flask_app.route('/login', methods=['GET', 'POST'])
     def login_page():
+        # Инициализируем сессию для генерации CSRF токена
+        if 'session_init' not in session:
+            session['session_init'] = True
+        
         settings = get_all_settings()
         if request.method == 'POST':
             ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()
@@ -2166,6 +2200,127 @@ def create_webhook_app(bot_controller_instance):
             **common_data,
         )
 
+    @flask_app.route('/modules/<module_id>/', defaults={'subpath': ''}, methods=['GET', 'POST'])
+    @flask_app.route('/modules/<module_id>/<path:subpath>', methods=['GET', 'POST'])
+    @login_required
+    def module_page_proxy(module_id: str, subpath: str = ''):
+        """Proxy request to module's panel routes if they exist."""
+        from flask import request
+        
+        # Check if module has registered routes
+        if not hasattr(flask_app, '_module_route_registry'):
+            common_data = get_common_template_data()
+            return render_template(
+                'module_page_placeholder.html',
+                module_id=module_id,
+                subpath=subpath,
+                message='Модуль не имеет панели (blueprint не зарегистрирован).',
+                **common_data,
+            )
+        
+        view_functions = flask_app._module_route_registry.get(module_id)
+        if not view_functions:
+            common_data = get_common_template_data()
+            return render_template(
+                'module_page_placeholder.html',
+                module_id=module_id,
+                subpath=subpath,
+                message='Модуль не имеет панели.',
+                **common_data,
+            )
+        
+        # Determine which view function to call
+        # For root path "/" use "index", for "/payouts/delete" try "payouts_delete", etc.
+        if not subpath or subpath == '':
+            func_name = 'index'
+        else:
+            # Try full path with slashes replaced by underscores first
+            # "/payouts/delete" -> "payouts_delete"
+            func_name = subpath.strip('/').replace('/', '_')
+        
+        # Get view function - try exact match first
+        view_func = view_functions.get(func_name)
+        
+        # If not found and path has segments, try first segment only
+        if not view_func and '/' in subpath:
+            func_name = subpath.strip('/').split('/')[0]
+            view_func = view_functions.get(func_name)
+        
+        if view_func:
+            # Call the view function with app context and inject common template data
+            # Temporarily wrap render_template to add context processor data
+            import flask as flask_module
+            original_render_template = flask_module.render_template
+            
+            def wrapped_render_template(template_name_or_list, **kwargs):
+                # Inject context from context_processor
+                context_data = inject_current_year()
+                # Merge: kwargs override context_data
+                merged = {**context_data, **kwargs}
+                return original_render_template(template_name_or_list, **merged)
+            
+            # Temporarily replace render_template
+            flask_module.render_template = wrapped_render_template
+            try:
+                result = view_func()
+            finally:
+                # Restore original render_template
+                flask_module.render_template = original_render_template
+            
+            return result
+        
+        # Debug info
+        available = list(view_functions.keys())
+        common_data = get_common_template_data()
+        return render_template(
+            'module_page_placeholder.html',
+            module_id=module_id,
+            subpath=subpath,
+            message=f'Функция "{func_name}" не найдена. Доступные: {available}',
+            **common_data,
+        )
+
+    @flask_app.route('/modules/upload', methods=['POST'])
+    @login_required
+    def module_upload_route():
+        """Upload and install a module from ZIP file."""
+        from werkzeug.utils import secure_filename
+        import tempfile
+        from pathlib import Path
+        
+        # Check if file is present
+        if 'module_file' not in request.files:
+            flash('Файл модуля не выбран.', 'danger')
+            return redirect(url_for('modules_page'))
+        
+        file = request.files['module_file']
+        if not file or file.filename == '':
+            flash('Файл модуля не выбран.', 'danger')
+            return redirect(url_for('modules_page'))
+        
+        # Validate file extension
+        if not file.filename.lower().endswith('.zip'):
+            flash('Файл должен быть ZIP архивом.', 'danger')
+            return redirect(url_for('modules_page'))
+        
+        # Save to temporary file
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_zip = Path(tmpdir) / secure_filename(file.filename)
+                file.save(str(tmp_zip))
+                
+                # Import module from ZIP
+                ok, message = module_loader.import_module_from_zip(tmp_zip, auto_enable=True)
+                
+                if ok:
+                    flash(f'✅ {message}', 'success')
+                else:
+                    flash(f'❌ Ошибка: {message}', 'danger')
+        except Exception as e:
+            logger.error(f"Module upload error: {e}", exc_info=True)
+            flash(f'❌ Ошибка загрузки: {e}', 'danger')
+        
+        return redirect(url_for('modules_page'))
 
     @flask_app.route('/admin/ssh-targets/create', methods=['POST'])
     @login_required

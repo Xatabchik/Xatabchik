@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -220,7 +221,9 @@ class ModuleLoader:
         if self._dispatcher and loaded.router:
             self._attach_router(module_id, loaded.router)
         if self._flask_app and loaded.blueprint:
-            self._register_blueprint(loaded.blueprint)
+            self._register_blueprint(module_id, loaded.blueprint)
+        # Enable module buttons
+        self._set_module_buttons_active(module_id, True)
         if not from_startup:
             self._set_status(module_id, ModuleStatus.ENABLED)
         self._enabled_cache.add(module_id)
@@ -232,7 +235,9 @@ class ModuleLoader:
         if loaded and self._dispatcher and loaded.router:
             self._detach_router(self._dispatcher, loaded.router)
         if loaded and self._flask_app and loaded.blueprint:
-            self._unregister_blueprint(self._flask_app, loaded.blueprint.name)
+            self._unregister_blueprint(module_id)
+        # Disable module buttons
+        self._set_module_buttons_active(module_id, False)
         self._enabled_cache.discard(module_id)
         self._set_status(module_id, ModuleStatus.DISABLED)
         return True, "Module disabled"
@@ -308,6 +313,8 @@ class ModuleLoader:
         rows = self._fetch_registry_rows()
         for module_id, row in rows.items():
             if row.get("status") != ModuleStatus.ENABLED.value:
+                # Ensure disabled modules have inactive buttons
+                self._set_module_buttons_active(module_id, False)
                 continue
             if module_id in self._enabled_cache:
                 continue
@@ -471,49 +478,91 @@ class ModuleLoader:
     def _attach_router(self, module_id: str, router: Router) -> None:
         if not self._dispatcher:
             return
-        if router in getattr(self._dispatcher, "sub_routers", []):
-            return
-        self._dispatcher.include_router(router)
-        logger.info("Module router attached: %s", module_id)
+        # Check if router is already attached
+        try:
+            sub_routers = getattr(self._dispatcher, "sub_routers", [])
+            if router in sub_routers:
+                logger.debug("Module router already attached: %s", module_id)
+                return
+        except Exception as e:
+            logger.warning("Error checking sub_routers: %s", e)
+        
+        try:
+            self._dispatcher.include_router(router)
+            logger.info("Module router attached: %s", module_id)
+        except RuntimeError as e:
+            if "already attached" in str(e):
+                logger.debug("Module router was already attached: %s", module_id)
+            else:
+                raise
 
     def _detach_router(self, dispatcher: Any, router: Router) -> None:
+        """Detach router from dispatcher."""
         try:
-            sub_routers = dispatcher.sub_routers
-        except Exception:
-            return
-        if router in sub_routers:
+            sub_routers = getattr(dispatcher, "sub_routers", [])
+            if router not in sub_routers:
+                return
             sub_routers.remove(router)
-        try:
-            router.parent_router = None
-        except Exception:
-            pass
+            # Reset parent_router using private attribute to avoid setter validation
+            if hasattr(router, '_parent_router'):
+                router._parent_router = None
+            logger.debug("Router detached successfully")
+        except Exception as e:
+            logger.warning("Error detaching router: %s", e)
 
-    def _register_blueprint(self, blueprint: Blueprint) -> None:
+    def _register_blueprint(self, module_id: str, blueprint: Blueprint) -> None:
+        """Store blueprint routes in a registry for dynamic dispatch.
+        
+        This allows module routes to be added after the app has started.
+        Routes are handled by a special proxy endpoint.
+        """
         if not self._flask_app:
             return
-        if blueprint.name in self._flask_app.blueprints:
-            return
-        self._flask_app.register_blueprint(blueprint)
+        
+        # Store reference to blueprints and their routes
+        if not hasattr(self._flask_app, '_module_route_registry'):
+            self._flask_app._module_route_registry = {}
+        
+        # Add module's template folder to Jinja loader search path
+        if blueprint.template_folder:
+            from jinja2 import ChoiceLoader, FileSystemLoader
+            module_path = self._module_paths.get(module_id)
+            if module_path:
+                template_path = module_path / blueprint.template_folder
+                if template_path.exists():
+                    # Get current loader
+                    current_loader = self._flask_app.jinja_loader
+                    # Create new loader that includes module templates
+                    new_loader = ChoiceLoader([
+                        current_loader,
+                        FileSystemLoader(str(template_path))
+                    ])
+                    self._flask_app.jinja_loader = new_loader
+        
+        # To extract view_functions from blueprint, we need to register it to a temp app
+        # because Blueprint only populates view_functions during registration
+        from flask import Flask
+        temp_app = Flask(__name__)
+        temp_app.register_blueprint(blueprint)
+        
+        # Now extract the populated view_functions
+        view_functions = {}
+        for endpoint, func in temp_app.view_functions.items():
+            # Endpoints are in format "blueprint_name.function_name"
+            if '.' in endpoint:
+                func_name = endpoint.split('.')[-1]
+                view_functions[func_name] = func
+        
+        # Store the view functions in the registry
+        self._flask_app._module_route_registry[module_id] = view_functions
 
-    def _unregister_blueprint(self, app: Any, bp_name: str) -> None:
-        if bp_name not in app.blueprints:
+    def _unregister_blueprint(self, module_id: str) -> None:
+        """Remove registered blueprint routes from the registry."""
+        if not self._flask_app or not hasattr(self._flask_app, '_module_route_registry'):
             return
-        app.blueprints.pop(bp_name, None)
-        rules = [rule for rule in app.url_map.iter_rules() if rule.endpoint.startswith(f"{bp_name}.")]
-        for rule in rules:
-            try:
-                app.url_map._rules.remove(rule)
-            except Exception:
-                pass
-            try:
-                rules_by_endpoint = app.url_map._rules_by_endpoint.get(rule.endpoint)
-                if rules_by_endpoint and rule in rules_by_endpoint:
-                    rules_by_endpoint.remove(rule)
-                if rules_by_endpoint == []:
-                    app.url_map._rules_by_endpoint.pop(rule.endpoint, None)
-            except Exception:
-                pass
-            app.view_functions.pop(rule.endpoint, None)
+        
+        # Remove the blueprint for this module
+        self._flask_app._module_route_registry.pop(module_id, None)
 
     def _get_dependents(self, module_id: str) -> list[str]:
         dependents: list[str] = []
@@ -530,6 +579,94 @@ class ModuleLoader:
             shutil.rmtree(path)
         except Exception as exc:
             logger.warning("Failed to delete module files %s: %s", module_id, exc)
+
+    def import_module_from_zip(self, zip_file_path: str | Path, *, auto_enable: bool = True) -> tuple[bool, str]:
+        """Import a module from a ZIP file.
+        
+        Expects ZIP with structure:
+            module_name/
+                __init__.py
+                bot_handlers.py
+                ...
+        """
+        zip_path = Path(zip_file_path)
+        if not zip_path.exists():
+            return False, "ZIP file not found"
+        
+        if not zip_path.suffix.lower() == '.zip':
+            return False, "File is not a ZIP archive"
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                # Find the module directory inside the ZIP
+                files = zf.namelist()
+                if not files:
+                    return False, "ZIP archive is empty"
+                
+                # Get the root directory name (module name)
+                root_parts = files[0].split('/')
+                if not root_parts[0]:
+                    return False, "Invalid ZIP structure"
+                
+                module_name = root_parts[0]
+                
+                # Check for __init__.py
+                if f"{module_name}/__init__.py" not in files:
+                    return False, "Module __init__.py not found"
+                
+                # Check if module already exists
+                target_path = self._modules_path / module_name
+                if target_path.exists():
+                    return False, f"Module '{module_name}' already exists"
+                
+                # Extract to modules directory
+                self._modules_path.mkdir(parents=True, exist_ok=True)
+                
+                # Extract all files from module directory
+                for file in files:
+                    if not file.startswith(f"{module_name}/"):
+                        continue
+                    
+                    # Extract to target_path
+                    rel_path = file[len(module_name)+1:]  # Remove "module_name/" prefix
+                    if not rel_path:  # Skip directory entry
+                        continue
+                    
+                    target_file = target_path / rel_path
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with zf.open(file) as source:
+                        with open(target_file, 'wb') as dest:
+                            dest.write(source.read())
+                
+                logger.info(f"Module extracted: {module_name} -> {target_path}")
+        except zipfile.BadZipFile:
+            return False, "Invalid ZIP file"
+        except Exception as exc:
+            # Clean up if extraction failed
+            try:
+                shutil.rmtree(target_path)
+            except Exception:
+                pass
+            return False, f"Extraction error: {exc}"
+        
+        # Discover the new module
+        self._discovered = False
+        self.discover_modules()
+        
+        # Validate that module was discovered
+        if module_name not in self._modules:
+            return False, "Module was extracted but failed validation"
+        
+        # Auto-enable if requested
+        if auto_enable:
+            ok, msg = self.enable_module(module_name)
+            if not ok:
+                logger.warning(f"Auto-enable failed for {module_name}: {msg}")
+                return False, f"Module extracted but enable failed: {msg}"
+            return True, f"Module '{module_name}' imported and enabled successfully"
+        
+        return True, f"Module '{module_name}' imported successfully"
 
     def _upsert_registry(self, meta: ModuleMeta) -> None:
         row = self._get_registry_row(meta.id)
@@ -578,6 +715,20 @@ class ModuleLoader:
                 """,
                 (status.value, status.value, error_message, module_id),
             )
+
+    def _set_module_buttons_active(self, module_id: str, active: bool) -> None:
+        """Enable or disable buttons associated with a module."""
+        with sqlite3.connect(self._db_file) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE button_configs
+                   SET is_active = ?
+                 WHERE button_id = ?
+                """,
+                (1 if active else 0, module_id),
+            )
+            conn.commit()
 
     def _get_registry_row(self, module_id: str) -> dict[str, Any] | None:
         with sqlite3.connect(self._db_file) as conn:

@@ -117,14 +117,14 @@
 			<div class="content-shell">
 				<!-- Мобильный заголовок с названием слева -->
 				<header class="mobile-header">
-					<div class="mobile-brand">
-						<a href="{{ url_for('dashboard_page') }}" class="mobile-brand-link">
-							<img src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
-							<span id="mobile-brand-title">{{ brand_title or 'Xatabchik' }}</span>
-						</a>
-					</div>
-					<div class="header-controls">
-						<div class="bot-control">
+					<div class="mobile-header-content">
+						<div class="mobile-brand">
+							<a href="{{ url_for('dashboard_page') }}" class="mobile-brand-link">
+								<img src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
+								<span id="mobile-brand-title">{{ brand_title or 'Xatabchik' }}</span>
+							</a>
+						</div>
+						<div class="mobile-bot-control">
 						{% set main_running = bot_status and bot_status.is_running %}
 						{% set support_running = support_bot_status and support_bot_status.is_running %}
 						{% if main_running and support_running %}
@@ -157,8 +157,6 @@
 							{% endif %}
 						{% endif %}
 						</div>
-
-						
 					</div>
 				</header>
 
@@ -167,13 +165,32 @@
 						<input id="burger" type="checkbox" />
 						
 						<nav class="burger-menu">
+							<div class="burger-menu-header">
+								<span class="burger-menu-title">Меню</span>
+							</div>
 							<ul>
-								<li><a href="{{ url_for('statistics_page') }}">Статистика</a></li>
-								<li><a href="{{ url_for('settings_page') }}">Настройки</a></li>
-								<li><a href="{{ url_for('modules_page') }}">Модули</a></li>
-								<li><a href="{{ url_for('button_constructor_page') }}">Конструктор кнопок</a></li>
-								<li><a href="{{ url_for('monitor_page') }}">Мониторинг</a></li>
-								{% if franchise_enabled %}<li><a href="/franchise">Франшиза</a></li>{% endif %}
+								<li class="burger-menu-section-title">Основное</li>
+								<li><a href="{{ url_for('dashboard_page') }}"><i class="ti ti-home"></i> Главная</a></li>
+								<li><a href="{{ url_for('statistics_page') }}"><i class="ti ti-chart-line"></i> Статистика</a></li>
+								
+								<li class="burger-menu-section-title">Управление</li>
+								<li><a href="{{ url_for('users_page') }}"><i class="ti ti-users"></i> Пользователи</a></li>
+								<li><a href="{{ url_for('admin_keys_page') }}"><i class="ti ti-key"></i> Ключи</a></li>
+								<li><a href="{{ url_for('support_list_page') }}"><i class="ti ti-message-circle"></i> Поддержка</a></li>
+								
+								<li class="burger-menu-section-title">Настройки</li>
+								<li><a href="{{ url_for('settings_page') }}"><i class="ti ti-settings"></i> Настройки</a></li>
+								<li><a href="{{ url_for('modules_page') }}"><i class="ti ti-puzzle"></i> Модули</a></li>
+								<li><a href="{{ url_for('button_constructor_page') }}"><i class="ti ti-tools"></i> Конструктор кнопок</a></li>
+								<li><a href="{{ url_for('monitor_page') }}"><i class="ti ti-device-desktop"></i> Мониторинг</a></li>
+								{% if franchise_enabled %}<li><a href="/franchise"><i class="ti ti-briefcase"></i> Франшиза</a></li>{% endif %}
+								
+								{% if module_menu_items %}
+								<li class="burger-menu-section-title">Модули</li>
+								{% for item in module_menu_items %}
+								<li><a href="{{ item.url }}"><i class="ti ti-{{ item.icon or 'plug' }}"></i> {{ item.label }}</a></li>
+								{% endfor %}
+								{% endif %}
 							</ul>
 						</nav>
 					</div>

@@ -1,6 +1,8 @@
 {% extends "base.html" %} {% block title %}Настройки Бота и Хостов{% endblock %}
 {% block content %}
 
+<div id="settings">
+
 <div class="page-header d-print-none mb-4">
   <div class="row align-items-center">
     <div class="col">
@@ -43,6 +45,183 @@
 </div>
 
 <style>
+  /* ==== Unified Compact Design System ==== */
+  /* Применение компактного дизайна ко всем формам на странице настроек */
+  
+  /* Form controls: уменьшенные размеры инпутов */
+  #settings .form-control:not(.soft-select-toggle),
+  #settings .form-select,
+  #settings input[type="text"]:not(.soft-select-toggle),
+  #settings input[type="url"],
+  #settings input[type="number"],
+  #settings input[type="password"],
+  #settings input[type="email"],
+  #settings textarea {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important; /* Одинаковые скругления со всех сторон */
+  }
+
+  /* Input groups: fix border radius for grouped elements */
+  #settings .input-group > .form-control:not(:last-child),
+  #settings .input-group > .form-select:not(:last-child) {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  #settings .input-group > .form-control:not(:first-child),
+  #settings .input-group > .form-select:not(:first-child) {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+  }
+
+  #settings .input-group > .input-group-text:first-child {
+    border-top-left-radius: 0.5rem !important;
+    border-bottom-left-radius: 0.5rem !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  #settings .input-group > .input-group-text:last-child {
+    border-top-right-radius: 0.5rem !important;
+    border-bottom-right-radius: 0.5rem !important;
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+  }
+
+  #settings .input-group > .btn:not(:last-child) {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  #settings .input-group > .btn:not(:first-child) {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+  }
+
+  /* Form labels: компактные лейблы */
+  #settings .form-group label,
+  #settings .form-label,
+  #settings label {
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    margin-bottom: 0.25rem !important;
+  }
+
+  /* Buttons: компактные кнопки */
+  #settings .btn:not(.soft-select-toggle):not(.nav-link) {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important; /* Одинаковые скругления со всех сторон */
+  }
+
+  /* Pill elements: компактные элементы с одинаковыми скругленными углами */
+  #settings .form-control.pill {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important;
+  }
+
+  #settings .btn.pill {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important;
+  }
+
+  #settings .soft-select-toggle.pill {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important;
+  }
+
+  /* Soft-select elements: компактные выпадающие списки */
+  #settings .soft-select-toggle {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important;
+  }
+
+  #settings .soft-select {
+    min-height: auto !important;
+  }
+
+  #settings .form-select.select-soft {
+    font-size: 0.85rem !important;
+    padding: 0.4rem 0.75rem !important;
+    border-radius: 0.5rem !important;
+  }
+
+  /* Row gaps: reduced spacing */
+  #settings .row.g-3 {
+    --bs-gutter-x: 0.5rem;
+    --bs-gutter-y: 0.5rem;
+  }
+
+  /* Gap utilities: reduced spacing */
+  #settings .gap-2 {
+    gap: 0.25rem !important;
+  }
+
+  /* Form text: smaller helper text */
+  #settings .form-text,
+  #settings small {
+    font-size: 0.75rem !important;
+  }
+
+  /* Checkboxes and switches: unified appearance */
+  #settings .form-check {
+    margin-bottom: 0.5rem !important;
+  }
+
+  /* Размеры только для обычных чекбоксов, не для переключателей */
+  #settings .form-check:not(.form-switch) .form-check-input {
+    width: 1.25rem !important;
+    height: 1.25rem !important;
+  }
+
+  #settings .form-check-label {
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    margin-left: 0.5rem !important;
+  }
+
+  #settings .form-group-checkbox {
+    margin-bottom: 0.5rem !important;
+  }
+
+  #settings .form-group-checkbox label {
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+  }
+
+  /* Cards and blocks: unified border radius */
+  #settings .card,
+  #settings .host-card,
+  #settings .rw-drawer {
+    border-radius: 0.75rem !important;
+  }
+
+  /* Card header: rounded top corners only */
+  #settings .card-header {
+    border-top-left-radius: 0.75rem !important;
+    border-top-right-radius: 0.75rem !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+  /* Card body: rounded bottom corners only if last child */
+  #settings .card-body:last-child {
+    border-bottom-left-radius: 0.75rem !important;
+    border-bottom-right-radius: 0.75rem !important;
+  }
+
+  /* Alert blocks */
+  #settings .alert {
+    border-radius: 0.75rem !important;
+  }
+
+  /* ==== Original Styles ==== */
+  
   /* Inline edit collapse animation */
   .collapse { max-height: 0; overflow: hidden; opacity: 0; transition: max-height 220ms ease, opacity 220ms ease; }
   .collapse.show { opacity: 1; }
@@ -147,7 +326,7 @@
 				</div>
 			</div>
 
-			<div class="row g-3 align-items-start">
+			<div class="row g-2 align-items-start">
 				<div class="col-12 col-lg-5">
 					<div class="host-card">
 						<h4>
@@ -157,23 +336,23 @@
 						<form action="{{ url_for('add_host_route') }}" method="post">
 							<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 							<div class="form-group">
-								<label for="host_name">Название хоста:</label>
+								<label class="form-label small" for="host_name">Название хоста:</label>
 								<input type="text" id="host_name" name="host_name" required />
 							</div>
 							<div class="form-group">
-								<label for="remnawave_base_url">Базовый URL Remnawave:</label>
+								<label class="form-label small" for="remnawave_base_url">Базовый URL Remnawave:</label>
 								<input type="url" id="remnawave_base_url" name="remnawave_base_url" placeholder="https://panel.example.com" required />
 							</div>
 							<div class="form-group password-wrapper">
-								<label for="remnawave_api_token">API Token:</label>
+								<label class="form-label small" for="remnawave_api_token">API Token:</label>
 								<input type="password" id="remnawave_api_token" name="remnawave_api_token" required />
 								<button type="button" class="toggle-password">👁️</button>
 							</div>
 							<div class="form-group">
-								<label for="squad_uuid">Squad UUID:</label>
+								<label class="form-label small" for="squad_uuid">Squad UUID:</label>
 								<input type="text" id="squad_uuid" name="squad_uuid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
 							</div>
-							<button type="submit" class="btn btn-primary">
+							<button type="submit" class="btn btn-sm btn-primary">
 								<i class="ti ti-plus me-1"></i>
 								Добавить хост
 							</button>
@@ -756,17 +935,16 @@
 					</div>
 					<div class="card-body">
 						<div class="mb-3">
-							<input type="hidden" name="enable_referrals" value="false" />
-							<div class="form-check">
-								<input type="hidden" name="enable_referrals" value="off">
-<input class="form-check-input" type="checkbox" id="enable_referrals" name="enable_referrals" value="true" {% if settings.enable_referrals == 'true' %}checked{% endif %}>
-            <div class="form-check form-switch my-2">
-                <input type="hidden" name="enable_referral_days_bonus" value="off">
-<input class="form-check-input" type="checkbox" id="enable_referral_days_bonus" name="enable_referral_days_bonus" {{ 'checked' if settings.get('enable_referral_days_bonus', 'true') == 'true' else '' }}>
-                <label class="form-check-label" for="enable_referral_days_bonus">Бонус +1 день к ключу пригласившему</label>
-            </div>
-
+							<input type="hidden" name="enable_referrals" value="off" />
+							<div class="form-check mb-3">
+								<input class="form-check-input" type="checkbox" id="enable_referrals" name="enable_referrals" value="true" {% if settings.enable_referrals == 'true' %}checked{% endif %}>
 								<label class="form-check-label" for="enable_referrals">Включить реферальную систему</label>
+							</div>
+							
+							<input type="hidden" name="enable_referral_days_bonus" value="off" />
+							<div class="form-check form-switch">
+								<input class="form-check-input" type="checkbox" id="enable_referral_days_bonus" name="enable_referral_days_bonus" {{ 'checked' if settings.get('enable_referral_days_bonus', 'true') == 'true' else '' }}>
+								<label class="form-check-label" for="enable_referral_days_bonus">Бонус +1 день к ключу пригласившему</label>
 							</div>
 						</div>
 						<div class="mb-3">
@@ -1337,5 +1515,7 @@
     }
   });
 </script>
+
+</div><!-- #settings -->
 
 {% endblock %}
