@@ -60,7 +60,7 @@ from shop_bot.data_manager.remnawave_repository import (
     list_gift_tokens,
 )
 from shop_bot.data_manager.database import (
-    get_button_configs, create_button_config, update_button_config, 
+    get_button_configs, get_button_configs_admin, create_button_config, update_button_config, 
     delete_button_config, reorder_button_configs
 )
 from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id
@@ -3533,9 +3533,10 @@ def create_webhook_app(bot_controller_instance):
     @login_required
     @csrf.exempt
     def get_button_configs_api(menu_type):
-        """Get button configurations for a specific menu type"""
+        """Get button configurations for a specific menu type (including inactive for admin)"""
         try:
-            configs = get_button_configs(menu_type)
+            # Для конструктора кнопок возвращаем ВСЕ кнопки (включая неактивные)
+            configs = get_button_configs_admin(menu_type, include_inactive=True)
             return jsonify({'success': True, 'data': configs})
         except Exception as e:
             logger.error(f"Error getting button configs for {menu_type}: {e}")

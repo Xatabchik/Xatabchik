@@ -677,8 +677,16 @@ def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 
             kid = k.get('key_id')
             host = k.get('host_name') or '—'
             email = k.get('key_email') or '—'
-            # Ваш оригинальный формат заголовка
-            title = f"#{kid} • {host} • {email[:20]}"
+            user_key_name = k.get('user_key_name')
+            expiry_date = datetime.fromisoformat(k['expiry_date'])
+            
+            # Если есть пользовательское название, показываем его вместо email
+            if user_key_name:
+                title = f"#{kid} • {user_key_name} • {host} (до {expiry_date.strftime('%d.%m.%Y')})"
+            else:
+                # Иначе показываем email как раньше
+                title = f"#{kid} • {host} • {email[:20]}"
+            
             builder.button(text=title, callback_data=f"admin_edit_key_{kid}")
     else:
         builder.button(text="Ключей нет", callback_data="noop")
@@ -1152,14 +1160,20 @@ def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboard
 
     if current_keys:
         for i, key in enumerate(current_keys):
-            # Рассчитываем номер для отображения (чтобы на 2 стр. было Ключ #6 и т.д.)
-            num = start_idx + i + 1
+            # Рассчитываем номер в обратном порядке (новые ключи = больший номер)
+            num = len(keys) - start_idx - i
             expiry_date = datetime.fromisoformat(key['expiry_date'])
             status_icon = "✅" if expiry_date > datetime.now() else "❌"
-            host_name = key.get('host_name', 'Неизвестный хост')
             
-            # Твой оригинальный текст
-            button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            # Если есть пользовательское название, показываем его
+            user_key_name = key.get('user_key_name')
+            if user_key_name:
+                button_text = f"{status_icon} #{num} {user_key_name} (до {expiry_date.strftime('%d.%m.%Y')})"
+            else:
+                # Иначе показываем полную информацию как раньше
+                host_name = key.get('host_name', 'Неизвестный хост')
+                button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            
             builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
 
     builder.adjust(1)
@@ -1192,6 +1206,17 @@ def create_search_keys_cancel_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="❌ Отмена", callback_data="cancel_search_keys")
     return builder.as_markup()
 
+
+def create_rename_key_keyboard(key_id: int, has_name: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура для переименования ключа."""
+    builder = InlineKeyboardBuilder()
+    if has_name:
+        builder.button(text="🗑️ Удалить название", callback_data=f"remove_key_name_{key_id}")
+    builder.button(text="❌ Отмена", callback_data=f"cancel_rename_key_{key_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def create_search_keys_results_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
     """Клавиатура с результатами поиска ключей."""
     builder = InlineKeyboardBuilder()
@@ -1206,8 +1231,16 @@ def create_search_keys_results_keyboard(keys: list, page: int = 0) -> InlineKeyb
             num = start_idx + i + 1
             expiry_date = datetime.fromisoformat(key['expiry_date'])
             status_icon = "✅" if expiry_date > datetime.now() else "❌"
-            host_name = key.get('host_name', 'Неизвестный хост')
-            button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            
+            # Если есть пользовательское название, показываем его
+            user_key_name = key.get('user_key_name')
+            if user_key_name:
+                button_text = f"{status_icon} #{key['key_id']} {user_key_name}"
+            else:
+                # Иначе показываем полную информацию как раньше
+                host_name = key.get('host_name', 'Неизвестный хост')
+                button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+            
             builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
 
     builder.adjust(1)
@@ -1396,6 +1429,9 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
     # Кнопка отправки ссылки подарка (если это подарочный ключ)
     if gift_code and gift_id:
         builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+    
+    # Кнопка переименования ключа (для всех ключей)
+    builder.button(text="📝 Переименовать ключ", callback_data=f"rename_key_{key_id}")
     
     # Если это подарочный ключ, показываем кнопку "К списку подарков", иначе "Назад к списку ключей"
     if gift_code:

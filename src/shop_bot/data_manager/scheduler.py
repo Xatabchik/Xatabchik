@@ -573,7 +573,7 @@ async def sync_keys_with_panels():
             continue
 
         try:
-            remote_users = await remnawave_api.list_users(host_name=host_name, squad_uuid=squad_uuid)
+            remote_users = await remnawave_api.list_users(host_name=host_name, squad_uuid=squad_uuid, size=1000)
         except Exception as exc:
             logger.error("Scheduler: Не удалось получить пользователей Remnawave для '%s': %s", host_name, exc)
             continue

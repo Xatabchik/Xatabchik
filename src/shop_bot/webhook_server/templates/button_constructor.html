@@ -38,6 +38,8 @@
             <select class="form-select" id="menu-type-select">
               <option value="main_menu">Главное меню</option>
               <option value="admin_menu">Админ меню</option>
+              <option value="admin_system_menu">Админ: Система</option>
+              <option value="admin_settings_menu">Админ: Настройки</option>
               <option value="profile_menu">Меню профиля</option>
               <option value="support_menu">Меню поддержки</option>
             </select>
@@ -52,6 +54,16 @@
         
         <div class="button-grid" id="button-grid">
           
+        </div>
+        
+        <div class="mt-4">
+          <h5 class="text-muted mb-3">
+            <i class="ti ti-eye-off"></i> Неактивные кнопки
+            <small class="text-secondary">(перетащите сюда, чтобы скрыть из меню)</small>
+          </h5>
+          <div class="inactive-buttons-grid" id="inactive-buttons-grid">
+            <p class="text-muted text-center">Нет неактивных кнопок</p>
+          </div>
         </div>
       </div>
     </div>
@@ -479,6 +491,29 @@ body {
   background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
   border: 2px dashed #30363d;
   border-radius: 8px;
+}
+
+/* Сетка неактивных кнопок */
+.inactive-buttons-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 100px;
+  padding: 20px;
+  background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+  border: 2px dashed #58a6ff40;
+  border-radius: 8px;
+}
+
+.inactive-buttons-grid .button-item {
+  width: auto;
+  min-width: 150px;
+  opacity: 0.6;
+}
+
+.inactive-buttons-grid .button-item:hover {
+  opacity: 1;
+  border-color: #58a6ff;
 }
 
 /* Классы для различных ширин кнопок в тёмной теме */
@@ -1146,38 +1181,75 @@ class ButtonConstructor {
   }
 
   renderButtons() {
-    const grid = document.getElementById('button-grid');
-    grid.innerHTML = '';
+    const activeGrid = document.getElementById('button-grid');
+    const inactiveGrid = document.getElementById('inactive-buttons-grid');
+    activeGrid.innerHTML = '';
+    inactiveGrid.innerHTML = '';
 
     if (this.buttons.length === 0) {
-      grid.innerHTML = '<p class="text-muted text-center">Нет кнопок. Нажмите "Добавить кнопку" для создания.</p>';
+      activeGrid.innerHTML = '<p class="text-muted text-center">Нет кнопок. Нажмите "Добавить кнопку" для создания.</p>';
+      inactiveGrid.innerHTML = '<p class="text-muted text-center">Нет неактивных кнопок</p>';
       return;
     }
 
-    // Сортируем кнопки по позиции для сетки 2x5
-    const sortedButtons = [...this.buttons].sort((a, b) => {
+    // Разделяем на активные и неактивные
+    const activeButtons = this.buttons.filter(b => b.is_active === 1);
+    const inactiveButtons = this.buttons.filter(b => b.is_active !== 1);
+
+    // Сортируем активные кнопки по позиции для сетки 2x5
+    const sortedActiveButtons = [...activeButtons].sort((a, b) => {
       if (a.row_position !== b.row_position) return a.row_position - b.row_position;
       if (a.column_position !== b.column_position) return a.column_position - b.column_position;
       return a.sort_order - b.sort_order;
     });
 
-    sortedButtons.forEach(button => {
-      const buttonElement = this.createButtonElement(button);
-      grid.appendChild(buttonElement);
-    });
+    // Сортируем неактивные по sort_order
+    const sortedInactiveButtons = [...inactiveButtons].sort((a, b) => a.sort_order - b.sort_order);
 
-    // Инициализируем Sortable
-    new Sortable(grid, {
+    // Рендерим активные кнопки
+    if (sortedActiveButtons.length === 0) {
+      activeGrid.innerHTML = '<p class="text-muted text-center">Нет активных кнопок</p>';
+    } else {
+      sortedActiveButtons.forEach(button => {
+        const buttonElement = this.createButtonElement(button);
+        activeGrid.appendChild(buttonElement);
+      });
+    }
+
+    // Рендерим неактивные кнопки
+    if (sortedInactiveButtons.length === 0) {
+      inactiveGrid.innerHTML = '<p class="text-muted text-center">Нет неактивных кнопок</p>';
+    } else {
+      sortedInactiveButtons.forEach(button => {
+        const buttonElement = this.createButtonElement(button, true);
+        inactiveGrid.appendChild(buttonElement);
+      });
+    }
+
+    // Инициализируем Sortable для активных кнопок
+    new Sortable(activeGrid, {
+      group: 'buttons',
       animation: 150,
       ghostClass: 'sortable-ghost',
       chosenClass: 'sortable-chosen',
       onEnd: (evt) => {
-        this.updateButtonPositions();
+        this.handleButtonMove(evt);
+      }
+    });
+
+    // Инициализируем Sortable для неактивных кнопок
+    new Sortable(inactiveGrid, {
+      group: 'buttons',
+      animation: 150,
+      ghostClass: 'sortable-ghost',
+      chosenClass: 'sortable-chosen',
+      onEnd: (evt) => {
+        this.handleButtonMove(evt);
       }
     });
   }
 
-  createButtonElement(button) {
+  createButtonElement(button, isInactive = false) {
     const div = document.createElement('div');
     div.className = 'button-item';
     div.dataset.buttonId = button.id;
@@ -1186,8 +1258,10 @@ class ButtonConstructor {
     const buttonWidth = button.button_width || 1;
     div.classList.add(`width-${buttonWidth}`);
     
+    const statusBadge = isInactive ? '<span style="color: #f85149; font-size: 0.7rem;">●</span> ' : '';
+    
     div.innerHTML = `
-      <div class="button-text">${button.text}</div>
+      <div class="button-text">${statusBadge}${button.text}</div>
       <div class="button-id">${button.button_id}</div>
       <div class="button-width-indicator">${buttonWidth}×</div>
       <div class="button-actions">
@@ -1450,6 +1524,62 @@ class ButtonConstructor {
     }
   }
 
+  handleButtonMove(evt) {
+    const fromContainer = evt.from.id;
+    const toContainer = evt.to.id;
+    
+    // Проверяем, изменился ли контейнер (активные <-> неактивные)
+    if (fromContainer !== toContainer) {
+      const buttonElement = evt.item;
+      const buttonId = parseInt(buttonElement.dataset.buttonId);
+      const button = this.buttons.find(b => b.id === buttonId);
+      
+      if (button) {
+        // Меняем статус активности
+        const newActiveStatus = toContainer === 'button-grid' ? 1 : 0;
+        this.toggleButtonActive(button.id, newActiveStatus);
+      }
+    } else if (toContainer === 'button-grid') {
+      // Если перемещение внутри активных кнопок, обновляем позиции
+      this.updateButtonPositions();
+    }
+  }
+
+  async toggleButtonActive(buttonId, isActive) {
+    try {
+      const response = await fetch(`/api/button-configs/${buttonId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': this.getCSRFToken()
+        },
+        body: JSON.stringify({ is_active: isActive })
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        // Обновляем локальные данные
+        const button = this.buttons.find(b => b.id === buttonId);
+        if (button) {
+          button.is_active = isActive;
+        }
+        
+        const statusText = isActive ? 'активирована' : 'деактивирована';
+        this.showNotification(`Кнопка ${statusText}`, 'success');
+        
+        // Перезагружаем кнопки
+        await this.loadButtons();
+      } else {
+        this.showNotification('Ошибка изменения статуса: ' + result.error, 'error');
+        // Откатываем изменения
+        await this.loadButtons();
+      }
+    } catch (error) {
+      this.showNotification('Ошибка: ' + error.message, 'error');
+      await this.loadButtons();
+    }
+  }
+
   updateButtonPositions() {
     const grid = document.getElementById('button-grid');
     const buttonElements = grid.querySelectorAll('.button-item');
@@ -1629,6 +1759,8 @@ class ButtonConstructor {
     const menuTitles = {
       'main_menu': { title: '🏠 Главное меню', subtitle: 'Выберите действие:' },
       'admin_menu': { title: '⚙️ Админ панель', subtitle: 'Административные функции:' },
+      'admin_system_menu': { title: '🖥 Админ: Система', subtitle: 'Системные функции:' },
+      'admin_settings_menu': { title: '⚙️ Админ: Настройки', subtitle: 'Настройки системы:' },
       'profile_menu': { title: '👤 Мой профиль', subtitle: 'Управление профилем:' },
       'support_menu': { title: '🆘 Поддержка', subtitle: 'Система поддержки:' }
     };

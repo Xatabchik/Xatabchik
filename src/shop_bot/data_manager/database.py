@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from pathlib import Path
 import json
@@ -157,7 +157,8 @@ def initialize_db():
                     traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
                     tag TEXT,
                     description TEXT,
-                    missing_from_server_at TIMESTAMP
+                    missing_from_server_at TIMESTAMP,
+                    user_key_name TEXT
                 )
             ''')
 
@@ -728,7 +729,8 @@ def _rebuild_vpn_keys_table(cursor: sqlite3.Cursor) -> None:
             traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
             tag TEXT,
             description TEXT,
-            missing_from_server_at TIMESTAMP
+            missing_from_server_at TIMESTAMP,
+            user_key_name TEXT
         )
     ''')
     old_columns = _get_table_columns(cursor, "vpn_keys_legacy")
@@ -823,12 +825,15 @@ def _ensure_vpn_keys_schema(cursor: sqlite3.Cursor) -> None:
                 traffic_limit_strategy TEXT DEFAULT 'NO_RESET',
                 tag TEXT,
                 description TEXT,
-                missing_from_server_at TIMESTAMP
+                missing_from_server_at TIMESTAMP,
+                user_key_name TEXT
             )
         ''')
         _finalize_vpn_key_indexes(cursor)
         return
     _rebuild_vpn_keys_table(cursor)
+    # Добавляем колонку user_key_name если её нет
+    _ensure_table_column(cursor, "vpn_keys", "user_key_name", "TEXT")
 
 
 def _migrate_gift_tags(cursor: sqlite3.Cursor) -> None:
@@ -1268,6 +1273,43 @@ def update_key_comment(key_id: int, comment: str) -> bool:
     except sqlite3.Error as e:
         logging.error(f"Не удалось обновить комментарий ключа для {key_id}: {e}")
         return False
+
+
+def update_key_name(key_id: int, new_name: str | None) -> bool:
+    """
+    Обновить пользовательское название ключа.
+    
+    Args:
+        key_id: ID ключа
+        new_name: Новое название (None или пустая строка для удаления)
+    
+    Returns:
+        True если успешно, False при ошибке
+    """
+    try:
+        # Валидация и нормализация
+        if new_name:
+            new_name = new_name.strip()
+            if len(new_name) > 30:
+                logging.warning(f"Название ключа слишком длинное ({len(new_name)} символов): {new_name[:50]}")
+                return False
+            if not new_name:
+                new_name = None
+        else:
+            new_name = None
+        
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE vpn_keys SET user_key_name = ?, updated_at = CURRENT_TIMESTAMP WHERE key_id = ?",
+                (new_name, key_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Не удалось обновить название ключа {key_id}: {e}")
+        return False
+
 
 def get_all_hosts() -> list[dict]:
     try:
@@ -3037,6 +3079,45 @@ def initialize_default_button_configs():
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 """, ("support_menu", button_id, text, callback_data, row_pos, col_pos, sort_order))
             
+            # Admin System Menu (подменю)
+            admin_system_menu_buttons = [
+                ("speedtest", "⚡ Тест скорости", "admin_speedtest", 0, 0, 0),
+                ("monitor", "📊 Мониторинг", "admin_monitor", 0, 1, 1),
+                ("backup", "🗄 Бэкап БД", "admin_backup_db", 1, 0, 2),
+                ("restore", "♻️ Восстановить БД", "admin_restore_db", 1, 1, 3),
+                ("back_to_admin", "⬅️ Назад", "admin_menu", 2, 0, 4),
+            ]
+            
+            for button_id, text, callback_data, row_pos, col_pos, sort_order in admin_system_menu_buttons:
+                cursor.execute("""
+                    INSERT INTO button_configs 
+                    (menu_type, button_id, text, callback_data, row_position, column_position, sort_order, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                """, ("admin_system_menu", button_id, text, callback_data, row_pos, col_pos, sort_order))
+            
+            # Admin Settings Menu (подменю)
+            admin_settings_menu_buttons = [
+                ("admins", "👮 Администраторы", "admin_admins_menu", 0, 0, 0),
+                ("plans", "🧾 Тарифы", "admin_plans", 0, 1, 1),
+                ("hosts", "🖥 Хосты", "admin_hosts_menu", 1, 0, 2),
+                ("payments", "💳 Платежки", "admin_payments_menu", 1, 1, 3),
+                ("referral", "👥 Рефералка", "admin_referral", 2, 0, 4),
+                ("franchise", "💼 Франшиза", "admin_franchise", 2, 1, 5),
+                ("modules", "🧩 Модули", "admin_modules", 3, 0, 6),
+                ("trial", "🎁 Триал", "admin_trial", 3, 1, 7),
+                ("notifications", "🔔 Уведомления", "admin_notifications_menu", 4, 0, 8),
+                ("captcha", "🛡️ Капча", "admin_captcha_settings", 4, 1, 9),
+                ("btn_constructor", "🧩 Конструктор кнопок", "admin_btn_constructor", 5, 0, 10),
+                ("back_to_admin", "⬅️ Назад", "admin_menu", 6, 0, 11),
+            ]
+            
+            for button_id, text, callback_data, row_pos, col_pos, sort_order in admin_settings_menu_buttons:
+                cursor.execute("""
+                    INSERT INTO button_configs 
+                    (menu_type, button_id, text, callback_data, row_position, column_position, sort_order, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                """, ("admin_settings_menu", button_id, text, callback_data, row_pos, col_pos, sort_order))
+            
             conn.commit()
             logging.info("Default button configurations initialized")
             return True
@@ -3985,7 +4066,7 @@ def get_keys_for_host(host_name: str) -> list[dict]:
 
 
 def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
-    """Поиск ключей пользователя по key_email."""
+    """Поиск ключей пользователя по key_email или user_key_name."""
     if not search_query or not search_query.strip():
         return []
     
@@ -3995,8 +4076,8 @@ def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM vpn_keys WHERE user_id = ? AND (key_email LIKE ? OR email LIKE ?) ORDER BY datetime(created_at) DESC, key_id DESC",
-                (user_id, search_term, search_term),
+                "SELECT * FROM vpn_keys WHERE user_id = ? AND (key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ?) ORDER BY datetime(created_at) DESC, key_id DESC",
+                (user_id, search_term, search_term, search_term),
             )
             rows = cursor.fetchall()
             return [_normalize_key_row(row) for row in rows]
@@ -4006,7 +4087,7 @@ def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
 
 
 def search_all_keys_by_email(search_query: str) -> list[dict]:
-    """Поиск всех ключей (администраторам) по key_email."""
+    """Поиск всех ключей (администраторам) по key_email или user_key_name."""
     if not search_query or not search_query.strip():
         return []
     
@@ -4016,8 +4097,8 @@ def search_all_keys_by_email(search_query: str) -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM vpn_keys WHERE key_email LIKE ? OR email LIKE ? ORDER BY datetime(created_at) DESC, key_id DESC",
-                (search_term, search_term),
+                "SELECT * FROM vpn_keys WHERE key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ? ORDER BY datetime(created_at) DESC, key_id DESC",
+                (search_term, search_term, search_term),
             )
             rows = cursor.fetchall()
             return [_normalize_key_row(row) for row in rows]

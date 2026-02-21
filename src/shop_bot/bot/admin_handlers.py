@@ -5521,7 +5521,7 @@ def get_admin_router() -> Router:
         await state.set_state("admin_search_user_keys_state")
         
         await callback.message.edit_text(
-            "🔍 Введите email ключа для поиска:",
+            "🔍 Введите название или email ключа для поиска:",
             reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
         )
 
@@ -5606,7 +5606,7 @@ def get_admin_router() -> Router:
         await state.set_state("admin_search_all_keys_state")
         
         await callback.message.edit_text(
-            "🔍 Введите email ключа для поиска во всех ключах:",
+            "🔍 Введите название или email ключа для поиска во всех ключах:",
             reply_markup=keyboards.create_admin_search_keys_cancel_keyboard()
         )
 

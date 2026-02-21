@@ -38,6 +38,7 @@ def get_key_info_text(
     created_date_str = key.get('created_date')
     connection_string = key.get('connection_string') or key.get('subscription_url') or ""
     key_email = key.get('key_email') or "—"
+    user_key_name = key.get('user_key_name')  # Пользовательское название
     
     # Парсим даты если они строки
     try:
@@ -65,11 +66,20 @@ def get_key_info_text(
     limit = device_limit if device_limit is not None else "—"
 
     text_parts = [
-        f"<b>🔑 Ваш ключ: #{key_number}</b>\n\n",
+        f"<b>🔑 Ваш ключ: #{key_number}</b>\n",
+    ]
+    
+    # Добавляем название если задано
+    if user_key_name:
+        text_parts.append(f"<b>📝 Название:</b> {html_escape(user_key_name)}\n")
+    
+    text_parts.append("\n")
+    
+    text_parts.extend([
         f"<blockquote><b>📧 Email:</b> {key_email}\n",
         f"<b>➕ Приобретён:</b> {created_formatted}\n",
         f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n",
-    ]
+    ])
     
     # Добавляем ссылку активации подарка отдельным блоком
     if gift_link and not is_gift_activated:
