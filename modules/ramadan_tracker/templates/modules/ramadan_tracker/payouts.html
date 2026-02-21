@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Ramadan Tracker - Payouts{% endblock %}
+{% block content %}
+
+<div class="page-header d-print-none mb-4">
+  <div class="row align-items-center">
+    <div class="col">
+      <h1 class="page-title mb-1">Запросы на вывод</h1>
+      <div class="text-secondary">История заявок победителей</div>
+    </div>
+    <div class="col-auto ms-auto d-print-none">
+      <a class="btn btn-outline-secondary" href="/modules/ramadan_tracker/">Назад</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% if payouts_rows %}
+      <div class="table-responsive">
+        <table class="table table-sm table-vcenter">
+          <thead>
+            <tr>
+              <th class="w-1">#</th>
+              <th>Period</th>
+              <th>User ID</th>
+              <th class="text-end">Amount</th>
+              <th>Requested At</th>
+              <th>Status</th>
+              <th class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in payouts_rows %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>{{ row.period_end }}</td>
+              <td>{{ row.user_id }}</td>
+              <td class="text-end">{{ '%.2f'|format(row.amount) }} ₽</td>
+              <td>{{ row.requested_at or '—' }}</td>
+              <td>
+                {% if row.completed_at %}
+                  <span class="badge bg-success">Выполнен</span>
+                  <small class="text-muted d-block">{{ row.completed_at }}</small>
+                  {% if row.proof_file_id %}
+                    <a href="#" onclick="alert('File ID: {{ row.proof_file_id }}'); return false;" class="badge bg-info">Есть скриншот</a>
+                  {% endif %}
+                {% else %}
+                  <span class="badge bg-warning">Ожидает</span>
+                {% endif %}
+              </td>
+              <td class="text-end">
+                {% if not row.completed_at %}
+                  <form method="post" action="/modules/ramadan_tracker/payouts/complete" style="display: inline;">
+                    <input type="hidden" name="withdrawal_id" value="{{ row.id }}">
+                    <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Отметить как выполнен?');">
+                      ✅ Выполнен
+                    </button>
+                  </form>
+                {% endif %}
+                <form method="post" action="/modules/ramadan_tracker/payouts/delete" style="display: inline;">
+                  <input type="hidden" name="withdrawal_id" value="{{ row.id }}">
+                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить запрос?');">
+                    ❌ Удалить
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="text-secondary">Запросов пока нет.</div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

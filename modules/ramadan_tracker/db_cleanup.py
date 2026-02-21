@@ -1,0 +1,10 @@
+def cleanup(db_conn) -> None:
+    cursor = db_conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS ramadan_tracker_daily")
+    cursor.execute("DROP TABLE IF EXISTS ramadan_tracker_state")
+    cursor.execute("DROP TABLE IF EXISTS ramadan_tracker_rewards")
+    cursor.execute("DROP TABLE IF EXISTS ramadan_tracker_reward_periods")
+    cursor.execute("DROP TABLE IF EXISTS ramadan_tracker_reward_users")
+    cursor.execute("DELETE FROM bot_settings WHERE key LIKE 'ramadan_tracker_%'")
+    cursor.execute("DELETE FROM button_configs WHERE menu_type = 'main_menu' AND button_id = 'ramadan_tracker'")
+    db_conn.commit()

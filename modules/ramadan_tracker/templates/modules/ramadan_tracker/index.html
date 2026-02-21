@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Ramadan Tracker{% endblock %}
+{% block content %}
+
+<div class="page-header d-print-none mb-4">
+  <div class="row align-items-center">
+    <div class="col">
+      <h1 class="page-title mb-1">Ramadan Tracker</h1>
+      <div class="text-secondary">Статистика и топ пользователей</div>
+    </div>
+    <div class="col-auto ms-auto d-print-none">
+      <a class="btn btn-outline-primary" href="/modules/ramadan_tracker/payouts">Запросы на вывод</a>
+    </div>
+  </div>
+</div>
+
+<div class="row row-deck">
+  <div class="col-12 col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Общая статистика</h3>
+      </div>
+      <div class="card-body">
+        <div class="row g-2">
+          <div class="col-6"><span class="text-secondary">Пользователей</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.users }}</strong></div>
+          <div class="col-6"><span class="text-secondary">Утренние азкары</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.morning_total }}</strong></div>
+          <div class="col-6"><span class="text-secondary">Вечерние азкары</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.evening_total }}</strong></div>
+          <div class="col-6"><span class="text-secondary">Азкары всего</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.adhkar_total }}</strong></div>
+          <div class="col-6"><span class="text-secondary">Салаваты</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.salawat_total }}</strong></div>
+          <div class="col-6"><span class="text-secondary">Таравих</span></div>
+          <div class="col-6 text-end"><strong>{{ stats.taraweeh_total }}</strong></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Топ пользователей</h3>
+      </div>
+      <div class="card-body">
+        {% if top_rows %}
+          <div class="table-responsive">
+            <table class="table table-sm table-vcenter">
+              <thead>
+                <tr>
+                  <th class="w-1">#</th>
+                  <th>User ID</th>
+                  <th class="text-end">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in top_rows %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td>{{ row.user_id }}</td>
+                  <td class="text-end">{{ row.score }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="text-secondary">Данных пока нет.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
