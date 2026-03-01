@@ -232,6 +232,7 @@ ALL_SETTINGS_KEYS = [
     "franchise_enabled",
     "franchise_commission_percent",
     "franchise_min_withdraw_rub",
+    "pwa_origin",
 ]
 
 
@@ -3643,6 +3644,220 @@ def create_webhook_app(bot_controller_instance):
         except Exception as e:
             logger.error(f"Error reordering button configs for {menu_type}: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
+
+    # =============================
+    # React PWA Web-App API
+    # =============================
+
+    _pwa_tokens: dict[str, tuple[int, float]] = {}  # token -> (user_id, expires_at)
+    _pwa_tokens_lock = threading.Lock()
+    _PWA_TOKEN_TTL = 86400  # 24 h
+
+    def _webapp_cors_headers(response):
+        """Add CORS headers to allow the React PWA (separate origin) to call this API."""
+        pwa_origin = (get_setting('pwa_origin') or '').strip()
+        origin = request.headers.get('Origin', '')
+        if pwa_origin and origin == pwa_origin:
+            response.headers['Access-Control-Allow-Origin'] = pwa_origin
+        elif not pwa_origin:
+            # pwa_origin not configured – allow any origin (development mode)
+            logger.warning('pwa_origin setting is not configured; allowing all origins for /api/webapp/* endpoints')
+            response.headers['Access-Control-Allow-Origin'] = origin or '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+
+    def _verify_webapp_initdata(init_data: str) -> dict | None:
+        """Validate Telegram Web App initData using HMAC-SHA256.
+        Returns parsed user dict on success, None on failure."""
+        bot_token = (get_setting('telegram_bot_token') or '').strip()
+        if not bot_token:
+            return None
+        try:
+            import urllib.parse as _up
+            import hashlib as _hl
+            pairs = dict(_up.parse_qsl(init_data, keep_blank_values=True))
+            check_hash = pairs.pop('hash', None)
+            if not check_hash:
+                return None
+            data_check_string = '\n'.join(
+                f'{k}={v}' for k, v in sorted(pairs.items())
+            )
+            secret_key = hmac.new(b'WebAppData', bot_token.encode(), _hl.sha256).digest()
+            computed = hmac.new(secret_key, data_check_string.encode(), _hl.sha256).hexdigest()
+            if not compare_digest(computed, check_hash):
+                return None
+            # Optionally check auth_date freshness (allow up to 1 hour)
+            auth_date = int(pairs.get('auth_date', 0))
+            if auth_date and (time.time() - auth_date) > 3600:
+                return None
+            user_json = pairs.get('user')
+            if user_json:
+                return json.loads(user_json)
+            return {}
+        except Exception as exc:
+            logger.warning('webapp initData verification error: %s', exc)
+            return None
+
+    def _generate_pwa_token(user_id: int) -> str:
+        """Generate a signed short-lived token for the PWA user."""
+        secret = flask_app.config['SECRET_KEY']
+        expires = time.time() + _PWA_TOKEN_TTL
+        raw = f'{user_id}:{expires}'
+        sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
+        token = base64.urlsafe_b64encode(f'{raw}:{sig}'.encode()).decode()
+        with _pwa_tokens_lock:
+            _pwa_tokens[token] = (user_id, expires)
+        return token
+
+    def _verify_pwa_token(token: str) -> int | None:
+        """Verify a PWA bearer token. Returns user_id or None."""
+        if not token:
+            return None
+        # Check in-memory cache first
+        with _pwa_tokens_lock:
+            cached = _pwa_tokens.get(token)
+            if cached:
+                user_id, expires = cached
+                if time.time() < expires:
+                    return user_id
+                del _pwa_tokens[token]
+                return None
+        # Re-verify signature in case server restarted
+        try:
+            secret = flask_app.config['SECRET_KEY']
+            decoded = base64.urlsafe_b64decode(token.encode()).decode()
+            parts = decoded.rsplit(':', 1)
+            if len(parts) != 2:
+                return None
+            raw, sig = parts
+            expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
+            if not compare_digest(expected, sig):
+                return None
+            uid_str, exp_str = raw.split(':', 1)
+            if time.time() > float(exp_str):
+                return None
+            return int(uid_str)
+        except Exception:
+            return None
+
+    def pwa_auth_required(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if request.method == 'OPTIONS':
+                resp = flask_app.make_response('')
+                return _webapp_cors_headers(resp)
+            auth_header = request.headers.get('Authorization', '')
+            token = auth_header.removeprefix('Bearer ').strip()
+            user_id = _verify_pwa_token(token)
+            if user_id is None:
+                resp = jsonify({'ok': False, 'error': 'unauthorized'})
+                resp.status_code = 401
+                return _webapp_cors_headers(resp)
+            return f(user_id, *args, **kwargs)
+        return decorated
+
+    @csrf.exempt
+    @flask_app.route('/api/webapp/auth', methods=['POST', 'OPTIONS'])
+    def webapp_auth():
+        """Authenticate a Telegram Web App user.
+        Expects JSON body: {"init_data": "<Telegram initData string>"}
+        Returns: {"ok": true, "token": "<bearer token>"}
+        """
+        if request.method == 'OPTIONS':
+            resp = flask_app.make_response('')
+            return _webapp_cors_headers(resp)
+        try:
+            body = request.get_json(silent=True) or {}
+            init_data = (body.get('init_data') or '').strip()
+            if not init_data:
+                resp = jsonify({'ok': False, 'error': 'init_data_required'})
+                resp.status_code = 400
+                return _webapp_cors_headers(resp)
+            tg_user = _verify_webapp_initdata(init_data)
+            if tg_user is None:
+                resp = jsonify({'ok': False, 'error': 'invalid_init_data'})
+                resp.status_code = 401
+                return _webapp_cors_headers(resp)
+            user_id = int(tg_user.get('id', 0))
+            if not user_id:
+                resp = jsonify({'ok': False, 'error': 'missing_user_id'})
+                resp.status_code = 400
+                return _webapp_cors_headers(resp)
+            token = _generate_pwa_token(user_id)
+            resp = jsonify({'ok': True, 'token': token, 'user_id': user_id})
+            return _webapp_cors_headers(resp)
+        except Exception as exc:
+            logger.error('webapp_auth error: %s', exc)
+            resp = jsonify({'ok': False, 'error': 'server_error'})
+            resp.status_code = 500
+            return _webapp_cors_headers(resp)
+
+    @csrf.exempt
+    @flask_app.route('/api/webapp/profile', methods=['GET', 'OPTIONS'])
+    @pwa_auth_required
+    def webapp_profile(user_id: int):
+        """Return the authenticated user's profile data."""
+        try:
+            from shop_bot.data_manager.database import get_user as _get_user, get_balance as _get_balance
+            user = _get_user(user_id)
+            if not user:
+                resp = jsonify({'ok': False, 'error': 'user_not_found'})
+                resp.status_code = 404
+                return _webapp_cors_headers(resp)
+            balance = _get_balance(user_id)
+            profile = {
+                'user_id': user_id,
+                'username': user.get('username'),
+                'first_name': user.get('first_name'),
+                'last_name': user.get('last_name'),
+                'balance': float(balance or 0),
+                'is_banned': bool(user.get('is_banned')),
+                'total_spent': float(user.get('total_spent') or 0),
+                'total_months': int(user.get('total_months') or 0),
+                'created_at': user.get('created_at'),
+            }
+            resp = jsonify({'ok': True, 'profile': profile})
+            return _webapp_cors_headers(resp)
+        except Exception as exc:
+            logger.error('webapp_profile error: %s', exc)
+            resp = jsonify({'ok': False, 'error': 'server_error'})
+            resp.status_code = 500
+            return _webapp_cors_headers(resp)
+
+    @csrf.exempt
+    @flask_app.route('/api/webapp/keys', methods=['GET', 'OPTIONS'])
+    @pwa_auth_required
+    def webapp_keys(user_id: int):
+        """Return the authenticated user's VPN keys."""
+        try:
+            from shop_bot.data_manager.database import get_user_keys as _get_user_keys
+            raw_keys = _get_user_keys(user_id)
+            keys = []
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            for k in raw_keys:
+                expiry_raw = k.get('expiry_date') or ''
+                try:
+                    expiry_dt = datetime.fromisoformat(expiry_raw)
+                    is_active = expiry_dt > now
+                except Exception:
+                    is_active = False
+                keys.append({
+                    'key_id': k.get('key_id'),
+                    'key_name': k.get('key_name') or k.get('email') or k.get('key_email'),
+                    'host_name': k.get('host_name'),
+                    'expiry_date': expiry_raw,
+                    'is_active': is_active,
+                    'subscription_url': k.get('subscription_url'),
+                })
+            resp = jsonify({'ok': True, 'keys': keys})
+            return _webapp_cors_headers(resp)
+        except Exception as exc:
+            logger.error('webapp_keys error: %s', exc)
+            resp = jsonify({'ok': False, 'error': 'server_error'})
+            resp.status_code = 500
+            return _webapp_cors_headers(resp)
 
     # =============================
     # Franchise (managed clone bots) — web panel
