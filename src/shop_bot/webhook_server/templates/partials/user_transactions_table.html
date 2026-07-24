@@ -1,0 +1,64 @@
+{% for tx in transactions %}
+<tr>
+  <td class="text-secondary">#{{ tx.transaction_id }}</td>
+  <td class="text-nowrap">{{ tx.created_date or '' }}</td>
+  <td class="text-nowrap">
+    {% set act = tx.action %}
+    {% set has_key = tx.key_id and (act in ('new', 'gift', 'extend', 'traffic_gb_topup', 'lte_gb_topup', 'main_traffic_reset') or act is none) %}
+    <div class="{% if has_key %}utx-open-key{% endif %}" {% if has_key %}role="button" tabindex="0" data-key-id="{{ tx.key_id }}" title="Открыть карточку ключа #{{ tx.key_id }}" style="cursor:pointer;"{% endif %}>
+      {% if act == 'new' %}
+        <span class="badge bg-green-lt"><i class="ti ti-key me-1"></i>{{ tx.action_label }}</span>
+      {% elif act == 'gift' %}
+        <span class="badge bg-purple-lt"><i class="ti ti-gift me-1"></i>{{ tx.action_label }}</span>
+      {% elif act == 'extend' %}
+        <span class="badge bg-blue-lt"><i class="ti ti-refresh me-1"></i>{{ tx.action_label }}</span>
+      {% elif act == 'top_up' %}
+        <span class="badge bg-cyan-lt"><i class="ti ti-wallet me-1"></i>{{ tx.action_label }}</span>
+      {% elif act in ('traffic_gb_topup', 'lte_gb_topup') %}
+        <span class="badge bg-orange-lt"><i class="ti ti-database me-1"></i>{{ tx.action_label }}{% if tx.size_gb %} (+{{ tx.size_gb|round(0, 'floor')|int }} ГБ){% endif %}</span>
+      {% elif act == 'main_traffic_reset' %}
+        <span class="badge bg-teal-lt"><i class="ti ti-refresh-dot me-1"></i>{{ tx.action_label }}</span>
+      {% else %}
+        <span class="badge bg-secondary-lt">{{ tx.action_label or '—' }}</span>
+      {% endif %}
+      {% if tx.key_id %}
+        <br><small class="{% if has_key %}text-primary{% else %}text-secondary{% endif %}"><i class="ti ti-key-filled me-1"></i>Ключ #{{ tx.key_id }}{% if tx.key_id_guessed %} <span class="text-secondary">(предположительно)</span>{% endif %}{% if has_key %} <i class="ti ti-external-link"></i>{% endif %}</small>
+      {% endif %}
+    </div>
+  </td>
+  <td>
+    {% if tx.payment_id %}
+    <span class="text-truncate d-inline-block align-middle utx-copy-payment-id" role="button" tabindex="0" data-payment-id="{{ tx.payment_id }}" title="Скопировать ID платежа" style="max-width:140px; cursor:pointer;">
+      <i class="ti ti-copy me-1 text-muted"></i>{{ tx.payment_id }}
+    </span>
+    {% else %}
+    <span class="text-secondary">—</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if tx.provider_transaction_id %}
+    <span class="text-truncate d-inline-block align-middle utx-copy-payment-id" role="button" tabindex="0" data-payment-id="{{ tx.provider_transaction_id }}" title="Скопировать ID платежа провайдера" style="max-width:140px; cursor:pointer;">
+      <i class="ti ti-copy me-1 text-muted"></i>{{ tx.provider_transaction_id }}
+    </span>
+    {% else %}
+    <span class="text-secondary">—</span>
+    {% endif %}
+  </td>
+  <td><strong class="text-success">{{ '%.2f'|format(tx.amount_rub or 0) }} RUB</strong></td>
+  <td>{{ tx.payment_method or '—' }}</td>
+  <td>
+    {% set st = (tx.status or '')|lower %}
+    {% if st == 'paid' or st == 'success' or st == 'completed' %}
+      <span class="badge bg-green">{{ tx.status }}</span>
+    {% elif st == 'pending' %}
+      <span class="badge bg-yellow">{{ tx.status }}</span>
+    {% elif st == 'failed' or st == 'canceled' or st == 'cancelled' %}
+      <span class="badge bg-red">{{ tx.status }}</span>
+    {% else %}
+      <span class="badge bg-secondary-lt">{{ tx.status or '—' }}</span>
+    {% endif %}
+  </td>
+  <td class="text-truncate" style="max-width:160px">{{ tx.plan_name or '—' }}</td>
+  <td class="text-truncate" style="max-width:140px">{{ tx.host_name or '—' }}</td>
+</tr>
+{% endfor %}

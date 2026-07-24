@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Серверы и экономика{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="alert alert-warning">
+  Учёт расходов ведётся отдельно от технической конфигурации серверов (раздел «Мониторинг»/хосты не затрагивается).
+  Расчёт маржи — приблизительный: сопоставляются только суммарная выручка и суммарные расходы, без привязки конкретного сервера к конкретному клиенту.
+</div>
+
+<div class="row row-deck row-cards mb-3">
+  {% for currency, cost in summary.total_monthly_cost_by_currency.items() %}
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Расходы в месяц ({{ currency }})</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(cost) }}</div>
+    </div></div>
+  </div>
+  {% endfor %}
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Выручка за 30 дней</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(summary.revenue_30d) }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Gross profit (оценка, RUB)</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(summary.gross_profit_estimate_by_currency.get('RUB', 0)) }} ₽</div>
+    </div></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-lg-6">
+    <div class="card mb-3">
+      <div class="card-header"><h3 class="card-title">По провайдерам</h3></div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead><tr><th>Провайдер</th><th>Расходы/мес</th></tr></thead>
+          <tbody>
+            {% for r in summary.by_provider %}
+            <tr><td>{{ r.provider }}</td><td>{{ "%.2f"|format(r.monthly_cost) }}</td></tr>
+            {% else %}
+            <tr><td colspan="2" class="text-center text-secondary py-4">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card mb-3">
+      <div class="card-header"><h3 class="card-title">По локациям</h3></div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead><tr><th>Локация</th><th>Расходы/мес</th></tr></thead>
+          <tbody>
+            {% for r in summary.by_location %}
+            <tr><td>{{ r.location }}</td><td>{{ "%.2f"|format(r.monthly_cost) }}</td></tr>
+            {% else %}
+            <tr><td colspan="2" class="text-center text-secondary py-4">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header"><h3 class="card-title">Добавить запись о расходах</h3></div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('analytics_economics_create_route') }}" class="row g-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+      <div class="col-md-2"><input class="form-control form-control-sm" name="server_label" placeholder="Название" required></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="linked_host_name" placeholder="Хост (необязательно)"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="provider" placeholder="Провайдер"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="location" placeholder="Локация"></div>
+      <div class="col-md-1"><input class="form-control form-control-sm" name="monthly_cost" type="number" step="0.01" placeholder="Цена/мес" required></div>
+      <div class="col-md-1"><input class="form-control form-control-sm" name="currency" placeholder="RUB" value="RUB"></div>
+      <div class="col-md-2"><button class="btn btn-primary btn-sm w-100" type="submit">Добавить</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Все записи расходов</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead><tr><th>Название</th><th>Хост</th><th>Провайдер</th><th>Локация</th><th>Цена/мес</th><th>Статус</th><th></th></tr></thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td>{{ e.server_label }}</td>
+          <td>{{ e.linked_host_name or '—' }}</td>
+          <td>{{ e.provider or '—' }}</td>
+          <td>{{ e.location or '—' }}</td>
+          <td>{{ "%.2f"|format(e.monthly_cost) }} {{ e.currency }}</td>
+          <td>{{ e.status }}</td>
+          <td>
+            <form method="post" action="{{ url_for('analytics_economics_delete_route', entry_id=e.id) }}" onsubmit="return confirm('Удалить запись?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button class="btn btn-outline-danger btn-sm" type="submit">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-secondary py-4">Записей пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

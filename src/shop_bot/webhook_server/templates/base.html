@@ -13,17 +13,17 @@
 		<meta name="theme-color" content="#ae3ec9" />
 		<meta name="csrf-token" content="{{ csrf_token() }}" />
 		
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css" />
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler-flags.min.css" />
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler-payments.min.css" />
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler-vendors.min.css" />
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler.min.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler-flags.min.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler-payments.min.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler-vendors.min.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler-icons.min.css') }}" />
 
 		
 		<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 
 		
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="{{ url_for('static', filename='vendor/chartjs/chart.min.js') }}"></script>
         
 	</head>
 	<body data-page="{{ request.endpoint }}" class="layout-boxed">
@@ -37,7 +37,7 @@
 					<button type="button" id="brand-edit" class="btn btn-outline-secondary btn-sm btn-glass" title="Сменить название">✏️</button>
 				</div>
 				<div class="brand-version">
-					<small>v1.1.6 beta</small>
+					<small>v1.9 beta</small>
 				</div>
 
 				<nav class="navigation sidebar-navigation">
@@ -55,9 +55,20 @@
 							<i class="ti ti-home me-2"></i>
 							<span>Главная</span>
 						</a>
+						<a href="{{ url_for('analytics_overview_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('analytics_') %}active{% endif %}">
+							<i class="ti ti-report-analytics me-2"></i>
+							<span>Продажи и аналитика</span>
+						</a>
 						<a href="{{ url_for('users_page') }}" class="nav-link {% if request.endpoint == 'users_page' %}active{% endif %}">
 							<i class="ti ti-users me-2"></i>
 							<span>Пользователи</span>
+						</a>
+						<a href="{{ url_for('referral_program_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('referral_program_') %}active{% endif %}">
+							<i class="ti ti-affiliate me-2"></i>
+							<span>Реферальная программа</span>
+							{% if referral_requests_stats and referral_requests_stats.new %}
+							<span class="badge bg-red-lt ms-auto">{{ referral_requests_stats.new }}</span>
+							{% endif %}
 						</a>
 						<a href="{{ url_for('admin_keys_page') }}" class="nav-link {% if request.endpoint == 'admin_keys_page' %}active{% endif %}">
 							<i class="ti ti-key me-2"></i>
@@ -174,6 +185,7 @@
 							<ul>
 								<li class="burger-menu-section-title">Основное</li>
 								<li><a href="{{ url_for('dashboard_page') }}"><i class="ti ti-home"></i> Главная</a></li>
+								<li><a href="{{ url_for('analytics_overview_page') }}"><i class="ti ti-report-analytics"></i> Продажи и аналитика</a></li>
 								<li><a href="{{ url_for('statistics_page') }}"><i class="ti ti-chart-line"></i> Статистика</a></li>
 								
 								<li class="burger-menu-section-title">Управление</li>
@@ -343,7 +355,7 @@
         </div>
 
         
-        <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
+        <script src="{{ url_for('static', filename='vendor/tabler/js/tabler.min.js') }}"></script>
         <script src="{{ url_for('static', filename='js/script.js') }}"></script>
         <script>
             (function(){

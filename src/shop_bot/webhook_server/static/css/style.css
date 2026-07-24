@@ -197,41 +197,32 @@ label.burger_img {
   background: color-mix(in oklab, var(--bg-surface) 98%, transparent) !important;
 }
 
-/* На маленьких экранах таблицы превращаем в блочные строки */
+/* На маленьких экранах таблицы НЕ превращаем в блочные строки (иначе теряются
+   заголовки/столбцы) — вместо этого даём горизонтальную прокрутку с сохранением
+   всех колонок (см. .table-responsive ниже). */
+.table-responsive {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
 @media (max-width: 640px) {
-  .users-table thead,
-  .transactions-table thead,
-  .table thead {
-    display: none;
+  .users-table,
+  .transactions-table,
+  .table {
+    font-size: 0.82rem;
   }
 
-  .users-table tr,
-  .transactions-table tr,
-  .table tr {
-    display: block;
-    border-bottom: 1px solid var(--border-color);
-    margin-bottom: 8px;
-    padding: 8px 0;
-  }
-
+  .users-table th,
+  .transactions-table th,
+  .table th,
   .users-table td,
   .transactions-table td,
   .table td {
-    display: flex;
-    justify-content: space-between;
-    padding: 4px 8px;
-    font-size: 0.9rem;
-  }
-
-  .users-table td::before,
-  .transactions-table td::before,
-  .table td::before {
-    content: attr(data-label);
-    font-weight: 600;
-    color: var(--text-muted);
-    margin-right: 6px;
+    padding: 6px 8px;
+    white-space: nowrap;
   }
 }
+
 
 /* === 7. Сетка/адаптив для основных колонок === */
 
@@ -281,9 +272,7 @@ body::after {
 }
 
 /* Settings page: allow full-width content without changing other pages */
-body.layout-boxed[data-page="settings_page"] .container {
-  /*max-width: 100% !important;*/
-}
+/* body.layout-boxed[data-page="settings_page"] .container { max-width: 100% !important; } */
 
 /* При prefers-reduced-motion уже есть снижение анимаций в исходном коде */
 
@@ -4017,7 +4006,7 @@ select optgroup{
 /* Make selected item readable in some browsers */
 .form-select option:checked,
 select option:checked{
-  background-color: rgb(0 217 255) !important
+  background-color: rgb(0 217 255) !important;
   color: var(--text-primary) !important;
 }
 
@@ -5185,4 +5174,103 @@ textarea.form-control-sm {
   padding-right: calc(var(--bs-gutter-x) * 0.5);
   padding-left: calc(var(--bs-gutter-x) * 0.5);
   margin-top: var(--bs-gutter-y);
+}
+
+/* =========================================================================
+   === Единая дизайн-система скруглений (по образцу страницы «Поддержка») ===
+   Проблема: карточки/кнопки/поля принудительно квадратные (border-radius:0),
+   а .input-group-text/.btn на границах группы иногда остаются скруглёнными
+   по умолчанию Bootstrap — из-за этого углы выглядят "квадратные слева,
+   скруглены справа" (и наоборот). Решение — как на support.html: скругляем
+   САМ контейнер .input-group и обрезаем содержимое (overflow:hidden), а не
+   расставляем радиусы по каждому дочернему элементу отдельно.
+   ========================================================================= */
+
+:root {
+  --app-radius-sm: 6px;
+  --app-radius: 8px;
+  --app-radius-md: 10px;
+  --app-radius-lg: 14px;
+}
+
+/* Карточки — единое скругление вместо квадратных углов */
+.card,
+.stat-card,
+.host-card,
+.login-container,
+.monitor-info,
+.server-item {
+  border-radius: var(--app-radius-md) !important;
+}
+
+.card-header {
+  border-radius: var(--app-radius-md) var(--app-radius-md) 0 0 !important;
+}
+
+/* Кнопки — единое скругление */
+.btn,
+.button,
+.btn-glass {
+  border-radius: var(--app-radius-sm) !important;
+}
+
+/* Поля ввода и селекты вне групп — единое скругление */
+.form-group input[type='text'],
+.form-group input[type='url'],
+.form-group input[type='password'],
+.form-group input[type='number'],
+.form-group input[type='email'],
+.form-group input[type='search'],
+.form-group input[type='tel'],
+.form-group select,
+.form-group textarea,
+.form-control,
+.form-select,
+textarea.form-control {
+  border-radius: var(--app-radius-sm) !important;
+}
+
+.soft-select .soft-select-toggle {
+  border-radius: var(--app-radius-sm) !important;
+}
+
+.soft-select-menu {
+  border-radius: var(--app-radius-sm) !important;
+  overflow: hidden;
+}
+
+/* --- input-group: скругляем контейнер целиком, обрезаем содержимое --- */
+.input-group {
+  border-radius: var(--app-radius-sm) !important;
+  overflow: hidden;
+}
+
+.input-group > .form-control,
+.input-group > .form-select,
+.input-group > .input-group-text,
+.input-group > .btn,
+.input-group > .soft-select .soft-select-toggle {
+  border-radius: 0 !important;
+}
+
+/* Утилита .pill/.pill-md — полностью скруглённая группа (пилюля) */
+.input-group.pill,
+.input-group.pill-md {
+  border-radius: 999px !important;
+}
+
+/* Бейджи — компактное скругление вместо резких углов */
+.badge {
+  border-radius: var(--app-radius-sm) !important;
+}
+
+/* --- Пагинация: одинаковое скругление у ВСЕХ ссылок, включая «Назад»/«Вперёд» ---
+   Tabler задаёт скругление только у крайних элементов через более специфичные
+   селекторы (.page-item:first-child .page-link / :last-child), из-за чего у
+   крайних кнопок закруглён только внешний угол, а внутренний — квадратный.
+   !important гарантированно перебивает эти правила независимо от специфичности. */
+.pagination .page-link,
+.pagination .page-item:first-child .page-link,
+.pagination .page-item:last-child .page-link {
+  border-radius: var(--app-radius-sm) !important;
 }

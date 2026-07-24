@@ -32,6 +32,7 @@ def get_key_info_text(
     domain: str | None = None,
     is_gift_activated: bool = False,
     gift_link: str | None = None,
+    traffic_info_text: str | None = None,
 ):
     # Получаем все данные из объекта ключа через .get()
     expiry_date_str = key.get('expiry_date')
@@ -95,9 +96,13 @@ def get_key_info_text(
         f"<blockquote>📁 <b>Группа:</b> {group}\n",
         f"🕒 <b>Тариф:</b> {tariff}\n",
         f"📱 <b>Лимит устройств:</b> {limit}</blockquote>\n\n",
-        f"<i>Подключите свое устройство по кнопкам ниже👇</i>\n\n",
     ])
-    
+
+    if traffic_info_text:
+        text_parts.append(f"📶 <b>Трафик:</b> {traffic_info_text}\n\n")
+
+    text_parts.append(f"<i>Подключите свое устройство по кнопкам ниже👇</i>\n\n")
+
     return "".join(text_parts)
 
 def get_purchase_success_text(action: str, key_number: int, expiry_date, connection_string: str):

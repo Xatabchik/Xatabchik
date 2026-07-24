@@ -238,6 +238,9 @@ def update_key(
     traffic_limit_strategy: str | None = None,
     tag: str | None = None,
     description: str | None = None,
+    traffic_boost_bytes: int | None = None,
+    next_traffic_reset_at: Any = database._UNSET,
+    remote_access_state: str | None = None,
 ) -> bool:
     return database.update_key_fields(
         key_id,
@@ -253,6 +256,9 @@ def update_key(
         traffic_limit_strategy=traffic_limit_strategy,
         tag=tag,
         description=description,
+        traffic_boost_bytes=traffic_boost_bytes,
+        next_traffic_reset_at=next_traffic_reset_at,
+        remote_access_state=remote_access_state,
     )
 
 
@@ -292,7 +298,14 @@ _LEGACY_FORWARDERS = (
     "add_to_balance",
     "add_to_referral_balance",
     "add_to_referral_balance_all",
+    # Host squads (двухпуловая схема base/lte)
+    "get_host_squads",
+    "add_host_squad",
+    "set_host_squad_active",
+    "delete_host_squad",
+    "get_squad_by_class",
     "adjust_user_balance",
+    "adjust_user_referral_balance",
     "ban_user",
     "create_gift_key",
     "create_host",
@@ -426,6 +439,33 @@ _LEGACY_FORWARDERS = (
     "add_partner_requisite",
     "set_default_partner_requisite",
     "delete_partner_requisite",
+
+    # Referral program: payout methods & withdrawal requests
+    "list_referral_payout_methods",
+    "add_referral_payout_method",
+    "delete_referral_payout_method",
+    "get_referral_payout_method",
+    "create_referral_withdrawal_request",
+    "list_referral_withdrawal_requests",
+    "get_referral_withdrawal_request",
+    "update_referral_withdrawal_request_status",
+    "get_referral_withdrawable_stats",
+    "create_webapp_auth_request",
+    "confirm_webapp_auth_request",
+    "get_webapp_auth_request",
+    "cleanup_old_webapp_auth_requests",
+
+    # Webapp (Telegram Mini App) support
+    "get_msk_time",
+    "check_transaction_exists",
+    "get_seller_user",
+    "get_device_tiers",
+    "get_user_by_auth_token",
+    "get_auth_token_by_user_id",
+    "update_user_auth_token",
+    "get_user_by_email",
+    "create_user_by_email",
+    "get_webapp_settings",
 )
 
 for _name in _LEGACY_FORWARDERS:

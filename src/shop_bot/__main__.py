@@ -125,12 +125,11 @@ def main():
 
     async def start_services():
         loop = asyncio.get_running_loop()
-        bot_controller.set_loop(loop)
         flask_app.config['EVENT_LOOP'] = loop
-        try:
-            webhook_app._support_bot_controller.set_loop(loop)
-        except Exception:
-            pass
+        # Основной бот и Support-бот управляют собственными изолированными
+        # циклами событий (см. BotController/SupportBotController), поэтому
+        # они больше не привязываются к общему loop() Flask/главного потока —
+        # это гарантирует, что сбой/зависание одного бота не влияет на другой.
         
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig, loop)))
@@ -181,7 +180,32 @@ def main():
         except Exception as e:
             logger.warning("Не удалось выполнить автозапуск ботов: %s", e)
 
-        asyncio.create_task(periodic_subscription_check(bot_controller))
+        async def _log_bot_status_soon():
+            # Диагностика: через пару секунд после старта проверяем, что
+            # флаг is_running действительно взведён у обоих ботов, чтобы
+            # сразу видеть в логах реальное состояние после автозапуска.
+            await asyncio.sleep(3)
+            try:
+                logger.info(
+                    "Проверка статуса после автозапуска: основной бот is_running=%s, support-бот is_running=%s",
+                    bot_controller.get_status().get("is_running"),
+                    webhook_app._support_bot_controller.get_status().get("is_running"),
+                )
+            except Exception as e:
+                logger.warning("Не удалось проверить статус ботов после автозапуска: %s", e)
+
+        asyncio.create_task(_log_bot_status_soon())
+
+        # Планировщик фоновых задач (уведомления, бэкапы, мониторинг и т.д.) работает
+        # с экземпляром основного бота, поэтому он должен выполняться в том же
+        # изолированном цикле событий, что и сам основной бот, а не в общем
+        # цикле Flask/главного потока — это сохраняет полную независимость
+        # основного бота и support-бота друг от друга.
+        main_bot_loop = bot_controller.get_loop()
+        if main_bot_loop and main_bot_loop.is_running():
+            asyncio.run_coroutine_threadsafe(periodic_subscription_check(bot_controller), main_bot_loop)
+        else:
+            logger.warning("Не удалось запустить планировщик: цикл событий основного бота недоступен.")
 
 
         try:

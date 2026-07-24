@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -26,8 +27,18 @@ class RemnawaveAPIError(RuntimeError):
 # Shared HTTPX clients (connection pooling) to avoid creating a new TCP/TLS connection
 # for each Remnawave request. This noticeably reduces latency and eliminates a source
 # of "bot подвисает" on slow networks.
+#
+# ВАЖНО: каждый обработчик Flask вызывает asyncio.run(...), который создаёт НОВЫЙ
+# event loop и закрывает его по завершении. httpx.AsyncClient и его пул соединений
+# привязаны к тому loop'у, в котором были созданы — если переиспользовать клиент из
+# уже закрытого loop'а, при попытке закрыть "протухшее" соединение получим
+# "RuntimeError: Event loop is closed". Поэтому храним вместе с клиентом ссылку на
+# loop, в котором он был создан, и пересоздаём клиент, если текущий loop другой.
 _CLIENTS: dict[tuple[str, str, bool], httpx.AsyncClient] = {}
-_CLIENTS_LOCK = asyncio.Lock()
+_CLIENTS_LOOP: dict[tuple[str, str, bool], asyncio.AbstractEventLoop] = {}
+# Обычный (не asyncio.Lock) замок: он не привязан к конкретному event loop/потоку
+# и защищает доступ к словарям клиентов из разных потоков/loop'ов безопасно.
+_CLIENTS_LOCK = threading.Lock()
 
 # Reasonable defaults: do not let handlers hang too long on network hiccups.
 _DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=10.0, read=20.0, write=20.0, pool=20.0)
@@ -39,16 +50,27 @@ async def _get_shared_client(config: dict[str, Any]) -> httpx.AsyncClient:
     token = (config.get("token") or "").strip()
     is_local = bool(config.get("is_local"))
     key = (base_url, token, is_local)
-    async with _CLIENTS_LOCK:
+    loop = asyncio.get_running_loop()
+    with _CLIENTS_LOCK:
         client = _CLIENTS.get(key)
-        if client is not None and not getattr(client, "is_closed", False):
+        cached_loop = _CLIENTS_LOOP.get(key)
+        is_stale = client is not None and (getattr(client, "is_closed", False) or cached_loop is not loop)
+        if client is not None and not is_stale:
             return client
+        if client is not None and is_stale:
+            # Клиент был создан в другом (возможно, уже закрытом) event loop.
+            # Штатно закрыть его сейчас нельзя — aclose() должен вызываться в том
+            # же loop, где клиент создавался, поэтому просто отбрасываем ссылку и
+            # даём сборщику мусора/ОС закрыть сокеты естественным образом.
+            _CLIENTS.pop(key, None)
+            _CLIENTS_LOOP.pop(key, None)
         client = httpx.AsyncClient(
             cookies=config.get("cookies") or {},
             timeout=_DEFAULT_TIMEOUT,
             limits=_DEFAULT_LIMITS,
         )
         _CLIENTS[key] = client
+        _CLIENTS_LOOP[key] = loop
         return client
 
 
@@ -385,13 +407,35 @@ async def delete_hwid_device(user_uuid: str, hwid: str, *, host_name: str | None
         
         logger.error("Remnawave: ошибка удаления устройства %s (HTTP %s)", hwid, response.status_code)
         return False
-        
+
     except RemnawaveAPIError as e:
         logger.error("Remnawave: ошибка API при удалении устройства %s: %s", hwid, e)
         return False
     except Exception:
         logger.exception("Remnawave: непредвиденная ошибка при удалении устройства %s", hwid)
         return False
+
+
+async def get_connected_devices_count(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
+    """Обёртка над get_hwid_devices_for_user для webapp: всегда возвращает
+    dict с ключом "devices" (список), даже если исходный ответ Remnawave —
+    просто список или пуст."""
+    raw = await get_hwid_devices_for_user(user_uuid, host_name=host_name)
+    if raw is None:
+        return {"devices": []}
+    if isinstance(raw, dict):
+        devices = raw.get("devices")
+        if devices is None:
+            devices = raw.get("hwidDevices") or raw.get("items") or []
+        return {"devices": devices}
+    if isinstance(raw, list):
+        return {"devices": raw}
+    return {"devices": []}
+
+
+async def delete_user_device(user_uuid: str, device_id: str, *, host_name: str | None = None) -> bool:
+    """Алиас delete_hwid_device с именем, ожидаемым webapp/handlers.py."""
+    return await delete_hwid_device(user_uuid, device_id, host_name=host_name)
 
 
 async def ensure_user(
@@ -406,12 +450,14 @@ async def ensure_user(
     tag: str | None = None,
     username: str | None = None,
     hwid_device_limit: int | None = None,
+    extra_squad_uuids: list[str] | None = None,
 ) -> dict[str, Any]:
     if not email:
         raise RemnawaveAPIError("email is required for ensure_user")
     if not squad_uuid:
         raise RemnawaveAPIError("squad_uuid is required for ensure_user")
 
+    active_squads = list(dict.fromkeys([squad_uuid] + list(extra_squad_uuids or [])))
 
     email = _normalize_email_for_remnawave(email)
     current = await get_user_by_email(email, host_name=host_name)
@@ -451,7 +497,7 @@ async def ensure_user(
             "uuid": current.get("uuid"),
             "status": "ACTIVE",
             "expireAt": expire_iso,
-            "activeInternalSquads": [squad_uuid],
+            "activeInternalSquads": active_squads,
             "email": email,
         }
 
@@ -462,7 +508,7 @@ async def ensure_user(
         if description:
             payload["description"] = description
         if tag:
-            payload["tag"] = tag
+            payload["tag"] = re.sub(r"[^A-Z0-9_]", "_", tag.upper())
         if hwid_device_limit is not None:
             payload["hwidDeviceLimit"] = hwid_device_limit
         method = "PATCH"
@@ -480,7 +526,7 @@ async def ensure_user(
             "username": generated_username,
             "status": "ACTIVE",
             "expireAt": expire_iso,
-            "activeInternalSquads": [squad_uuid],
+            "activeInternalSquads": active_squads,
             "email": email,
         }
 
@@ -491,7 +537,7 @@ async def ensure_user(
         if description:
             payload["description"] = description
         if tag:
-            payload["tag"] = tag
+            payload["tag"] = re.sub(r"[^A-Z0-9_]", "_", tag.upper())
         if hwid_device_limit is not None:
             payload["hwidDeviceLimit"] = hwid_device_limit
         method = "POST"
@@ -740,6 +786,19 @@ async def reset_user_traffic(user_uuid: str) -> bool:
     return True
 
 
+async def update_user_traffic_limit(user_uuid: str, new_traffic_limit_bytes: int, *, host_name: str | None = None) -> bool:
+    """Обновляет лимит трафика (trafficLimitBytes) пользователя в Remnawave."""
+    if not user_uuid:
+        return False
+    encoded_uuid = quote(user_uuid.strip())
+    payload = {"uuid": user_uuid.strip(), "trafficLimitBytes": int(new_traffic_limit_bytes)}
+    if host_name:
+        await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200,))
+    else:
+        await _request("PATCH", "/api/users", json_payload=payload, expected_status=(200,))
+    return True
+
+
 async def set_user_status(user_uuid: str, active: bool) -> bool:
     if not user_uuid:
         return False
@@ -747,6 +806,269 @@ async def set_user_status(user_uuid: str, active: bool) -> bool:
     action = "enable" if active else "disable"
     await _request("POST", f"/api/users/{encoded_uuid}/actions/{action}", expected_status=(200, 204))
     return True
+
+
+def _extract_used_traffic_bytes(payload: dict[str, Any] | None) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    for k in ("usedTrafficBytes", "trafficUsedBytes", "traffic_used_bytes", "usedBytes"):
+        v = payload.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+    return 0
+
+
+async def disable_user(user_uuid: str, *, host_name: str) -> bool:
+    """POST /api/users/{uuid}/actions/disable — скрыть ноду (используется для 💰-premium нод при исчерпании LTE
+    или для всех нод при исчерпании основного пула трафика)."""
+    if not user_uuid:
+        return False
+    try:
+        encoded_uuid = quote(user_uuid.strip())
+        await _request_for_host(host_name, "POST", f"/api/users/{encoded_uuid}/actions/disable", expected_status=(200, 204))
+        logger.info("Remnawave[%s]: пользователь %s отключён (disable)", host_name, user_uuid)
+        return True
+    except Exception as e:
+        logger.error("Remnawave[%s]: не удалось отключить пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
+        return False
+
+
+async def enable_user(user_uuid: str, *, host_name: str) -> bool:
+    """POST /api/users/{uuid}/actions/enable — вернуть доступ пользователю на конкретном хосте."""
+    if not user_uuid:
+        return False
+    try:
+        encoded_uuid = quote(user_uuid.strip())
+        await _request_for_host(host_name, "POST", f"/api/users/{encoded_uuid}/actions/enable", expected_status=(200, 204))
+        logger.info("Remnawave[%s]: пользователь %s включён (enable)", host_name, user_uuid)
+        return True
+    except Exception as e:
+        logger.error("Remnawave[%s]: не удалось включить пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
+        return False
+
+
+async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host_name: str) -> bool:
+    """PATCH /api/users — установить полный список activeInternalSquads пользователя.
+
+    В отличие от enable_user/disable_user (которые полностью открывают/закрывают доступ на хосте),
+    это позволяет точечно управлять членством в конкретном сквада (например, отключить только
+    LTE-сквад, оставив Base-сквад активным — двухпуловая схема).
+    """
+    if not user_uuid:
+        return False
+    try:
+        payload = {"uuid": user_uuid, "activeInternalSquads": list(dict.fromkeys(squad_uuids or []))}
+        await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200, 201))
+        logger.info(
+            "Remnawave[%s]: activeInternalSquads пользователя %s обновлены -> %s",
+            host_name, user_uuid, payload["activeInternalSquads"],
+        )
+        return True
+    except Exception as e:
+        logger.error(
+            "Remnawave[%s]: не удалось обновить activeInternalSquads пользователя %s: %s",
+            host_name, user_uuid, e, exc_info=True,
+        )
+        return False
+
+
+async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
+    """Убрать конкретный сквад из activeInternalSquads пользователя, не трогая остальные сквады."""
+    if not user_uuid or not squad_uuid:
+        return False
+    try:
+        current = await get_user_by_uuid(user_uuid, host_name=host_name)
+        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        if squad_uuid not in current_squads:
+            return True  # уже отсутствует — идемпотентно
+        new_squads = [s for s in current_squads if s != squad_uuid]
+        return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
+    except Exception as e:
+        logger.error(
+            "Remnawave[%s]: не удалось убрать сквад %s у пользователя %s: %s",
+            host_name, squad_uuid, user_uuid, e, exc_info=True,
+        )
+        return False
+
+
+async def add_squad_to_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
+    """Добавить конкретный сквад в activeInternalSquads пользователя, не трогая остальные сквады."""
+    if not user_uuid or not squad_uuid:
+        return False
+    try:
+        current = await get_user_by_uuid(user_uuid, host_name=host_name)
+        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        if squad_uuid in current_squads:
+            return True  # уже присутствует — идемпотентно
+        new_squads = current_squads + [squad_uuid]
+        return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
+    except Exception as e:
+        logger.error(
+            "Remnawave[%s]: не удалось добавить сквад %s пользователю %s: %s",
+            host_name, squad_uuid, user_uuid, e, exc_info=True,
+        )
+        return False
+
+
+async def get_user_used_traffic(user_uuid: str, *, host_name: str) -> int:
+    """Использованный трафик (в байтах) пользователя на конкретном инстансе Remnawave. 0, если данных нет."""
+    if not user_uuid:
+        return 0
+    try:
+        payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+        return _extract_used_traffic_bytes(payload)
+    except Exception as e:
+        logger.error("Remnawave[%s]: не удалось получить использованный трафик пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
+        return 0
+
+
+async def reset_user_traffic_on_host(user_uuid: str, *, host_name: str) -> bool:
+    """POST /api/users/{uuid}/actions/reset-traffic на конкретном инстансе (host-aware вариант reset_user_traffic)."""
+    if not user_uuid:
+        return False
+    try:
+        encoded_uuid = quote(user_uuid.strip())
+        await _request_for_host(host_name, "POST", f"/api/users/{encoded_uuid}/actions/reset-traffic", expected_status=(200, 204))
+        return True
+    except Exception as e:
+        logger.error("Remnawave[%s]: не удалось сбросить трафик пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
+        return False
+
+
+def _extract_usage_rows(response: httpx.Response) -> list[dict[str, Any]]:
+    """Достаёт список записей UserUsageDto из ответа Remnawave независимо от обёртки ({"response": [...]}, просто [...])."""
+    try:
+        data = response.json()
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        result = data.get("response")
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict) and isinstance(result.get("data"), list):
+            return result["data"]
+        return []
+    if isinstance(data, list):
+        return data
+    return []
+
+
+async def get_node_usage_range(
+    node_uuid: str,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    host_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """Legacy per-node usage endpoint: GET /api/nodes/{node_uuid}/usage/range.
+
+    Возвращает расход ВСЕХ пользователей на конкретной ноде за период
+    (UserUsageDto: userUuid/user_uuid, nodeUuid/node_uuid, total, date).
+    Используется как fallback, если v2.8.0+ bandwidth-stats эндпоинт недоступен.
+    """
+    if not node_uuid:
+        return []
+    params = {"start": _to_iso(start_date), "end": _to_iso(end_date)}
+    try:
+        encoded_uuid = quote(node_uuid.strip())
+        path = f"/api/nodes/{encoded_uuid}/usage/range"
+        if host_name:
+            resp = await _request_for_host(host_name, "GET", path, params=params, expected_status=(200, 404))
+        else:
+            resp = await _request("GET", path, params=params, expected_status=(200, 404))
+        if resp.status_code == 404:
+            return []
+        return _extract_usage_rows(resp)
+    except Exception as e:
+        logger.warning("Remnawave: get_node_usage_range(%s) не удался: %s", node_uuid, e)
+        return []
+
+
+async def get_bandwidth_stats_nodes_users(
+    node_uuids: list[str],
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    host_name: str | None = None,
+) -> list[dict[str, Any]]:
+    """v2.8.0+ endpoint: POST /api/bandwidth-stats/nodes/users.
+
+    Пер-пользовательская статистика сразу по списку нод за период — один запрос вместо N (по ноде),
+    предпочтительный путь при доступности панели версии 2.8.0+.
+    """
+    if not node_uuids:
+        return []
+    payload = {
+        "nodeUuids": list(dict.fromkeys(node_uuids)),
+        "start": _to_iso(start_date),
+        "end": _to_iso(end_date),
+    }
+    try:
+        path = "/api/bandwidth-stats/nodes/users"
+        if host_name:
+            resp = await _request_for_host(host_name, "POST", path, json_payload=payload, expected_status=(200, 404))
+        else:
+            resp = await _request("POST", path, json_payload=payload, expected_status=(200, 404))
+        if resp.status_code == 404:
+            return []
+        return _extract_usage_rows(resp)
+    except Exception as e:
+        logger.warning("Remnawave: get_bandwidth_stats_nodes_users не удался (возможно, версия панели < 2.8.0): %s", e)
+        return []
+
+
+async def get_user_lte_usage_bytes(
+    user_uuid: str,
+    lte_node_uuids: list[str],
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    host_name: str | None = None,
+) -> int:
+    """Суммарный расход конкретного пользователя по нодам LTE-сквада за период.
+
+    Порядок попыток:
+      1. v2.8.0+ `POST /api/bandwidth-stats/nodes/users` — один запрос сразу по всем нодам.
+      2. Fallback: legacy `GET /api/nodes/{uuid}/usage/range` по каждой ноде отдельно (для старых панелей
+         или если основной эндпоинт вернул 404/пусто).
+    """
+    if not user_uuid or not lte_node_uuids:
+        return 0
+
+    node_uuids = list(dict.fromkeys(lte_node_uuids))
+
+    def _sum_for_user(rows: list[dict[str, Any]]) -> int:
+        total = 0
+        for row in rows or []:
+            row_user = row.get("userUuid") or row.get("user_uuid")
+            if row_user != user_uuid:
+                continue
+            val = row.get("total") or row.get("totalBytes") or row.get("bytes") or 0
+            try:
+                total += int(val)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    try:
+        rows = await get_bandwidth_stats_nodes_users(node_uuids, start_date, end_date, host_name=host_name)
+        if rows:
+            total = _sum_for_user(rows)
+            if total > 0:
+                return total
+    except Exception as e:
+        logger.warning("Remnawave: v2.8.0+ bandwidth-stats недоступен, использую legacy per-node fallback: %s", e)
+
+    total = 0
+    for node_uuid in node_uuids:
+        try:
+            rows = await get_node_usage_range(node_uuid, start_date, end_date, host_name=host_name)
+            total += _sum_for_user(rows)
+        except Exception as e:
+            logger.warning("Remnawave: get_node_usage_range fallback для ноды %s не удался: %s", node_uuid, e)
+    return total
 
 
 def extract_subscription_url(user_payload: dict[str, Any] | None) -> str | None:
@@ -768,9 +1090,18 @@ async def create_or_update_key_on_host(
     traffic_limit_bytes: int | None = None,
     traffic_limit_strategy: str | None = None,
     hwid_device_limit: int | None = None,
+    plan_id: int | None = None,
+    include_lte_squad: bool | None = None,
     raise_on_error: bool = False,
 ) -> dict | None:
-    """Legacy совместимость: создаёт/обновляет пользователя Remnawave и возвращает данные по ключу."""
+    """Legacy совместимость: создаёт/обновляет пользователя Remnawave и возвращает данные по ключу.
+
+    Двухпуловая схема (host_squads): помимо базового `squad_uuid` хоста (legacy-поле на xui_hosts),
+    пользователь также добавляется в активный сквад класса 'lte' этого хоста (если он настроен),
+    когда это уместно — то есть когда `include_lte_squad=True` ЛИБО у переданного `plan_id` задан
+    `lte_limit_bytes > 0`. Если явной информации нет (plan_id не передан и include_lte_squad не задан),
+    поведение как раньше — только базовый сквад (без регрессии для старых вызовов).
+    """
     try:
         squad = rw_repo.get_squad(host_name)
         if not squad:
@@ -786,6 +1117,28 @@ async def create_or_update_key_on_host(
             if raise_on_error:
                 raise RemnawaveAPIError(msg)
             return None
+
+        # Определяем, нужно ли добавить пользователя в LTE-сквад этого хоста (двухпуловая схема).
+        want_lte = include_lte_squad
+        if want_lte is None:
+            want_lte = False
+            if plan_id is not None:
+                try:
+                    plan = rw_repo.get_plan_by_id(int(plan_id))
+                    want_lte = bool(plan) and int(plan.get('lte_limit_bytes') or 0) > 0
+                except Exception:
+                    want_lte = False
+
+        extra_squad_uuids: list[str] = []
+        if want_lte:
+            try:
+                lte_squad = rw_repo.get_squad_by_class(host_name, 'lte')
+                if lte_squad and lte_squad.get('squad_uuid'):
+                    lte_uuid = str(lte_squad['squad_uuid']).strip()
+                    if lte_uuid and lte_uuid != squad_uuid:
+                        extra_squad_uuids.append(lte_uuid)
+            except Exception as e:
+                logger.warning("Remnawave: не удалось определить LTE-сквад для хоста '%s': %s", host_name, e)
 
         if expiry_timestamp_ms is not None:
             target_dt = datetime.fromtimestamp(expiry_timestamp_ms / 1000, tz=timezone.utc)
@@ -828,6 +1181,7 @@ async def create_or_update_key_on_host(
             tag=tag,
             username=email.split('@')[0] if email else None,
             hwid_device_limit=hwid_device_limit,
+            extra_squad_uuids=extra_squad_uuids or None,
         )
 
         subscription_url = extract_subscription_url(user_payload) or ''

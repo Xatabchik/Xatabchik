@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Тарифы{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Популярные тарифы</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr><th>Тариф</th><th>Продаж</th><th>Выручка</th><th>Средний чек</th><th>Повторные покупатели</th></tr>
+      </thead>
+      <tbody>
+        {% for p in plans %}
+        <tr>
+          <td>{{ p.plan_name }}</td>
+          <td>{{ p.sales }}</td>
+          <td>{{ "%.2f"|format(p.revenue) }} ₽</td>
+          <td>{{ "%.2f"|format(p.avg_check) }} ₽</td>
+          <td>{{ p.repeat_buyers }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-secondary py-4">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

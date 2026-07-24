@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+import math
 import qrcode
 import aiohttp
 import re
@@ -57,8 +58,16 @@ from shop_bot.data_manager.remnawave_repository import (
     update_promo_code_status,
     record_key_from_payload,
     add_to_referral_balance_all,
+    add_to_referral_balance,
+    deduct_from_referral_balance,
     get_referral_balance_all,
     get_referral_balance,
+    list_referral_payout_methods,
+    add_referral_payout_method,
+    delete_referral_payout_method,
+    get_referral_payout_method,
+    create_referral_withdrawal_request,
+    list_referral_withdrawal_requests,
     get_referral_top_rich,
     get_referral_rank_and_count,
     get_all_users,
@@ -95,6 +104,7 @@ from shop_bot.data_manager.database import get_latest_pending_for_user, get_user
 from shop_bot.data_manager.database import delete_key_by_id
 from shop_bot.data_manager.database import _get_pending_metadata
 from shop_bot.data_manager.database import get_franchise_min_withdraw, get_franchise_percent_default
+from shop_bot.data_manager.database import log_utm_visit, set_user_utm_slug_if_absent
 
 TELEGRAM_BOT_USERNAME = None
 PAYMENT_METHODS = None
@@ -610,6 +620,7 @@ async def _create_heleket_payment_request(
         "key_id": state_data.get("key_id"),
         "host_name": host_name or state_data.get("host_name"),
         "plan_id": state_data.get("plan_id"),
+        "package_id": state_data.get("package_id"),
         "customer_email": state_data.get("customer_email"),
         "payment_method": "Heleket",
         "payment_id": payment_id,
@@ -679,6 +690,54 @@ async def _create_heleket_payment_request(
         logger.error(f"Heleket: ошибка при создании инвойса: {e}", exc_info=True)
         return None
 
+async def create_cryptobot_api_invoice(amount: float, payload_str: str) -> tuple[str, int] | None:
+    """
+    Упрощённая обёртка для создания инвойса в Crypto Pay (CryptoBot), используемая
+    из webapp (shop_bot/webapp/handlers.py). В отличие от _create_cryptobot_invoice,
+    не создаёт pending-транзакцию (это уже делает вызывающий код) и принимает
+    готовый payload (обычно payment_id).
+
+    Возвращает (bot_invoice_url, invoice_id) либо None при ошибке.
+    """
+    token = (get_setting("cryptobot_token") or "").strip()
+    if not token:
+        logger.error("CryptoBot: не указан токен API в настройках.")
+        return None
+
+    price_str = f"{Decimal(str(amount)).quantize(Decimal('0.01'))}"
+    body = {
+        "amount": price_str,
+        "currency_type": "fiat",
+        "fiat": "RUB",
+        "payload": payload_str,
+    }
+    headers = {
+        "Crypto-Pay-API-Token": token,
+        "Content-Type": "application/json",
+    }
+    url = "https://pay.crypt.bot/api/createInvoice"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=body, timeout=20) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error(f"CryptoBot: HTTP {resp.status}: {text}")
+                    return None
+                data = await resp.json(content_type=None)
+                if isinstance(data, dict) and data.get("ok") and isinstance(data.get("result"), dict):
+                    res = data["result"]
+                    pay_url = res.get("bot_invoice_url") or res.get("invoice_url")
+                    invoice_id = res.get("invoice_id")
+                    if pay_url and invoice_id is not None:
+                        return pay_url, int(invoice_id)
+                logger.error(f"CryptoBot: неожиданный ответ API: {data}")
+                return None
+    except Exception as e:
+        logger.error(f"CryptoBot: ошибка при создании инвойса (api wrapper): {e}", exc_info=True)
+        return None
+
+
 async def _create_cryptobot_invoice(
     user_id: int,
     price_rub: float,
@@ -719,6 +778,7 @@ async def _create_cryptobot_invoice(
         "key_id": key_id,
         "host_name": (host_name or state_data.get("host_name")),
         "plan_id": plan_id,
+        "package_id": state_data.get("package_id"),
         "customer_email": customer_email,
         "payment_method": "CryptoBot",
         "promo_code": promo_code,
@@ -889,6 +949,20 @@ class TopUpProcess(StatesGroup):
     waiting_for_topup_method = State()
 
 
+class TrafficGbTopUp(StatesGroup):
+    waiting_for_package = State()
+    waiting_for_method = State()
+
+
+class LteGbTopUp(StatesGroup):
+    waiting_for_package = State()
+    waiting_for_method = State()
+
+
+class MainPoolReset(StatesGroup):
+    waiting_for_method = State()
+
+
 class SupportDialog(StatesGroup):
     waiting_for_subject = State()
     waiting_for_message = State()
@@ -911,6 +985,15 @@ class FranchiseStates(StatesGroup):
 
 class KeyManagement(StatesGroup):
     waiting_for_rename = State()
+
+
+class ReferralWithdraw(StatesGroup):
+    waiting_method_type = State()
+    waiting_method_bank = State()
+    waiting_method_value = State()
+    waiting_withdraw_choose_method = State()
+    waiting_withdraw_amount = State()
+    waiting_transfer_amount = State()
 
 
 def is_valid_email(email: str) -> bool:
@@ -1010,6 +1093,15 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
     except Exception:
         balance_str = str(balance_val)
 
+    try:
+        ref_balance_val = get_referral_balance(user_id) or 0
+    except Exception:
+        ref_balance_val = 0
+    try:
+        ref_balance_str = f"{float(ref_balance_val):.2f}"
+    except Exception:
+        ref_balance_str = str(ref_balance_val)
+
     username_safe = html_escape(str(username or "Пользователь"))
 
     # Ссылки (настраиваются в админке)
@@ -1030,7 +1122,8 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
     text = (
         f"<b>👤 Профиль: {username_safe}</b>\n\n"
         f"<blockquote>—— ID: {user_id}\n"
-        f"—— Баланс: {balance_str} ₽ RUB</blockquote>\n\n"
+        f"—— Баланс: {balance_str} ₽ RUB\n"
+        f"—— Заработано (реф. баланс): {ref_balance_str} ₽ RUB</blockquote>\n\n"
         f"📝 <a href=\"{channel_link_safe}\">Наш канал</a> 📝\n"
         f"👉 <a href=\"{chat_link_safe}\">Наш чат</a> 👉\n\n"
         f"{promo_text}"
@@ -1129,6 +1222,21 @@ def get_user_router() -> Router:
         username = message.from_user.username or message.from_user.full_name
         referrer_id = None
 
+        # Обрабатываем вход через веб-приложение (deep-link авторизация)
+        if command.args and command.args.startswith('auth_'):
+            auth_token = command.args[5:]
+            try:
+                register_user_if_not_exists(user_id, username, None)
+                ok = rw_repo.confirm_webapp_auth_request(auth_token, user_id)
+                if ok:
+                    await message.answer("✅ Вход выполнен! Вернитесь во вкладку с веб-приложением — она обновится автоматически.")
+                else:
+                    await message.answer("⚠️ Ссылка для входа устарела. Попробуйте открыть веб-приложение заново.")
+            except Exception:
+                logger.warning("Не удалось обработать auth_ deep-link", exc_info=True)
+                await message.answer("⚠️ Не удалось выполнить вход. Попробуйте ещё раз.")
+            return
+
         # Обрабатываем активацию подарка
         if command.args and command.args.startswith('gift_'):
             gift_code = command.args[5:]  # Убираем "gift_"
@@ -1159,6 +1267,16 @@ def get_user_router() -> Router:
                     logger.info(f"Новый пользователь {user_id} пришел по реферальной ссылке от {referrer_id}")
             except (IndexError, ValueError):
                 logger.warning(f"Получен неверный реферальный код: {command.args}")
+
+        # Обрабатываем UTM-метку (best-effort, не должно ломать регистрацию/капчу)
+        if command.args and command.args.startswith('utm_'):
+            try:
+                utm_slug = command.args[4:].strip()
+                if utm_slug:
+                    log_utm_visit(utm_slug, user_id, 'start')
+                    set_user_utm_slug_if_absent(user_id, utm_slug)
+            except Exception:
+                logger.warning(f"Не удалось обработать UTM-метку: {command.args}", exc_info=True)
 
         # Проверяем, нужна ли капча
         captcha_enabled = get_setting("captcha_enabled") == "true"
@@ -1204,7 +1322,7 @@ def get_user_router() -> Router:
                 start_bonus = Decimal("20.00")
             if start_bonus > 0:
                 try:
-                    ok = add_to_balance(int(referrer_id), float(start_bonus))
+                    ok = add_to_referral_balance(int(referrer_id), float(start_bonus))
                 except Exception as e:
                     logger.warning(f"Реферальный стартовый бонус: не удалось добавить к балансу для реферера {referrer_id}: {e}")
                     ok = False
@@ -1807,6 +1925,967 @@ def get_user_router() -> Router:
         except Exception as e:
             logger.error(f"Error sending gift link {gift_id}: {e}", exc_info=True)
             await callback.answer("❌ Произошла ошибка при отправке ссылки", show_alert=True)
+
+    def _resolve_plan_for_traffic_topup(key_id: int, user_id: int) -> tuple[dict, dict] | tuple[None, None]:
+        key_data = rw_repo.get_key_by_id(key_id)
+        if not key_data or key_data.get('user_id') != user_id:
+            return None, None
+        plan_id = _resolve_plan_id_for_key(key_data)
+        if not plan_id:
+            return None, None
+        plan = get_plan_by_id(plan_id)
+        if not plan or int(plan.get('traffic_limit_bytes') or 0) <= 0:
+            return None, None
+        return key_data, plan
+
+    @user_router.callback_query(F.data.startswith("traffic_gb_start_"))
+    @registration_required
+    async def traffic_gb_start_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            key_id = int(callback.data.split("_")[-1])
+        except Exception:
+            await callback.answer("Ошибка данных", show_alert=True)
+            return
+
+        key_data, plan = _resolve_plan_for_traffic_topup(key_id, user_id)
+        if not plan:
+            await callback.message.edit_text(
+                "❌ Для тарифа этого ключа не настроена докупка трафика.",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        packages = database.get_traffic_packages_for_plan(plan['plan_id'], only_active=True)
+        if not packages:
+            await callback.message.edit_text(
+                "❌ Пакеты докупки трафика для этого тарифа пока не настроены. Обратитесь к администратору.",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        await state.update_data(traffic_key_id=key_id)
+        await callback.message.edit_text(
+            "Выберите объём докупаемого трафика:",
+            reply_markup=keyboards.create_traffic_packages_keyboard(key_id, packages)
+        )
+
+    @user_router.callback_query(F.data.startswith("traffic_gb_pick_"))
+    @registration_required
+    async def traffic_gb_pick_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            parts = callback.data.split("_")
+            package_id = int(parts[-1])
+            key_id = int(parts[-2])
+        except Exception:
+            await callback.answer("Ошибка данных", show_alert=True)
+            return
+
+        key_data, plan = _resolve_plan_for_traffic_topup(key_id, user_id)
+        if not plan:
+            await callback.message.edit_text("❌ Ошибка: тариф ключа не найден.")
+            return
+
+        package = database.get_traffic_package_by_id(package_id)
+        if not package or int(package.get('plan_id')) != int(plan['plan_id']):
+            await callback.answer("Пакет не найден", show_alert=True)
+            return
+
+        await state.update_data(
+            traffic_key_id=key_id,
+            traffic_package_id=package_id,
+            traffic_package_price=float(package.get('price') or 0),
+            traffic_package_size_gb=float(package.get('size_gb') or 0),
+        )
+
+        try:
+            main_balance = get_balance(user_id)
+        except Exception:
+            main_balance = 0.0
+
+        size_gb = float(package.get('size_gb') or 0)
+        price = float(package.get('price') or 0)
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+
+        await callback.message.edit_text(
+            f"📶 Докупка {size_txt} ГБ — {price:.0f} RUB\n"
+            f"Ваш баланс: {main_balance:.0f} RUB\n\n"
+            "Выберите способ оплаты:",
+            reply_markup=keyboards.create_traffic_gb_payment_method_keyboard(PAYMENT_METHODS)
+        )
+        await state.set_state(TrafficGbTopUp.waiting_for_method)
+
+    def _traffic_gb_metadata(data: dict, user_id: int, payment_method: str, payment_id: str) -> dict:
+        price = float(data.get('traffic_package_price', 0))
+        return {
+            "user_id": int(user_id),
+            "price": price,
+            "action": "traffic_gb_topup",
+            "key_id": data.get('traffic_key_id'),
+            "package_id": data.get('traffic_package_id'),
+            "size_gb": data.get('traffic_package_size_gb'),
+            "payment_method": payment_method,
+            "payment_id": payment_id,
+        }
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_balance")
+    async def trafficgb_pay_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('traffic_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        if not deduct_from_balance(user_id, price):
+            await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+            return
+        payment_id = f"balance:{user_id}:{uuid.uuid4()}"
+        metadata = _traffic_gb_metadata(data, user_id, "Balance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_referral_balance")
+    async def trafficgb_pay_referral_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('traffic_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        if not deduct_from_referral_balance(user_id, price):
+            await callback.answer("Недостаточно средств на реферальном балансе.", show_alert=True)
+            return
+        payment_id = f"referral_balance:{user_id}:{uuid.uuid4()}"
+        metadata = _traffic_gb_metadata(data, user_id, "ReferralBalance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_yookassa")
+    async def trafficgb_pay_yookassa_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю ссылку на оплату...")
+        yookassa_shop_id = get_setting("yookassa_shop_id")
+        yookassa_secret_key = get_setting("yookassa_secret_key")
+        if not yookassa_shop_id or not yookassa_secret_key:
+            await callback.message.answer("❌ YooKassa не настроен. Обратитесь к администратору.")
+            await state.clear()
+            return
+        Configuration.account_id = yookassa_shop_id
+        Configuration.secret_key = yookassa_secret_key
+
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('traffic_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('traffic_package_size_gb')
+        description = f"Докупка {size_gb} ГБ трафика"
+        payment_id = str(uuid.uuid4())
+        price_str = f"{price:.2f}"
+        metadata = _traffic_gb_metadata(data, user_id, "YooKassa", payment_id)
+        try:
+            create_payload_pending(payment_id, user_id, float(price), metadata)
+        except Exception as e:
+            logger.warning(f"YooKassa traffic-gb: не удалось создать pending: {e}")
+        try:
+            payment_payload = {
+                "amount": {"value": price_str, "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": f"https://t.me/{TELEGRAM_BOT_USERNAME}"},
+                "capture": True,
+                "description": description,
+                "metadata": {"payment_id": payment_id}
+            }
+            payment = Payment.create(payment_payload, uuid.uuid4())
+            try:
+                provider_payment_id = getattr(payment, "id", None)
+                if provider_payment_id:
+                    metadata2 = dict(metadata)
+                    metadata2["yookassa_payment_id"] = str(provider_payment_id)
+                    create_payload_pending(payment_id, user_id, float(price), metadata2)
+            except Exception as e:
+                logger.warning(f"YooKassa traffic-gb: не удалось сохранить provider id: {e}")
+            await state.clear()
+            await callback.message.edit_text(
+                "Нажмите на кнопку ниже для оплаты:",
+                reply_markup=keyboards.create_yookassa_payment_keyboard(payment.confirmation.confirmation_url, payment_id)
+            )
+        except Exception as e:
+            logger.error(f"Failed to create YooKassa traffic-gb payment: {e}", exc_info=True)
+            await callback.message.answer("Не удалось создать ссылку на оплату.")
+            await state.clear()
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_platega")
+    async def trafficgb_pay_platega_handler(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        await callback.answer("Создаю ссылку Platega...")
+        if not _platega_is_enabled():
+            await callback.message.edit_text("❌ Platega временно недоступен.")
+            await state.clear()
+            return
+        data = await state.get_data()
+        price = Decimal(str(data.get('traffic_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('traffic_package_size_gb')
+        payment_id = str(uuid.uuid4())
+        metadata = _traffic_gb_metadata(data, user_id, "Platega", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url, txid = await _create_platega_payment_link(amount_rub=price, payment_id=payment_id, description=f"Докупка {size_gb} ГБ трафика")
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку Platega. Попробуйте позже.")
+            await state.clear()
+            return
+        try:
+            metadata2 = dict(metadata)
+            metadata2["platega_transaction_id"] = txid
+            create_payload_pending(payment_id, user_id, float(price), metadata2)
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_platega_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_heleket")
+    async def trafficgb_pay_heleket_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю счёт...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('traffic_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        state_data = {
+            "action": "traffic_gb_topup",
+            "customer_email": None,
+            "plan_id": None,
+            "package_id": data.get('traffic_package_id'),
+            "host_name": None,
+            "key_id": data.get('traffic_key_id'),
+        }
+        try:
+            pay_url = await _create_heleket_payment_request(
+                user_id=user_id,
+                price=price,
+                months=0,
+                host_name="",
+                state_data=state_data
+            )
+            if pay_url:
+                await callback.message.edit_text(
+                    "Нажмите на кнопку ниже для оплаты:",
+                    reply_markup=keyboards.create_payment_keyboard(pay_url)
+                )
+                await state.clear()
+            else:
+                await callback.message.edit_text("❌ Не удалось создать счёт. Попробуйте другой способ оплаты.")
+        except Exception as e:
+            logger.error(f"Failed to create traffic-gb Heleket invoice: {e}", exc_info=True)
+            await callback.message.edit_text("❌ Не удалось создать счёт. Попробуйте другой способ оплаты.")
+            await state.clear()
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_cryptobot")
+    async def trafficgb_pay_cryptobot_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю счёт в Crypto Pay...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('traffic_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        state_data = {
+            "action": "traffic_gb_topup",
+            "customer_email": None,
+            "plan_id": None,
+            "package_id": data.get('traffic_package_id'),
+            "host_name": None,
+            "key_id": data.get('traffic_key_id'),
+        }
+        try:
+            result = await _create_cryptobot_invoice(
+                user_id=user_id,
+                price_rub=price,
+                months=0,
+                host_name="",
+                state_data=state_data,
+            )
+            if result:
+                pay_url, invoice_id = result
+                await callback.message.edit_text(
+                    "Нажмите на кнопку ниже для оплаты:",
+                    reply_markup=keyboards.create_cryptobot_payment_keyboard(pay_url, invoice_id)
+                )
+                await state.clear()
+            else:
+                await callback.message.edit_text("❌ Не удалось создать счёт в CryptoBot. Попробуйте другой способ оплаты.")
+        except Exception as e:
+            logger.error(f"Failed to create traffic-gb CryptoBot invoice: {e}", exc_info=True)
+            await callback.message.edit_text("❌ Не удалось создать счёт в CryptoBot. Попробуйте другой способ оплаты.")
+            await state.clear()
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_yoomoney")
+    async def trafficgb_pay_yoomoney_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Готовлю YooMoney...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('traffic_package_price', 0)))
+        wallet = get_setting("yoomoney_wallet")
+        secret = get_setting("yoomoney_secret")
+        if not wallet or not secret or price <= 0:
+            await callback.message.edit_text("❌ YooMoney временно недоступен.")
+            await state.clear()
+            return
+        w = (wallet or "").strip()
+        if not (w.isdigit() and len(w) >= 11):
+            await callback.message.edit_text("❌ Некорректный номер кошелька YooMoney.")
+            await state.clear()
+            return
+        if price < Decimal("1.00"):
+            await callback.message.edit_text("❌ Минимальная сумма перевода YooMoney — 1 RUB.")
+            await state.clear()
+            return
+        payment_id = str(uuid.uuid4())
+        metadata = _traffic_gb_metadata(data, user_id, "YooMoney", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url = _build_yoomoney_link(wallet, price, payment_id)
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_yoomoney_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_stars")
+    async def trafficgb_pay_stars_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Готовлю счёт в Telegram Stars...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('traffic_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        try:
+            stars_ratio = Decimal(get_setting("stars_per_rub") or '0')
+        except Exception:
+            stars_ratio = Decimal('0')
+        if stars_ratio <= 0:
+            await callback.message.edit_text("❌ Оплата в Stars временно недоступна.")
+            await state.clear()
+            return
+        stars_amount = int((price * stars_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) or 1
+        payment_id = str(uuid.uuid4())
+        metadata = _traffic_gb_metadata(data, user_id, "Telegram Stars", payment_id)
+        try:
+            create_payload_pending(payment_id, user_id, float(price), metadata)
+        except Exception as e:
+            logger.error(f"traffic-gb Stars: не удалось создать pending: {e}", exc_info=True)
+        size_gb = data.get('traffic_package_size_gb')
+        try:
+            await callback.message.answer_invoice(
+                title="Докупка трафика",
+                description=f"Докупка {size_gb} ГБ трафика",
+                prices=[LabeledPrice(label="Докупка трафика", amount=stars_amount)],
+                payload=payment_id,
+                currency="XTR",
+            )
+            await state.clear()
+        except Exception as e:
+            logger.error(f"Failed to create traffic-gb Stars invoice: {e}")
+            await callback.message.edit_text("❌ Не удалось создать счёт в Stars.")
+            await state.clear()
+
+    def _resolve_plan_for_lte_topup(key_id: int, user_id: int) -> tuple[dict, dict] | tuple[None, None]:
+        key_data = rw_repo.get_key_by_id(key_id)
+        if not key_data or key_data.get('user_id') != user_id:
+            return None, None
+        plan_id = _resolve_plan_id_for_key(key_data)
+        if not plan_id:
+            return None, None
+        plan = get_plan_by_id(plan_id)
+        if not plan or int(plan.get('lte_limit_bytes') or 0) <= 0:
+            return None, None
+        # LTE-докупка доступна только если у хоста ключа реально настроен активный сквад класса 'lte'
+        # (двухпуловая схема host_squads) — иначе покупка не будет иметь эффекта на стороне Remnawave.
+        host_name_for_key = key_data.get('host_name')
+        try:
+            lte_squad_cfg = database.get_squad_by_class(host_name_for_key, 'lte') if host_name_for_key else None
+        except Exception:
+            lte_squad_cfg = None
+        if not lte_squad_cfg:
+            return None, None
+        return key_data, plan
+
+    @user_router.callback_query(F.data.startswith("lte_gb_start_"))
+    @registration_required
+    async def lte_gb_start_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            key_id = int(callback.data.split("_")[-1])
+        except Exception:
+            await callback.answer("Ошибка данных", show_alert=True)
+            return
+
+        key_data, plan = _resolve_plan_for_lte_topup(key_id, user_id)
+        if not plan:
+            await callback.message.edit_text(
+                "❌ Для тарифа этого ключа не настроена докупка LTE.",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        packages = database.get_traffic_packages_for_plan(plan['plan_id'], only_active=True, pool='lte')
+        if not packages:
+            await callback.message.edit_text(
+                "❌ Пакеты докупки LTE для этого тарифа пока не настроены. Обратитесь к администратору.",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        await state.update_data(lte_key_id=key_id)
+        await callback.message.edit_text(
+            "Выберите объём докупаемого LTE-трафика (💰 premium-ноды):",
+            reply_markup=keyboards.create_lte_packages_keyboard(key_id, packages)
+        )
+
+    @user_router.callback_query(F.data.startswith("lte_gb_pick_"))
+    @registration_required
+    async def lte_gb_pick_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            parts = callback.data.split("_")
+            package_id = int(parts[-1])
+            key_id = int(parts[-2])
+        except Exception:
+            await callback.answer("Ошибка данных", show_alert=True)
+            return
+
+        key_data, plan = _resolve_plan_for_lte_topup(key_id, user_id)
+        if not plan:
+            await callback.message.edit_text("❌ Ошибка: тариф ключа не найден.")
+            return
+
+        package = database.get_traffic_package_by_id(package_id)
+        if not package or int(package.get('plan_id')) != int(plan['plan_id']):
+            await callback.answer("Пакет не найден", show_alert=True)
+            return
+
+        await state.update_data(
+            lte_key_id=key_id,
+            lte_package_id=package_id,
+            lte_package_price=float(package.get('price') or 0),
+            lte_package_size_gb=float(package.get('size_gb') or 0),
+        )
+
+        try:
+            main_balance = get_balance(user_id)
+        except Exception:
+            main_balance = 0.0
+
+        size_gb = float(package.get('size_gb') or 0)
+        price = float(package.get('price') or 0)
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+
+        await callback.message.edit_text(
+            f"💰 Докупка {size_txt} ГБ LTE — {price:.0f} RUB\n"
+            f"Ваш баланс: {main_balance:.0f} RUB\n\n"
+            "Выберите способ оплаты:",
+            reply_markup=keyboards.create_lte_gb_payment_method_keyboard(PAYMENT_METHODS)
+        )
+        await state.set_state(LteGbTopUp.waiting_for_method)
+
+    def _lte_gb_metadata(data: dict, user_id: int, payment_method: str, payment_id: str) -> dict:
+        price = float(data.get('lte_package_price', 0))
+        return {
+            "user_id": int(user_id),
+            "price": price,
+            "action": "lte_gb_topup",
+            "key_id": data.get('lte_key_id'),
+            "package_id": data.get('lte_package_id'),
+            "size_gb": data.get('lte_package_size_gb'),
+            "payment_method": payment_method,
+            "payment_id": payment_id,
+        }
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_balance")
+    async def ltegb_pay_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('lte_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        if not deduct_from_balance(user_id, price):
+            await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+            return
+        payment_id = f"balance:{user_id}:{uuid.uuid4()}"
+        metadata = _lte_gb_metadata(data, user_id, "Balance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_referral_balance")
+    async def ltegb_pay_referral_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('lte_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        if not deduct_from_referral_balance(user_id, price):
+            await callback.answer("Недостаточно средств на реферальном балансе.", show_alert=True)
+            return
+        payment_id = f"referral_balance:{user_id}:{uuid.uuid4()}"
+        metadata = _lte_gb_metadata(data, user_id, "ReferralBalance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_yookassa")
+    async def ltegb_pay_yookassa_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю ссылку на оплату...")
+        yookassa_shop_id = get_setting("yookassa_shop_id")
+        yookassa_secret_key = get_setting("yookassa_secret_key")
+        if not yookassa_shop_id or not yookassa_secret_key:
+            await callback.message.answer("❌ YooKassa не настроен. Обратитесь к администратору.")
+            await state.clear()
+            return
+        Configuration.account_id = yookassa_shop_id
+        Configuration.secret_key = yookassa_secret_key
+
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('lte_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('lte_package_size_gb')
+        description = f"Докупка {size_gb} ГБ LTE-трафика"
+        payment_id = str(uuid.uuid4())
+        price_str = f"{price:.2f}"
+        metadata = _lte_gb_metadata(data, user_id, "YooKassa", payment_id)
+        try:
+            create_payload_pending(payment_id, user_id, float(price), metadata)
+        except Exception as e:
+            logger.warning(f"YooKassa lte-gb: не удалось создать pending: {e}")
+        try:
+            payment_payload = {
+                "amount": {"value": price_str, "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": f"https://t.me/{TELEGRAM_BOT_USERNAME}"},
+                "capture": True,
+                "description": description,
+                "metadata": {"payment_id": payment_id}
+            }
+            payment = Payment.create(payment_payload, uuid.uuid4())
+            try:
+                provider_payment_id = getattr(payment, "id", None)
+                if provider_payment_id:
+                    metadata2 = dict(metadata)
+                    metadata2["yookassa_payment_id"] = str(provider_payment_id)
+                    create_payload_pending(payment_id, user_id, float(price), metadata2)
+            except Exception as e:
+                logger.warning(f"YooKassa lte-gb: не удалось сохранить provider id: {e}")
+            await state.clear()
+            await callback.message.edit_text(
+                "Нажмите на кнопку ниже для оплаты:",
+                reply_markup=keyboards.create_yookassa_payment_keyboard(payment.confirmation.confirmation_url, payment_id)
+            )
+        except Exception as e:
+            logger.error(f"Failed to create YooKassa lte-gb payment: {e}", exc_info=True)
+            await callback.message.answer("Не удалось создать ссылку на оплату.")
+            await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_platega")
+    async def ltegb_pay_platega_handler(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        await callback.answer("Создаю ссылку Platega...")
+        if not _platega_is_enabled():
+            await callback.message.edit_text("❌ Platega временно недоступен.")
+            await state.clear()
+            return
+        data = await state.get_data()
+        price = Decimal(str(data.get('lte_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('lte_package_size_gb')
+        payment_id = str(uuid.uuid4())
+        metadata = _lte_gb_metadata(data, user_id, "Platega", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url, txid = await _create_platega_payment_link(amount_rub=price, payment_id=payment_id, description=f"Докупка {size_gb} ГБ LTE")
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку Platega. Попробуйте позже.")
+            await state.clear()
+            return
+        try:
+            metadata2 = dict(metadata)
+            metadata2["platega_transaction_id"] = txid
+            create_payload_pending(payment_id, user_id, float(price), metadata2)
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_platega_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_heleket")
+    async def ltegb_pay_heleket_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю счёт...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('lte_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        state_data = {
+            "action": "lte_gb_topup",
+            "customer_email": None,
+            "plan_id": None,
+            "package_id": data.get('lte_package_id'),
+            "host_name": None,
+            "key_id": data.get('lte_key_id'),
+        }
+        try:
+            pay_url = await _create_heleket_payment_request(
+                user_id=user_id,
+                price=price,
+                months=0,
+                host_name="",
+                state_data=state_data
+            )
+            if pay_url:
+                await callback.message.edit_text(
+                    "Нажмите на кнопку ниже для оплаты:",
+                    reply_markup=keyboards.create_payment_keyboard(pay_url)
+                )
+                await state.clear()
+            else:
+                await callback.message.edit_text("❌ Не удалось создать счёт. Попробуйте другой способ оплаты.")
+        except Exception as e:
+            logger.error(f"Failed to create lte-gb Heleket invoice: {e}", exc_info=True)
+            await callback.message.edit_text("❌ Не удалось создать счёт. Попробуйте другой способ оплаты.")
+            await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_cryptobot")
+    async def ltegb_pay_cryptobot_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю счёт в Crypto Pay...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('lte_package_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        state_data = {
+            "action": "lte_gb_topup",
+            "customer_email": None,
+            "plan_id": None,
+            "package_id": data.get('lte_package_id'),
+            "host_name": None,
+            "key_id": data.get('lte_key_id'),
+        }
+        try:
+            result = await _create_cryptobot_invoice(
+                user_id=user_id,
+                price_rub=price,
+                months=0,
+                host_name="",
+                state_data=state_data,
+            )
+            if result:
+                pay_url, invoice_id = result
+                await callback.message.edit_text(
+                    "Нажмите на кнопку ниже для оплаты:",
+                    reply_markup=keyboards.create_cryptobot_payment_keyboard(pay_url, invoice_id)
+                )
+                await state.clear()
+            else:
+                await callback.message.edit_text("❌ Не удалось создать счёт в CryptoBot. Попробуйте другой способ оплаты.")
+        except Exception as e:
+            logger.error(f"Failed to create lte-gb CryptoBot invoice: {e}", exc_info=True)
+            await callback.message.edit_text("❌ Не удалось создать счёт в CryptoBot. Попробуйте другой способ оплаты.")
+            await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_yoomoney")
+    async def ltegb_pay_yoomoney_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Готовлю YooMoney...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('lte_package_price', 0)))
+        wallet = get_setting("yoomoney_wallet")
+        secret = get_setting("yoomoney_secret")
+        if not wallet or not secret or price <= 0:
+            await callback.message.edit_text("❌ YooMoney временно недоступен.")
+            await state.clear()
+            return
+        w = (wallet or "").strip()
+        if not (w.isdigit() and len(w) >= 11):
+            await callback.message.edit_text("❌ Некорректный номер кошелька YooMoney.")
+            await state.clear()
+            return
+        if price < Decimal("1.00"):
+            await callback.message.edit_text("❌ Минимальная сумма перевода YooMoney — 1 RUB.")
+            await state.clear()
+            return
+        payment_id = str(uuid.uuid4())
+        metadata = _lte_gb_metadata(data, user_id, "YooMoney", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url = _build_yoomoney_link(wallet, price, payment_id)
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_yoomoney_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_stars")
+    async def ltegb_pay_stars_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Готовлю счёт в Telegram Stars...")
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('lte_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        try:
+            stars_ratio = Decimal(get_setting("stars_per_rub") or '0')
+        except Exception:
+            stars_ratio = Decimal('0')
+        if stars_ratio <= 0:
+            await callback.message.edit_text("❌ Оплата в Stars временно недоступна.")
+            await state.clear()
+            return
+        stars_amount = int((price * stars_ratio).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) or 1
+        payment_id = str(uuid.uuid4())
+        metadata = _lte_gb_metadata(data, user_id, "Telegram Stars", payment_id)
+        try:
+            create_payload_pending(payment_id, user_id, float(price), metadata)
+        except Exception as e:
+            logger.error(f"lte-gb Stars: не удалось создать pending: {e}", exc_info=True)
+        size_gb = data.get('lte_package_size_gb')
+        try:
+            await callback.message.answer_invoice(
+                title="Докупка LTE",
+                description=f"Докупка {size_gb} ГБ LTE-трафика",
+                prices=[LabeledPrice(label="Докупка LTE", amount=stars_amount)],
+                payload=payment_id,
+                currency="XTR",
+            )
+            await state.clear()
+        except Exception as e:
+            logger.error(f"Failed to create lte-gb Stars invoice: {e}")
+            await callback.message.edit_text("❌ Не удалось создать счёт в Stars.")
+            await state.clear()
+
+    def _resolve_key_for_main_reset(key_id: int, user_id: int) -> dict | None:
+        key_data = rw_repo.get_key_by_id(key_id)
+        if not key_data or key_data.get('user_id') != user_id:
+            return None
+        return key_data
+
+    @user_router.callback_query(F.data.startswith("main_reset_start_"))
+    @registration_required
+    async def main_reset_start_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        user_id = callback.from_user.id
+        try:
+            key_id = int(callback.data.split("_")[-1])
+        except Exception:
+            await callback.answer("Ошибка данных", show_alert=True)
+            return
+
+        key_data = _resolve_key_for_main_reset(key_id, user_id)
+        if not key_data:
+            await callback.message.edit_text("❌ Ключ не найден.", reply_markup=keyboards.create_back_to_menu_keyboard())
+            return
+
+        plan = None
+        try:
+            plan_id_for_key = _resolve_plan_id_for_key(key_data)
+            if plan_id_for_key:
+                plan = get_plan_by_id(plan_id_for_key)
+        except Exception:
+            plan = None
+
+        plan_traffic_limit = int((plan or {}).get('traffic_limit_bytes') or 0)
+        if not plan or plan_traffic_limit <= 0:
+            await callback.message.edit_text(
+                "❌ Для тарифа этого ключа сброс основного трафика недоступен (тариф безлимитный).",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        try:
+            price = float(plan.get('main_reset_price_rub') or 0)
+        except Exception:
+            price = 0.0
+        if price <= 0:
+            await callback.message.edit_text(
+                "❌ Платный сброс основного трафика не настроен для этого тарифа. Обратитесь к администратору.",
+                reply_markup=keyboards.create_back_to_menu_keyboard()
+            )
+            return
+
+        # Дата ближайшего бесплатного (планового) сброса основного трафика по тарифу
+        next_free_reset_txt = "—"
+        next_reset_raw = key_data.get('next_traffic_reset_at')
+        if next_reset_raw:
+            try:
+                next_reset_dt = datetime.fromisoformat(str(next_reset_raw).replace(' ', 'T'))
+                next_free_reset_txt = next_reset_dt.strftime('%d.%m.%Y')
+            except Exception:
+                pass
+
+        await state.update_data(main_reset_key_id=key_id, main_reset_price=price)
+        try:
+            main_balance = get_balance(user_id)
+        except Exception:
+            main_balance = 0.0
+
+        await callback.message.edit_text(
+            "♻️ Сбросить лимит обычного трафика\n\n"
+            f"Стоимость: {price:.0f} RUB.\n\n"
+            "После оплаты счётчик обычного трафика обнулится моментально, а лимит и история "
+            "Мобильного LTE останутся прежними.\n\n"
+            f"Следующий бесплатный сброс по тарифу: {next_free_reset_txt}.\n\n"
+            f"Ваш баланс: {main_balance:.0f} RUB\n\n"
+            "Выберите способ оплаты:",
+            reply_markup=keyboards.create_main_reset_payment_method_keyboard(PAYMENT_METHODS)
+        )
+        await state.set_state(MainPoolReset.waiting_for_method)
+
+    def _main_reset_metadata(data: dict, user_id: int, payment_method: str, payment_id: str) -> dict:
+        price = float(data.get('main_reset_price', 0))
+        return {
+            "user_id": int(user_id),
+            "price": price,
+            "action": "main_traffic_reset",
+            "key_id": data.get('main_reset_key_id'),
+            "payment_method": payment_method,
+            "payment_id": payment_id,
+        }
+
+    @user_router.callback_query(MainPoolReset.waiting_for_method, F.data == "mainreset_pay_balance")
+    async def mainreset_pay_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('main_reset_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена.")
+            await state.clear()
+            return
+        if not deduct_from_balance(user_id, price):
+            await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+            return
+        payment_id = f"balance:{user_id}:{uuid.uuid4()}"
+        metadata = _main_reset_metadata(data, user_id, "Balance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(MainPoolReset.waiting_for_method, F.data == "mainreset_pay_referral_balance")
+    async def mainreset_pay_referral_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = float(data.get('main_reset_price', 0))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена.")
+            await state.clear()
+            return
+        if not deduct_from_referral_balance(user_id, price):
+            await callback.answer("Недостаточно средств на реферальном балансе.", show_alert=True)
+            return
+        payment_id = f"referral_balance:{user_id}:{uuid.uuid4()}"
+        metadata = _main_reset_metadata(data, user_id, "ReferralBalance", payment_id)
+        metadata["chat_id"] = callback.message.chat.id
+        metadata["message_id"] = callback.message.message_id
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+    @user_router.callback_query(MainPoolReset.waiting_for_method, F.data == "mainreset_pay_yookassa")
+    async def mainreset_pay_yookassa_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю ссылку на оплату...")
+        yookassa_shop_id = get_setting("yookassa_shop_id")
+        yookassa_secret_key = get_setting("yookassa_secret_key")
+        if not yookassa_shop_id or not yookassa_secret_key:
+            await callback.message.answer("❌ YooKassa не настроен. Обратитесь к администратору.")
+            await state.clear()
+            return
+        Configuration.account_id = yookassa_shop_id
+        Configuration.secret_key = yookassa_secret_key
+
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        price = Decimal(str(data.get('main_reset_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена.")
+            await state.clear()
+            return
+        description = "Досрочный сброс основного пула трафика"
+        payment_id = str(uuid.uuid4())
+        price_str = f"{price:.2f}"
+        metadata = _main_reset_metadata(data, user_id, "YooKassa", payment_id)
+        try:
+            create_payload_pending(payment_id, user_id, float(price), metadata)
+        except Exception as e:
+            logger.warning(f"YooKassa main-reset: не удалось создать pending: {e}")
+        try:
+            payment_payload = {
+                "amount": {"value": price_str, "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": f"https://t.me/{TELEGRAM_BOT_USERNAME}"},
+                "capture": True,
+                "description": description,
+                "metadata": {"payment_id": payment_id}
+            }
+            payment = Payment.create(payment_payload, uuid.uuid4())
+            try:
+                provider_payment_id = getattr(payment, "id", None)
+                if provider_payment_id:
+                    metadata2 = dict(metadata)
+                    metadata2["yookassa_payment_id"] = str(provider_payment_id)
+                    create_payload_pending(payment_id, user_id, float(price), metadata2)
+            except Exception as e:
+                logger.warning(f"YooKassa main-reset: не удалось сохранить provider id: {e}")
+            await state.clear()
+            await callback.message.edit_text(
+                "Нажмите на кнопку ниже для оплаты:",
+                reply_markup=keyboards.create_yookassa_payment_keyboard(payment.confirmation.confirmation_url, payment_id)
+            )
+        except Exception as e:
+            logger.error(f"Failed to create YooKassa main-reset payment: {e}", exc_info=True)
+            await callback.message.answer("Не удалось создать ссылку на оплату.")
+            await state.clear()
 
     @user_router.callback_query(F.data == "top_up_start")
     @registration_required
@@ -2730,6 +3809,10 @@ def get_user_router() -> Router:
             total_ref_earned = float(get_referral_balance_all(user_id))
         except Exception:
             total_ref_earned = 0.0
+        try:
+            available_ref_balance = float(get_referral_balance(user_id))
+        except Exception:
+            available_ref_balance = 0.0
 
         # Referral bonuses text is driven by admin settings
         def _to_float_setting(key: str, default: float) -> float:
@@ -2766,24 +3849,44 @@ def get_user_router() -> Router:
 
         extra_bonus = " +1 день подписки" if days_bonus_enabled else ""
         bonuses_line = f"<b>🏆 Бонусы за приглашения:</b>🌟 {main_bonus}{extra_bonus}"
-        text = (
-            "👥 <b>Реферальная программа</b>\n\n"
-            f"<b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>\n\n"
-            f"<b>🤝 Приглашайте друзей и получайте бонусы на каждом уровне! 💰</b>\n\n"
-            f"{bonuses_line}\n\n"
-            f"<b>📊 Статистика приглашений:</b>\n"
-            f"<b>👥 Приглашено пользователей:</b> {referral_count}\n\n"
-            f"<b>💰 Заработано по рефералке:</b> {total_ref_earned:.2f} RUB"
-        )
+
+        withdraw_enabled = _ref_withdraw_enabled()
+        min_withdraw = _ref_float_setting("minimum_withdrawal", 100.0)
+        can_withdraw_now = withdraw_enabled and available_ref_balance >= min_withdraw
+
+        text_lines = [
+            "👥 <b>Реферальная программа</b>",
+            "",
+            f"<b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>",
+            "",
+            "<b>🤝 Приглашайте друзей и получайте бонусы на каждом уровне! 💰</b>",
+            "",
+            bonuses_line,
+            "",
+            "<b>📊 Статистика приглашений:</b>",
+            f"<b>👥 Приглашено пользователей:</b> {referral_count}",
+            "",
+            f"<b>💰 Заработано по рефералке (всего):</b> {total_ref_earned:.2f} ₽",
+            f"<b>💼 Доступно к выводу:</b> {available_ref_balance:.2f} ₽",
+        ]
+        if withdraw_enabled:
+            text_lines.append(f"<b>ℹ️ Минимальная сумма для вывода:</b> {min_withdraw:.0f} ₽")
+        text = "\n".join(text_lines)
 
         share_text = "🌐Обход глушилок и блокировок на любом устройстве! 😊"
         share_url = "https://t.me/share/url?" + urlencode({"url": referral_link, "text": share_text})
 
         builder = InlineKeyboardBuilder()
         builder.button(text="📩 Поделиться", url=share_url)
+        builder.button(text="🔄 Перевести на баланс", callback_data="referral_transfer_start")
+        if can_withdraw_now:
+            builder.button(text="💸 Вывести", callback_data="referral_withdraw_start")
+        if withdraw_enabled:
+            builder.button(text="🧾 Способы получения", callback_data="referral_payout_methods")
+            builder.button(text="📋 Запросы на вывод", callback_data="referral_withdraw_requests")
         builder.button(text="🏆 Топ-5", callback_data="show_referral_top")
         builder.button(text="⬅️ Назад", callback_data="back_to_main_menu")
-        builder.adjust(1, 1, 1)
+        builder.adjust(1)
         await callback.message.edit_text(
             text, reply_markup=builder.as_markup(), disable_web_page_preview=True
         )
@@ -2837,6 +3940,490 @@ def get_user_router() -> Router:
         builder.button(text="🏠 Главное меню", callback_data="back_to_main_menu")
         builder.adjust(1, 1)
         await callback.message.edit_text(text, reply_markup=builder.as_markup())
+
+
+    # =============================
+    # Referral balance / withdrawal
+    # =============================
+
+    def _ref_is_true(key: str, default: bool = False) -> bool:
+        raw = str(get_setting(key) or ("true" if default else "false")).strip().lower()
+        return raw in {"1", "true", "yes", "on", "y"}
+
+    def _ref_float_setting(key: str, default: float) -> float:
+        raw = str(get_setting(key) or str(default)).strip().replace(",", ".")
+        try:
+            return float(raw)
+        except Exception:
+            return float(default)
+
+    def _ref_withdraw_enabled() -> bool:
+        return _ref_is_true("referral_withdraw_enabled", False)
+
+    def _ref_method_enabled(method_type: str) -> dict:
+        return {
+            "sbp": _ref_is_true("referral_withdraw_sbp_enabled", False),
+            "card": _ref_is_true("referral_withdraw_card_enabled", False),
+            "usdt_trc20": _ref_is_true("referral_withdraw_usdt_enabled", False),
+        }.get(method_type, False)
+
+    def _ref_sbp_banks() -> list[str]:
+        raw = get_setting("referral_withdraw_sbp_banks") or ""
+        return [b.strip() for b in raw.split(",") if b.strip()]
+
+    _REF_METHOD_LABELS = {"sbp": "СБП", "card": "Номер карты", "usdt_trc20": "USDT TRC20"}
+
+    def _ref_mask(value: str) -> str:
+        s = (value or "").strip()
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if not digits:
+            return html_escape(s)
+        last4 = digits[-4:]
+        return "*" * max(0, len(digits) - 4) + last4
+
+    def _kb_my_balance(withdraw_enabled: bool, can_withdraw_now: bool = False) -> types.InlineKeyboardMarkup:
+        b = InlineKeyboardBuilder()
+        b.button(text="🔄 Перевести на баланс", callback_data="referral_transfer_start")
+        if can_withdraw_now:
+            b.button(text="💸 Вывести", callback_data="referral_withdraw_start")
+        if withdraw_enabled:
+            b.button(text="🧾 Способы получения", callback_data="referral_payout_methods")
+            b.button(text="📋 Запросы на вывод", callback_data="referral_withdraw_requests")
+        b.button(text="⬅️ Назад", callback_data="show_referral_program")
+        b.adjust(1)
+        return b.as_markup()
+
+    @user_router.callback_query(F.data == "referral_my_balance")
+    @registration_required
+    async def referral_my_balance(callback: types.CallbackQuery, state: FSMContext):
+        # Оставлено для обратной совместимости со старыми сообщениями/кнопками —
+        # теперь баланс отображается прямо на экране "Реферальная программа".
+        await callback.answer()
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        await referral_program_handler(callback)
+
+    _REF_STATUS_LABELS = {
+        "new": "🕓 На рассмотрении",
+        "processing": "⏳ В обработке",
+        "paid": "✅ Выплачено",
+        "rejected": "❌ Отклонено",
+    }
+
+    @user_router.callback_query(F.data == "referral_withdraw_requests")
+    @catch_callback_errors
+    async def referral_withdraw_requests(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        user_id = cb.from_user.id
+        requests = list_referral_withdrawal_requests(user_id=user_id) or []
+        lines = ["📋 <b>Запросы на вывод</b>", ""]
+        if not requests:
+            lines.append("У вас пока нет заявок на вывод средств.")
+        else:
+            for r in requests[:20]:
+                status = _REF_STATUS_LABELS.get(r.get("status"), r.get("status"))
+                amount = float(r.get("amount") or 0.0)
+                label = _REF_METHOD_LABELS.get(r.get("method_type"), r.get("method_type"))
+                masked = _ref_mask(str(r.get("requisite_value") or ""))
+                extra = f" ({r.get('bank_name')})" if r.get("bank_name") else ""
+                created = r.get("created_at") or ""
+                lines.append(
+                    f"• <b>{amount:.2f} ₽</b> — {label}{extra} •{masked}\n"
+                    f"  Статус: {status}\n"
+                    f"  Дата: {created}"
+                )
+                if r.get("status") == "rejected" and r.get("reject_reason"):
+                    lines.append(f"  Причина: {html_escape(str(r.get('reject_reason')))}")
+        b = InlineKeyboardBuilder()
+        b.button(text="⬅️ Назад", callback_data="show_referral_program")
+        b.adjust(1)
+        await cb.message.edit_text("\n".join(lines), reply_markup=b.as_markup(), disable_web_page_preview=True)
+        await fast_callback_answer(cb)
+
+
+    @user_router.callback_query(F.data == "referral_transfer_start")
+    @catch_callback_errors
+    async def referral_transfer_start(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        user_id = cb.from_user.id
+        balance = float(get_referral_balance(user_id) or 0.0)
+        if balance <= 0:
+            await cb.answer("На реферальном балансе нет средств.", show_alert=True)
+            return
+        b = InlineKeyboardBuilder()
+        b.button(text="❌ Отмена", callback_data="referral_my_balance")
+        b.adjust(1)
+        await state.set_state(ReferralWithdraw.waiting_transfer_amount)
+        await cb.message.edit_text(
+            f"🔄 <b>Перевод на основной баланс</b>\n\nДоступно на реферальном балансе: <b>{balance:.2f} ₽</b>\n\n"
+            f"Введите сумму для перевода (например: <code>{balance:.0f}</code>), "
+            f"минимальная сумма не ограничена:",
+            reply_markup=b.as_markup(),
+        )
+        await fast_callback_answer(cb)
+
+    @user_router.message(ReferralWithdraw.waiting_transfer_amount)
+    @registration_required
+    async def referral_transfer_amount(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        raw = (message.text or "").replace(",", ".").strip()
+        try:
+            amount = float(raw)
+        except Exception:
+            await message.answer("Не понял сумму. Пришлите число, например 100.")
+            return
+        if amount <= 0:
+            await message.answer("Сумма должна быть больше нуля.")
+            return
+        current = float(get_referral_balance(user_id) or 0.0)
+        if amount > current:
+            await message.answer(f"На реферальном балансе недостаточно средств. Доступно: {current:.2f} ₽.")
+            return
+        if not deduct_from_referral_balance(user_id, amount):
+            await message.answer("❌ Не удалось списать средства с реферального баланса. Попробуйте позже.")
+            return
+        ok = add_to_balance(user_id, amount)
+        if not ok:
+            # Откатываем списание, если зачисление не удалось
+            try:
+                add_to_referral_balance(user_id, amount)
+            except Exception:
+                logger.error(f"Не удалось откатить перевод реферального баланса для {user_id} после неудачного зачисления.")
+            await message.answer("❌ Не удалось зачислить средства на основной баланс. Попробуйте позже.")
+            return
+        try:
+            log_username = message.from_user.username or f"@{user_id}"
+            log_transaction(
+                username=log_username,
+                transaction_id=None,
+                payment_id=str(uuid.uuid4()),
+                user_id=user_id,
+                status='paid',
+                amount_rub=amount,
+                amount_currency=None,
+                currency_name=None,
+                payment_method='ReferralTransfer',
+                metadata=json.dumps({"action": "referral_transfer"})
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось залогировать перевод реферального баланса для {user_id}: {e}")
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        new_ref_balance = float(get_referral_balance(user_id) or 0.0)
+        new_main_balance = float(get_balance(user_id) or 0.0)
+        withdraw_enabled_now = _ref_withdraw_enabled()
+        min_withdraw_now = _ref_float_setting("minimum_withdrawal", 100.0)
+        await message.answer(
+            f"✅ Переведено {amount:.2f} ₽ на основной баланс.\n\n"
+            f"Реферальный баланс: {new_ref_balance:.2f} ₽\n"
+            f"Основной баланс: {new_main_balance:.2f} ₽",
+            reply_markup=_kb_my_balance(withdraw_enabled_now, new_ref_balance >= min_withdraw_now)
+        )
+
+    def _kb_payout_methods(items: list[dict], withdraw_enabled: bool) -> types.InlineKeyboardMarkup:
+        b = InlineKeyboardBuilder()
+        if withdraw_enabled:
+            b.button(text="➕ Добавить способ", callback_data="referral_payout_method_add")
+        for m in items[:20]:
+            mid = int(m.get("id") or 0)
+            if mid <= 0:
+                continue
+            label = _REF_METHOD_LABELS.get(m.get("method_type"), m.get("method_type"))
+            masked = _ref_mask(str(m.get("requisite_value") or ""))
+            extra = f" ({m.get('bank_name')})" if m.get("bank_name") else ""
+            b.button(text=f"🗑 {label}{extra} •{masked}", callback_data=f"rpm_delete:{mid}")
+        b.button(text="⬅️ Назад", callback_data="referral_my_balance")
+        b.adjust(1)
+        return b.as_markup()
+
+    @user_router.callback_query(F.data == "referral_payout_methods")
+    @catch_callback_errors
+    async def referral_payout_methods(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        withdraw_enabled = _ref_withdraw_enabled()
+        if not withdraw_enabled:
+            await cb.answer("Вывод средств временно недоступен.", show_alert=True)
+            return
+        user_id = cb.from_user.id
+        items = list_referral_payout_methods(user_id) or []
+        lines = ["🧾 <b>Способы получения</b>", ""]
+        if not items:
+            lines.append("Пока нет сохранённых способов получения.\nНажмите «Добавить способ».")
+        else:
+            for i, m in enumerate(items, 1):
+                label = _REF_METHOD_LABELS.get(m.get("method_type"), m.get("method_type"))
+                masked = _ref_mask(str(m.get("requisite_value") or ""))
+                extra = f" ({m.get('bank_name')})" if m.get("bank_name") else ""
+                lines.append(f"{i}. {label}{extra}: <code>{masked}</code>")
+        await cb.message.edit_text(
+            "\n".join(lines), reply_markup=_kb_payout_methods(items, withdraw_enabled), disable_web_page_preview=True
+        )
+        await fast_callback_answer(cb)
+
+    def _kb_method_types() -> types.InlineKeyboardMarkup:
+        b = InlineKeyboardBuilder()
+        if _ref_method_enabled("sbp"):
+            b.button(text="🏦 СБП", callback_data="rpm_add_type:sbp")
+        if _ref_method_enabled("card"):
+            b.button(text="💳 Номер карты", callback_data="rpm_add_type:card")
+        if _ref_method_enabled("usdt_trc20"):
+            b.button(text="💵 USDT TRC20", callback_data="rpm_add_type:usdt_trc20")
+        b.button(text="❌ Отмена", callback_data="referral_payout_methods")
+        b.adjust(1)
+        return b.as_markup()
+
+    @user_router.callback_query(F.data == "referral_payout_method_add")
+    @catch_callback_errors
+    async def referral_payout_method_add(cb: types.CallbackQuery, state: FSMContext):
+        if not _ref_withdraw_enabled():
+            await cb.answer("Недоступно.", show_alert=True)
+            return
+        if not (_ref_method_enabled("sbp") or _ref_method_enabled("card") or _ref_method_enabled("usdt_trc20")):
+            await cb.answer("Администратор пока не подключил ни одного способа получения.", show_alert=True)
+            return
+        await cb.message.edit_text(
+            "Выберите способ получения:", reply_markup=_kb_method_types()
+        )
+        await fast_callback_answer(cb)
+
+    def _kb_bank_choice(banks: list[str]) -> types.InlineKeyboardMarkup:
+        b = InlineKeyboardBuilder()
+        for i, bank in enumerate(banks[:30]):
+            b.button(text=bank, callback_data=f"rpm_bank:{i}")
+        b.button(text="❌ Отмена", callback_data="referral_payout_methods")
+        b.adjust(2)
+        return b.as_markup()
+
+    @user_router.callback_query(F.data.startswith("rpm_add_type:"))
+    @catch_callback_errors
+    async def referral_payout_method_add_type(cb: types.CallbackQuery, state: FSMContext):
+        method_type = (cb.data or "").split(":", 1)[1]
+        if not _ref_method_enabled(method_type):
+            await cb.answer("Этот способ временно недоступен.", show_alert=True)
+            return
+        await state.update_data(rpm_type=method_type)
+        if method_type == "sbp":
+            banks = _ref_sbp_banks()
+            if not banks:
+                await cb.answer("Список банков не настроен администратором.", show_alert=True)
+                return
+            await state.update_data(rpm_banks=banks)
+            await state.set_state(ReferralWithdraw.waiting_method_bank)
+            await cb.message.edit_text("🏦 Выберите банк:", reply_markup=_kb_bank_choice(banks))
+        else:
+            await state.set_state(ReferralWithdraw.waiting_method_value)
+            prompt = "💳 Введите номер карты:" if method_type == "card" else "💵 Введите адрес кошелька USDT TRC20:"
+            await cb.message.edit_text(prompt, reply_markup=_kb_payout_methods([], True))
+        await fast_callback_answer(cb)
+
+    @user_router.callback_query(F.data.startswith("rpm_bank:"), ReferralWithdraw.waiting_method_bank)
+    @catch_callback_errors
+    async def referral_payout_method_bank_choice(cb: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        banks = data.get("rpm_banks") or []
+        try:
+            idx = int((cb.data or "").split(":", 1)[1])
+            bank = banks[idx]
+        except Exception:
+            await cb.answer("Некорректный выбор.", show_alert=True)
+            return
+        await state.update_data(rpm_bank=bank)
+        await state.set_state(ReferralWithdraw.waiting_method_value)
+        await cb.message.edit_text(
+            f"🏦 Банк: <b>{html_escape(bank)}</b>\n\nВведите номер телефона (СБП):",
+        )
+        await fast_callback_answer(cb)
+
+    @user_router.message(ReferralWithdraw.waiting_method_value)
+    @registration_required
+    async def referral_payout_method_value(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        method_type = data.get("rpm_type")
+        bank = data.get("rpm_bank")
+        value = (message.text or "").strip()
+        if not value:
+            await message.answer("Значение не может быть пустым. Попробуйте снова.")
+            return
+        ok, msg, _new_id = add_referral_payout_method(message.from_user.id, method_type, value, bank_name=bank)
+        await message.answer(("✅ " if ok else "❌ ") + msg)
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        items = list_referral_payout_methods(message.from_user.id) or []
+        withdraw_enabled = _ref_withdraw_enabled()
+        lines = ["🧾 <b>Способы получения</b>", ""]
+        for i, m in enumerate(items, 1):
+            label = _REF_METHOD_LABELS.get(m.get("method_type"), m.get("method_type"))
+            masked = _ref_mask(str(m.get("requisite_value") or ""))
+            extra = f" ({m.get('bank_name')})" if m.get("bank_name") else ""
+            lines.append(f"{i}. {label}{extra}: <code>{masked}</code>")
+        await message.answer("\n".join(lines), reply_markup=_kb_payout_methods(items, withdraw_enabled))
+
+    @user_router.callback_query(F.data.startswith("rpm_delete:"))
+    @catch_callback_errors
+    async def referral_payout_method_delete(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            mid = int((cb.data or "").split(":", 1)[1])
+        except Exception:
+            await cb.answer("Некорректные данные.", show_alert=True)
+            return
+        ok, msg = delete_referral_payout_method(mid, cb.from_user.id)
+        await cb.answer(("✅ " if ok else "❌ ") + msg, show_alert=not ok)
+        items = list_referral_payout_methods(cb.from_user.id) or []
+        withdraw_enabled = _ref_withdraw_enabled()
+        lines = ["🧾 <b>Способы получения</b>", ""]
+        if not items:
+            lines.append("Пока нет сохранённых способов получения.")
+        else:
+            for i, m in enumerate(items, 1):
+                label = _REF_METHOD_LABELS.get(m.get("method_type"), m.get("method_type"))
+                masked = _ref_mask(str(m.get("requisite_value") or ""))
+                extra = f" ({m.get('bank_name')})" if m.get("bank_name") else ""
+                lines.append(f"{i}. {label}{extra}: <code>{masked}</code>")
+        await cb.message.edit_text(
+            "\n".join(lines), reply_markup=_kb_payout_methods(items, withdraw_enabled), disable_web_page_preview=True
+        )
+        await fast_callback_answer(cb)
+
+    @user_router.callback_query(F.data == "referral_withdraw_start")
+    @catch_callback_errors
+    async def referral_withdraw_start(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        if not _ref_withdraw_enabled():
+            await cb.answer("Вывод средств временно недоступен.", show_alert=True)
+            return
+        user_id = cb.from_user.id
+        balance = float(get_referral_balance(user_id) or 0.0)
+        min_withdraw = _ref_float_setting("minimum_withdrawal", 100.0)
+        if balance < min_withdraw:
+            await cb.answer(
+                f"Минимальная сумма для вывода {min_withdraw:.0f} ₽. У вас {balance:.2f} ₽.", show_alert=True
+            )
+            return
+        items = list_referral_payout_methods(user_id) or []
+        if not items:
+            await cb.message.edit_text(
+                "🧾 Сначала добавьте способ получения средств.",
+                reply_markup=_kb_payout_methods([], True),
+            )
+            await fast_callback_answer(cb)
+            return
+        b = InlineKeyboardBuilder()
+        for m in items[:20]:
+            mid = int(m.get("id") or 0)
+            label = _REF_METHOD_LABELS.get(m.get("method_type"), m.get("method_type"))
+            masked = _ref_mask(str(m.get("requisite_value") or ""))
+            extra = f" ({m.get('bank_name')})" if m.get("bank_name") else ""
+            b.button(text=f"{label}{extra} •{masked}", callback_data=f"rwd_method:{mid}")
+        b.button(text="❌ Отмена", callback_data="referral_my_balance")
+        b.adjust(1)
+        await state.set_state(ReferralWithdraw.waiting_withdraw_choose_method)
+        await cb.message.edit_text(
+            f"💸 <b>Вывод средств</b>\n\nДоступно: <b>{balance:.2f} ₽</b>\n\nВыберите способ получения:",
+            reply_markup=b.as_markup(),
+        )
+        await fast_callback_answer(cb)
+
+    @user_router.callback_query(F.data.startswith("rwd_method:"), ReferralWithdraw.waiting_withdraw_choose_method)
+    @catch_callback_errors
+    async def referral_withdraw_choose_method(cb: types.CallbackQuery, state: FSMContext):
+        try:
+            mid = int((cb.data or "").split(":", 1)[1])
+        except Exception:
+            await cb.answer("Некорректные данные.", show_alert=True)
+            return
+        method = get_referral_payout_method(mid, cb.from_user.id)
+        if not method:
+            await cb.answer("Способ получения не найден.", show_alert=True)
+            return
+        balance = float(get_referral_balance(cb.from_user.id) or 0.0)
+        min_withdraw = _ref_float_setting("minimum_withdrawal", 100.0)
+        await state.update_data(rwd_method_id=mid)
+        await state.set_state(ReferralWithdraw.waiting_withdraw_amount)
+        b = InlineKeyboardBuilder()
+        b.button(text="❌ Отмена", callback_data="referral_withdraw_start")
+        b.adjust(1)
+        await cb.message.edit_text(
+            f"Доступно: <b>{balance:.2f} ₽</b>\nМинимум: <b>{min_withdraw:.0f} ₽</b>\n\n"
+            f"Введите сумму для вывода числом (например: <code>{min_withdraw:.0f}</code>):",
+            reply_markup=b.as_markup(),
+        )
+        await fast_callback_answer(cb)
+
+    @user_router.message(ReferralWithdraw.waiting_withdraw_amount)
+    @registration_required
+    async def referral_withdraw_amount(message: types.Message, state: FSMContext):
+        if not _ref_withdraw_enabled():
+            await message.answer("Вывод средств временно недоступен.")
+            try:
+                await state.clear()
+            except Exception:
+                pass
+            return
+        data = await state.get_data()
+        method_id = data.get("rwd_method_id")
+        min_withdraw = _ref_float_setting("minimum_withdrawal", 100.0)
+        raw = (message.text or "").replace(",", ".").strip()
+        try:
+            amount = float(raw)
+        except Exception:
+            await message.answer(f"Не понял сумму. Пришлите число, например {min_withdraw:.0f}.")
+            return
+        if amount < min_withdraw:
+            await message.answer(f"Минимальная сумма для вывода: {min_withdraw:.0f} ₽.")
+            return
+        ok, msg, new_id = create_referral_withdrawal_request(message.from_user.id, amount, int(method_id))
+        await message.answer(("✅ " if ok else "❌ ") + msg)
+        if ok and new_id:
+            method = get_referral_payout_method(int(method_id))
+            try:
+                admin_id_raw = get_setting("admin_telegram_id")
+                admin_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
+            except Exception:
+                admin_id = None
+            if admin_id:
+                label = _REF_METHOD_LABELS.get((method or {}).get("method_type"), (method or {}).get("method_type"))
+                bank_line = f"{(method or {}).get('bank_name')} — " if (method or {}).get("bank_name") else ""
+                requisite = html_escape(str((method or {}).get("requisite_value") or ""))
+                uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
+                admin_text = (
+                    "💸 <b>Новая заявка на вывод (реферальная программа)</b>\n"
+                    f"Заявка: #{new_id}\n"
+                    f"Пользователь: {uname} (<code>{message.from_user.id}</code>)\n"
+                    f"Сумма: <b>{amount:.2f} ₽</b>\n"
+                    f"Способ: {label}\n"
+                    f"Реквизиты: {bank_line}<code>{requisite}</code>"
+                )
+                try:
+                    await message.bot.send_message(admin_id, admin_text, parse_mode="HTML")
+                except Exception:
+                    logger.warning("Не удалось уведомить администратора о заявке на вывод", exc_info=True)
+        try:
+            await state.clear()
+        except Exception:
+            pass
+        withdraw_enabled = _ref_withdraw_enabled()
+        balance = float(get_referral_balance(message.from_user.id) or 0.0)
+        min_withdraw_now = _ref_float_setting("minimum_withdrawal", 100.0)
+        lines = ["💼 <b>Мой баланс</b>", "", f"Реферальный баланс: <b>{balance:.2f} ₽</b>"]
+        await message.answer("\n".join(lines), reply_markup=_kb_my_balance(withdraw_enabled, balance >= min_withdraw_now))
 
 
     @user_router.callback_query(F.data == "show_about")
@@ -3406,7 +4993,47 @@ def get_user_router() -> Router:
         return devices
 
 
-        
+    def _resolve_plan_id_for_key(key_data: dict) -> int | None:
+        """Определяет plan_id, привязанный к ключу (из description JSON)."""
+        try:
+            desc = (key_data or {}).get("description")
+            if isinstance(desc, str) and desc.strip().startswith("{"):
+                meta = json.loads(desc)
+                if isinstance(meta, dict) and meta.get("plan_id") is not None:
+                    return int(meta.get("plan_id"))
+        except Exception:
+            pass
+        return None
+
+
+    def _extract_traffic_used_bytes(payload: dict | None) -> int:
+        """Извлекает использованный трафик из payload пользователя Remnawave (если поле есть)."""
+        if not isinstance(payload, dict):
+            return 0
+        candidates = [
+            "trafficUsedBytes", "traffic_used_bytes", "usedTrafficBytes",
+            "trafficUsed", "traffic_used", "usedBytes", "bytesUsed",
+        ]
+        for k in candidates:
+            v = payload.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+            if isinstance(v, str) and v.isdigit():
+                try:
+                    iv = int(v)
+                    if iv > 0:
+                        return iv
+                except Exception:
+                    pass
+        return 0
+
+    def _format_bytes_gb(num_bytes: int) -> str:
+        try:
+            gb = num_bytes / (1024 ** 3)
+            return f"{gb:.2f}".rstrip('0').rstrip('.') if '.' in f"{gb:.2f}" else f"{gb:.2f}"
+        except Exception:
+            return "0"
+
     def _get_tariff_info_for_key(key_data: dict, user_payload: dict | None = None) -> tuple[str, str, int]:
         """Подбирает данные тарифа для отображения в 'Мои ключи'.
 
@@ -4281,6 +5908,75 @@ def get_user_router() -> Router:
             gift_id, gift_code = rw_repo.get_gift_info_by_key_id(key_id_to_show)
             domain = (get_setting("domain") or "").strip()
             
+            # Определяем, доступна ли докупка ГБ (тариф ключа имеет ограничение трафика)
+            show_traffic_topup = False
+            plan_traffic_limit_bytes = 0
+            plan_lte_limit_bytes = 0
+            plan_main_reset_price = 0.0
+            try:
+                plan_id_for_key = _resolve_plan_id_for_key(key_data)
+                if plan_id_for_key:
+                    plan_for_key = get_plan_by_id(plan_id_for_key)
+                    if plan_for_key:
+                        plan_traffic_limit_bytes = int(plan_for_key.get('traffic_limit_bytes') or 0)
+                        plan_lte_limit_bytes = int(plan_for_key.get('lte_limit_bytes') or 0)
+                        plan_main_reset_price = float(plan_for_key.get('main_reset_price_rub') or 0)
+                        if plan_traffic_limit_bytes > 0:
+                            show_traffic_topup = True
+            except Exception:
+                show_traffic_topup = False
+
+            # Объём использованного трафика и дата ближайшего ежемесячного сброса (если тариф лимитирован по ГБ)
+            traffic_info_text = None
+            try:
+                if plan_traffic_limit_bytes > 0:
+                    used_bytes = _extract_traffic_used_bytes(user_payload)
+                    boost_bytes = int(key_data.get('traffic_boost_bytes') or 0)
+                    total_limit_bytes = plan_traffic_limit_bytes + boost_bytes
+                    used_gb_txt = _format_bytes_gb(used_bytes)
+                    total_gb_txt = _format_bytes_gb(total_limit_bytes)
+                    traffic_info_text = f"♾ Основной: {used_gb_txt} ГБ / {total_gb_txt} ГБ"
+
+                    next_reset_raw = key_data.get('next_traffic_reset_at')
+                    if next_reset_raw:
+                        try:
+                            next_reset_dt = datetime.fromisoformat(str(next_reset_raw).replace(' ', 'T'))
+                            traffic_info_text += f" (сброс {next_reset_dt.strftime('%d.%m.%Y')})"
+                        except Exception:
+                            pass
+            except Exception:
+                traffic_info_text = None
+
+            # Показываем блок LTE-пула (💰 premium-ноды), если у тарифа есть отдельный LTE-лимит
+            # И у хоста ключа реально настроен активный сквад класса 'lte' (host_squads).
+            show_lte_topup = False
+            # Сброс основного трафика доступен только тарифам с лимитом основного трафика и заданной ценой
+            show_main_reset = show_traffic_topup and plan_main_reset_price > 0
+            try:
+                if plan_lte_limit_bytes > 0:
+                    host_name_for_lte = key_data.get('host_name')
+                    lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte') if host_name_for_lte else None
+                    if lte_squad_cfg:
+                        show_lte_topup = True
+                        lte_state = database.get_lte_state(user_id)
+                        lte_limit = int(lte_state.get('lte_limit_bytes') or 0) or plan_lte_limit_bytes
+                        lte_used = int(lte_state.get('lte_used_bytes') or 0)
+                        lte_boost = int(lte_state.get('lte_boost_bytes') or 0)
+                        lte_total = lte_limit + lte_boost
+                        lte_used_txt = _format_bytes_gb(lte_used)
+                        lte_total_txt = _format_bytes_gb(lte_total)
+                        lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
+                        lte_reset_raw = lte_state.get('lte_reset_at')
+                        if lte_reset_raw:
+                            try:
+                                lte_reset_dt = datetime.fromisoformat(str(lte_reset_raw).replace(' ', 'T'))
+                                lte_line += f" (сброс {lte_reset_dt.strftime('%d.%m.%Y')})"
+                            except Exception:
+                                pass
+                        traffic_info_text = f"{traffic_info_text}\n{lte_line}" if traffic_info_text else lte_line
+            except Exception:
+                pass
+
             final_text = get_key_info_text(
                 key_data,
                 key_number,
@@ -4290,11 +5986,18 @@ def get_user_router() -> Router:
                 device_limit=device_limit,
                 gift_code=gift_code,
                 domain=domain,
+                traffic_info_text=traffic_info_text,
             )
             
             await callback.message.edit_text(
                 text=final_text,
-                reply_markup=keyboards.create_key_info_keyboard(key_id_to_show, connection_string, devices_list=devices_list, gift_code=gift_code, gift_id=gift_id)
+                reply_markup=keyboards.create_key_info_keyboard(
+                    key_id_to_show, connection_string, devices_list=devices_list,
+                    gift_code=gift_code, gift_id=gift_id,
+                    show_traffic_topup=show_traffic_topup,
+                    show_lte_topup=show_lte_topup,
+                    show_main_reset=show_main_reset,
+                )
             )
         except Exception as e:
             logger.error(f"Error showing key {key_id_to_show}: {e}")
@@ -4381,7 +6084,8 @@ def get_user_router() -> Router:
                 new_host_name,
                 email,
                 days_to_add=None,
-                expiry_timestamp_ms=expiry_timestamp_ms_exact
+                expiry_timestamp_ms=expiry_timestamp_ms_exact,
+                plan_id=_resolve_plan_id_for_key(key_data),
             )
             if not result:
                 await callback.message.edit_text(
@@ -5148,8 +6852,13 @@ def get_user_router() -> Router:
             main_balance = get_balance(message.chat.id)
         except Exception:
             main_balance = 0.0
+        try:
+            ref_balance = get_referral_balance(message.chat.id)
+        except Exception:
+            ref_balance = 0.0
 
         show_balance_btn = main_balance >= float(final_price)
+        show_ref_balance_btn = ref_balance >= float(final_price)
 
         try:
             await message.edit_text(
@@ -5160,6 +6869,7 @@ def get_user_router() -> Router:
                     key_id=data.get('key_id'),
                     show_balance=show_balance_btn,
                     main_balance=main_balance,
+                    referral_balance=(ref_balance if show_ref_balance_btn else None),
                     price=float(final_price),
                     promo_applied=bool(data.get('promo_code')),
                 )
@@ -5173,6 +6883,7 @@ def get_user_router() -> Router:
                     key_id=data.get('key_id'),
                     show_balance=show_balance_btn,
                     main_balance=main_balance,
+                    referral_balance=(ref_balance if show_ref_balance_btn else None),
                     price=float(final_price)
                 )
         )
@@ -5790,7 +7501,49 @@ def get_user_router() -> Router:
         await state.clear()
         await process_successful_payment(bot, metadata)
 
-    
+    @user_router.callback_query(PaymentProcess.waiting_for_payment_method, F.data == "pay_referral_balance")
+    async def pay_with_referral_balance_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        await callback.answer()
+        data = await state.get_data()
+        user_id = callback.from_user.id
+        plan = get_plan_by_id(data.get('plan_id'))
+        if not plan:
+            await callback.message.edit_text("❌ Ошибка: Тариф не найден.")
+            await state.clear()
+            return
+        months = int(plan.get('months') or 0)
+        duration_days = int(plan.get('duration_days') or 0)
+        price = float(data.get('final_price', plan['price']))
+
+        if not deduct_from_referral_balance(user_id, price):
+            await callback.answer("Недостаточно средств на реферальном балансе.", show_alert=True)
+            return
+
+        promo_code = (data.get('promo_code') or '').strip() if isinstance(data, dict) else ''
+        promo_discount = float(data.get('promo_discount') or 0) if promo_code else 0.0
+
+        metadata = {
+            "user_id": user_id,
+            "months": months,
+            "duration_days": duration_days,
+            "price": price,
+            "action": data.get('action'),
+            "key_id": data.get('key_id'),
+            "host_name": data.get('host_name'),
+            "plan_id": data.get('plan_id'),
+            "customer_email": data.get('customer_email'),
+            "payment_method": "ReferralBalance",
+            "chat_id": callback.message.chat.id,
+            "message_id": callback.message.message_id,
+            "promo_code": promo_code,
+            "promo_discount": promo_discount,
+        }
+        metadata.setdefault("payment_id", f"referral_balance:{user_id}:{uuid.uuid4()}")
+
+        await state.clear()
+        await process_successful_payment(bot, metadata)
+
+
 
     
     @user_router.message(StateFilter(None), F.text)
@@ -6512,6 +8265,7 @@ async def notify_admin_of_purchase(bot: Bot, metadata: dict):
 
         payment_method_map = {
             'Balance': 'Баланс',
+            'ReferralBalance': 'Реферальный баланс',
             'Card': 'Карта',
             'Crypto': 'Крипто',
             'USDT': 'USDT',
@@ -6606,6 +8360,19 @@ async def notify_admin_of_purchase(bot: Bot, metadata: dict):
 async def process_successful_payment(bot: Bot, metadata: dict):
     candidate_email = None  # default for gift flow
     logger.info("💳 Обрабатываем успешный платеж")
+
+    def _provider_ids_for_log(meta: dict) -> dict:
+        """Извлекает ID транзакции/инвойса на стороне платёжного провайдера из исходных
+        metadata, чтобы не потерять их при пересборке metadata для log_transaction."""
+        out = {}
+        if not isinstance(meta, dict):
+            return out
+        for k in ("platega_transaction_id", "cryptobot_invoice_id", "heleket_uuid", "yookassa_payment_id"):
+            v = meta.get(k)
+            if v:
+                out[k] = v
+        return out
+
     try:
         action = metadata.get('action')
         user_id = int(metadata.get('user_id'))
@@ -6670,6 +8437,272 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         except TelegramBadRequest as e:
             logger.warning(f"Could not delete payment message: {e}")
 
+    if action == "traffic_gb_topup":
+        key_id_tg = _to_int(metadata.get('key_id'), 0)
+        package_id_tg = _to_int(metadata.get('package_id'), 0)
+        logger.info(f"📶 Обрабатываем докупку трафика: пользователь={user_id}, key_id={key_id_tg}, package_id={package_id_tg}")
+        try:
+            key_data = rw_repo.get_key_by_id(key_id_tg) if key_id_tg else None
+            package = database.get_traffic_package_by_id(package_id_tg) if package_id_tg else None
+            if not key_data or not package:
+                logger.error(f"traffic_gb_topup: ключ или пакет не найден (key_id={key_id_tg}, package_id={package_id_tg})")
+                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика. Обратитесь в поддержку.")
+                return
+
+            size_gb = float(package.get('size_gb') or 0)
+            add_bytes = int(size_gb * 1024 * 1024 * 1024)
+
+            host_name = key_data.get('host_name')
+            user_uuid = key_data.get('remnawave_user_uuid')
+            current_boost = int(key_data.get('traffic_boost_bytes') or 0)
+
+            user_payload = None
+            try:
+                if user_uuid:
+                    user_payload = await remnawave_api.get_user_by_uuid(user_uuid, host_name=host_name)
+                if not user_payload:
+                    email = key_data.get('key_email') or key_data.get('email')
+                    if email:
+                        user_payload = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                        if user_payload and not user_uuid:
+                            user_uuid = user_payload.get('uuid')
+            except Exception as e:
+                logger.error(f"traffic_gb_topup: не удалось получить пользователя Remnawave: {e}", exc_info=True)
+
+            current_limit = None
+            if isinstance(user_payload, dict):
+                current_limit = user_payload.get('trafficLimitBytes')
+            if current_limit is None:
+                current_limit = key_data.get('traffic_limit_bytes') or 0
+
+            new_limit = int(current_limit or 0) + add_bytes
+            new_boost = current_boost + add_bytes
+
+            ok_remote = False
+            if user_uuid:
+                try:
+                    ok_remote = await remnawave_api.update_user_traffic_limit(user_uuid, new_limit, host_name=host_name)
+                except Exception as e:
+                    logger.error(f"traffic_gb_topup: ошибка обновления лимита в Remnawave: {e}", exc_info=True)
+                    ok_remote = False
+
+            if not ok_remote:
+                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика на сервере. Обратитесь в поддержку.")
+                return
+
+            try:
+                rw_repo.update_key(key_id_tg, traffic_limit_bytes=new_limit, traffic_boost_bytes=new_boost)
+            except Exception as e:
+                logger.error(f"traffic_gb_topup: не удалось обновить локальную запись ключа {key_id_tg}: {e}", exc_info=True)
+
+            try:
+                log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''
+                if not log_username:
+                    user_info = get_user(user_id)
+                    log_username = (user_info.get('username') if user_info else '') or f"@{user_id}"
+                log_transaction(
+                    username=log_username,
+                    transaction_id=None,
+                    payment_id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    status='paid',
+                    amount_rub=float(price),
+                    amount_currency=None,
+                    currency_name=None,
+                    payment_method=payment_method or 'Unknown',
+                    metadata=json.dumps({"action": "traffic_gb_topup", "key_id": key_id_tg, "size_gb": size_gb, **_provider_ids_for_log(metadata)})
+                )
+            except Exception:
+                pass
+
+            try:
+                update_user_stats(user_id, float(price), 0)
+            except Exception:
+                pass
+
+            size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"✅ Оплата получена! К вашему тарифу добавлено {size_txt} ГБ трафика.\n"
+                    f"Новый лимит трафика действует до ближайшего ежемесячного сброса, после чего вернётся к базовому значению тарифа."
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"traffic_gb_topup: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
+        return
+
+    if action == "lte_gb_topup":
+        key_id_lte = _to_int(metadata.get('key_id'), 0)
+        package_id_lte = _to_int(metadata.get('package_id'), 0)
+        logger.info(f"💰 Обрабатываем докупку LTE: пользователь={user_id}, key_id={key_id_lte}, package_id={package_id_lte}")
+        try:
+            key_data = rw_repo.get_key_by_id(key_id_lte) if key_id_lte else None
+            package = database.get_traffic_package_by_id(package_id_lte) if package_id_lte else None
+            if not key_data or not package:
+                logger.error(f"lte_gb_topup: ключ или пакет не найден (key_id={key_id_lte}, package_id={package_id_lte})")
+                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку LTE. Обратитесь в поддержку.")
+                return
+
+            size_gb = float(package.get('size_gb') or 0)
+            add_bytes = int(size_gb * 1024 * 1024 * 1024)
+
+            lte_state = database.get_lte_state(user_id)
+            new_boost = int(lte_state.get('lte_boost_bytes') or 0) + add_bytes
+            try:
+                database.update_lte_state(user_id, lte_boost_bytes=new_boost, premium_state='enabled')
+                # Сдвигаем точку отсчёта (baseline) LTE-расхода на "сейчас": панель Remnawave хранит
+                # расход по нодам накопительно, поэтому без baseline купленный лимит будет мгновенно
+                # "съеден" уже накопленным историческим трафиком (см. SQUAD_DUAL_LIMIT_PROMPT.md, п.4).
+                database.request_lte_baseline_reset(user_id)
+            except Exception as e:
+                logger.error(f"lte_gb_topup: не удалось обновить lte_state пользователя {user_id}: {e}", exc_info=True)
+
+            # Немедленно возвращаем доступ на premium-нодах для всех ключей пользователя
+            try:
+                user_keys = get_user_keys(user_id)
+                for uk in (user_keys or []):
+                    try:
+                        host_name_uk = uk.get('host_name')
+                        try:
+                            lte_squad_uk = database.get_squad_by_class(host_name_uk, 'lte')
+                        except Exception:
+                            lte_squad_uk = None
+                        is_premium_uk = database.get_host_class(host_name_uk) == 'premium'
+                        if not is_premium_uk and not lte_squad_uk:
+                            continue
+                        uuid_uk = uk.get('remnawave_user_uuid')
+                        state_uk = uk.get('remote_access_state')
+                        if not uuid_uk or state_uk not in ('disabled_premium', 'disabled_premium_squad'):
+                            continue
+                        if state_uk == 'disabled_premium_squad' and lte_squad_uk:
+                            ok = await remnawave_api.add_squad_to_user(
+                                uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
+                            )
+                        else:
+                            ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
+                        if ok:
+                            database.update_key_fields(uk.get('key_id'), remote_access_state='enabled')
+                    except Exception as e:
+                        logger.error(f"lte_gb_topup: не удалось включить доступ для ключа {uk.get('key_id')}: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"lte_gb_topup: ошибка перебора ключей пользователя {user_id}: {e}", exc_info=True)
+
+            try:
+                log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''
+                if not log_username:
+                    user_info = get_user(user_id)
+                    log_username = (user_info.get('username') if user_info else '') or f"@{user_id}"
+                log_transaction(
+                    username=log_username,
+                    transaction_id=None,
+                    payment_id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    status='paid',
+                    amount_rub=float(price),
+                    amount_currency=None,
+                    currency_name=None,
+                    payment_method=payment_method or 'Unknown',
+                    metadata=json.dumps({"action": "lte_gb_topup", "key_id": key_id_lte, "size_gb": size_gb, **_provider_ids_for_log(metadata)})
+                )
+            except Exception:
+                pass
+
+            try:
+                update_user_stats(user_id, float(price), 0)
+            except Exception:
+                pass
+
+            size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"✅ Оплата получена! К вашему LTE-пулу (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
+                    f"Доступ на premium-нодах восстановлен."
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"lte_gb_topup: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
+        return
+
+    if action == "main_traffic_reset":
+        key_id_mr = _to_int(metadata.get('key_id'), 0)
+        logger.info(f"♻️ Обрабатываем сброс основного пула: пользователь={user_id}, key_id={key_id_mr}")
+        try:
+            key_data = rw_repo.get_key_by_id(key_id_mr) if key_id_mr else None
+            if not key_data:
+                logger.error(f"main_traffic_reset: ключ не найден (key_id={key_id_mr})")
+                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось найти ключ для сброса. Обратитесь в поддержку.")
+                return
+
+            reset_errors = 0
+            try:
+                user_keys = get_user_keys(user_id)
+            except Exception:
+                user_keys = [key_data]
+
+            for uk in (user_keys or [key_data]):
+                try:
+                    uuid_uk = uk.get('remnawave_user_uuid')
+                    host_name_uk = uk.get('host_name')
+                    if not uuid_uk:
+                        continue
+                    ok = await remnawave_api.reset_user_traffic_on_host(uuid_uk, host_name=host_name_uk)
+                    if not ok:
+                        reset_errors += 1
+                        continue
+                    try:
+                        await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
+                    except Exception:
+                        pass
+                    try:
+                        database.update_key_fields(uk.get('key_id'), traffic_boost_bytes=0, remote_access_state='enabled')
+                    except Exception:
+                        pass
+                except Exception as e:
+                    reset_errors += 1
+                    logger.error(f"main_traffic_reset: ошибка сброса ключа {uk.get('key_id')}: {e}", exc_info=True)
+
+            try:
+                log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''
+                if not log_username:
+                    user_info = get_user(user_id)
+                    log_username = (user_info.get('username') if user_info else '') or f"@{user_id}"
+                log_transaction(
+                    username=log_username,
+                    transaction_id=None,
+                    payment_id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    status='paid',
+                    amount_rub=float(price),
+                    amount_currency=None,
+                    currency_name=None,
+                    payment_method=payment_method or 'Unknown',
+                    metadata=json.dumps({"action": "main_traffic_reset", "key_id": key_id_mr, **_provider_ids_for_log(metadata)})
+                )
+            except Exception:
+                pass
+
+            try:
+                update_user_stats(user_id, float(price), 0)
+            except Exception:
+                pass
+
+            if reset_errors == 0:
+                try:
+                    await bot.send_message(user_id, "✅ Оплата получена! Основной пул трафика сброшен, доступ восстановлен на всех нодах.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    await bot.send_message(user_id, "⚠️ Оплата получена, но часть узлов не удалось сбросить. Обратитесь в поддержку, если доступ не восстановился.")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"main_traffic_reset: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
+        return
 
     if action == "top_up":
         logger.info(f"💰 Обрабатываем пополнение баланса для пользователя {user_id}: {float(price):.2f} RUB")
@@ -6697,7 +8730,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             if not log_username:
                 user_info = get_user(user_id)
                 log_username = (user_info.get('username') if user_info else '') or f"@{user_id}"
-            log_transaction(
+            logged_ok = log_transaction(
                 username=log_username,
                 transaction_id=None,
                 payment_id=str(uuid.uuid4()),
@@ -6707,15 +8740,32 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 amount_currency=None,
                 currency_name=None,
                 payment_method=payment_method or 'Unknown',
-                metadata=json.dumps({"action": "top_up"})
+                metadata=json.dumps({"action": "top_up", **_provider_ids_for_log(metadata)})
             )
-        except Exception:
-            pass
+            if logged_ok:
+                logger.info(
+                    f"🧾 Транзакция пополнения баланса записана в 'transactions': user={user_id}, "
+                    f"amount={float(price):.2f} RUB, payment_method={payment_method or 'Unknown'}"
+                )
+            else:
+                logger.error(
+                    f"💥 Не удалось записать транзакцию пополнения баланса в 'transactions' для user={user_id}, "
+                    f"amount={float(price):.2f} RUB, payment_method={payment_method or 'Unknown'}. "
+                    f"Это пополнение НЕ попадёт в доходы/аналитику! Подробности см. выше в логе "
+                    f"('Failed to log transaction for user...')."
+                )
+        except Exception as e:
+            logger.error(
+                f"💥 Непредвиденная ошибка при записи транзакции пополнения баланса для user={user_id}, "
+                f"amount={float(price):.2f} RUB: {e}. Это пополнение НЕ попадёт в доходы/аналитику!",
+                exc_info=True,
+            )
+
 
 
         try:
             pm_for_ref = (payment_method or '').strip().lower()
-            if pm_for_ref == 'balance':
+            if pm_for_ref in ('balance', 'referralbalance'):
                 logger.info(f"Referral(top_up): skip accrual for user {user_id} because top-up was made from internal balance.")
             else:
                 user_data = get_user(user_id) or {}
@@ -6750,9 +8800,9 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                     logger.info(f"Referral(top_up): user={user_id}, referrer={referrer_id}, type={reward_type}, reward={float(reward):.2f}")
                     if float(reward) > 0:
                         try:
-                            ok_ref = add_to_balance(referrer_id, float(reward))
+                            ok_ref = add_to_referral_balance(referrer_id, float(reward))
                         except Exception as e:
-                            logger.warning(f"Referral(top_up): add_to_balance failed for referrer {referrer_id}: {e}")
+                            logger.warning(f"Referral(top_up): add_to_referral_balance failed for referrer {referrer_id}: {e}")
                             ok_ref = False
                         try:
                             add_to_referral_balance_all(referrer_id, float(reward))
@@ -6781,6 +8831,10 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 current_balance = float(get_balance(user_id))
             except Exception:
                 pass
+            try:
+                gifts_count = len(rw_repo.get_user_inactive_gifts(user_id) or [])
+            except Exception:
+                gifts_count = 0
             if ok:
                 await bot.send_message(
                     chat_id=user_id,
@@ -6831,7 +8885,10 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 candidate_email = f"{user_id}-{int(time.time())}@bot.local"
         elif action == "gift":
             # Генерируем временный email для подарка (он будет использован, пока подарок не активирован)
-            import uuid
+            # uuid уже импортирован на уровне модуля (см. верх файла) — НЕ импортируем повторно здесь:
+            # локальный `import uuid` делает имя `uuid` локальным для ВСЕЙ функции
+            # process_successful_payment, из-за чего более ранние ветки (top_up и т.д.)
+            # падали с UnboundLocalError на uuid.uuid4().
             gift_code = str(uuid.uuid4())[:12]
             candidate_email = f"gift-{gift_code}@bot.local"
         else:
@@ -6889,18 +8946,19 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         except Exception:
             pass
 
-        # strategy makes sense only when traffic limit exists (0 means unlimited)
+        # strategy makes sense only when traffic limit exists (0 means unлимит)
+        # Принудительно используем MONTH при наличии лимита трафика, независимо от того,
+        # что сохранено в тарифе (в т.ч. для тарифов, созданных до появления ежемесячного сброса).
         if traffic_limit_bytes is None:
             traffic_limit_strategy = None
         else:
             try:
                 if int(traffic_limit_bytes) == 0:
                     traffic_limit_strategy = None
-                elif not traffic_limit_strategy:
-                    traffic_limit_strategy = 'NO_RESET'
+                else:
+                    traffic_limit_strategy = 'MONTH_ROLLING'
             except Exception:
-                if not traffic_limit_strategy:
-                    traffic_limit_strategy = 'NO_RESET'
+                traffic_limit_strategy = 'MONTH_ROLLING'
 
         days_to_add = _compute_days_to_add(plan_months, plan_days)
         if days_to_add <= 0:
@@ -6961,6 +9019,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 traffic_limit_bytes=traffic_limit_bytes,
                 traffic_limit_strategy=traffic_limit_strategy,
                 hwid_device_limit=hwid_device_limit,
+                plan_id=plan_id_int,
                 raise_on_error=True,
             )
         except Exception as exc:
@@ -7003,10 +9062,18 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             if not key_id:
                 await processing_message.edit_text("❌ Не удалось сохранить ключ. Попробуйте позже.")
                 return
+            try:
+                if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
+                    rw_repo.update_key(
+                        key_id,
+                        next_traffic_reset_at=database.compute_next_traffic_reset_str(),
+                    )
+            except Exception:
+                logger.warning(f"Не удалось установить дату сброса трафика для нового ключа {key_id}", exc_info=True)
         
         elif action == "gift":
             # Создаём запись о неактивированном подарке
-            import uuid
+            # uuid уже импортирован на уровне модуля — см. комментарий выше по функции.
             gift_code_unique = str(uuid.uuid4())[:16]
             
             # Использовуем candidate_email для получения key_id (ключ был создан на хосте)
@@ -7029,6 +9096,14 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                             plan_id=plan_id,
                             gift_code=gift_code_unique,
                         )
+                        try:
+                            if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
+                                rw_repo.update_key(
+                                    key_id,
+                                    next_traffic_reset_at=database.compute_next_traffic_reset_str(),
+                                )
+                        except Exception:
+                            logger.warning(f"Не удалось установить дату сброса трафика для подарочного ключа {key_id}", exc_info=True)
                         
                         if gift_result:
                             # Обновляем связь между подарком и ключом
@@ -7091,11 +9166,23 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             ):
                 await processing_message.edit_text("❌ Не удалось обновить информацию о ключе. Попробуйте позже.")
                 return
+            try:
+                if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
+                    # Продление перезапускает цикл ежемесячного сброса трафика и снимает докупленный буст.
+                    rw_repo.update_key(
+                        key_id,
+                        traffic_boost_bytes=0,
+                        next_traffic_reset_at=database.compute_next_traffic_reset_str(),
+                    )
+                else:
+                    rw_repo.update_key(key_id, next_traffic_reset_at=None)
+            except Exception:
+                logger.warning(f"Не удалось обновить дату сброса трафика при продлении ключа {key_id}", exc_info=True)
 
 
         try:
             pm_for_ref = (payment_method or '').strip().lower()
-            if pm_for_ref == 'balance':
+            if pm_for_ref in ('balance', 'referralbalance'):
                 logger.info(f"Referral: skip accrual for user {user_id} because payment was made from internal balance.")
             else:
                 user_data = get_user(user_id) or {}
@@ -7131,9 +9218,9 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                     logger.info(f"Referral: user={user_id}, referrer={referrer_id}, type={reward_type}, reward={float(reward):.2f}")
                     if float(reward) > 0:
                         try:
-                            ok = add_to_balance(referrer_id, float(reward))
+                            ok = add_to_referral_balance(referrer_id, float(reward))
                         except Exception as e:
-                            logger.warning(f"Referral: add_to_balance failed for referrer {referrer_id}: {e}")
+                            logger.warning(f"Referral: add_to_referral_balance failed for referrer {referrer_id}: {e}")
                             ok = False
                         try:
                             add_to_referral_balance_all(referrer_id, float(reward))
@@ -7157,7 +9244,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
 
 
         pm = (payment_method or '').strip().lower()
-        spent_for_stats = 0.0 if pm == 'balance' else price
+        spent_for_stats = 0.0 if pm in ('balance', 'referralbalance') else price
         # статистика в месяцах: для тарифов в днях округляем вверх до месяцев
         months_for_stats = months
         try:
@@ -7176,10 +9263,13 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         log_method = metadata.get('payment_method', 'Unknown')
         
         log_metadata = json.dumps({
+            "action": action,
+            "key_id": key_id,
             "plan_id": metadata.get('plan_id'),
             "plan_name": get_plan_by_id(metadata.get('plan_id')).get('plan_name', 'Unknown') if get_plan_by_id(metadata.get('plan_id')) else 'Unknown',
             "host_name": metadata.get('host_name'),
-            "customer_email": metadata.get('customer_email')
+            "customer_email": metadata.get('customer_email'),
+            **_provider_ids_for_log(metadata),
         })
 
 

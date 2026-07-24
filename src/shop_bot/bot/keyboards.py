@@ -116,7 +116,9 @@ def create_main_menu_keyboard(
     
     builder.button(text=(get_setting("btn_gift_key_text") or "🎁 Подарить"), callback_data="gift_new_key")
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
-    
+
+    builder.button(text="💼 Мой баланс", callback_data="referral_my_balance")
+
     builder.button(text=(get_setting("btn_referral_text") or "🤝 Реферальная программа"), callback_data="show_referral_program")
 
     # Franchise: create clone bot
@@ -208,9 +210,19 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🎁 Триал", callback_data="admin_trial")
     builder.button(text="🔔 Уведомления", callback_data="admin_notifications_menu")
     builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
+    builder.button(text="💰 LTE / Сброс трафика", callback_data="admin_lte_settings_menu")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
-    builder.adjust(2, 2, 2, 2, 2, 1, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1, 1, 1)
+    return builder.as_markup()
+
+
+def create_admin_lte_settings_keyboard(*, dual_limit_interval_sec: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    interval_label = f"⏱ Интервал проверки лимитов: {dual_limit_interval_sec} сек"
+    builder.button(text=interval_label, callback_data="admin_lte_set_interval")
+    builder.button(text="⬅️ Назад", callback_data="admin_settings_menu")
+    builder.adjust(1, 1)
     return builder.as_markup()
 
 
@@ -395,7 +407,7 @@ def create_admin_hosts_menu_keyboard(hosts: list[dict]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def create_admin_host_manage_keyboard(host_digest: str) -> InlineKeyboardMarkup:
+def create_admin_host_manage_keyboard(host_digest: str, node_class: str = 'unlim') -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Переименовать", callback_data=f"admin_hosts_rename:{host_digest}")
     builder.button(text="🌐 URL панели", callback_data=f"admin_hosts_set_url:{host_digest}")
@@ -404,14 +416,18 @@ def create_admin_host_manage_keyboard(host_digest: str) -> InlineKeyboardMarkup:
     builder.button(text="⚙️ Remnawave (URL)", callback_data=f"admin_hosts_set_rmw_url:{host_digest}")
     builder.button(text="🔐 Remnawave (Token)", callback_data=f"admin_hosts_set_rmw_token:{host_digest}")
     builder.button(text="🧩 Squad UUID", callback_data=f"admin_hosts_set_squad:{host_digest}")
+    builder.button(text="🧬 Сквады (base/lte)", callback_data=f"admin_hosts_squads:{host_digest}")
 
     builder.button(text="🔌 SSH (speedtest)", callback_data=f"admin_hosts_set_ssh:{host_digest}")
     builder.button(text="🧾 Тарифы", callback_data=f"admin_hosts_to_plans:{host_digest}")
 
+    class_label = "💰 Класс: Premium (LTE)" if (node_class or 'unlim') == 'premium' else "♾ Класс: Unlimited"
+    builder.button(text=class_label, callback_data=f"admin_hosts_toggle_class:{host_digest}")
+
     builder.button(text="🗑 Удалить хост", callback_data=f"admin_hosts_delete:{host_digest}")
     builder.button(text="⬅️ К списку хостов", callback_data="admin_hosts_menu")
 
-    builder.adjust(2, 1, 2, 1, 1, 1)
+    builder.adjust(2, 2, 1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -427,6 +443,47 @@ def create_admin_hosts_delete_confirm_keyboard(host_digest: str) -> InlineKeyboa
     builder.button(text="✅ Да, удалить", callback_data=f"admin_hosts_delete_confirm:{host_digest}")
     builder.button(text="❌ Отмена", callback_data=f"admin_hosts_open:{host_digest}")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_admin_host_squads_keyboard(host_digest: str, squads: list[dict]) -> InlineKeyboardMarkup:
+    """Список сквадов хоста с переключением активности и удалением."""
+    builder = InlineKeyboardBuilder()
+    class_icons = {"base": "♾", "lte": "💰", "other": "🧩"}
+    rows = []
+    if squads:
+        for sq in squads:
+            sid = sq.get('id')
+            cls = sq.get('squad_class') or 'other'
+            icon = class_icons.get(cls, "🧩")
+            active = bool(sq.get('is_active'))
+            uuid_short = str(sq.get('squad_uuid') or '')[:8]
+            state_icon = "✅" if active else "🚫"
+            builder.button(
+                text=f"{state_icon} {icon} {cls} · {uuid_short}…",
+                callback_data=f"admin_hosts_squad_toggle:{sid}:{host_digest}",
+            )
+            builder.button(text="🗑", callback_data=f"admin_hosts_squad_delete:{sid}:{host_digest}")
+            rows.append(2)
+    else:
+        builder.button(text="Сквады не добавлены", callback_data="noop")
+        rows.append(1)
+
+    builder.button(text="➕ Добавить сквад", callback_data=f"admin_hosts_squad_add:{host_digest}")
+    builder.button(text="⬅️ К хосту", callback_data=f"admin_hosts_open:{host_digest}")
+    rows.extend([1, 1])
+
+    builder.adjust(*rows)
+    return builder.as_markup()
+
+
+def create_admin_squad_class_keyboard(host_digest: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="♾ Base", callback_data=f"admin_hosts_squad_add_class:{host_digest}:base")
+    builder.button(text="💰 LTE", callback_data=f"admin_hosts_squad_add_class:{host_digest}:lte")
+    builder.button(text="🧩 Other", callback_data=f"admin_hosts_squad_add_class:{host_digest}:other")
+    builder.button(text="❌ Отмена", callback_data=f"admin_hosts_squads:{host_digest}")
+    builder.adjust(3, 1)
     return builder.as_markup()
 
 
@@ -556,10 +613,73 @@ def create_admin_plan_manage_keyboard(plan: dict) -> InlineKeyboardMarkup:
     show_name_label = "🏷 Название в тарифах: ✅" if show_name else "🏷 Название в тарифах: ❌"
     builder.button(text=show_name_label, callback_data="admin_plan_toggle_show_name")
 
+    builder.button(text="📦 Пакеты ГБ (докупка)", callback_data=f"admin_plan_packages_{plan_id}")
+
+    try:
+        has_traffic_limit = int(plan.get("traffic_limit_bytes") or 0) > 0
+    except Exception:
+        has_traffic_limit = False
+
+    if has_traffic_limit:
+        try:
+            reset_price = float(plan.get("main_reset_price_rub") or 0)
+        except Exception:
+            reset_price = 0.0
+        reset_label = f"♻️ Цена сброса: {reset_price:.0f} RUB" if reset_price > 0 else "♻️ Цена сброса: не задана"
+        builder.button(text=reset_label, callback_data="admin_plan_edit_main_reset_price")
+
+    lte_limit = 0
+    try:
+        lte_limit = int(plan.get("lte_limit_bytes") or 0)
+    except Exception:
+        lte_limit = 0
+    lte_label = f"💰 LTE-лимит: {lte_limit // (1024**3)} ГБ" if lte_limit > 0 else "💰 LTE-лимит: не задан"
+    builder.button(text=lte_label, callback_data="admin_plan_edit_lte_limit")
+    builder.button(text="💰 LTE-пакеты (докупка)", callback_data=f"admin_lte_packages_{plan_id}")
+
     builder.button(text=toggle_text, callback_data="admin_plan_toggle_active")
     builder.button(text="🗑 Удалить", callback_data="admin_plan_delete")
     builder.button(text="⬅️ Назад", callback_data="admin_plans_back_to_host_menu")
-    builder.adjust(2, 2, 2, 1, 1, 1)
+    reset_row = [1] if has_traffic_limit else []
+    builder.adjust(2, 2, 2, 1, *reset_row, 1, 1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def create_admin_traffic_packages_keyboard(plan_id: int, packages: list[dict], pool: str = 'main') -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for pkg in packages:
+        pkg_id = pkg.get("package_id")
+        try:
+            size_gb = float(pkg.get("size_gb") or 0)
+        except Exception:
+            size_gb = 0.0
+        try:
+            price = float(pkg.get("price") or 0)
+        except Exception:
+            price = 0.0
+        is_active = int(pkg.get("is_active", 1) or 0) == 1
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+        prefix = "✅" if is_active else "🚫"
+        builder.button(
+            text=f"{prefix} {size_txt} ГБ — {price:.0f} RUB",
+            callback_data=f"admin_pkg_open_{pkg_id}"
+        )
+    builder.adjust(1)
+    builder.button(text="➕ Добавить пакет", callback_data=f"admin_pkg_add_{plan_id}_{pool}")
+    builder.button(text="⬅️ Назад к тарифу", callback_data=f"admin_plans_open_{plan_id}")
+    builder.adjust(*( [1] * len(packages) + [1, 1] ))
+    return builder.as_markup()
+
+
+def create_admin_traffic_package_manage_keyboard(package_id: int, plan_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    toggle_text = "🚫 Скрыть" if is_active else "✅ Активировать"
+    builder.button(text="📶 Изменить размер (ГБ)", callback_data=f"admin_pkg_edit_size_{package_id}")
+    builder.button(text="💰 Изменить цену", callback_data=f"admin_pkg_edit_price_{package_id}")
+    builder.button(text=toggle_text, callback_data=f"admin_pkg_toggle_{package_id}")
+    builder.button(text="🗑 Удалить", callback_data=f"admin_pkg_delete_{package_id}")
+    builder.button(text="⬅️ Назад", callback_data=f"admin_plan_packages_{plan_id}")
+    builder.adjust(2, 2, 1)
     return builder.as_markup()
 
 
@@ -661,8 +781,53 @@ def create_admin_user_actions_keyboard(user_id: int, is_banned: bool | None = No
     builder.button(text="⬅️ К списку", callback_data="admin_users")
     builder.button(text="⬅️ В админ-меню", callback_data="admin_menu")
 
-    builder.adjust(2, 2, 2, 1, 2)
+    builder.adjust(2, 2, 1, 2, 1, 2)
     return builder.as_markup()
+
+def create_keys_management_keyboard(keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура списка ключей пользователя (раздел 'Мои ключи') с пагинацией."""
+    builder = InlineKeyboardBuilder()
+    items_per_page = 5
+
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = keys[start_idx:end_idx]
+
+    if current_keys:
+        for i, key in enumerate(current_keys):
+            num = start_idx + i + 1
+            kid = key.get('key_id')
+            expiry_date = datetime.fromisoformat(key['expiry_date'])
+            status_icon = "✅" if expiry_date > datetime.now() else "❌"
+
+            user_key_name = key.get('user_key_name')
+            if user_key_name:
+                button_text = f"{status_icon} #{kid} {user_key_name}"
+            else:
+                host_name = key.get('host_name', 'Неизвестный хост')
+                button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
+
+            builder.button(text=button_text, callback_data=f"show_key_{kid}")
+    else:
+        builder.button(text="Ключей нет", callback_data="noop")
+
+    builder.adjust(1)
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"keys_page_{page-1}"))
+    if end_idx < len(keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"keys_page_{page+1}"))
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    if len(keys) > 10:
+        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data="search_my_keys"))
+
+    builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_main_menu"))
+
+    return builder.as_markup()
+
 
 def create_admin_user_keys_keyboard(user_id: int, keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -847,14 +1012,20 @@ def create_about_keyboard(channel_url: str | None, terms_url: str | None, privac
 def create_support_keyboard(support_user: str | None = None) -> InlineKeyboardMarkup:
     """Кнопка техподдержки (всегда ведёт на фиксированный URL)."""
     builder = InlineKeyboardBuilder()
-    builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=SUPPORT_URL)
+    if SUPPORT_URL:
+        builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), url=SUPPORT_URL)
+    else:
+        builder.button(text=(get_setting("btn_support_text") or "🆘 Поддержка"), callback_data="support_menu")
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
 
 def create_support_bot_link_keyboard(support_bot_username: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🆘 Открыть поддержку", url=SUPPORT_URL)
+    if SUPPORT_URL:
+        builder.button(text="🆘 Открыть поддержку", url=SUPPORT_URL)
+    else:
+        builder.button(text="🆘 Открыть поддержку", callback_data="support_menu")
     builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
     builder.adjust(1)
     return builder.as_markup()
@@ -876,7 +1047,13 @@ def create_inactive_usage_reminder_keyboard(connection_string: str | None) -> In
     if show_howto:
         builder.button(text=(get_setting("btn_howto_text") or "❓ Как использовать"), callback_data="howto_vless")
 
-    builder.button(text="🆘 Поддержка", url=_get_notifications_support_url())
+    support_url = _get_notifications_support_url()
+    if support_url:
+        builder.button(text="🆘 Поддержка", url=support_url)
+    else:
+        # Нет настроенного URL поддержки — используем внутреннее меню поддержки,
+        # чтобы не отправлять Telegram кнопку без url/callback_data (иначе он отклоняет весь запрос).
+        builder.button(text="🆘 Поддержка", callback_data="support_menu")
     builder.button(text="🏠 Личный кабинет", callback_data="back_to_main_menu")
 
     builder.adjust(1)
@@ -981,6 +1158,7 @@ def create_payment_method_keyboard(
     key_id: int,
     show_balance: bool | None = None,
     main_balance: float | None = None,
+    referral_balance: float | None = None,
     price: float | None = None,
     promo_applied: bool = False,
 ) -> InlineKeyboardMarkup:
@@ -1013,6 +1191,14 @@ def create_payment_method_keyboard(
             except Exception:
                 pass
         builder.button(text=label, callback_data="pay_balance")
+
+    if referral_balance is not None and referral_balance > 0:
+        ref_label = "💎 Реферальным балансом"
+        try:
+            ref_label += f" ({referral_balance:.0f} RUB)"
+        except Exception:
+            pass
+        builder.button(text=ref_label, callback_data="pay_referral_balance")
 
 
     if pm.get("yookassa"):
@@ -1150,57 +1336,187 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
     builder.adjust(1)
     return builder.as_markup()
 
-def create_keys_management_keyboard(keys: list, page: int = 0) -> InlineKeyboardMarkup:
+
+def create_traffic_packages_keyboard(key_id: int, packages: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    items_per_page = 5  # Оставляем по 5, так как текст кнопок очень длинный
-    
-    start_idx = page * items_per_page
-    end_idx = start_idx + items_per_page
-    current_keys = keys[start_idx:end_idx]
-
-    if current_keys:
-        for i, key in enumerate(current_keys):
-            # Рассчитываем номер в обратном порядке (новые ключи = больший номер)
-            num = len(keys) - start_idx - i
-            expiry_date = datetime.fromisoformat(key['expiry_date'])
-            status_icon = "✅" if expiry_date > datetime.now() else "❌"
-            
-            # Если есть пользовательское название, показываем его
-            user_key_name = key.get('user_key_name')
-            if user_key_name:
-                button_text = f"{status_icon} #{num} {user_key_name} (до {expiry_date.strftime('%d.%m.%Y')})"
-            else:
-                # Иначе показываем полную информацию как раньше
-                host_name = key.get('host_name', 'Неизвестный хост')
-                button_text = f"{status_icon} Ключ #{num} ({host_name}) (до {expiry_date.strftime('%d.%m.%Y')})"
-            
-            builder.button(text=button_text, callback_data=f"show_key_{key['key_id']}")
-
+    for pkg in packages:
+        pkg_id = pkg.get("package_id")
+        try:
+            size_gb = float(pkg.get("size_gb") or 0)
+        except Exception:
+            size_gb = 0.0
+        try:
+            price = float(pkg.get("price") or 0)
+        except Exception:
+            price = 0.0
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+        builder.button(
+            text=f"📶 {size_txt} ГБ — {price:.0f} RUB",
+            callback_data=f"traffic_gb_pick_{key_id}_{pkg_id}"
+        )
+    builder.button(text="⬅️ Назад", callback_data=f"show_key_{key_id}")
     builder.adjust(1)
-
-    # Кнопки пагинации
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"keys_page_{page-1}"))
-    if end_idx < len(keys):
-        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"keys_page_{page+1}"))
-    
-    if nav_buttons:
-        builder.row(*nav_buttons)
-
-    # Кнопка поиска (показываем, если ключей > 10)
-    if len(keys) > 10:
-        builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data="search_my_keys"))
-
-    # Кнопки меню
-    builder.row(
-        InlineKeyboardButton(text=(get_setting("btn_buy_key_text") or "🛒 Купить ключ"), callback_data="buy_new_key"),
-        InlineKeyboardButton(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
-    )
-    
     return builder.as_markup()
 
-def create_search_keys_cancel_keyboard() -> InlineKeyboardMarkup:
+
+def create_traffic_gb_payment_method_keyboard(payment_methods: dict) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+
+    def _label(setting_key: str, fallback: str) -> str:
+        try:
+            val = (get_setting(setting_key) or "").strip()
+        except Exception:
+            val = ""
+        return val or fallback
+
+    pm = {
+        "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
+        "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
+        "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "cryptobot": bool(get_setting("cryptobot_token") or ""),
+        "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
+        "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
+        "stars": ((get_setting("stars_enabled") or "false").strip().lower() == "true"),
+    }
+
+    if pm.get("yookassa"):
+        if (get_setting("sbp_enabled") or '').strip().lower() in ('true','1','on','yes','y'):
+            builder.button(text=_label("payment_label_yookassa_sbp", "🏦 СБП / Банковская карта"), callback_data="trafficgb_pay_yookassa")
+        else:
+            builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="trafficgb_pay_yookassa")
+    if pm.get("platega"):
+        builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="trafficgb_pay_platega")
+    if pm.get("cryptobot"):
+        builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="trafficgb_pay_cryptobot")
+    elif pm.get("heleket"):
+        builder.button(text=_label("payment_label_heleket", "💎 Криптовалюта"), callback_data="trafficgb_pay_heleket")
+    if pm.get("tonconnect"):
+        builder.button(text=_label("payment_label_tonconnect", "🪙 TON Connect"), callback_data="trafficgb_pay_tonconnect")
+    if pm.get("stars"):
+        builder.button(text=_label("payment_label_stars", "⭐ Telegram Stars"), callback_data="trafficgb_pay_stars")
+    if pm.get("yoomoney"):
+        builder.button(text=_label("payment_label_yoomoney", "🏦 Банковская карта"), callback_data="trafficgb_pay_yoomoney")
+
+    builder.button(text="💼 Оплатить с баланса", callback_data="trafficgb_pay_balance")
+    builder.button(text="💎 Реферальным балансом", callback_data="trafficgb_pay_referral_balance")
+    builder.button(text="⬅️ Отмена", callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_lte_packages_keyboard(key_id: int, packages: list[dict]) -> InlineKeyboardMarkup:
+    """Пакеты докупки независимого LTE-пула (premium-ноды 💰)."""
+    builder = InlineKeyboardBuilder()
+    for pkg in packages:
+        pkg_id = pkg.get("package_id")
+        try:
+            size_gb = float(pkg.get("size_gb") or 0)
+        except Exception:
+            size_gb = 0.0
+        try:
+            price = float(pkg.get("price") or 0)
+        except Exception:
+            price = 0.0
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+        builder.button(
+            text=f"💰 {size_txt} ГБ LTE — {price:.0f} RUB",
+            callback_data=f"lte_gb_pick_{key_id}_{pkg_id}"
+        )
+    builder.button(text="⬅️ Назад", callback_data=f"show_key_{key_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_lte_gb_payment_method_keyboard(payment_methods: dict) -> InlineKeyboardMarkup:
+    """Выбор способа оплаты докупки LTE-пула (полный аналог create_traffic_gb_payment_method_keyboard,
+    но с callback-префиксом ltegb_pay_*)."""
+    builder = InlineKeyboardBuilder()
+
+    def _label(setting_key: str, fallback: str) -> str:
+        try:
+            val = (get_setting(setting_key) or "").strip()
+        except Exception:
+            val = ""
+        return val or fallback
+
+    pm = {
+        "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
+        "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
+        "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "cryptobot": bool(get_setting("cryptobot_token") or ""),
+        "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
+        "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
+        "stars": ((get_setting("stars_enabled") or "false").strip().lower() == "true"),
+    }
+
+    if pm.get("yookassa"):
+        if (get_setting("sbp_enabled") or '').strip().lower() in ('true','1','on','yes','y'):
+            builder.button(text=_label("payment_label_yookassa_sbp", "🏦 СБП / Банковская карта"), callback_data="ltegb_pay_yookassa")
+        else:
+            builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="ltegb_pay_yookassa")
+    if pm.get("platega"):
+        builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="ltegb_pay_platega")
+    if pm.get("cryptobot"):
+        builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="ltegb_pay_cryptobot")
+    elif pm.get("heleket"):
+        builder.button(text=_label("payment_label_heleket", "💎 Криптовалюта"), callback_data="ltegb_pay_heleket")
+    if pm.get("tonconnect"):
+        builder.button(text=_label("payment_label_tonconnect", "🪙 TON Connect"), callback_data="ltegb_pay_tonconnect")
+    if pm.get("stars"):
+        builder.button(text=_label("payment_label_stars", "⭐ Telegram Stars"), callback_data="ltegb_pay_stars")
+    if pm.get("yoomoney"):
+        builder.button(text=_label("payment_label_yoomoney", "🏦 Банковская карта"), callback_data="ltegb_pay_yoomoney")
+
+    builder.button(text="💼 Оплатить с баланса", callback_data="ltegb_pay_balance")
+    builder.button(text="💎 Реферальным балансом", callback_data="ltegb_pay_referral_balance")
+    builder.button(text="⬅️ Отмена", callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_main_reset_payment_method_keyboard(payment_methods: dict) -> InlineKeyboardMarkup:
+    """Выбор способа оплаты разовой платной перезагрузки основного пула трафика."""
+    builder = InlineKeyboardBuilder()
+
+    def _label(setting_key: str, fallback: str) -> str:
+        try:
+            val = (get_setting(setting_key) or "").strip()
+        except Exception:
+            val = ""
+        return val or fallback
+
+    pm = {
+        "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
+        "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
+        "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "cryptobot": bool(get_setting("cryptobot_token") or ""),
+        "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
+        "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
+        "stars": ((get_setting("stars_enabled") or "false").strip().lower() == "true"),
+    }
+
+    if pm.get("yookassa"):
+        builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="mainreset_pay_yookassa")
+    if pm.get("platega"):
+        builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="mainreset_pay_platega")
+    if pm.get("cryptobot"):
+        builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="mainreset_pay_cryptobot")
+    elif pm.get("heleket"):
+        builder.button(text=_label("payment_label_heleket", "💎 Криптовалюта"), callback_data="mainreset_pay_heleket")
+    if pm.get("tonconnect"):
+        builder.button(text=_label("payment_label_tonconnect", "🪙 TON Connect"), callback_data="mainreset_pay_tonconnect")
+    if pm.get("stars"):
+        builder.button(text=_label("payment_label_stars", "⭐ Telegram Stars"), callback_data="mainreset_pay_stars")
+    if pm.get("yoomoney"):
+        builder.button(text=_label("payment_label_yoomoney", "🏦 Банковская карта"), callback_data="mainreset_pay_yoomoney")
+
+    builder.button(text="💼 Оплатить с баланса", callback_data="mainreset_pay_balance")
+    builder.button(text="💎 Реферальным балансом", callback_data="mainreset_pay_referral_balance")
+    builder.button(text="⬅️ Отмена", callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
     """Клавиатура для отмены поиска ключей пользователя."""
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="cancel_search_keys")
@@ -1391,12 +1707,21 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
     builder.adjust(1)
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None) -> InlineKeyboardMarkup:
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
     # Для подарочных ключей не показываем кнопку продления
     if not gift_code:
         builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
+
+    if show_traffic_topup and not gift_code:
+        builder.button(text="📶 Докупить ГБ", callback_data=f"traffic_gb_start_{key_id}")
+
+    if show_lte_topup and not gift_code:
+        builder.button(text="💰 Докупить LTE", callback_data=f"lte_gb_start_{key_id}")
+
+    if show_main_reset and not gift_code:
+        builder.button(text="♻️ Сбросить основной", callback_data=f"main_reset_start_{key_id}")
 
     show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
     show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
@@ -1472,7 +1797,6 @@ def create_profile_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
-    builder.button(text=(get_setting("btn_referral_text") or "🤝 Реферальная программа"), callback_data="show_referral_program")
     
     # Кнопка для просмотра неактивных подарков
     gifts_label = f"🎁 Мои подарки ({gifts_count})" if gifts_count is not None else "🎁 Мои подарки"
@@ -1806,6 +2130,28 @@ def create_dynamic_keyboard(
                         "row_position": max_row + 1,
                         "column_position": 0,
                         "sort_order": 999,
+                        "button_width": 1,
+                        "is_active": 1,
+                    }
+                ]
+
+        # Ensure LTE / traffic reset settings are always reachable from the admin settings menu.
+        if menu_type == "admin_settings_menu" and button_configs:
+            existing_callbacks = {cfg.get("callback_data") for cfg in button_configs}
+            if "admin_lte_settings_menu" not in existing_callbacks:
+                try:
+                    max_row = max(int(cfg.get("row_position", 0) or 0) for cfg in button_configs)
+                except Exception:
+                    max_row = 0
+                button_configs = list(button_configs) + [
+                    {
+                        "button_id": "lte_settings",
+                        "text": "💰 LTE / Сброс трафика",
+                        "callback_data": "admin_lte_settings_menu",
+                        "url": None,
+                        "row_position": max_row + 1,
+                        "column_position": 0,
+                        "sort_order": 997,
                         "button_width": 1,
                         "is_active": 1,
                     }

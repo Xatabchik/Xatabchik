@@ -1,9 +1,15 @@
 {% set cp = current_page or 1 %}
 {% set tp = total_pages or 1 %}
 {% set per = per_page or 25 %}
+{% set q = search or '' %}
+{% set sb = sort_by or '' %}
+{% set sd = sort_dir or '' %}
 
-<li class="page-item {% if cp >= tp %}disabled{% endif %}">
-  <a class="page-link" href="{{ url_for('admin_keys_page', page=(cp+1 if cp<tp else tp), per_page=per) }}" aria-label="Next">Вперед</a>
+<li class="page-item {% if cp <= 1 %}disabled{% endif %}">
+  <a class="page-link" href="{{ url_for('admin_keys_page', page=(cp-1 if cp>1 else 1), per_page=per, search=q, sort=sb, dir=sd) }}" aria-label="Назад" tabindex="{% if cp<=1 %}-1{% endif %}">
+    <i class="ti ti-chevron-left"></i>
+    <span class="d-none d-sm-inline ms-1">Назад</span>
+  </a>
 </li>
 
 {% set edges = 3 %}
@@ -16,12 +22,15 @@
       <li class="page-item disabled"><span class="page-link">...</span></li>
     {% endif %}
     <li class="page-item {% if p == cp %}active{% endif %}">
-      <a class="page-link" href="{{ url_for('admin_keys_page', page=p, per_page=per) }}">{{ p }}</a>
+      <a class="page-link" href="{{ url_for('admin_keys_page', page=p, per_page=per, search=q, sort=sb, dir=sd) }}">{{ p }}</a>
     </li>
     {% set ns.last = p %}
   {% endif %}
 {% endfor %}
 
-<li class="page-item {% if cp <= 1 %}disabled{% endif %}">
-  <a class="page-link" href="{{ url_for('admin_keys_page', page=(cp-1 if cp>1 else 1), per_page=per) }}" aria-label="Previous">Назад</a>
+<li class="page-item {% if cp >= tp %}disabled{% endif %}">
+  <a class="page-link" href="{{ url_for('admin_keys_page', page=(cp+1 if cp<tp else tp), per_page=per, search=q, sort=sb, dir=sd) }}" aria-label="Вперёд" tabindex="{% if cp>=tp %}-1{% endif %}">
+    <span class="d-none d-sm-inline me-1">Вперёд</span>
+    <i class="ti ti-chevron-right"></i>
+  </a>
 </li>

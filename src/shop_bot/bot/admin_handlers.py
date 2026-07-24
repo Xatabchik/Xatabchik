@@ -19,6 +19,7 @@ from shop_bot.bot.callback_safety import fast_callback_answer, catch_callback_er
 from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import remnawave_repository as rw_repo
+from shop_bot.data_manager import database
 from shop_bot.data_manager.remnawave_repository import (
     get_all_users,
     get_setting,
@@ -50,9 +51,14 @@ from shop_bot.data_manager.remnawave_repository import (
     update_host_subscription_url,
     update_host_remnawave_settings,
     update_host_ssh_settings,
+    get_host_squads,
+    add_host_squad,
+    set_host_squad_active,
+    delete_host_squad,
 )
 from shop_bot.data_manager.database import (
     update_key_email,
+    set_balance,
     set_referral_balance,
     set_referral_balance_all,
     delete_user_completely,
@@ -63,6 +69,13 @@ from shop_bot.data_manager.database import (
     update_plan_metadata,
     delete_plan,
     set_plan_active,
+
+    # traffic packages (докупка ГБ)
+    create_traffic_package,
+    get_traffic_packages_for_plan,
+    get_traffic_package_by_id,
+    update_traffic_package,
+    delete_traffic_package,
 
     # Button constructor (dynamic keyboards)
     get_button_configs_admin,
@@ -1986,6 +1999,10 @@ def get_admin_router() -> Router:
         waiting_set_squad = State()
         waiting_set_ssh = State()
 
+        squads_menu = State()
+        waiting_add_squad2_uuid = State()
+        waiting_add_squad2_label = State()
+
 
     def _resolve_host_from_digest(digest: str) -> str | None:
         try:
@@ -2063,7 +2080,31 @@ def get_admin_router() -> Router:
         except Exception:
             digest = hashlib.sha1(str(host_name).encode('utf-8', 'ignore')).hexdigest()[:12]
         text = _format_host_card(host)
-        kb = keyboards.create_admin_host_manage_keyboard(digest)
+        try:
+            node_class = database.get_host_class(host_name)
+        except Exception:
+            node_class = 'unlim'
+        kb = keyboards.create_admin_host_manage_keyboard(digest, node_class)
+        if edit_message:
+            try:
+                await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+    async def show_admin_host_squads(message: types.Message, host_name: str, host_digest: str, *, edit_message: bool = False):
+        try:
+            squads = get_host_squads(host_name)
+        except Exception:
+            squads = []
+        text = (
+            f"🧬 <b>Сквады хоста «{_safe(host_name)}»</b>\n\n"
+            "Двухпуловая схема: <b>Base</b> (♾ безлимит) и <b>LTE</b> (💰 отдельный лимит трафика). "
+            "У хоста может быть максимум один активный сквад класса Base и один — LTE."
+        )
+        kb = keyboards.create_admin_host_squads_keyboard(host_digest, squads)
         if edit_message:
             try:
                 await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -2235,6 +2276,174 @@ def get_admin_router() -> Router:
         await show_admin_host_detail(callback.message, host_name, edit_message=True)
 
 
+    @admin_router.callback_query(F.data.startswith("admin_hosts_squads:"))
+    @catch_callback_errors
+    @fast_callback_answer
+    async def admin_hosts_squads_open(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        digest = (callback.data or "").split("admin_hosts_squads:", 1)[-1].strip()
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            await show_admin_hosts_menu(callback.message, edit_message=True)
+            return
+        await state.set_state(AdminHosts.squads_menu)
+        await state.update_data(host_digest=digest, host_name=host_name)
+        await show_admin_host_squads(callback.message, host_name, digest, edit_message=True)
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_squad_toggle:"))
+    @catch_callback_errors
+    @fast_callback_answer
+    async def admin_hosts_squad_toggle(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        parts = (callback.data or "").split(":")
+        # admin_hosts_squad_toggle:{squad_id}:{digest}
+        try:
+            squad_id = int(parts[1])
+        except (IndexError, ValueError):
+            await callback.answer("Некорректный ID сквада.", show_alert=True)
+            return
+        digest = parts[2] if len(parts) > 2 else ""
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+
+        squads = get_host_squads(host_name)
+        current = next((s for s in squads if s.get('id') == squad_id), None)
+        new_active = not bool(current.get('is_active')) if current else True
+        try:
+            ok = set_host_squad_active(squad_id, new_active)
+        except Exception:
+            ok = False
+        if not ok:
+            await callback.answer("Не удалось изменить статус сквада.", show_alert=True)
+        await show_admin_host_squads(callback.message, host_name, digest, edit_message=True)
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_squad_delete:"))
+    @catch_callback_errors
+    @fast_callback_answer
+    async def admin_hosts_squad_delete(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        parts = (callback.data or "").split(":")
+        try:
+            squad_id = int(parts[1])
+        except (IndexError, ValueError):
+            await callback.answer("Некорректный ID сквада.", show_alert=True)
+            return
+        digest = parts[2] if len(parts) > 2 else ""
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        try:
+            ok = delete_host_squad(squad_id)
+        except Exception:
+            ok = False
+        if not ok:
+            await callback.answer("Не удалось удалить сквад.", show_alert=True)
+        await show_admin_host_squads(callback.message, host_name, digest, edit_message=True)
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_squad_add:"))
+    async def admin_hosts_squad_add(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        digest = (callback.data or "").split("admin_hosts_squad_add:", 1)[-1].strip()
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        await state.update_data(host_digest=digest, host_name=host_name)
+        await callback.message.edit_text(
+            "🧬 <b>Добавление сквада</b>\n\nВыберите класс сквада:",
+            reply_markup=keyboards.create_admin_squad_class_keyboard(digest),
+            parse_mode="HTML",
+        )
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_squad_add_class:"))
+    async def admin_hosts_squad_add_class(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        payload = (callback.data or "").split("admin_hosts_squad_add_class:", 1)[-1]
+        digest, _, squad_class = payload.partition(":")
+        squad_class = (squad_class or 'base').strip().lower()
+        if squad_class not in ('base', 'lte', 'other'):
+            squad_class = 'base'
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        await state.update_data(host_digest=digest, host_name=host_name, add_squad_class=squad_class)
+        await state.set_state(AdminHosts.waiting_add_squad2_uuid)
+        await callback.message.edit_text(
+            f"🧬 Класс: <b>{squad_class}</b>\n\nВведите <b>Squad UUID</b>:",
+            reply_markup=keyboards.create_admin_hosts_cancel_keyboard(f"admin_hosts_squads:{digest}"),
+            parse_mode="HTML",
+        )
+
+
+    @admin_router.message(AdminHosts.waiting_add_squad2_uuid)
+    async def admin_hosts_squad2_uuid(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        squad_uuid = (message.text or '').strip()
+        if not squad_uuid:
+            await message.answer("❌ Squad UUID не может быть пустым.")
+            return
+        await state.update_data(add_squad_uuid=squad_uuid)
+        await state.set_state(AdminHosts.waiting_add_squad2_label)
+        data = await state.get_data()
+        digest = data.get('host_digest') or ''
+        await message.answer(
+            "Введите <b>метку</b> сквада (или отправьте <code>-</code>, чтобы пропустить):",
+            reply_markup=keyboards.create_admin_hosts_cancel_keyboard(f"admin_hosts_squads:{digest}"),
+            parse_mode="HTML",
+        )
+
+
+    @admin_router.message(AdminHosts.waiting_add_squad2_label)
+    async def admin_hosts_squad2_label(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        label = (message.text or '').strip()
+        if label == '-':
+            label = ''
+        data = await state.get_data()
+        host_name = data.get('host_name') or ''
+        digest = data.get('host_digest') or ''
+        squad_class = data.get('add_squad_class') or 'base'
+        squad_uuid = data.get('add_squad_uuid') or ''
+
+        squad_id = None
+        try:
+            squad_id = add_host_squad(host_name, squad_uuid, squad_class, label or None)
+        except Exception:
+            squad_id = None
+
+        await state.set_state(AdminHosts.squads_menu)
+        if squad_id:
+            await message.answer("✅ Сквад добавлен.")
+        else:
+            await message.answer(
+                "❌ Не удалось добавить сквад (возможно, уже есть активный сквад этого класса или дубликат UUID)."
+            )
+        await show_admin_host_squads(message, host_name, digest, edit_message=False)
+
+
     @admin_router.callback_query(F.data.startswith("admin_hosts_delete:"))
     async def admin_hosts_delete(callback: types.CallbackQuery, state: FSMContext):
         if not is_admin(callback.from_user.id):
@@ -2294,6 +2503,31 @@ def get_admin_router() -> Router:
             reply_markup=keyboards.create_admin_hosts_cancel_keyboard(f"admin_hosts_open:{digest}"),
             parse_mode="HTML",
         )
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_toggle_class:"))
+    async def admin_hosts_toggle_class(callback: types.CallbackQuery, state: FSMContext):
+        """Переключение класса ноды: ♾ Unlimited <-> 💰 Premium (LTE)."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        digest = callback.data.split("admin_hosts_toggle_class:", 1)[-1]
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        try:
+            current_class = database.get_host_class(host_name)
+        except Exception:
+            current_class = 'unlim'
+        new_class = 'unlim' if current_class == 'premium' else 'premium'
+        try:
+            database.set_host_class(host_name, new_class)
+        except Exception:
+            pass
+        label = "Premium (LTE) 💰" if new_class == 'premium' else "Unlimited ♾"
+        await callback.answer(f"Класс ноды изменён: {label}")
+        await show_admin_host_detail(callback.message, host_name, edit_message=True)
 
 
     @admin_router.message(AdminHosts.waiting_rename)
@@ -2852,6 +3086,85 @@ def get_admin_router() -> Router:
         await show_admin_trial_menu(message, edit_message=False)
 
 
+    # === LTE / dual traffic pool settings ===
+
+    class AdminLteSettings(StatesGroup):
+        menu = State()
+        waiting_for_interval = State()
+
+
+    def _get_dual_limit_interval() -> int:
+        try:
+            val = int(float(get_setting("dual_limit_interval_sec") or 120))
+        except Exception:
+            val = 120
+        return val if val > 0 else 120
+
+
+    async def show_admin_lte_settings_menu(message: types.Message, edit_message: bool = False):
+        interval = _get_dual_limit_interval()
+        text_out = (
+            "💰 <b>LTE / Сброс основного трафика</b>\n\n"
+            f"Интервал проверки лимитов (сек): <b>{interval}</b>\n\n"
+            "Класс ноды (♾/💰) настраивается в карточке хоста: «🖥 Хосты» → выбрать хост.\n"
+            "LTE-лимит, LTE-пакеты и цена сброса основного трафика настраиваются в карточке тарифа: "
+            "«🧾 Тарифы» → выбрать тариф. Цена сброса уникальна для каждого тарифа и доступна только "
+            "тарифам с лимитом трафика."
+        )
+        kb = keyboards.create_admin_lte_settings_keyboard(dual_limit_interval_sec=interval)
+        if edit_message:
+            try:
+                await message.edit_text(text_out, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await message.answer(text_out, reply_markup=kb, parse_mode="HTML")
+        else:
+            await message.answer(text_out, reply_markup=kb, parse_mode="HTML")
+
+
+    @admin_router.callback_query(F.data == "admin_lte_settings_menu")
+    async def admin_lte_settings_entry(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.clear()
+        await state.set_state(AdminLteSettings.menu)
+        await show_admin_lte_settings_menu(callback.message, edit_message=True)
+
+
+    @admin_router.callback_query(F.data == "admin_lte_set_interval")
+    async def admin_lte_set_interval_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminLteSettings.waiting_for_interval)
+        await callback.message.edit_text(
+            "⏱ <b>Интервал проверки двойных лимитов трафика</b>\n\n"
+            "Введите интервал в секундах (например, 120):",
+            reply_markup=keyboards.create_cancel_keyboard("admin_lte_settings_menu"),
+            parse_mode="HTML",
+        )
+
+
+    @admin_router.message(AdminLteSettings.waiting_for_interval)
+    async def admin_lte_set_interval_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        raw = (message.text or "").strip()
+        try:
+            interval = int(float(raw.replace(",", ".")))
+            if interval <= 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите положительное целое число секунд, например: 120")
+            return
+        rw_repo.update_setting("dual_limit_interval_sec", str(interval))
+        await state.set_state(AdminLteSettings.menu)
+        await message.answer("✅ Интервал проверки обновлён.")
+        await show_admin_lte_settings_menu(message, edit_message=False)
+
+
     
 
     # === Notifications (inactive usage reminders) ===
@@ -3030,6 +3343,8 @@ def get_admin_router() -> Router:
         edit_price = State()
         edit_traffic = State()
         edit_devices = State()
+        edit_lte_limit = State()
+        edit_main_reset_price = State()
         confirm_delete = State()
 
         # создание нового тарифа
@@ -3040,6 +3355,14 @@ def get_admin_router() -> Router:
         waiting_for_traffic = State()
         waiting_for_devices = State()
         waiting_for_price = State()
+
+        # управление пакетами докупки трафика (ГБ)
+        packages_menu = State()
+        package_menu = State()
+        waiting_for_package_size = State()
+        waiting_for_package_price = State()
+        edit_package_size = State()
+        edit_package_price = State()
 
 
 
@@ -3195,6 +3518,8 @@ def get_admin_router() -> Router:
 
 
     @admin_router.callback_query(AdminPlans.host_menu, F.data.startswith("admin_plans_open_"))
+    @admin_router.callback_query(AdminPlans.packages_menu, F.data.startswith("admin_plans_open_"))
+    @admin_router.callback_query(AdminPlans.package_menu, F.data.startswith("admin_plans_open_"))
     async def admin_plans_open_plan(callback: types.CallbackQuery, state: FSMContext):
         """Открыть конкретный тариф из списка тарифов хоста."""
         if not is_admin(callback.from_user.id):
@@ -3226,6 +3551,440 @@ def get_admin_router() -> Router:
             _format_plan_detail(plan, host_name),
             reply_markup=keyboards.create_admin_plan_manage_keyboard(plan),
             parse_mode='HTML'
+        )
+
+
+    def _format_traffic_package_detail(pkg: dict) -> str:
+        pkg_id = pkg.get('package_id')
+        try:
+            size_gb = float(pkg.get('size_gb') or 0)
+        except Exception:
+            size_gb = 0.0
+        try:
+            price = float(pkg.get('price') or 0)
+        except Exception:
+            price = 0.0
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+        status_txt = "✅ Активен" if is_active else "🚫 Скрыт"
+        return (
+            "📶 <b>Пакет докупки трафика</b>\n\n"
+            f"ID: <b>#{pkg_id}</b>\n"
+            f"Объём: <b>{size_txt} ГБ</b>\n"
+            f"Цена: <b>{price:.2f} RUB</b>\n"
+            f"Статус: <b>{status_txt}</b>\n\n"
+            "Выберите действие:"
+        )
+
+
+    @admin_router.callback_query(AdminPlans.plan_menu, F.data.startswith("admin_plan_packages_"))
+    async def admin_plan_packages_menu(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        try:
+            plan_id = int(callback.data.split("admin_plan_packages_", 1)[-1])
+        except Exception:
+            await callback.answer("Некорректный тариф.", show_alert=True)
+            return
+        plan = get_plan_by_id(plan_id)
+        if not plan:
+            await callback.answer("Тариф не найден.", show_alert=True)
+            return
+        await callback.answer()
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool='main')
+        await state.set_state(AdminPlans.packages_menu)
+        packages = get_traffic_packages_for_plan(plan_id, pool='main')
+        pname = html_escape.escape(str(plan.get('plan_name') or '—'))
+        text = (
+            f"📶 <b>Пакеты докупки трафика для тарифа «{pname}»</b>\n\n"
+            "Пользователи смогут докупить один из этих пакетов ГБ поверх лимита тарифа.\n"
+            "Действует до ближайшего ежемесячного сброса трафика."
+        )
+        if not packages:
+            text += "\n\n❌ Пакеты пока не настроены."
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboards.create_admin_traffic_packages_keyboard(plan_id, packages, pool='main'),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.plan_menu, F.data.startswith("admin_lte_packages_"))
+    async def admin_lte_packages_menu(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        try:
+            plan_id = int(callback.data.split("admin_lte_packages_", 1)[-1])
+        except Exception:
+            await callback.answer("Некорректный тариф.", show_alert=True)
+            return
+        plan = get_plan_by_id(plan_id)
+        if not plan:
+            await callback.answer("Тариф не найден.", show_alert=True)
+            return
+        if int(plan.get('lte_limit_bytes') or 0) <= 0:
+            await callback.answer("Сначала задайте LTE-лимит тарифа.", show_alert=True)
+            return
+        await callback.answer()
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool='lte')
+        await state.set_state(AdminPlans.packages_menu)
+        packages = database.get_traffic_packages_for_plan(plan_id, pool='lte')
+        pname = html_escape.escape(str(plan.get('plan_name') or '—'))
+        text = (
+            f"💰 <b>LTE-пакеты докупки для тарифа «{pname}»</b>\n\n"
+            "Пользователи смогут докупить один из этих пакетов ГБ в независимый LTE-пул (premium-ноды)."
+        )
+        if not packages:
+            text += "\n\n❌ Пакеты пока не настроены."
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboards.create_admin_traffic_packages_keyboard(plan_id, packages, pool='lte'),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.plan_menu, F.data == "admin_plan_edit_lte_limit")
+    async def admin_plan_edit_lte_limit_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.edit_lte_limit)
+        await callback.message.edit_text(
+            "💰 Введите лимит независимого LTE-пула в ГБ для этого тарифа (0 — отключить LTE-пул):",
+            reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+        )
+
+
+    @admin_router.message(AdminPlans.edit_lte_limit)
+    async def admin_plan_edit_lte_limit_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            size_gb = float(text)
+            if size_gb < 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректное неотрицательное число ГБ, например: 20")
+            return
+        data = await state.get_data()
+        plan_id = data.get('current_plan_id')
+        if not plan_id:
+            await message.answer("❌ Ошибка данных. Начните заново.")
+            await state.clear()
+            return
+        lte_limit_bytes = int(size_gb * 1024 * 1024 * 1024)
+        current_plan = get_plan_by_id(int(plan_id))
+        if not current_plan:
+            await message.answer("❌ Тариф не найден.")
+            return
+        try:
+            update_plan(
+                int(plan_id),
+                current_plan.get('plan_name'),
+                current_plan.get('months'),
+                current_plan.get('price'),
+                lte_limit_bytes=lte_limit_bytes,
+            )
+        except Exception as e:
+            logger.error(f"admin_plan_edit_lte_limit: не удалось обновить план {plan_id}: {e}", exc_info=True)
+            await message.answer("❌ Не удалось сохранить лимит.")
+            return
+        await state.set_state(AdminPlans.plan_menu)
+        plan = get_plan_by_id(int(plan_id))
+        data2 = await state.get_data()
+        host_name = data2.get('plans_host')
+        await message.answer(
+            _format_plan_detail(plan, host_name),
+            reply_markup=keyboards.create_admin_plan_manage_keyboard(plan),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.plan_menu, F.data == "admin_plan_edit_main_reset_price")
+    async def admin_plan_edit_main_reset_price_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.edit_main_reset_price)
+        await callback.message.edit_text(
+            "♻️ Введите цену досрочного сброса основного трафика для этого тарифа в рублях "
+            "(например, 99). 0 — отключить возможность сброса для пользователей:",
+            reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+        )
+
+
+    @admin_router.message(AdminPlans.edit_main_reset_price)
+    async def admin_plan_edit_main_reset_price_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            price = float(text)
+            if price < 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректное неотрицательное число, например: 99")
+            return
+        data = await state.get_data()
+        plan_id = data.get('current_plan_id')
+        if not plan_id:
+            await message.answer("❌ Ошибка данных. Начните заново.")
+            await state.clear()
+            return
+        current_plan = get_plan_by_id(int(plan_id))
+        if not current_plan:
+            await message.answer("❌ Тариф не найден.")
+            return
+        try:
+            update_plan(
+                int(plan_id),
+                current_plan.get('plan_name'),
+                current_plan.get('months'),
+                current_plan.get('price'),
+                main_reset_price_rub=price,
+            )
+        except Exception as e:
+            logger.error(f"admin_plan_edit_main_reset_price: не удалось обновить план {plan_id}: {e}", exc_info=True)
+            await message.answer("❌ Не удалось сохранить цену.")
+            return
+        await state.set_state(AdminPlans.plan_menu)
+        plan = get_plan_by_id(int(plan_id))
+        data2 = await state.get_data()
+        host_name = data2.get('plans_host')
+        await message.answer(
+            _format_plan_detail(plan, host_name),
+            reply_markup=keyboards.create_admin_plan_manage_keyboard(plan),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.packages_menu, F.data.startswith("admin_pkg_add_"))
+    async def admin_pkg_add_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        rest = callback.data.split("admin_pkg_add_", 1)[-1]
+        pool = 'main'
+        plan_id_str = rest
+        if rest.endswith('_lte'):
+            pool = 'lte'
+            plan_id_str = rest[:-len('_lte')]
+        elif rest.endswith('_main'):
+            pool = 'main'
+            plan_id_str = rest[:-len('_main')]
+        try:
+            plan_id = int(plan_id_str)
+        except Exception:
+            await callback.answer("Некорректный тариф.", show_alert=True)
+            return
+        await callback.answer()
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool=pool)
+        await state.set_state(AdminPlans.waiting_for_package_size)
+        await callback.message.edit_text(
+            "📶 Введите объём пакета в ГБ (например, 5 или 10):",
+            reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+        )
+
+
+    @admin_router.message(AdminPlans.waiting_for_package_size)
+    async def admin_pkg_size_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            size_gb = float(text)
+            if size_gb <= 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректное положительное число ГБ, например: 10")
+            return
+        await state.update_data(new_package_size=size_gb)
+        await state.set_state(AdminPlans.waiting_for_package_price)
+        await message.answer("💰 Теперь введите цену пакета в рублях (например, 99):")
+
+
+    @admin_router.message(AdminPlans.waiting_for_package_price)
+    async def admin_pkg_price_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            price = float(text)
+            if price <= 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректную положительную цену, например: 99")
+            return
+        data = await state.get_data()
+        plan_id = data.get('current_plan_id')
+        size_gb = data.get('new_package_size')
+        pool = data.get('current_pkg_pool') or 'main'
+        if not plan_id or not size_gb:
+            await message.answer("❌ Ошибка данных. Начните заново.")
+            await state.clear()
+            return
+        create_traffic_package(int(plan_id), float(size_gb), float(price), pool=pool)
+        await state.set_state(AdminPlans.packages_menu)
+        packages = get_traffic_packages_for_plan(int(plan_id), pool=pool)
+        await message.answer(
+            "✅ Пакет добавлен.",
+            reply_markup=keyboards.create_admin_traffic_packages_keyboard(int(plan_id), packages, pool=pool)
+        )
+
+
+    @admin_router.callback_query(AdminPlans.packages_menu, F.data.startswith("admin_pkg_open_"))
+    async def admin_pkg_open(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        try:
+            pkg_id = int(callback.data.split("admin_pkg_open_", 1)[-1])
+        except Exception:
+            await callback.answer("Некорректный пакет.", show_alert=True)
+            return
+        pkg = get_traffic_package_by_id(pkg_id)
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+        await callback.answer()
+        await state.update_data(current_package_id=pkg_id, current_plan_id=pkg.get('plan_id'))
+        await state.set_state(AdminPlans.package_menu)
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        await callback.message.edit_text(
+            _format_traffic_package_detail(pkg),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.package_menu, F.data.startswith("admin_pkg_edit_size_"))
+    async def admin_pkg_edit_size_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.edit_package_size)
+        await callback.message.edit_text(
+            "📶 Введите новый объём пакета в ГБ:",
+            reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+        )
+
+
+    @admin_router.message(AdminPlans.edit_package_size)
+    async def admin_pkg_edit_size_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            size_gb = float(text)
+            if size_gb <= 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректное положительное число ГБ.")
+            return
+        data = await state.get_data()
+        pkg_id = data.get('current_package_id')
+        plan_id = data.get('current_plan_id')
+        update_traffic_package(int(pkg_id), size_gb=size_gb)
+        await state.set_state(AdminPlans.package_menu)
+        pkg = get_traffic_package_by_id(int(pkg_id))
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        await message.answer(
+            _format_traffic_package_detail(pkg),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.package_menu, F.data.startswith("admin_pkg_edit_price_"))
+    async def admin_pkg_edit_price_start(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.edit_package_price)
+        await callback.message.edit_text(
+            "💰 Введите новую цену пакета в рублях:",
+            reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+        )
+
+
+    @admin_router.message(AdminPlans.edit_package_price)
+    async def admin_pkg_edit_price_received(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            price = float(text)
+            if price <= 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите корректную положительную цену.")
+            return
+        data = await state.get_data()
+        pkg_id = data.get('current_package_id')
+        plan_id = data.get('current_plan_id')
+        update_traffic_package(int(pkg_id), price=price)
+        await state.set_state(AdminPlans.package_menu)
+        pkg = get_traffic_package_by_id(int(pkg_id))
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        await message.answer(
+            _format_traffic_package_detail(pkg),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.package_menu, F.data.startswith("admin_pkg_toggle_"))
+    async def admin_pkg_toggle(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        try:
+            pkg_id = int(callback.data.split("admin_pkg_toggle_", 1)[-1])
+        except Exception:
+            await callback.answer("Некорректный пакет.", show_alert=True)
+            return
+        pkg = get_traffic_package_by_id(pkg_id)
+        if not pkg:
+            await callback.answer("Пакет не найден.", show_alert=True)
+            return
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        update_traffic_package(pkg_id, is_active=not is_active)
+        await callback.answer("Статус изменён.")
+        pkg = get_traffic_package_by_id(pkg_id)
+        is_active = int(pkg.get('is_active', 1) or 0) == 1
+        await callback.message.edit_text(
+            _format_traffic_package_detail(pkg),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active),
+            parse_mode='HTML'
+        )
+
+
+    @admin_router.callback_query(AdminPlans.package_menu, F.data.startswith("admin_pkg_delete_"))
+    async def admin_pkg_delete(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        try:
+            pkg_id = int(callback.data.split("admin_pkg_delete_", 1)[-1])
+        except Exception:
+            await callback.answer("Некорректный пакет.", show_alert=True)
+            return
+        pkg = get_traffic_package_by_id(pkg_id)
+        plan_id = pkg.get('plan_id') if pkg else None
+        delete_traffic_package(pkg_id)
+        await callback.answer("Пакет удалён.")
+        await state.set_state(AdminPlans.packages_menu)
+        packages = get_traffic_packages_for_plan(plan_id) if plan_id else []
+        await callback.message.edit_text(
+            "📶 Пакеты обновлены.",
+            reply_markup=keyboards.create_admin_traffic_packages_keyboard(plan_id, packages)
         )
 
 
@@ -3605,7 +4364,7 @@ def get_admin_router() -> Router:
             await message.answer("❌ Некорректное значение (0–100000).", reply_markup=keyboards.create_admin_plan_edit_flow_keyboard())
             return
 
-        limit_bytes = None
+        limit_bytes = 0
         if gb > 0:
             limit_bytes = int(gb * 1024 * 1024 * 1024)
 
@@ -3866,7 +4625,7 @@ def get_admin_router() -> Router:
             await message.answer("❌ Некорректное значение (0–100000).", reply_markup=keyboards.create_admin_plans_flow_keyboard())
             return
 
-        limit_bytes = None
+        limit_bytes = 0
         if gb > 0:
             limit_bytes = int(gb * 1024 * 1024 * 1024)
 
@@ -5146,6 +5905,7 @@ def get_admin_router() -> Router:
             is_banned = user.get("is_banned", False)
             total_spent = user.get("total_spent", 0)
             balance = user.get("balance", 0)
+            referral_balance = user.get("referral_balance", 0)
             referred_by = user.get("referred_by")
             keys = get_keys_for_user(user_id)
             keys_count = len(keys)
@@ -5155,6 +5915,7 @@ def get_admin_router() -> Router:
                 f"Имя пользователя: {user_tag}\n"
                 f"Всего потратил: {float(total_spent):.2f} RUB\n"
                 f"Баланс: {float(balance):.2f} RUB\n"
+                f"Реф. баланс (заработок): {float(referral_balance or 0):.2f} RUB\n"
                 f"Забанен: {'да' if is_banned else 'нет'}\n"
                 f"Приглашён: {referred_by if referred_by else '—'}\n"
                 f"Ключей: {keys_count}"
@@ -5197,6 +5958,7 @@ def get_admin_router() -> Router:
         is_banned = user.get('is_banned', False)
         total_spent = user.get('total_spent', 0)
         balance = user.get('balance', 0)
+        referral_balance = user.get('referral_balance', 0)
         referred_by = user.get('referred_by')
         keys = get_keys_for_user(user_id)
         keys_count = len(keys)
@@ -5205,6 +5967,7 @@ def get_admin_router() -> Router:
             f"Имя пользователя: {user_tag}\n"
             f"Всего потратил: {float(total_spent):.2f} RUB\n"
             f"Баланс: {float(balance):.2f} RUB\n"
+            f"Реф. баланс (заработок): {float(referral_balance or 0):.2f} RUB\n"
             f"Забанен: {'да' if is_banned else 'нет'}\n"
             f"Приглашён: {referred_by if referred_by else '—'}\n"
             f"Ключей: {keys_count}"
@@ -5273,6 +6036,7 @@ def get_admin_router() -> Router:
             user_tag = f"<a href='tg://user?id={user_id}'>Профиль</a>"
         total_spent = user.get('total_spent', 0)
         balance = user.get('balance', 0)
+        referral_balance = user.get('referral_balance', 0)
         referred_by = user.get('referred_by')
         keys = get_keys_for_user(user_id)
         keys_count = len(keys)
@@ -5281,6 +6045,7 @@ def get_admin_router() -> Router:
             f"Имя пользователя: {user_tag}\n"
             f"Всего потратил: {float(total_spent):.2f} RUB\n"
             f"Баланс: {float(balance):.2f} RUB\n"
+            f"Реф. баланс (заработок): {float(referral_balance or 0):.2f} RUB\n"
             f"Забанен: да\n"
             f"Приглашён: {referred_by if referred_by else '—'}\n"
             f"Ключей: {keys_count}"
@@ -5382,6 +6147,7 @@ def get_admin_router() -> Router:
             user_tag = f"<a href='tg://user?id={user_id}'>Профиль</a>"
         total_spent = user.get('total_spent', 0)
         balance = user.get('balance', 0)
+        referral_balance = user.get('referral_balance', 0)
         referred_by = user.get('referred_by')
         keys = get_keys_for_user(user_id)
         keys_count = len(keys)
@@ -5390,6 +6156,7 @@ def get_admin_router() -> Router:
             f"Имя пользователя: {user_tag}\n"
             f"Всего потратил: {float(total_spent):.2f} RUB\n"
             f"Баланс: {float(balance):.2f} RUB\n"
+            f"Реф. баланс (заработок): {float(referral_balance or 0):.2f} RUB\n"
             f"Забанен: нет\n"
             f"Приглашён: {referred_by if referred_by else '—'}\n"
             f"Ключей: {keys_count}"

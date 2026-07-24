@@ -66,7 +66,7 @@ class ManagedBotsService:
         async def runner():
             logger.info(f"Менеджер бота запущен: bot_id={bot_id} (@{info.get('username')})")
             try:
-                await dp.start_polling(bot)
+                await dp.start_polling(bot, handle_signals=False)
             except asyncio.CancelledError:
                 pass
             except Exception as e:

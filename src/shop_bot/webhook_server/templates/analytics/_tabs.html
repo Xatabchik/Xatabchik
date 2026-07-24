@@ -1,0 +1,48 @@
+{# Общие вкладки раздела «Продажи и аналитика». Подключается через {% include %} в каждой странице. #}
+<ul class="nav nav-tabs mb-4 flex-wrap">
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'overview' %}active{% endif %}" href="{{ url_for('analytics_overview_page') }}">
+      <i class="ti ti-layout-dashboard me-1"></i> Обзор
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'transactions' %}active{% endif %}" href="{{ url_for('analytics_transactions_page') }}">
+      <i class="ti ti-receipt me-1"></i> Транзакции
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'plans' %}active{% endif %}" href="{{ url_for('analytics_plans_page') }}">
+      <i class="ti ti-tags me-1"></i> Тарифы
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'payment_methods' %}active{% endif %}" href="{{ url_for('analytics_payment_methods_page') }}">
+      <i class="ti ti-credit-card me-1"></i> Оплаты
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'utm' %}active{% endif %}" href="{{ url_for('analytics_utm_page') }}">
+      <i class="ti ti-link me-1"></i> UTM
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'referrals' %}active{% endif %}" href="{{ url_for('analytics_referrals_page') }}">
+      <i class="ti ti-users-group me-1"></i> Рефералы
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'coupons' %}active{% endif %}" href="{{ url_for('analytics_coupons_page') }}">
+      <i class="ti ti-ticket me-1"></i> Купоны
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'economics' %}active{% endif %}" href="{{ url_for('analytics_economics_page') }}">
+      <i class="ti ti-server-2 me-1"></i> Серверы и экономика
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'forecast' %}active{% endif %}" href="{{ url_for('analytics_forecast_page') }}">
+      <i class="ti ti-trending-up me-1"></i> Прогнозы
+    </a>
+  </li>
+</ul>

@@ -1,11 +1,27 @@
-version: '3.8'
-
 services:
   xatabchik:
     build: .
     restart: unless-stopped
     ports:
-      - '1488:1488'
+      - "1488:1488"
     volumes:
       - .:/app/project
+    environment:
+      TELEGRAM_PROXY: ${TELEGRAM_PROXY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     container_name: xatabchik
+
+  xatabchik-webapp:
+    build: .
+    restart: unless-stopped
+    command: /app/.venv/bin/uvicorn shop_bot.webapp.handlers:app --host 0.0.0.0 --port 8000 --proxy-headers
+    ports:
+      - 127.0.0.1:8001:8000
+    volumes:
+      - .:/app/project
+    environment:
+      TELEGRAM_PROXY: ${TELEGRAM_PROXY:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    container_name: xatabchik-webapp

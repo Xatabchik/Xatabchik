@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Рефералы{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Реферреров</div>
+      <div class="h1 mb-0">{{ referrals.referrers_count }}</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Рефералов</div>
+      <div class="h1 mb-0">{{ referrals.referrals_count }}</div>
+      <div class="text-secondary small">Активных: {{ referrals.active_referrals }} · Платящих: {{ referrals.paying_referrals }}</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Выручка от рефералов</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(referrals.revenue_from_referrals) }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Начислено / Остаток / Использовано</div>
+      <div class="small">{{ "%.2f"|format(referrals.accrued_total) }} / {{ "%.2f"|format(referrals.current_balance_total) }} / {{ "%.2f"|format(referrals.spent_total) }} ₽</div>
+    </div></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-lg-6">
+    <div class="card mb-3">
+      <div class="card-header"><h3 class="card-title">Топ по рефералам</h3></div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead><tr><th>Реферер</th><th>Приглашено</th><th>Платящих</th><th>Бонус всего</th></tr></thead>
+          <tbody>
+            {% for r in top_referrers %}
+            <tr>
+              <td>{{ r.referrer_id }}</td>
+              <td>{{ r.invited_count }}</td>
+              <td>{{ r.paying_count }}</td>
+              <td>{{ "%.2f"|format(r.bonus_total or 0) }} ₽</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-center text-secondary py-4">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card mb-3">
+      <div class="card-header"><h3 class="card-title">Топ покупателей</h3></div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead><tr><th>Пользователь</th><th>Успешных транз.</th><th>Выручка</th><th>Средний чек</th><th>LTV (total_spent)</th></tr></thead>
+          <tbody>
+            {% for b in top_buyers %}
+            <tr>
+              <td>{{ b.username or b.user_id }}</td>
+              <td>{{ b.successful_tx }}</td>
+              <td>{{ "%.2f"|format(b.revenue) }} ₽</td>
+              <td>{{ "%.2f"|format(b.avg_check) }} ₽</td>
+              <td>{{ "%.2f"|format(b.total_spent or 0) }} ₽</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-secondary py-4">Нет данных</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer text-secondary small">LTV показан как поле users.total_spent (уже используется на странице «Пользователи») — не пересчитывается заново, чтобы не расходиться в цифрах.</div>
+    </div>
+  </div>
+</div>
+{% endblock %}

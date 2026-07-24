@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -18,10 +19,40 @@ class SupportBotController:
         self._task = None
         self._is_running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        # Support-бот работает в собственном изолированном event loop/потоке,
+        # полностью независимом от основного бота и от Flask: сбой/зависание
+        # одного бота никак не влияет на другой.
+        self._start_own_loop()
+
+    def _start_own_loop(self) -> None:
+        ready = threading.Event()
+
+        def _runner():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            # См. комментарий в BotController._start_own_loop: сигнализируем
+            # готовность только когда цикл событий реально запустился.
+            loop.call_soon(ready.set)
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+
+        self._loop_thread = threading.Thread(target=_runner, daemon=True, name="support-bot-loop")
+        self._loop_thread.start()
+        if not ready.wait(timeout=5):
+            logger.warning("Собственный цикл событий support-бота не подтвердил готовность за 5 сек.")
+        logger.info("Собственный цикл событий support-бота запущен.")
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
-        self._loop = loop
-        logger.info("Цикл событий установлен.")
+        # Оставлено для обратной совместимости со старым кодом. Теперь контроллер
+        # управляет собственным циклом событий самостоятельно, внешний loop игнорируется.
+        logger.debug("set_loop() проигнорирован: у support-бота собственный цикл событий.")
+
+    def get_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
 
     def get_bot_instance(self) -> Bot | None:
         return self._bot
@@ -30,7 +61,7 @@ class SupportBotController:
         self._is_running = True
         logger.info("Запущен опрос Telegram (Support-бот)...")
         try:
-            await self._dp.start_polling(self._bot)
+            await self._dp.start_polling(self._bot, handle_signals=False)
         except asyncio.CancelledError:
             logger.info("Опрос остановлен (задача отменена).")
         except Exception as e:
@@ -48,6 +79,8 @@ class SupportBotController:
         if self._is_running:
             return {"status": "error", "message": "Support-бот уже запущен."}
 
+        if not self._loop or not self._loop.is_running():
+            self._start_own_loop()
         if not self._loop or not self._loop.is_running():
             return {"status": "error", "message": "Критическая ошибка: цикл событий не установлен."}
 

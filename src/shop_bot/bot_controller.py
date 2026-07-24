@@ -1,10 +1,17 @@
 import asyncio
 import logging
+import threading
 
 from yookassa import Configuration
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode 
+from aiogram.enums import ParseMode
+from aiogram.exceptions import (
+    TelegramServerError,
+    TelegramNetworkError,
+    TelegramUnauthorizedError,
+    TelegramRetryAfter,
+)
 
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.bot.handlers import get_user_router
@@ -29,24 +36,89 @@ class BotController:
         self._task = None
         self._is_running = False
         self._loop = None
+        self._loop_thread: threading.Thread | None = None
         self._managed_service: ManagedBotsService | None = None
+        self._stop_requested = False
+        # Основной бот работает в собственном изолированном event loop/потоке,
+        # полностью независимом от Flask и от Support-бота: сбой/зависание
+        # одного бота никак не влияет на другой.
+        self._start_own_loop()
+
+    def _start_own_loop(self) -> None:
+        ready = threading.Event()
+
+        def _runner():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            # Сигнализируем "готово" только когда цикл событий реально начал
+            # работать (callback выполнится уже внутри run_forever()), а не
+            # сразу после создания объекта loop — иначе is_running() мог бы
+            # ненадолго возвращать False сразу после старта потока (гонка).
+            loop.call_soon(ready.set)
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+
+        self._loop_thread = threading.Thread(target=_runner, daemon=True, name="main-bot-loop")
+        self._loop_thread.start()
+        if not ready.wait(timeout=5):
+            logger.warning("Собственный цикл событий основного бота не подтвердил готовность за 5 сек.")
+        logger.info("Собственный цикл событий основного бота запущен.")
 
     def set_loop(self, loop: asyncio.AbstractEventLoop):
-        self._loop = loop
-        logger.info("Цикл событий установлен.")
+        # Оставлено для обратной совместимости со старым кодом, который мог
+        # вызывать set_loop() извне. Теперь контроллер управляет собственным
+        # циклом событий самостоятельно, поэтому внешний loop игнорируется.
+        logger.debug("set_loop() проигнорирован: у основного бота собственный цикл событий.")
+
+    def get_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
 
     def get_bot_instance(self) -> Bot | None:
         return self._bot
 
     async def _start_polling(self):
         self._is_running = True
+        self._stop_requested = False
         logger.info("Запущен опрос Telegram (Основной-бот).")
+
+        max_backoff = 60.0
+        backoff = 2.0
         try:
-            await self._dp.start_polling(self._bot)
-        except asyncio.CancelledError:
-            logger.info("Опрос остановлен (задача отменена).")
-        except Exception as e:
-            logger.error(f"Ошибка во время опроса: {e}", exc_info=True)
+            while not self._stop_requested:
+                try:
+                    await self._dp.start_polling(self._bot, handle_signals=False)
+                    # start_polling() возвращается штатно, когда была вызвана
+                    # dp.stop_polling() (т.е. пользователь остановил бота).
+                    break
+                except asyncio.CancelledError:
+                    logger.info("Опрос остановлен (задача отменена).")
+                    break
+                except TelegramUnauthorizedError as e:
+                    # Неверный/отозванный токен — повторные попытки бессмысленны.
+                    logger.error(f"Опрос остановлен: неверный токен бота: {e}")
+                    break
+                except TelegramRetryAfter as e:
+                    wait_for = float(getattr(e, "retry_after", backoff) or backoff)
+                    logger.warning(f"Telegram просит подождать {wait_for} сек. перед повтором опроса.")
+                    await asyncio.sleep(wait_for)
+                except (TelegramServerError, TelegramNetworkError) as e:
+                    logger.error(
+                        f"Ошибка во время опроса (временная проблема на стороне Telegram/сети): {e}. "
+                        f"Повтор через {backoff:.0f} сек."
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+                    continue
+                except Exception as e:
+                    logger.error(f"Ошибка во время опроса: {e}", exc_info=True)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+                    continue
+                # Успешный проход без ошибок — сбрасываем backoff
+                backoff = 2.0
         finally:
             logger.info("Опрос корректно остановлен.")
             self._is_running = False
@@ -65,7 +137,10 @@ class BotController:
     def start(self):
         if self._is_running:
             return {"status": "error", "message": "Бот уже запущен."}
-        
+
+        if not self._loop or not self._loop.is_running():
+            # Собственный цикл событий мог не подняться при инициализации — пробуем ещё раз.
+            self._start_own_loop()
         if not self._loop or not self._loop.is_running():
             return {"status": "error", "message": "Критическая ошибка: цикл событий не установлен."}
 
@@ -193,6 +268,7 @@ class BotController:
             return {"status": "error", "message": "Критическая ошибка: компоненты бота недоступны."}
 
         logger.info("Отправляю сигнал на корректную остановку...")
+        self._stop_requested = True
         asyncio.run_coroutine_threadsafe(self._dp.stop_polling(), self._loop)
         
         return {"status": "success", "message": "Команда на остановку бота отправлена."}

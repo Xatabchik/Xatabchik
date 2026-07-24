@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Купоны{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">Создать купон</h3>
+  </div>
+  <form method="post" action="{{ url_for('analytics_coupons_create_route') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+    <div class="card-body">
+      <div class="row g-2">
+        <div class="col-md-3">
+          <label class="form-label">Код</label>
+          <input type="text" name="code" class="form-control text-uppercase" placeholder="SALE2026" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Скидка, %</label>
+          <input type="number" step="0.01" min="0" max="100" name="discount_percent" class="form-control" placeholder="напр. 10">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Скидка, ₽</label>
+          <input type="number" step="0.01" min="0" name="discount_amount" class="form-control" placeholder="напр. 100">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Лимит всего</label>
+          <input type="number" min="1" name="usage_limit_total" class="form-control" placeholder="без лимита">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Лимит на пользователя</label>
+          <input type="number" min="1" name="usage_limit_per_user" class="form-control" placeholder="без лимита">
+        </div>
+      </div>
+      <div class="row g-2 mt-1">
+        <div class="col-md-3">
+          <label class="form-label">Действует с</label>
+          <input type="datetime-local" name="valid_from" class="form-control">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Действует до</label>
+          <input type="datetime-local" name="valid_until" class="form-control">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Описание</label>
+          <input type="text" name="description" class="form-control" placeholder="комментарий, необязательно">
+        </div>
+      </div>
+      <div class="form-text mt-2">Укажите либо процентную, либо фиксированную скидку (не обе сразу). Хотя бы одна обязательна.</div>
+    </div>
+    <div class="card-footer text-end">
+      <button type="submit" class="btn btn-primary">Создать купон</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">Купоны / промокоды</h3>
+  </div>
+  <div class="card-body border-bottom py-2 text-secondary small">
+    Купоны можно создавать/включать/выключать/удалять здесь, а также через Telegram-бот (админ-меню бота).
+  </div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr>
+          <th>Код</th><th>Скидка</th><th>Использований</th><th>Сумма скидок</th><th>Выручка</th><th>Конверсия лимита</th><th>Период действия</th><th>Осталось дней</th><th>Статус</th><th class="w-1">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in coupons %}
+        <tr class="{% if c.is_expired %}text-secondary{% endif %}">
+          <td>
+            <code class="coupon-copy-code" role="button" tabindex="0" data-code="{{ c.code }}" title="Скопировать код" style="cursor:pointer;">{{ c.code }}</code>
+          </td>
+          <td>
+            {% if c.discount_percent %}{{ c.discount_percent }}%{% elif c.discount_amount %}{{ c.discount_amount }} ₽{% endif %}
+          </td>
+          <td>{{ c.uses }}{% if c.usage_limit_total %} / {{ c.usage_limit_total }}{% endif %}</td>
+          <td>{{ "%.2f"|format(c.discount_sum) }} ₽</td>
+          <td>{{ "%.2f"|format(c.revenue) }} ₽</td>
+          <td>{% if c.usage_conversion_pct is not none %}{{ "%.1f"|format(c.usage_conversion_pct) }}%{% else %}—{% endif %}</td>
+          <td class="text-nowrap small">
+            {% if c.valid_from %}<div><i class="ti ti-calendar-event me-1"></i>с {{ c.valid_from[:16] }}</div>{% endif %}
+            {% if c.valid_until %}<div><i class="ti ti-calendar-x me-1"></i>по {{ c.valid_until[:16] }}</div>{% endif %}
+            {% if not c.valid_from and not c.valid_until %}<span class="text-secondary">бессрочно</span>{% endif %}
+          </td>
+          <td>
+            {% if c.is_expired %}<span class="badge bg-secondary-lt">истёк</span>
+            {% elif c.days_left is not none %}
+              <span class="badge {% if c.days_left <= 3 %}bg-red-lt{% elif c.days_left <= 7 %}bg-yellow-lt{% else %}bg-green-lt{% endif %}">{{ c.days_left }} дн.</span>
+            {% else %}<span class="text-secondary">—</span>{% endif %}
+          </td>
+          <td>
+            {% if c.is_expired %}<span class="badge bg-secondary-lt">истёк</span>
+            {% elif c.is_active %}<span class="badge bg-green-lt">активен</span>
+            {% else %}<span class="badge bg-red-lt">выключен</span>{% endif %}
+          </td>
+          <td class="text-nowrap">
+            <form method="post" action="{{ url_for('analytics_coupons_toggle_route', code=c.code) }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <input type="hidden" name="is_active" value="{{ '0' if c.is_active else '1' }}">
+              <button type="submit" class="btn btn-sm {{ 'btn-outline-secondary' if c.is_active else 'btn-outline-success' }}">
+                {{ 'Выключить' if c.is_active else 'Включить' }}
+              </button>
+            </form>
+            <form method="post" action="{{ url_for('analytics_coupons_delete_route', code=c.code) }}" class="d-inline" onsubmit="return confirm('Удалить купон {{ c.code }}? Это действие необратимо.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-danger">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-center text-secondary py-4">Купонов пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer text-secondary small">
+    Выручка по купону сопоставляется через order_id использования купона с payment_id транзакции; при отсутствии совпадения — по ближайшей транзакции того же пользователя (приблизительно).
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        return true;
+      } catch (__) {
+        return false;
+      }
+    }
+  }
+
+  document.querySelectorAll('.coupon-copy-code').forEach(function (el) {
+    const handler = async function () {
+      const code = el.getAttribute('data-code') || '';
+      if (!code) return;
+      const ok = await copyText(code);
+      try { window.showToast(ok ? 'success' : 'danger', ok ? 'Код скопирован' : 'Не удалось скопировать код'); } catch (_) {}
+    };
+    el.addEventListener('click', handler);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+    });
+  });
+});
+</script>
+{% endblock %}
+

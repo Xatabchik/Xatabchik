@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — UTM{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="card mb-3">
+  <div class="card-header"><h3 class="card-title">Новая UTM-метка</h3></div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('analytics_utm_create_route') }}" class="row g-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+      <div class="col-md-2"><input class="form-control form-control-sm" name="slug" placeholder="slug (напр. vk_promo1)" required></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="source" placeholder="source (vk, instagram)"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="medium" placeholder="medium (cpc, post)"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="campaign" placeholder="campaign"></div>
+      <div class="col-md-2"><input class="form-control form-control-sm" name="label" placeholder="Название/комментарий"></div>
+      <div class="col-md-1"><input class="form-control form-control-sm" name="budget" type="number" step="0.01" placeholder="Бюджет ₽"></div>
+      <div class="col-md-1"><button class="btn btn-primary btn-sm w-100" type="submit">Создать</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Эффективность UTM-меток</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr><th>Метка</th><th>Ссылка для бота</th><th>Клики</th><th>Регистрации</th><th>Оплаты</th><th>Выручка</th><th>ROI</th><th class="w-1">Действия</th></tr>
+      </thead>
+      <tbody>
+        {% for l in links %}
+        <tr>
+          <td>{{ l.label or l.slug }}<div class="text-secondary small">{{ l.source }}/{{ l.medium }}/{{ l.campaign }}</div></td>
+          <td>
+            <code class="utm-copy-link" role="button" tabindex="0" data-link="https://t.me/{{ bot_username }}?start=utm_{{ l.slug }}" title="Скопировать ссылку" style="cursor:pointer;">https://t.me/{{ bot_username }}?start=utm_{{ l.slug }}</code>
+          </td>
+          <td>{{ l.clicks }}</td>
+          <td>{{ l.registrations }}</td>
+          <td>{{ l.payments }}</td>
+          <td>{{ "%.2f"|format(l.revenue) }} ₽</td>
+          <td>{% if l.roi_pct is not none %}{{ "%.1f"|format(l.roi_pct) }}%{% else %}<span class="text-secondary">н/д (бюджет не указан)</span>{% endif %}</td>
+          <td class="text-nowrap">
+            <form method="post" action="{{ url_for('analytics_utm_delete_route', slug=l.slug) }}" class="d-inline" onsubmit="return confirm('Удалить UTM-метку {{ l.slug }}? Статистика посещений по ней тоже будет удалена.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-danger"><i class="ti ti-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-secondary py-4">Меток пока нет</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer text-secondary small">
+    Атрибуция — по первому касанию (first-touch): метка фиксируется за пользователем при первом /start и не перезаписывается при последующих переходах по другим ссылкам.
+    Для пользователей, зарегистрированных до появления этой метки, атрибуции не будет — это ожидаемое ограничение.
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        return true;
+      } catch (__) {
+        return false;
+      }
+    }
+  }
+
+  document.querySelectorAll('.utm-copy-link').forEach(function (el) {
+    const handler = async function () {
+      const link = el.getAttribute('data-link') || '';
+      if (!link) return;
+      const ok = await copyText(link);
+      try { window.showToast(ok ? 'success' : 'danger', ok ? 'Ссылка скопирована' : 'Не удалось скопировать ссылку'); } catch (_) {}
+    };
+    el.addEventListener('click', handler);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
+    });
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Реферальная программа — Заявки на вывод{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Реферальная программа</h1></div></div>
+</div>
+
+{% include "referral_program/_tabs.html" %}
+
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <div class="btn-group flex-wrap" role="group">
+      <a href="{{ url_for('referral_program_requests_page') }}" class="btn btn-sm {% if not status_filter %}btn-primary{% else %}btn-outline-secondary{% endif %}">Все</a>
+      <a href="{{ url_for('referral_program_requests_page', status='new') }}" class="btn btn-sm {% if status_filter == 'new' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Новые {% if referral_requests_stats.new %}<span class="badge bg-red-lt ms-1">{{ referral_requests_stats.new }}</span>{% endif %}</a>
+      <a href="{{ url_for('referral_program_requests_page', status='processing') }}" class="btn btn-sm {% if status_filter == 'processing' %}btn-primary{% else %}btn-outline-secondary{% endif %}">В обработке</a>
+      <a href="{{ url_for('referral_program_requests_page', status='paid') }}" class="btn btn-sm {% if status_filter == 'paid' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Выплачено</a>
+      <a href="{{ url_for('referral_program_requests_page', status='rejected') }}" class="btn btn-sm {% if status_filter == 'rejected' %}btn-primary{% else %}btn-outline-secondary{% endif %}">Отклонено</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h3 class="card-title"><i class="ti ti-cash-banknote me-2"></i>Заявки на вывод</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Пользователь</th>
+          <th class="text-end">Сумма</th>
+          <th>Метод</th>
+          <th>Реквизиты</th>
+          <th>Создана</th>
+          <th>Статус</th>
+          <th class="text-end">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests_list %}
+        <tr>
+          <td>#{{ r.id }}</td>
+          <td>{% if r.username %}@{{ r.username }}{% else %}—{% endif %} <span class="text-muted">({{ r.user_id }})</span></td>
+          <td class="text-end fw-bold">{{ "%.2f"|format(r.amount or 0) }} ₽</td>
+          <td>{{ referral_method_labels.get(r.method_type, r.method_type) }}</td>
+          <td>
+            {% if r.method_type == 'sbp' %}{{ r.bank_name or '' }}, {{ r.requisite_value }}
+            {% else %}{{ r.requisite_value }}{% endif %}
+          </td>
+          <td class="text-nowrap">{{ r.created_at }}</td>
+          <td>
+            {% if r.status == 'new' %}<span class="badge bg-azure-lt">Новая</span>
+            {% elif r.status == 'processing' %}<span class="badge bg-yellow-lt">В обработке</span>
+            {% elif r.status == 'paid' %}<span class="badge bg-green-lt">Выплачено</span>
+            {% elif r.status == 'rejected' %}<span class="badge bg-red-lt">Отклонена{% if r.reject_reason %} ({{ r.reject_reason }}){% endif %}</span>
+            {% else %}{{ r.status }}{% endif %}
+          </td>
+          <td class="text-end">
+            {% if r.status in ('new', 'processing') %}
+            <div class="btn-group">
+              <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                <input type="hidden" name="status" value="paid" />
+                <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Отметить заявку #{{ r.id }} как выплаченную?');">Выплачено</button>
+              </form>
+              <button type="button" class="btn btn-sm btn-outline-danger ms-1" data-bs-toggle="modal" data-bs-target="#rejectModal{{ r.id }}">Отклонить</button>
+            </div>
+            <div class="modal modal-blur fade" id="rejectModal{{ r.id }}" tabindex="-1">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                  <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                    <input type="hidden" name="status" value="rejected" />
+                    <div class="modal-header"><h5 class="modal-title">Отклонить заявку #{{ r.id }}</h5></div>
+                    <div class="modal-body">
+                      <label class="form-label">Причина (необязательно, будет показана пользователю)</label>
+                      <textarea class="form-control" name="reject_reason" rows="3"></textarea>
+                      <div class="form-text mt-2">Сумма {{ "%.2f"|format(r.amount or 0) }} ₽ будет возвращена на реферальный баланс пользователя.</div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-link" data-bs-dismiss="modal">Отмена</button>
+                      <button type="submit" class="btn btn-danger">Отклонить заявку</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+            {% else %}
+            <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-4">Заявок нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

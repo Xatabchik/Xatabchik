@@ -17,7 +17,10 @@ dependencies = [
     "pytonconnect==0.3.2",
     "paramiko==3.5.0",
     "colorama==0.4.6",
-    "psutil==5.9.8"
+    "psutil==5.9.8",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "python-multipart==0.0.20"
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Прогнозы{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="alert alert-info">
+  Прогноз рассчитывается прозрачной моделью: скользящее среднее выручки/транзакций за последние 7 дней, умноженное на число оставшихся дней месяца, плюс уже полученная в этом месяце сумма. Все значения ниже — оценочные.
+</div>
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Средняя выручка/день (7д)</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(forecast.daily_avg_revenue_7d) }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Среднее число транз./день (7д)</div>
+      <div class="h1 mb-0">{{ "%.1f"|format(forecast.daily_avg_transactions_7d) }}</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Выручка в текущем месяце уже получена</div>
+      <div class="h1 mb-0">{{ "%.2f"|format(forecast.revenue_so_far_this_month) }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm"><div class="card-body">
+      <div class="subheader">Осталось дней в месяце</div>
+      <div class="h1 mb-0">{{ forecast.days_left_in_month }}</div>
+    </div></div>
+  </div>
+</div>
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6">
+    <div class="card"><div class="card-body">
+      <div class="subheader">Прогноз выручки к концу месяца</div>
+      <div class="h1 mb-0 text-success">{{ "%.2f"|format(forecast.forecast_revenue_month_end) }} ₽</div>
+    </div></div>
+  </div>
+  <div class="col-sm-6">
+    <div class="card"><div class="card-body">
+      <div class="subheader">Прогноз числа транзакций к концу месяца</div>
+      <div class="h1 mb-0 text-success">{{ forecast.forecast_transactions_month_end }}</div>
+    </div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Прогноз популярности тарифов (текущий тренд, топ-5)</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead><tr><th>Тариф</th><th>Продажи сейчас</th><th>Доля выручки</th></tr></thead>
+      <tbody>
+        {% set total_rev = plans | sum(attribute='revenue') %}
+        {% for p in plans %}
+        <tr>
+          <td>{{ p.plan_name }}</td>
+          <td>{{ p.sales }}</td>
+          <td>{% if total_rev > 0 %}{{ "%.1f"|format(p.revenue / total_rev * 100) }}%{% else %}—{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="text-center text-secondary py-4">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer text-secondary small">Экстраполяция доли тарифа в прогнозной выручке — оценка на основе текущего тренда, без учёта сезонности.</div>
+</div>
+{% endblock %}

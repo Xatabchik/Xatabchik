@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Реферальная программа — Настройки{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Реферальная программа</h1></div></div>
+</div>
+
+{% include "referral_program/_tabs.html" %}
+
+<form method="post" action="{{ url_for('referral_program_settings_route') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+
+  <div class="card mb-3">
+    <div class="card-header"><h3 class="card-title"><i class="ti ti-gift me-2"></i>Начисления рефереру</h3></div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Тип начисления</label>
+          <select class="form-select" name="referral_reward_type">
+            <option value="percent_purchase" {% if (settings.referral_reward_type or 'percent_purchase') == 'percent_purchase' %}selected{% endif %}>Процент с покупки реферала</option>
+            <option value="fixed_purchase" {% if settings.referral_reward_type == 'fixed_purchase' %}selected{% endif %}>Фиксированная сумма за покупку реферала</option>
+            <option value="fixed_start_referrer" {% if settings.referral_reward_type == 'fixed_start_referrer' %}selected{% endif %}>Фиксированный бонус при старте по ссылке</option>
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Процент вознаграждения пригласившему</label>
+          <div class="input-group"><input class="form-control" type="number" step="0.01" name="referral_percentage" value="{{ settings.referral_percentage or '10' }}"><span class="input-group-text">%</span></div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Скидка новому пользователю на первую покупку</label>
+          <div class="input-group"><input class="form-control" type="number" step="0.01" name="referral_discount" value="{{ settings.referral_discount or '5' }}"><span class="input-group-text">%</span></div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Минимальная сумма для вывода</label>
+          <div class="input-group"><input class="form-control" type="number" step="0.01" name="minimum_withdrawal" value="{{ settings.minimum_withdrawal or '100' }}"><span class="input-group-text">₽</span></div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Фикс. сумма за покупку (если выбрано выше)</label>
+          <div class="input-group"><input class="form-control" type="number" step="0.01" name="fixed_referral_bonus_amount" value="{{ settings.fixed_referral_bonus_amount or '50' }}"><span class="input-group-text">₽</span></div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Бонус при старте (если выбрано выше)</label>
+          <div class="input-group"><input class="form-control" type="number" step="0.01" name="referral_on_start_referrer_amount" value="{{ settings.referral_on_start_referrer_amount or '20' }}"><span class="input-group-text">₽</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header"><h3 class="card-title"><i class="ti ti-wallet me-2"></i>Вывод средств</h3></div>
+    <div class="card-body">
+      <input type="hidden" name="referral_withdraw_enabled" value="off" />
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="referral_withdraw_enabled" name="referral_withdraw_enabled" value="true" {% if settings.referral_withdraw_enabled == 'true' %}checked{% endif %}>
+        <label class="form-check-label fw-bold" for="referral_withdraw_enabled">Вывод средств включён</label>
+        <div class="form-text">Главный переключатель. Если выключен — раздел «Вывести» и «Методы получения» полностью скрыты у пользователей в боте (независимо от переключателей ниже), но начисление реферальных бонусов продолжает работать.</div>
+      </div>
+      <hr>
+      <div class="form-text mb-2">Методы получения (доступны пользователю только если выключатель выше включён):</div>
+      <div class="row g-3">
+        <div class="col-md-4">
+          <input type="hidden" name="referral_withdraw_sbp_enabled" value="off" />
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="referral_withdraw_sbp_enabled" name="referral_withdraw_sbp_enabled" value="true" {% if settings.referral_withdraw_sbp_enabled == 'true' %}checked{% endif %}>
+            <label class="form-check-label" for="referral_withdraw_sbp_enabled">🏦 СБП</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <input type="hidden" name="referral_withdraw_card_enabled" value="off" />
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="referral_withdraw_card_enabled" name="referral_withdraw_card_enabled" value="true" {% if settings.referral_withdraw_card_enabled == 'true' %}checked{% endif %}>
+            <label class="form-check-label" for="referral_withdraw_card_enabled">💳 Номер карты</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <input type="hidden" name="referral_withdraw_usdt_enabled" value="off" />
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="referral_withdraw_usdt_enabled" name="referral_withdraw_usdt_enabled" value="true" {% if settings.referral_withdraw_usdt_enabled == 'true' %}checked{% endif %}>
+            <label class="form-check-label" for="referral_withdraw_usdt_enabled">💵 USDT TRC20</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Список банков для СБП (через запятую)</label>
+          <input class="form-control" type="text" name="referral_withdraw_sbp_banks" value="{{ settings.referral_withdraw_sbp_banks or '' }}" placeholder="Сбербанк, Тинькофф, ВТБ">
+          <div class="form-text">Пользователь выберет банк из этого списка при добавлении метода получения СБП.</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer text-end">
+      <button type="submit" class="btn btn-primary">Сохранить настройки</button>
+    </div>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,21 @@
+{# Общие вкладки раздела «Реферальная программа». #}
+<ul class="nav nav-tabs mb-4 flex-wrap">
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'settings' %}active{% endif %}" href="{{ url_for('referral_program_page') }}">
+      <i class="ti ti-settings me-1"></i> Настройки
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'top' %}active{% endif %}" href="{{ url_for('referral_program_top_page') }}">
+      <i class="ti ti-trophy me-1"></i> Топ рефералов
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'requests' %}active{% endif %}" href="{{ url_for('referral_program_requests_page') }}">
+      <i class="ti ti-wallet me-1"></i> Заявки на вывод
+      {% if referral_requests_stats and referral_requests_stats.new %}
+      <span class="badge bg-red-lt ms-1">{{ referral_requests_stats.new }}</span>
+      {% endif %}
+    </a>
+  </li>
+</ul>

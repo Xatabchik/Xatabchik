@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Обзор{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center">
+    <div class="col">
+      <h1 class="page-title mb-1">Продажи и аналитика</h1>
+      <div class="text-secondary">Единый источник данных: цифры совпадают с «Главная» и «Статистика».</div>
+    </div>
+  </div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Выручка сегодня</div>
+        <div class="h1 mb-0">{{ "%.2f"|format(overview.today.revenue or 0) }} ₽</div>
+        <div class="text-secondary small">{{ overview.today.transactions or 0 }} транзакций · чек {{ "%.0f"|format(overview.today.avg_check or 0) }} ₽</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Выручка за 7 дней</div>
+        <div class="h1 mb-0">{{ "%.2f"|format(overview.d7.revenue or 0) }} ₽</div>
+        <div class="text-secondary small">{{ overview.d7.transactions or 0 }} транзакций · чек {{ "%.0f"|format(overview.d7.avg_check or 0) }} ₽</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Выручка за 30 дней</div>
+        <div class="h1 mb-0">{{ "%.2f"|format(overview.d30.revenue or 0) }} ₽</div>
+        <div class="text-secondary small">{{ overview.d30.transactions or 0 }} транзакций · чек {{ "%.0f"|format(overview.d30.avg_check or 0) }} ₽</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Выручка за всё время</div>
+        <div class="h1 mb-0">{{ "%.2f"|format(overview.all.revenue or 0) }} ₽</div>
+        <div class="text-secondary small">{{ overview.all.transactions or 0 }} транзакций · {{ overview.total_payers or 0 }} плательщиков</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Новые плательщики (30д)</div>
+        <div class="h1 mb-0">{{ overview.new_payers_30d or 0 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Повторные покупатели</div>
+        <div class="h1 mb-0">{{ overview.repeat_payers or 0 }}</div>
+        <div class="text-secondary small">Конверсия 1→2: {{ "%.1f"|format(overview.repeat_conversion_pct or 0) }}%</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Ожидают оплаты</div>
+        <div class="h1 mb-0">{{ overview.pending_payments or 0 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">MRR (оценка)</div>
+        <div class="h1 mb-0">{{ "%.0f"|format(overview.mrr_estimate or 0) }} ₽</div>
+        <div class="text-secondary small">Оценочно, нормализовано к месяцу</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">Динамика выручки и транзакций (30 дней)</h3>
+    <div class="card-actions">
+      <select id="an-days" class="form-select form-select-sm" style="width:auto">
+        <option value="7">7 дней</option>
+        <option value="30" selected>30 дней</option>
+        <option value="90">90 дней</option>
+      </select>
+    </div>
+  </div>
+  <div class="card-body">
+    <canvas id="an-revenue-chart" height="90"></canvas>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">Прогноз до конца месяца (оценка)</h3>
+  </div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-sm-4"><span class="text-secondary">Выручка уже получена:</span> <b>{{ "%.2f"|format(forecast.revenue_so_far_this_month or 0) }} ₽</b></div>
+      <div class="col-sm-4"><span class="text-secondary">Осталось дней:</span> <b>{{ forecast.days_left_in_month or 0 }}</b></div>
+      <div class="col-sm-4"><span class="text-secondary">Прогноз к концу месяца:</span> <b>{{ "%.2f"|format(forecast.forecast_revenue_month_end or 0) }} ₽</b></div>
+    </div>
+    <div class="text-secondary small mt-2">Расчёт: скользящее среднее за 7 дней × оставшиеся дни. Подробности — на вкладке «Прогнозы».</div>
+  </div>
+</div>
+
+{% if overview.failed_or_pending_by_status %}
+<div class="card mb-3">
+  <div class="card-header"><h3 class="card-title">Неуспешные / прочие статусы транзакций</h3></div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead><tr><th>Статус</th><th>Количество</th></tr></thead>
+      <tbody>
+        {% for status, cnt in overview.failed_or_pending_by_status.items() %}
+        <tr><td>{{ status }}</td><td>{{ cnt }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<script>
+(function() {
+  const ctx = document.getElementById('an-revenue-chart');
+  if (!ctx) return;
+  let chart = null;
+  function render(data) {
+    const labels = Object.keys(data.revenue || {});
+    const revenue = labels.map(k => data.revenue[k]);
+    const tx = labels.map(k => data.transactions[k] || 0);
+    if (chart) chart.destroy();
+    chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'line', label: 'Выручка, ₽', data: revenue, yAxisID: 'y', borderColor: '#206bc4', backgroundColor: 'rgba(32,107,196,0.15)', tension: 0.3 },
+          { type: 'bar', label: 'Транзакции', data: tx, yAxisID: 'y1', backgroundColor: 'rgba(76,175,80,0.35)' },
+        ],
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { position: 'left', title: { display: true, text: '₽' } },
+          y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'шт.' } },
+        },
+      },
+    });
+  }
+  function load(days) {
+    fetch("{{ url_for('analytics_overview_charts_json') }}?days=" + days)
+      .then(r => r.json())
+      .then(render)
+      .catch(() => {});
+  }
+  load(30);
+  const sel = document.getElementById('an-days');
+  if (sel) sel.addEventListener('change', () => load(sel.value));
+})();
+</script>
+
+{% endblock %}

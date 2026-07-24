@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import sqlite3
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from aiogram import Bot
 from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 
 from . import remnawave_repository as rw_repo
 
@@ -72,9 +74,13 @@ def cleanup_old_backups(keep: int = 7) -> None:
         logger.warning(f"Бэкап: не удалось очистить старые архивы: {e}")
 
 
-async def send_backup_to_admins(bot: Bot, zip_path: Path) -> int:
+async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int = 180, max_attempts: int = 3) -> int:
     """
     Отправляет архив всем администраторам. Возвращает число успешных отправок.
+
+    Загрузка большого файла может занимать больше времени, чем стандартный
+    таймаут HTTP-клиента aiogram, поэтому здесь используется увеличенный
+    request_timeout и несколько попыток с задержкой при сетевых сбоях.
     """
     cnt = 0
     try:
@@ -86,17 +92,48 @@ async def send_backup_to_admins(bot: Bot, zip_path: Path) -> int:
             logger.warning("Бэкап: нет администраторов для отправки архива")
             return 0
         caption = f"🗄 Бэкап БД: {zip_path.name}"
-        file = FSInputFile(str(zip_path))
         for uid in admin_ids:
-            try:
-                await bot.send_document(chat_id=int(uid), document=file, caption=caption)
-                cnt += 1
-            except Exception as e:
-                logger.error(f"Бэкап: не удалось отправить администратору {uid}: {e}")
+            last_error: Exception | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    file = FSInputFile(str(zip_path))
+                    await bot.send_document(
+                        chat_id=int(uid),
+                        document=file,
+                        caption=caption,
+                        request_timeout=request_timeout,
+                    )
+                    cnt += 1
+                    last_error = None
+                    break
+                except TelegramRetryAfter as e:
+                    last_error = e
+                    wait_s = getattr(e, "retry_after", 5) or 5
+                    logger.warning(
+                        f"Бэкап: администратор {uid} — flood control, ждём {wait_s}с (попытка {attempt}/{max_attempts})"
+                    )
+                    await asyncio.sleep(wait_s)
+                except (TelegramNetworkError, TimeoutError, asyncio.TimeoutError) as e:
+                    last_error = e
+                    logger.warning(
+                        f"Бэкап: тайм-аут/сетевая ошибка при отправке администратору {uid} "
+                        f"(попытка {attempt}/{max_attempts}): {e}"
+                    )
+                    if attempt < max_attempts:
+                        await asyncio.sleep(3 * attempt)
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"Бэкап: не удалось отправить администратору {uid}: {e}")
+                    break
+            if last_error is not None:
+                logger.error(
+                    f"Бэкап: не удалось отправить администратору {uid} после {max_attempts} попыток: {last_error}"
+                )
         return cnt
     except Exception as e:
         logger.error(f"Бэкап: ошибка при рассылке архива: {e}", exc_info=True)
         return cnt
+
 
 
 def validate_db_file(db_path: Path) -> bool:

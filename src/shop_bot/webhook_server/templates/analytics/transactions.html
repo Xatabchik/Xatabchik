@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Транзакции{% endblock %}
+
+{% block content %}
+
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center">
+    <div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div>
+  </div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title">Транзакции</h3>
+    <div class="card-actions">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('analytics_transactions_csv', q=search, sort_by=sort_by, sort_dir=sort_dir) }}">
+        <i class="ti ti-download me-1"></i> Экспорт CSV
+      </a>
+    </div>
+  </div>
+  <div class="card-body border-bottom py-2">
+    <form method="get" class="d-flex flex-wrap gap-2">
+      <input type="text" name="q" class="form-control form-control-sm" style="max-width:260px" placeholder="Поиск: пользователь, ID, метод..." value="{{ search }}">
+      <select name="sort_by" class="form-select form-select-sm" style="max-width:180px">
+        <option value="date" {% if sort_by=='date' %}selected{% endif %}>По дате</option>
+        <option value="amount" {% if sort_by=='amount' %}selected{% endif %}>По сумме</option>
+        <option value="payment_method" {% if sort_by=='payment_method' %}selected{% endif %}>По методу</option>
+        <option value="status" {% if sort_by=='status' %}selected{% endif %}>По статусу</option>
+      </select>
+      <select name="sort_dir" class="form-select form-select-sm" style="max-width:120px">
+        <option value="desc" {% if sort_dir=='desc' %}selected{% endif %}>убыв.</option>
+        <option value="asc" {% if sort_dir=='asc' %}selected{% endif %}>возр.</option>
+      </select>
+      <button class="btn btn-primary btn-sm" type="submit">Применить</button>
+    </form>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr>
+          <th>ID</th><th>Пользователь</th><th>Сумма</th><th>Статус</th><th>Метод</th><th>Тариф</th><th>Действие</th><th>Дата</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in transactions %}
+        <tr>
+          <td>{{ t.transaction_id }}</td>
+          <td>{{ t.username or t.user_id }}</td>
+          <td>{{ "%.2f"|format(t.amount_rub or 0) }} {{ t.currency_name or '₽' }}</td>
+          <td><span class="badge {% if t.status in ['paid','success','succeeded'] %}bg-green-lt{% else %}bg-secondary-lt{% endif %}">{{ t.status }}</span></td>
+          <td>{{ t.payment_method or '—' }}</td>
+          <td>{{ t.plan_name or '—' }}</td>
+          <td>
+            {{ t.action_label or '—' }}
+            {% if t.key_id %}
+              <a href="{{ url_for('admin_keys_page') }}?search={{ t.key_id }}" class="ms-1" title="Открыть ключ">#{{ t.key_id }}{% if t.key_id_guessed %} (предположительно){% endif %}</a>
+            {% endif %}
+          </td>
+          <td>{{ t.created_date }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-secondary py-4">Нет данных</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer d-flex align-items-center">
+    <p class="m-0 text-secondary">Страница {{ current_page }} из {{ total_pages }}</p>
+    <ul class="pagination m-0 ms-auto">
+      {% if current_page > 1 %}
+      <li class="page-item"><a class="page-link" href="?page={{ current_page - 1 }}&q={{ search }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">Пред.</a></li>
+      {% endif %}
+      {% if current_page < total_pages %}
+      <li class="page-item"><a class="page-link" href="?page={{ current_page + 1 }}&q={{ search }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">След.</a></li>
+      {% endif %}
+    </ul>
+  </div>
+</div>
+
+{% endblock %}
