@@ -2191,7 +2191,7 @@ def get_admin_stats() -> dict:
                 SELECT COALESCE(SUM(amount_rub), 0)
                 FROM transactions
                 WHERE status IN ('paid','success','succeeded')
-                  AND LOWER(COALESCE(payment_method, '')) <> 'balance'
+                  AND LOWER(COALESCE(payment_method, '')) NOT IN ('balance', 'referral_transfer', 'referral_payout', 'referraltransfer')
                 """
             )
             row = cursor.fetchone()
@@ -2212,7 +2212,7 @@ def get_admin_stats() -> dict:
                 FROM transactions
                 WHERE status IN ('paid','success','succeeded')
                   AND date(created_date) = date('now')
-                  AND LOWER(COALESCE(payment_method, '')) <> 'balance'
+                  AND LOWER(COALESCE(payment_method, '')) NOT IN ('balance', 'referral_transfer', 'referral_payout', 'referraltransfer')
                 """
             )
             row = cursor.fetchone()
