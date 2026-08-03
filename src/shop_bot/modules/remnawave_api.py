@@ -504,21 +504,27 @@ async def ensure_user(
             except ValueError:
                 pass
 
+        _current_id = current.get("id") or current.get("uuid")
+        _current_username = current.get("username")
         logger.info(
-            "Remnawave: найден пользователь %s (%s) на '%s' — обновляю срок до %s",
+            "Remnawave: найден пользователь %s (id=%s) на '%s' — обновляю срок до %s",
             email,
-            current.get("uuid"),
+            _current_id,
             host_name,
             expire_iso,
         )
 
         payload = {
-            "uuid": current.get("uuid"),
             "status": "ACTIVE",
             "expireAt": expire_iso,
             "activeInternalSquads": active_squads,
             "email": email,
         }
+        # Remnawave PATCH requires at least one of: username, id
+        if _current_id is not None:
+            payload["id"] = _current_id
+        if _current_username:
+            payload["username"] = _current_username
 
         if traffic_limit_bytes is not None:
             payload["trafficLimitBytes"] = traffic_limit_bytes
@@ -576,11 +582,14 @@ async def ensure_user(
             if not _existing:
                 raise
             _patch: dict[str, Any] = {
-                "uuid": _existing.get("uuid"),
+                "username": _uname,
                 "status": "ACTIVE",
                 "expireAt": expire_iso,
                 "activeInternalSquads": active_squads,
             }
+            _existing_id = _existing.get("id") or _existing.get("uuid")
+            if _existing_id is not None:
+                _patch["id"] = _existing_id
             if traffic_limit_bytes is not None:
                 _patch["trafficLimitBytes"] = traffic_limit_bytes
             if traffic_limit_strategy is not None:
