@@ -304,6 +304,25 @@ async def get_user_by_email(email: str, *, host_name: str | None = None) -> dict
     return data if isinstance(data, dict) else None
 
 
+async def get_user_by_username(username: str, *, host_name: str | None = None) -> dict[str, Any] | None:
+    if not username:
+        return None
+    encoded_username = quote(username.strip())
+    if host_name:
+        response = await _request_for_host(host_name, "GET", f"/api/users/by-username/{encoded_username}", expected_status=(200, 404))
+    else:
+        response = await _request("GET", f"/api/users/by-username/{encoded_username}", expected_status=(200, 404))
+    if response.status_code == 404:
+        return None
+    payload = response.json()
+    if isinstance(payload, dict):
+        inner = payload.get("response")
+        data = inner if inner is not None else payload
+    else:
+        data = payload
+    return data if isinstance(data, dict) else None
+
+
 async def get_user_by_uuid(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
     if not user_uuid:
         return None
@@ -543,7 +562,38 @@ async def ensure_user(
         method = "POST"
         path = "/api/users"
 
-    response = await _request_for_host(host_name, method, path, json_payload=payload, expected_status=(200, 201))
+    try:
+        response = await _request_for_host(host_name, method, path, json_payload=payload, expected_status=(200, 201))
+    except RemnawaveAPIError as _exc:
+        # A019: username collision — user exists under a different email; find and PATCH instead.
+        if method == "POST" and ("A019" in str(_exc) or "username already exists" in str(_exc).lower()):
+            _uname = payload.get("username", "")
+            logger.warning(
+                "Remnawave: A019 на '%s' — username '%s' уже занят, ищу по username и обновляю",
+                host_name, _uname,
+            )
+            _existing = await get_user_by_username(_uname, host_name=host_name)
+            if not _existing:
+                raise
+            _patch: dict[str, Any] = {
+                "uuid": _existing.get("uuid"),
+                "status": "ACTIVE",
+                "expireAt": expire_iso,
+                "activeInternalSquads": active_squads,
+            }
+            if traffic_limit_bytes is not None:
+                _patch["trafficLimitBytes"] = traffic_limit_bytes
+            if traffic_limit_strategy is not None:
+                _patch["trafficLimitStrategy"] = traffic_limit_strategy
+            if description:
+                _patch["description"] = description
+            if tag:
+                _patch["tag"] = re.sub(r"[^A-Z0-9_]", "_", tag.upper())
+            if hwid_device_limit is not None:
+                _patch["hwidDeviceLimit"] = hwid_device_limit
+            response = await _request_for_host(host_name, "PATCH", "/api/users", json_payload=_patch, expected_status=(200, 201))
+        else:
+            raise
     data = response.json() or {}
     result = data.get("response") if isinstance(data, dict) else None
     if not result:
