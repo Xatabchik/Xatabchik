@@ -187,12 +187,16 @@ class BotController:
             module_loader.discover_modules()
             module_loader.set_dispatcher(self._dp)
 
-            # Start all managed clone bots on the same event loop
+            # Start all managed clone bots on the same event loop (only when franchise is enabled)
             try:
                 if not self._managed_service:
                     self._managed_service = ManagedBotsService(self._loop)
                     set_service(self._managed_service)
-                asyncio.run_coroutine_threadsafe(self._managed_service.start_all(), self._loop)
+                franchise_on = _is_true(rw_repo.get_setting("franchise_enabled") or "false")
+                if franchise_on:
+                    asyncio.run_coroutine_threadsafe(self._managed_service.start_all(), self._loop)
+                else:
+                    logger.info("Франшиза отключена — клоны ботов не запускаются.")
             except Exception as e:
                 logger.warning(f"Не удалось запустить клоны ботов: {e}")
             

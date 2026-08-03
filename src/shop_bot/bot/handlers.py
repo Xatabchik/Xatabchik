@@ -30,9 +30,10 @@ from aiogram.types import BufferedInputFile, LabeledPrice, PreCheckoutQuery
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.enums import ChatMemberStatus
+from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
 from shop_bot.bot import keyboards
 from shop_bot.data_manager.remnawave_repository import (
     add_to_balance,
@@ -43,6 +44,8 @@ from shop_bot.data_manager.remnawave_repository import (
     get_next_key_number,
     create_payload_pending,
     claim_processed_payment,
+    unclaim_processed_payment,
+    reset_pending_transaction,
     get_pending_status,
     get_pending_metadata,
     find_and_complete_pending_transaction,
@@ -258,18 +261,36 @@ async def _notify_user_key_creation_error(
     user_id: int,
     code: str,
     refund: bool = True,
+    factory_bot_id: int = 0,
 ) -> None:
     lines = ["❌ Не удалось создать ключ."]
     if refund:
-        lines.append("Оформили возврат, деньги придут обратно.")
+        lines.append("Средства возвращены на ваш баланс в боте.")
     lines.append(f"Код ошибки: {code}")
     lines.append("Попробуй позже или напиши в поддержку.")
+    text = "\n".join(lines)
+    markup = keyboards.create_support_keyboard()
+    # Franchise users may only have started the clone bot — try it first.
+    if factory_bot_id > 0:
+        try:
+            info = rw_repo.get_managed_bot(factory_bot_id)
+            token = (info or {}).get("token")
+            if token:
+                tmp = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+                try:
+                    await tmp.send_message(chat_id=user_id, text=text, reply_markup=markup)
+                    return
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        await tmp.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     try:
-        await bot.send_message(
-            chat_id=user_id,
-            text="\n".join(lines),
-            reply_markup=keyboards.create_support_keyboard(),
-        )
+        await bot.send_message(chat_id=user_id, text=text, reply_markup=markup)
     except Exception:
         pass
 
@@ -281,10 +302,11 @@ async def _handle_key_creation_failure(
     action_label: str,
     exc: Exception | None,
     refund: bool = True,
+    factory_bot_id: int = 0,
 ) -> None:
     code, description, detail = _classify_key_creation_error(exc)
     _log_key_creation_error(user_id, action_label, code, detail)
-    await _notify_user_key_creation_error(bot, user_id=user_id, code=code, refund=refund)
+    await _notify_user_key_creation_error(bot, user_id=user_id, code=code, refund=refund, factory_bot_id=factory_bot_id)
     await _notify_admins_key_creation_error(
         bot,
         user_id=user_id,
@@ -9038,12 +9060,26 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             )
         except Exception as exc:
             action_label = _format_key_action_label(action, price=price, key_id=key_id)
+            # Release the idempotency lock so the webhook provider can retry.
+            try:
+                rw_repo.unclaim_processed_payment(payment_id)
+                rw_repo.reset_pending_transaction(payment_id)
+            except Exception:
+                pass
+            # Actual refund: credit back to user balance for external payments.
+            did_refund = False
+            if price > 0 and (payment_method or '').strip().lower() not in ('balance', 'referralbalance', ''):
+                try:
+                    did_refund = bool(add_to_balance(user_id, float(price)))
+                except Exception:
+                    pass
             await _handle_key_creation_failure(
                 bot,
                 user_id=user_id,
                 action_label=action_label,
                 exc=exc,
-                refund=True,
+                refund=did_refund,
+                factory_bot_id=factory_bot_id,
             )
             try:
                 await processing_message.edit_text("❌ Не удалось создать ключ.")
@@ -9052,12 +9088,26 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             return
         if action != "gift" and not result:
             action_label = _format_key_action_label(action, price=price, key_id=key_id)
+            # Release the idempotency lock so the webhook provider can retry.
+            try:
+                rw_repo.unclaim_processed_payment(payment_id)
+                rw_repo.reset_pending_transaction(payment_id)
+            except Exception:
+                pass
+            # Actual refund: credit back to user balance for external payments.
+            did_refund = False
+            if price > 0 and (payment_method or '').strip().lower() not in ('balance', 'referralbalance', ''):
+                try:
+                    did_refund = bool(add_to_balance(user_id, float(price)))
+                except Exception:
+                    pass
             await _handle_key_creation_failure(
                 bot,
                 user_id=user_id,
                 action_label=action_label,
                 exc=RuntimeError("key creation returned empty response"),
-                refund=True,
+                refund=did_refund,
+                factory_bot_id=factory_bot_id,
             )
             try:
                 await processing_message.edit_text("❌ Не удалось создать ключ.")

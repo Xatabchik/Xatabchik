@@ -3450,89 +3450,10 @@ def claim_processed_payment(payment_id: str) -> bool:
     except sqlite3.Error as e:
         logging.error(f"Failed to claim processed payment {pid}: {e}")
         return False
-    if not pid:
-        return None
-
-    def _work():
-        with _connect_pending_db() as conn:
-            cursor = conn.cursor()
-            _ensure_pending_tables(cursor)
-
-            cursor.execute("BEGIN IMMEDIATE")
-            cursor.execute(
-                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
-                (pid,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return None
-
-            cursor.execute(
-                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
-                (pid,),
-            )
-            if cursor.rowcount != 1:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return None
-
-            conn.commit()
-
-            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
-            try:
-                meta = json.loads(raw or "{}")
-            except Exception:
-                meta = {}
-            meta.setdefault("payment_id", pid)
-            return meta
-
-    try:
-        return _retry_sqlite(_work)
-    except sqlite3.Error as e:
-        logging.error(f"Failed to complete pending transaction {pid}: {e}")
-        return None
 
 
-def get_latest_pending_for_user(user_id: int) -> dict | None:
-    """Return metadata of the most recent PENDING transaction for the user (without completing it)."""
-    try:
-        with _connect_pending_db() as conn:
-            cursor = conn.cursor()
-            _ensure_pending_tables(cursor)
-            cursor.execute(
-                """
-                SELECT payment_id, metadata
-                FROM pending_transactions
-                WHERE user_id = ? AND status = 'pending'
-                ORDER BY updated_at DESC, created_at DESC
-                LIMIT 1
-                """,
-                (int(user_id),),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            pid = row[0] if isinstance(row, (tuple, list)) else row["payment_id"]
-            raw = row[1] if isinstance(row, (tuple, list)) else row["metadata"]
-            try:
-                meta = json.loads(raw or "{}")
-            except Exception:
-                meta = {}
-            meta.setdefault("payment_id", pid)
-            return meta
-    except sqlite3.Error as e:
-        logging.error(f"Failed to get latest pending for user {user_id}: {e}")
-        return None
-
-
-def claim_processed_payment(payment_id: str) -> bool:
-    """Idempotency guard: returns True only once per payment_id."""
+def unclaim_processed_payment(payment_id: str) -> bool:
+    """Remove idempotency record so a failed payment can be retried."""
     pid = (payment_id or "").strip()
     if not pid:
         return False
@@ -3541,100 +3462,18 @@ def claim_processed_payment(payment_id: str) -> bool:
         with _connect_pending_db() as conn:
             cursor = conn.cursor()
             _ensure_processed_payments_table(cursor)
-            cursor.execute(
-                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)",
-                (pid,),
-            )
-            return cursor.rowcount == 1
+            cursor.execute("DELETE FROM processed_payments WHERE payment_id = ?", (pid,))
+            return cursor.rowcount > 0
 
     try:
         return bool(_retry_sqlite(_work))
     except sqlite3.Error as e:
-        logging.error(f"Failed to claim processed payment {pid}: {e}")
+        logging.error(f"Failed to unclaim processed payment {pid}: {e}")
         return False
-    if not pid:
-        return None
-
-    def _work():
-        with _connect_pending_db() as conn:
-            cursor = conn.cursor()
-            _ensure_pending_tables(cursor)
-
-            cursor.execute("BEGIN IMMEDIATE")
-            cursor.execute(
-                "SELECT metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
-                (pid,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return None
-
-            cursor.execute(
-                "UPDATE pending_transactions SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ? AND status = 'pending'",
-                (pid,),
-            )
-            if cursor.rowcount != 1:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                return None
-
-            conn.commit()
-
-            raw = row[0] if isinstance(row, (tuple, list)) else row["metadata"]
-            try:
-                meta = json.loads(raw or "{}")
-            except Exception:
-                meta = {}
-            meta.setdefault("payment_id", pid)
-            return meta
-
-    try:
-        return _retry_sqlite(_work)
-    except sqlite3.Error as e:
-        logging.error(f"Failed to complete pending transaction {pid}: {e}")
-        return None
 
 
-def get_latest_pending_for_user(user_id: int) -> dict | None:
-    """Return metadata of the most recent PENDING transaction for the user (without completing it)."""
-    try:
-        with _connect_pending_db() as conn:
-            cursor = conn.cursor()
-            _ensure_pending_tables(cursor)
-            cursor.execute(
-                """
-                SELECT payment_id, metadata
-                FROM pending_transactions
-                WHERE user_id = ? AND status = 'pending'
-                ORDER BY updated_at DESC, created_at DESC
-                LIMIT 1
-                """,
-                (int(user_id),),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            pid = row[0] if isinstance(row, (tuple, list)) else row["payment_id"]
-            raw = row[1] if isinstance(row, (tuple, list)) else row["metadata"]
-            try:
-                meta = json.loads(raw or "{}")
-            except Exception:
-                meta = {}
-            meta.setdefault("payment_id", pid)
-            return meta
-    except sqlite3.Error as e:
-        logging.error(f"Failed to get latest pending for user {user_id}: {e}")
-        return None
-
-
-def claim_processed_payment(payment_id: str) -> bool:
-    """Idempotency guard: returns True only once per payment_id."""
+def reset_pending_transaction(payment_id: str) -> bool:
+    """Reset a completed pending transaction back to 'pending' to allow webhook retry."""
     pid = (payment_id or "").strip()
     if not pid:
         return False
@@ -3642,19 +3481,20 @@ def claim_processed_payment(payment_id: str) -> bool:
     def _work():
         with _connect_pending_db() as conn:
             cursor = conn.cursor()
-            _ensure_processed_payments_table(cursor)
+            _ensure_pending_tables(cursor)
             cursor.execute(
-                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, CURRENT_TIMESTAMP)",
+                "UPDATE pending_transactions SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE payment_id = ?",
                 (pid,),
             )
-            return cursor.rowcount == 1
+            return cursor.rowcount > 0
 
     try:
         return bool(_retry_sqlite(_work))
     except sqlite3.Error as e:
-        logging.error(f"Failed to claim processed payment {pid}: {e}")
+        logging.error(f"Failed to reset pending transaction {pid}: {e}")
         return False
-        
+
+
 def get_referrals_for_user(user_id: int) -> list[dict]:
     """Возвращает список пользователей, которых пригласил данный user_id.
     Поля: telegram_id, username, registration_date, total_spent.
@@ -7145,6 +6985,53 @@ def accrue_partner_commission(
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
+
+            # --- Self-purchase guard ---
+            # 1. Direct: buyer == owner of this bot
+            # 2. Indirect: buyer was referred by the owner (owner recruited their own customer)
+            # 3. Referrer-bot chain: buyer == owner of the parent bot that created this bot
+            cur.execute(
+                "SELECT owner_telegram_id, COALESCE(referrer_bot_id, 0) FROM managed_bots WHERE id = ? LIMIT 1",
+                (b,),
+            )
+            row = cur.fetchone()
+            if row:
+                owner_id = int(row[0] or 0)
+                referrer_bot_id = int(row[1] or 0)
+
+                if owner_id and u == owner_id:
+                    logging.warning(
+                        "accrue_partner_commission: skipped — self-purchase (user %d == owner %d, bot %d)",
+                        u, owner_id, b,
+                    )
+                    return False
+
+                # Check if buyer was referred by the owner
+                cur.execute("SELECT referred_by FROM users WHERE telegram_id = ? LIMIT 1", (u,))
+                user_row = cur.fetchone()
+                referred_by = int((user_row[0] or 0)) if user_row else 0
+                if owner_id and referred_by == owner_id:
+                    logging.warning(
+                        "accrue_partner_commission: skipped — buyer %d referred by owner %d (bot %d)",
+                        u, owner_id, b,
+                    )
+                    return False
+
+                # Check if buyer is the owner of the referrer/parent bot
+                if referrer_bot_id > 0:
+                    cur.execute(
+                        "SELECT owner_telegram_id FROM managed_bots WHERE id = ? LIMIT 1",
+                        (referrer_bot_id,),
+                    )
+                    ref_row = cur.fetchone()
+                    ref_owner_id = int((ref_row[0] or 0)) if ref_row else 0
+                    if ref_owner_id and u == ref_owner_id:
+                        logging.warning(
+                            "accrue_partner_commission: skipped — buyer %d is owner of referrer bot %d (bot %d)",
+                            u, referrer_bot_id, b,
+                        )
+                        return False
+
             cur.execute(
                 """
                 INSERT OR IGNORE INTO partner_commissions

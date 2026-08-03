@@ -1906,7 +1906,17 @@ def get_admin_router() -> Router:
         
         # Переключаем и получаем новое состояние
         is_enabled = toggle_franchise_settings()
-        
+
+        if not is_enabled:
+            try:
+                from shop_bot.factory_bot.runtime import get_service
+                svc = get_service()
+                if svc:
+                    import asyncio
+                    asyncio.create_task(svc.stop_all())
+            except Exception as _e:
+                logger.warning(f"Не удалось остановить клоны ботов при отключении франшизы: {_e}")
+
         status_text = "включена ✅" if is_enabled else "выключена ❌"
         await callback.answer(f"Франшиза {status_text}")
         

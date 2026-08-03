@@ -312,6 +312,8 @@ _LEGACY_FORWARDERS = (
     "create_pending_transaction",
     "create_payload_pending",
     "claim_processed_payment",
+    "unclaim_processed_payment",
+    "reset_pending_transaction",
     "create_plan",
     "create_support_ticket",
     "deduct_from_balance",
