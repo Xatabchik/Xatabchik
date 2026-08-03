@@ -6217,21 +6217,28 @@ def get_user_router() -> Router:
             return
         
         try:
-            # Получаем user_uuid из ключа
+            # Получаем данные пользователя из Remnawave (нужен integer id для нового API)
             user_uuid = key_data.get('remnawave_user_uuid') or key_data.get('xui_client_uuid')
-            if not user_uuid:
-                # Пытаемся получить из Remnawave
-                details = await remnawave_api.get_key_details_from_host(key_data)
-                if details and isinstance(details.get('user'), dict):
-                    user_uuid = details['user'].get('uuid') or details['user'].get('userUuid')
-            
-            if not user_uuid:
+            user_id: int | None = None
+            details = await remnawave_api.get_key_details_from_host(key_data)
+            if details and isinstance(details.get('user'), dict):
+                up = details['user']
+                if not user_uuid:
+                    user_uuid = up.get('uuid') or up.get('userUuid')
+                raw_id = up.get('id')
+                if raw_id is not None:
+                    try:
+                        user_id = int(raw_id)
+                    except (ValueError, TypeError):
+                        pass
+
+            if not user_uuid and user_id is None:
                 await callback.answer("❌ Не удалось получить информацию об аккаунте", show_alert=True)
                 return
             
             # Пытаемся удалить устройство через API
             host_name = key_data.get('host_name')
-            success = await remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name)
+            success = await remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name, user_id=user_id)
             
             if success:
                 await callback.answer("✅ Устройство успешно удалено!", show_alert=True)

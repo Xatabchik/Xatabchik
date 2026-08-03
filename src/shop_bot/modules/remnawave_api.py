@@ -382,25 +382,24 @@ async def get_hwid_devices_for_user(user_uuid: str, *, host_name: str | None = N
         return None
 
 
-async def delete_hwid_device(user_uuid: str, hwid: str, *, host_name: str | None = None) -> bool:
-    """Удалить одно HWID-устройство пользователя через API.
-    
-    Args:
-        user_uuid: UUID пользователя в Remnawave
-        hwid: Hardware ID удаляемого устройства
-        host_name: Имя хоста (если нужна привязка к конкретному хосту)
-    
-    Returns:
-        True если успешно удалено, False в случае ошибки
-    """
-    if not user_uuid or not hwid:
+async def delete_hwid_device(
+    user_uuid: str | None,
+    hwid: str,
+    *,
+    host_name: str | None = None,
+    user_id: int | None = None,
+) -> bool:
+    """Удалить одно HWID-устройство пользователя через API."""
+    if (not user_uuid and user_id is None) or not hwid:
         return False
-    
+
     try:
-        payload = {
-            "userUuid": str(user_uuid).strip(),
-            "hwid": str(hwid).strip(),
-        }
+        payload: dict[str, Any] = {"hwid": str(hwid).strip()}
+        # New Remnawave: userId (int); old Remnawave: userUuid (str)
+        if user_id is not None:
+            payload["userId"] = int(user_id)
+        if user_uuid:
+            payload["userUuid"] = str(user_uuid).strip()
         
         if host_name:
             response = await _request_for_host(
