@@ -4883,7 +4883,10 @@ def get_user_router() -> Router:
         if not isinstance(user_payload, dict):
             return 0
 
-        user_uuid = user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
+        user_uuid = (
+            user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
+            or user_payload.get("id")
+        )
         host_name = (key_data or {}).get("host_name")
         if not user_uuid:
             return 0
@@ -4958,7 +4961,10 @@ def get_user_router() -> Router:
         if not isinstance(user_payload, dict):
             return []
         
-        user_uuid = user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
+        user_uuid = (
+            user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
+            or user_payload.get("id")
+        )
         host_name = (key_data or {}).get("host_name")
         
         if not user_uuid:
