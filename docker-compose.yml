@@ -11,6 +11,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     container_name: xatabchik
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   xatabchik-webapp:
     build: .
@@ -25,3 +30,8 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     container_name: xatabchik-webapp
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
