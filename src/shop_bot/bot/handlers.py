@@ -4985,6 +4985,7 @@ def get_user_router() -> Router:
         possible_containers = [
             hwid_payload if isinstance(hwid_payload, list) else None,
             hwid_payload.get("devices") if isinstance(hwid_payload, dict) else None,
+            hwid_payload.get("list") if isinstance(hwid_payload, dict) else None,
             hwid_payload.get("response") if isinstance(hwid_payload, dict) else None,
             hwid_payload.get("data") if isinstance(hwid_payload, dict) else None,
             hwid_payload.get("items") if isinstance(hwid_payload, dict) else None,

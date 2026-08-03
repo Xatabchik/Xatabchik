@@ -371,6 +371,8 @@ async def get_hwid_devices_for_user(user_uuid: str, *, host_name: str | None = N
             inner = payload.get("response")
             if inner is None:
                 inner = payload.get("data")
+            if inner is None:
+                inner = payload.get("list")
             return inner if inner is not None else payload
         return payload
     except RemnawaveAPIError:
