@@ -504,12 +504,13 @@ async def ensure_user(
             except ValueError:
                 pass
 
-        _current_id = current.get("id") or current.get("uuid")
+        _current_uuid = current.get("uuid")   # old Remnawave field
+        _current_id = current.get("id")         # new Remnawave field (int)
         _current_username = current.get("username")
         logger.info(
             "Remnawave: найден пользователь %s (id=%s) на '%s' — обновляю срок до %s",
             email,
-            _current_id,
+            _current_id or _current_uuid,
             host_name,
             expire_iso,
         )
@@ -520,7 +521,9 @@ async def ensure_user(
             "activeInternalSquads": active_squads,
             "email": email,
         }
-        # Remnawave PATCH requires at least one of: username, id
+        # Send all known identifier fields for compat with old (uuid) and new (id/username) Remnawave
+        if _current_uuid:
+            payload["uuid"] = _current_uuid
         if _current_id is not None:
             payload["id"] = _current_id
         if _current_username:
@@ -587,7 +590,10 @@ async def ensure_user(
                 "expireAt": expire_iso,
                 "activeInternalSquads": active_squads,
             }
-            _existing_id = _existing.get("id") or _existing.get("uuid")
+            _existing_uuid = _existing.get("uuid")
+            _existing_id = _existing.get("id")
+            if _existing_uuid:
+                _patch["uuid"] = _existing_uuid
             if _existing_id is not None:
                 _patch["id"] = _existing_id
             if traffic_limit_bytes is not None:
