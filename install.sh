@@ -346,6 +346,19 @@ if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
     log_success "✔ SSL-сертификаты для ${DOMAIN} уже существуют."
 else
     log_info "Получение SSL-сертификатов для ${DOMAIN}..."
+    # Создаём временный HTTP server block, чтобы certbot --nginx мог найти server_name
+    sudo rm -f /etc/nginx/sites-enabled/default
+    sudo tee "$NGINX_CONF" >/dev/null <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+}
+EOF
+    if [[ ! -L "$NGINX_LINK" ]]; then
+        sudo ln -s "$NGINX_CONF" "$NGINX_LINK"
+    fi
+    sudo nginx -t && sudo systemctl reload nginx
     sudo certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive --redirect
     log_success "✔ Сертификаты Let's Encrypt успешно получены."
 fi
