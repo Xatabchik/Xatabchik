@@ -1252,7 +1252,7 @@ async def create_or_update_key_on_host(
         expiry_ts_ms = int(expire_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
         return {
-            'client_uuid': user_payload.get('uuid') or user_payload.get('id'),
+            'client_uuid': str(user_payload.get('uuid') or user_payload.get('id') or ''),
             'short_uuid': user_payload.get('shortUuid'),
             'email': email,
             'host_name': squad.get('host_name') or host_name,
@@ -1316,7 +1316,7 @@ async def delete_client_on_host(host_name: str, client_email: str) -> bool:
         if isinstance(user_payload, list):
 
             user_payload = next((u for u in user_payload if isinstance(u, dict)), None)
-        user_uuid = (user_payload.get('uuid') or user_payload.get('id')) if isinstance(user_payload, dict) else None
+        user_uuid = str(user_payload.get('uuid') or user_payload.get('id') or '') if isinstance(user_payload, dict) else None
         if not user_uuid:
             logger.warning("Remnawave: нет uuid для пользователя %s", client_email)
             return False
