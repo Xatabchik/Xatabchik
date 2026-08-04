@@ -1107,7 +1107,7 @@ label.burger_img::before {
 
 
 #burger:checked ~ .burger-menu { display: block; }
-html, body { height: 100%; font-size: calc(16px * var(--ui-font-scale)); }
+html, body { height: 100%; min-height: 100dvh; font-size: calc(16px * var(--ui-font-scale)); }
 
 html { scrollbar-gutter: stable; }
 
@@ -3682,12 +3682,14 @@ body{
 		linear-gradient(180deg, #0c1422 0%, #0b121d 55%, #090f16 100%) !important;
 	color: var(--text-primary) !important;
 	min-height: 100vh;
+	min-height: 100dvh;
 }
 
 /* Shell */
 .layout-shell{
 	display: flex;
 	min-height: 100vh;
+	min-height: 100dvh;
 	width: 100%;
 }
 
@@ -3819,7 +3821,7 @@ body{
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	padding: 18px 26px 28px;
+	padding: 18px 26px max(28px, env(safe-area-inset-bottom));
 }
 
 .topbar{
