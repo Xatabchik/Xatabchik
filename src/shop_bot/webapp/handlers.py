@@ -311,7 +311,9 @@ def _format_bytes(size: Any) -> str:
 def _process_template_placeholders(html: str, user_id: int, webapp_settings: dict, context_data: dict) -> str:
     title = webapp_settings.get("webapp_title") or get_setting("panel_brand_title") or "Xatab VPN"
     support_username = get_setting("support_contact_username") or get_setting("support_bot_username") or ""
-    
+    bot_username = get_setting("telegram_bot_username") or ""
+    webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+
     replacements = {
         "{{ panel_brand_title }}": title,
         "{{ user_profile_card }}": context_data.get("profile_card", ""),
@@ -326,6 +328,8 @@ def _process_template_placeholders(html: str, user_id: int, webapp_settings: dic
         "{{ webapp_icon }}": context_data.get("webapp_icon", ""),
         "{{ logo_hidden }}": "hidden" if not context_data.get("webapp_logo") else "",
         "{{ user_id }}": str(user_id),
+        "{{ bot_username }}": bot_username,
+        "{{ webapp_domain }}": webapp_domain,
         "{{ tg_fullscreen_css }}": """
     <style>
         .tg-miniapp #main-page,
@@ -2276,6 +2280,136 @@ class CommentRequest(BaseModel):
     key_id: int
     comment: str
 
+class GiftActivateRequest(BaseModel):
+    user_id: int
+    gift_code: str
+
+# ── Referral info ──────────────────────────────────────────────────────────
+@app.post("/api/user/referral-info")
+async def api_user_referral_info(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        user_id = data.get("user_id")
+        if user_id:
+            user = get_user(int(user_id))
+    if not user or user.get("is_banned"):
+        return {"ok": False, "error": "Unauthorized"}
+
+    uid = user["telegram_id"]
+    bot_username = get_setting("telegram_bot_username") or ""
+    webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+    bot_link = f"https://t.me/{bot_username}?start=ref_{uid}" if bot_username else ""
+    webapp_link = f"{webapp_domain}/ref/{uid}" if webapp_domain else ""
+
+    from shop_bot.data_manager.remnawave_repository import get_referral_count
+    count = get_referral_count(uid)
+    earned = float(user.get("referral_balance_all") or 0)
+    available = float(user.get("referral_balance") or 0)
+
+    return {
+        "ok": True,
+        "bot_link": bot_link,
+        "webapp_link": webapp_link,
+        "count": count,
+        "earned": earned,
+        "available": available,
+    }
+
+# ── User sent gifts ────────────────────────────────────────────────────────
+@app.post("/api/user/gifts")
+async def api_user_gifts(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        user_id = data.get("user_id")
+        if user_id:
+            user = get_user(int(user_id))
+    if not user or user.get("is_banned"):
+        return {"ok": False, "error": "Unauthorized"}
+
+    uid = user["telegram_id"]
+    from shop_bot.data_manager import database
+    gifts = database.get_user_inactive_gifts(uid) or []
+
+    bot_username = get_setting("telegram_bot_username") or ""
+    webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+
+    result = []
+    for g in gifts:
+        code = g.get("gift_code") or ""
+        if webapp_domain:
+            link = f"{webapp_domain}/gift/{code}"
+        elif bot_username:
+            link = f"https://t.me/{bot_username}?start=gift_{code}"
+        else:
+            link = ""
+        result.append({
+            "gift_id": g.get("gift_id"),
+            "gift_code": code,
+            "host_name": g.get("host_name"),
+            "created_at": g.get("created_at"),
+            "expires_at": g.get("expires_at"),
+            "link": link,
+        })
+
+    return {"ok": True, "gifts": result}
+
+# ── Gift activation via webapp ─────────────────────────────────────────────
+@app.post("/api/gift/activate")
+async def api_gift_activate(req: GiftActivateRequest):
+    try:
+        user = get_user(req.user_id)
+        if not user or user.get("is_banned"):
+            return {"ok": False, "error": "Access denied"}
+
+        from shop_bot.data_manager import database
+        from shop_bot.data_manager import remnawave_repository as rw_repo
+
+        gift = database.get_gift_by_code(req.gift_code)
+        if not gift:
+            return {"ok": False, "error": "Подарок не найден или код неверный"}
+        if gift.get("is_activated"):
+            return {"ok": False, "error": "Этот подарок уже был активирован"}
+
+        expires_at = gift.get("expires_at")
+        if expires_at:
+            try:
+                from datetime import datetime
+                if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
+                    return {"ok": False, "error": "Срок действия подарка истёк"}
+            except Exception:
+                pass
+
+        success, activated_gift = database.activate_user_gift(req.gift_code, req.user_id)
+        if not success:
+            return {"ok": False, "error": "Не удалось активировать подарок"}
+
+        # Reassign the key to the activating user
+        key_id = gift.get("key_id")
+        if key_id:
+            new_email = rw_repo.generate_key_email_for_user(req.user_id)
+            rw_repo.update_key(key_id, user_id=req.user_id, email=new_email, tag="")
+
+        # Set referrer if from_user_id is known and user is new
+        try:
+            from_user_id = int((activated_gift or gift or {}).get("from_user_id") or 0)
+            if from_user_id > 0:
+                database.set_referred_by_from_gift(req.user_id, from_user_id)
+        except Exception:
+            pass
+
+        return {"ok": True, "message": "Подарок успешно активирован! Ключ добавлен в ваш профиль."}
+    except Exception as e:
+        logger.error(f"Gift activate error: {e}")
+        return {"ok": False, "error": str(e)}
+
 @app.post("/api/key/devices")
 async def api_key_devices(req: KeyActionRequest):
     try:
@@ -2700,20 +2834,68 @@ async def web_gift_page(gift_code: str, request: Request):
         webapp_settings = get_webapp_settings()
         project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
         logo_url = webapp_settings.get("webapp_logo") or ""
+        webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
 
         gift = get_gift_by_code(gift_code) if gift_code else None
         deeplink = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
 
+        # Detect if visitor is already authenticated in webapp
+        auth_token = request.cookies.get("auth_token") or request.query_params.get("token") or ""
+        authed_user = None
+        if auth_token:
+            from shop_bot.data_manager import database
+            authed_user = database.get_user_by_auth_token(auth_token)
+
         if not gift:
             title = "Подарочный ключ"
             desc = "Активируйте подарок через Telegram."
+            action_html = f"<a class='btn' href='{deeplink}'>Открыть в Telegram</a>" if deeplink else ""
         elif gift.get("is_activated"):
             title = "Подарок уже активирован"
             desc = "Этот подарочный ключ уже был использован."
-            deeplink = ""
+            action_html = ""
+        elif authed_user:
+            uid = authed_user.get("telegram_id")
+            title = "Подарочный VPN-ключ"
+            desc = "Нажмите кнопку ниже, чтобы активировать подарок прямо здесь."
+            webapp_url = f"{webapp_domain}/?token={auth_token}&activate_gift={gift_code}" if webapp_domain else deeplink
+            action_html = f"""
+<button class='btn' id='activate-btn' onclick='activateGift("{gift_code}", {uid})'>Активировать</button>
+<div id='activate-msg' style='display:none;margin-top:1rem;font-size:.8rem;color:#10b981'></div>
+<script>
+async function activateGift(code, userId) {{
+  document.getElementById('activate-btn').disabled = true;
+  document.getElementById('activate-btn').textContent = 'Активация...';
+  try {{
+    const r = await fetch('/api/gift/activate', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{user_id: userId, gift_code: code}})
+    }});
+    const d = await r.json();
+    const msg = document.getElementById('activate-msg');
+    msg.style.display = 'block';
+    if (d.ok) {{
+      msg.textContent = '✅ ' + d.message;
+      msg.style.color = '#10b981';
+      document.getElementById('activate-btn').style.display = 'none';
+      setTimeout(() => {{ window.location.href = '{webapp_domain or "/"}'; }}, 1800);
+    }} else {{
+      msg.textContent = '❌ ' + d.error;
+      msg.style.color = '#f87171';
+      document.getElementById('activate-btn').disabled = false;
+      document.getElementById('activate-btn').textContent = 'Активировать';
+    }}
+  }} catch(e) {{
+    document.getElementById('activate-btn').disabled = false;
+    document.getElementById('activate-btn').textContent = 'Активировать';
+  }}
+}}
+</script>"""
         else:
             title = "Подарочный VPN-ключ"
             desc = "Нажмите кнопку ниже, чтобы активировать подарок в Telegram."
+            action_html = f"<a class='btn' href='{deeplink}'>Активировать в Telegram</a>" if deeplink else ""
 
         html = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -2722,14 +2904,15 @@ async def web_gift_page(gift_code: str, request: Request):
 <style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}}
 .card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
 h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
-.btn{{display:block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s}}
-.btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
+.btn{{display:inline-block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s;cursor:pointer;border:none;width:100%;box-sizing:border-box}}
+.btn:hover{{opacity:.85}} .btn:disabled{{opacity:.5;cursor:not-allowed}}
+img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
 .gift-icon{{font-size:3rem;margin-bottom:.5rem}}</style></head>
 <body><div class="card">
 {"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else "<div class='gift-icon'>🎁</div>"}
 <h2>{title}</h2>
 <p>{desc}</p>
-{"<a class='btn' href='" + deeplink + "'>Активировать в Telegram</a>" if deeplink else ""}
+{action_html}
 </div></body></html>"""
         return HTMLResponse(content=html)
     except Exception as e:

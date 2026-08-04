@@ -336,14 +336,24 @@
             {{ server_plans_grid }}
         </main>
 
-        <footer class="py-6 relative z-10">
+        <footer class="py-6 relative z-10 flex flex-col gap-2">
+            <!-- Gift / Self toggle -->
+            <div class="flex items-center gap-1 bg-white/5 rounded-xl p-1 mb-1">
+                <button id="purchase-mode-self" onclick="setPurchaseMode('new')"
+                    class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all bg-white/10 text-white">
+                    Для себя
+                </button>
+                <button id="purchase-mode-gift" onclick="setPurchaseMode('gift')"
+                    class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all text-gray-400">
+                    <span class="material-icons-round text-[12px] align-middle mr-0.5">card_giftcard</span>Подарок
+                </button>
+            </div>
             <button id="pay-button"
                 class="w-full bg-white/5 text-gray-500 py-4 px-4 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 pointer-events-none"
                 disabled>
                 <span class="material-icons-round text-lg">bolt</span>
                 <span id="pay-button-text">Выберите тариф</span>
             </button>
-            <!-- <p class="text-[8px] text-center text-gray-500 mt-4 px-6">Нажимая кнопку, вы соглашаетесь с условиями оферты и правилами сервиса</p> -->
         </footer>
     </div>
     <!-- ======== Конец Страница покупки ======== -->
@@ -544,6 +554,36 @@
 
                 <div id="profile-keys-list-container">
                     {{ profile_keys_list }}
+                </div>
+            </div>
+
+            <!-- Referral Program Section -->
+            <div class="flex flex-col gap-3">
+                <button onclick="toggleSection('referral-section')" class="flex items-center justify-between px-1 w-full text-left group">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest group-hover:text-gray-300 transition-colors flex items-center gap-1.5">
+                        <span class="material-icons-round text-[13px] text-emerald-400">group_add</span>
+                        Реферальная программа
+                    </div>
+                    <span id="referral-section-icon" class="material-icons-round text-gray-600 text-[15px] transition-transform">expand_more</span>
+                </button>
+                <div id="referral-section" class="hidden flex flex-col gap-2">
+                    <div id="referral-info-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
+                    <div id="referral-info-content" class="hidden flex flex-col gap-2"></div>
+                </div>
+            </div>
+
+            <!-- Gifts Section -->
+            <div class="flex flex-col gap-3">
+                <button onclick="toggleSection('gifts-section')" class="flex items-center justify-between px-1 w-full text-left group">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest group-hover:text-gray-300 transition-colors flex items-center gap-1.5">
+                        <span class="material-icons-round text-[13px] text-amber-400">card_giftcard</span>
+                        Мои подарки
+                    </div>
+                    <span id="gifts-section-icon" class="material-icons-round text-gray-600 text-[15px] transition-transform">expand_more</span>
+                </button>
+                <div id="gifts-section" class="hidden flex flex-col gap-2">
+                    <div id="gifts-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
+                    <div id="gifts-content" class="hidden flex flex-col gap-2"></div>
                 </div>
             </div>
         </main>
@@ -1038,7 +1078,9 @@
 
         window.addEventListener('hashchange', handleHashChange);
 
-        // Accordion for keys
+        // Signal that JS is ready (for deferred init like gift activation)
+        setTimeout(() => window.dispatchEvent(new Event('appReady')), 200);
+
         document.querySelectorAll('.key-toggle').forEach(button => {
             button.addEventListener('click', () => {
                 const content = button.nextElementSibling;
@@ -1703,6 +1745,7 @@
         let pollingInterval = null;
         let activePaymentId = null;
         const RENDERED_USER_ID = parseInt("{{ user_id }}") || 0;
+        window._currentUserId = RENDERED_USER_ID || null;
 
         function showNotification(message, type = 'info') {
             if (window.Telegram?.WebApp?.showAlert) {
@@ -1961,8 +2004,32 @@
             const months = this.getAttribute('data-months') || "0";
             const durationDays = this.getAttribute('data-duration-days') || "0";
             const td = activeTierData.purchase;
-            if (planId) openPaymentModal(planId, host, 'new', null, price, name, td.deviceCount, td.tierPrice, months, durationDays);
+            const action = window._purchaseMode || 'new';
+            const label = action === 'gift' ? ('Подарок: ' + name) : name;
+            if (planId) openPaymentModal(planId, host, action, null, price, label, td.deviceCount, td.tierPrice, months, durationDays);
         };
+
+        window._purchaseMode = 'new';
+        function setPurchaseMode(mode) {
+            window._purchaseMode = mode;
+            const selfBtn = document.getElementById('purchase-mode-self');
+            const giftBtn = document.getElementById('purchase-mode-gift');
+            if (selfBtn && giftBtn) {
+                selfBtn.classList.toggle('bg-white/10', mode === 'new');
+                selfBtn.classList.toggle('text-white', mode === 'new');
+                selfBtn.classList.toggle('text-gray-400', mode !== 'new');
+                giftBtn.classList.toggle('bg-white/10', mode === 'gift');
+                giftBtn.classList.toggle('text-white', mode === 'gift');
+                giftBtn.classList.toggle('text-gray-400', mode !== 'gift');
+            }
+            // Update pay button label if already selected
+            const payBtn = document.getElementById('pay-button');
+            if (payBtn && !payBtn.disabled) {
+                const name = payBtn.getAttribute('data-plan-name') || '';
+                const payText = document.getElementById('pay-button-text');
+                if (payText && name) payText.textContent = mode === 'gift' ? ('🎁 Купить подарок — ' + name) : ('Купить — ' + name);
+            }
+        }
 
         document.getElementById('renew-pay-button').onclick = function () {
             const planId = this.getAttribute('data-plan-id');
@@ -3340,6 +3407,172 @@
                 showNotification('Ошибка при запросе вывода', 'error');
             }
         }
+
+        // ── Collapse/expand profile sections ────────────────────────────
+        function toggleSection(id) {
+            const el = document.getElementById(id);
+            const icon = document.getElementById(id + '-icon');
+            if (!el) return;
+            const opening = el.classList.contains('hidden');
+            el.classList.toggle('hidden');
+            if (icon) icon.style.transform = opening ? 'rotate(180deg)' : '';
+            if (opening) {
+                if (id === 'referral-section') loadReferralInfo();
+                if (id === 'gifts-section') loadUserGifts();
+            }
+        }
+
+        // ── Referral info ────────────────────────────────────────────────
+        async function loadReferralInfo() {
+            const token = window.getAuthToken();
+            const userId = window._currentUserId;
+            if (!token && !userId) return;
+            try {
+                const resp = await fetch('/api/user/referral-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, user_id: userId })
+                });
+                const d = await resp.json();
+                const loading = document.getElementById('referral-info-loading');
+                const content = document.getElementById('referral-info-content');
+                if (loading) loading.style.display = 'none';
+                if (!d.ok || !content) return;
+                content.classList.remove('hidden');
+
+                const botLink = d.bot_link || '';
+                const webLink = d.webapp_link || '';
+                content.innerHTML = `
+                <div class="glass-card border border-white/10 rounded-2xl p-4 flex flex-col gap-3">
+                    <div class="grid grid-cols-3 gap-2 mb-1">
+                        <div class="bg-white/5 rounded-xl p-2 text-center">
+                            <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Рефералы</div>
+                            <div class="text-sm font-black text-white">${d.count}</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl p-2 text-center">
+                            <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Заработано</div>
+                            <div class="text-sm font-black text-white truncate">${d.earned.toFixed(0)} ₽</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl p-2 text-center">
+                            <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Доступно</div>
+                            <div class="text-sm font-black text-primary truncate">${d.available.toFixed(0)} ₽</div>
+                        </div>
+                    </div>
+                    ${botLink ? `
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Ссылка в Telegram</div>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${botLink}</div>
+                            <button onclick="copyToClipboard('${botLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
+                                <span class="material-icons-round text-sm">content_copy</span>
+                            </button>
+                            <a href="https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent('Попробуй этот VPN!')}" target="_blank"
+                               class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-2 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                                <span class="material-icons-round text-sm">send</span>
+                            </a>
+                        </div>
+                    </div>` : ''}
+                    ${webLink ? `
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Ссылка на сайт</div>
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${webLink}</div>
+                            <button onclick="copyToClipboard('${webLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
+                                <span class="material-icons-round text-sm">content_copy</span>
+                            </button>
+                        </div>
+                    </div>` : ''}
+                </div>`;
+            } catch (e) {
+                console.error('Referral info error:', e);
+            }
+        }
+
+        async function copyToClipboard(text, btn) {
+            try {
+                await navigator.clipboard.writeText(text);
+                if (btn) {
+                    const icon = btn.querySelector('.material-icons-round');
+                    if (icon) { icon.textContent = 'check'; setTimeout(() => { icon.textContent = 'content_copy'; }, 1500); }
+                }
+                showNotification('Скопировано!', 'success');
+            } catch (e) {
+                showNotification('Не удалось скопировать', 'error');
+            }
+        }
+
+        // ── User gifts ───────────────────────────────────────────────────
+        async function loadUserGifts() {
+            const token = window.getAuthToken();
+            const userId = window._currentUserId;
+            if (!token && !userId) return;
+            try {
+                const resp = await fetch('/api/user/gifts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, user_id: userId })
+                });
+                const d = await resp.json();
+                const loading = document.getElementById('gifts-loading');
+                const content = document.getElementById('gifts-content');
+                if (loading) loading.style.display = 'none';
+                if (!d.ok || !content) return;
+                content.classList.remove('hidden');
+                if (!d.gifts || !d.gifts.length) {
+                    content.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
+                    return;
+                }
+                content.innerHTML = d.gifts.map(g => `
+                <div class="glass-card border border-white/10 rounded-xl p-3 flex flex-col gap-2">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="material-icons-round text-amber-400 text-base">card_giftcard</span>
+                            <div>
+                                <div class="text-[10px] font-bold text-white">${g.host_name || 'Подарок'}</div>
+                                <div class="text-[9px] text-gray-500">${g.created_at ? g.created_at.slice(0,10) : ''}</div>
+                            </div>
+                        </div>
+                        <span class="text-[9px] text-amber-400 font-bold uppercase">Не активирован</span>
+                    </div>
+                    ${g.link ? `
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${g.link}</div>
+                        <button onclick="copyToClipboard('${g.link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+                            <span class="material-icons-round text-sm">content_copy</span>
+                        </button>
+                        <a href="https://t.me/share/url?url=${encodeURIComponent(g.link)}&text=${encodeURIComponent('🎁 Получи подарочный VPN ключ!')}" target="_blank"
+                           class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                            <span class="material-icons-round text-sm">send</span>
+                        </a>
+                    </div>` : ''}
+                </div>`).join('');
+            } catch (e) {
+                console.error('Gifts error:', e);
+            }
+        }
+
+        // ── Auto-activate gift from URL param ────────────────────────────
+        (function checkGiftParam() {
+            const url = new URL(window.location.href);
+            const giftCode = url.searchParams.get('activate_gift');
+            if (!giftCode) return;
+            url.searchParams.delete('activate_gift');
+            window.history.replaceState(null, '', url.toString() || window.location.pathname);
+            window.addEventListener('appReady', async () => {
+                const userId = window._currentUserId;
+                if (!userId) return;
+                try {
+                    const r = await fetch('/api/gift/activate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_id: userId, gift_code: giftCode })
+                    });
+                    const d = await r.json();
+                    showNotification(d.ok ? (d.message || 'Подарок активирован!') : (d.error || 'Ошибка активации'), d.ok ? 'success' : 'error');
+                    if (d.ok) setTimeout(() => location.reload(), 1800);
+                } catch (e) { /* silent */ }
+            });
+        })();
     </script>
 </body>
 
