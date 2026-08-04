@@ -1556,14 +1556,48 @@ def create_webhook_app(bot_controller_instance):
         nginx_link_path = f"/etc/nginx/sites-enabled/{nginx_conf_name}.conf"
         nginx_cfg = _build_nginx_config(domain, port_int)
 
+        def _nginx_reload(step_name):
+            """Try nginx -s reload first (works in Docker), fall back to service/systemctl."""
+            for cmd in (["nginx", "-s", "reload"], ["service", "nginx", "reload"], ["systemctl", "reload", "nginx"]):
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    if r.returncode == 0:
+                        _step(step_name, "ok", " ".join(cmd))
+                        return True
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
+            _step(step_name, "error", "Не удалось перезагрузить Nginx ни одним из методов")
+            return False
+
+        def _nginx_start():
+            """Start nginx after fresh install (Docker-compatible)."""
+            for cmd in (["service", "nginx", "start"], ["nginx"]):
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                    if r.returncode == 0:
+                        _step("Запуск Nginx", "ok", " ".join(cmd))
+                        return True
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
+            _step("Запуск Nginx", "error", "Не удалось запустить Nginx")
+            return False
+
         # --- Check / install nginx ---
-        nginx_ok = _run("Проверка Nginx", ["which", "nginx"])
-        if not nginx_ok:
+        nginx_installed = _run("Проверка Nginx", ["which", "nginx"])
+        if not nginx_installed:
+            # 'which nginx' failing is expected before installation — demote to skip
+            steps[-1]["status"] = "skip"
+            steps[-1]["message"] = "Nginx не установлен, будет установлен"
             _run("Обновление пакетной базы", ["apt-get", "update", "-qq"], timeout=120)
             _run("Установка Nginx + certbot", [
                 "apt-get", "install", "-y", "--no-install-recommends",
                 "nginx", "certbot", "python3-certbot-nginx"
             ], timeout=300, extra_env={"DEBIAN_FRONTEND": "noninteractive"})
+            _nginx_start()
 
         # --- Write nginx config ---
         wrote_cfg = False
@@ -1608,7 +1642,17 @@ def create_webhook_app(bot_controller_instance):
         if not _run("Проверка конфига Nginx", ["nginx", "-t"]):
             return jsonify({"success": False, "steps": steps, "nginx_config": nginx_cfg})
 
-        _run("Перезагрузка Nginx", ["systemctl", "reload", "nginx"])
+        _nginx_reload("Перезагрузка Nginx")
+
+        # --- DNS pre-check before certbot ---
+        import socket as _socket
+        try:
+            resolved = _socket.getaddrinfo(domain, 80, _socket.AF_INET)[0][4][0]
+            _step("DNS-проверка домена", "ok", f"{domain} → {resolved}")
+        except Exception as dns_exc:
+            _step("DNS-проверка домена", "error",
+                  f"Домен не разрешается: {dns_exc}. Добавьте A-запись DNS, указывающую на IP этого сервера.")
+            return jsonify({"success": False, "steps": steps})
 
         # --- Certbot SSL ---
         certbot_ok = _run("SSL-сертификат (Let's Encrypt)", [
@@ -1619,7 +1663,7 @@ def create_webhook_app(bot_controller_instance):
         ], timeout=180)
 
         if certbot_ok:
-            _run("Финальная перезагрузка Nginx", ["systemctl", "reload", "nginx"])
+            _nginx_reload("Финальная перезагрузка Nginx")
 
         all_ok = all(s["status"] in ("ok", "skip") for s in steps)
         return jsonify({"success": all_ok, "steps": steps})
