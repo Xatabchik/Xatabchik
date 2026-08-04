@@ -272,7 +272,8 @@ if [[ -f "$NGINX_CONF" ]]; then
     fi
     cd "$PROJECT_DIR"
     log_info "\nШаг 1: обновление исходного кода"
-    git pull --ff-only
+    git fetch --all
+    git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
     sudo "${COMPOSE[@]}" down --remove-orphans
