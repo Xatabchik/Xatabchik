@@ -1514,9 +1514,10 @@ def create_webhook_app(bot_controller_instance):
         def _step(name, status, message):
             steps.append({"name": name, "status": status, "message": message})
 
-        def _run(name, cmd, timeout=90):
+        def _run(name, cmd, timeout=90, extra_env=None):
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                env = ({**os.environ, **extra_env}) if extra_env else None
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
                 ok = r.returncode == 0
                 _step(name, "ok" if ok else "error", ((r.stdout + r.stderr).strip()[:800]) or ("OK" if ok else "ошибка"))
                 return ok
@@ -1558,10 +1559,11 @@ def create_webhook_app(bot_controller_instance):
         # --- Check / install nginx ---
         nginx_ok = _run("Проверка Nginx", ["which", "nginx"])
         if not nginx_ok:
+            _run("Обновление пакетной базы", ["apt-get", "update", "-qq"], timeout=120)
             _run("Установка Nginx + certbot", [
                 "apt-get", "install", "-y", "--no-install-recommends",
                 "nginx", "certbot", "python3-certbot-nginx"
-            ], timeout=240)
+            ], timeout=300, extra_env={"DEBIAN_FRONTEND": "noninteractive"})
 
         # --- Write nginx config ---
         wrote_cfg = False
@@ -1590,10 +1592,13 @@ def create_webhook_app(bot_controller_instance):
         # --- Create symlink ---
         if not os.path.lexists(nginx_link_path):
             try:
+                os.makedirs(os.path.dirname(nginx_link_path), exist_ok=True)
                 os.symlink(nginx_conf_path, nginx_link_path)
                 _step("Symlink sites-enabled", "ok", "Создан")
             except PermissionError:
-                _run("Symlink sites-enabled", ["sudo", "ln", "-sf", nginx_conf_path, nginx_link_path])
+                _run("Symlink sites-enabled", ["sudo", "bash", "-c",
+                     f"mkdir -p {os.path.dirname(nginx_link_path)} && "
+                     f"ln -sf {nginx_conf_path} {nginx_link_path}"])
             except Exception as exc:
                 _step("Symlink sites-enabled", "error", str(exc)[:300])
         else:
