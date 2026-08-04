@@ -168,6 +168,18 @@ obtain_ssl() {
         log_success "SSL сертификат для $domain уже существует"
         return
     fi
+
+    # If an external proxy (Traefik) owns port 80 it redirects HTTP→HTTPS,
+    # which breaks the HTTP-01 challenge — detect and skip certbot in that case.
+    local redirect_url
+    redirect_url=$(curl -s -o /dev/null -w "%{redirect_url}" --max-time 8 \
+        "http://${domain}/.well-known/acme-challenge/probe" 2>/dev/null || true)
+    if [[ "$redirect_url" == https://* ]]; then
+        log_warn "Обнаружен внешний прокси (HTTP→HTTPS редирект на порту 80)."
+        log_warn "HTTP-01 challenge невозможен. Настройте SSL через Traefik или вручную."
+        log_success "✔ Nginx настроен. SSL будет обслуживаться внешним прокси."
+        return
+    fi
     
     log_info "Получение SSL сертификата..."
     run_with_spinner "Certbot" \
