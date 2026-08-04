@@ -1468,12 +1468,50 @@ def create_webhook_app(bot_controller_instance):
     _DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)+$')
     _EMAIL_RE  = re.compile(r'^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,}$')
 
+    _ACME_WEBROOT = "/var/www/certbot"
+
     def _build_nginx_config(domain: str, port: int) -> str:
+        """HTTP-only config; serves ACME webroot so certbot --webroot works."""
         return (
             f"server {{\n"
             f"    listen 80;\n"
             f"    server_name {domain};\n"
             f"    client_max_body_size 100M;\n\n"
+            f"    location /.well-known/acme-challenge/ {{\n"
+            f"        root /var/www/certbot;\n"
+            f"    }}\n\n"
+            f"    location / {{\n"
+            f"        proxy_pass http://127.0.0.1:{port};\n"
+            f"        proxy_set_header Host $host;\n"
+            f"        proxy_set_header X-Real-IP $remote_addr;\n"
+            f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
+            f"        proxy_http_version 1.1;\n"
+            f"        proxy_set_header Upgrade $http_upgrade;\n"
+            f"        proxy_set_header Connection \"upgrade\";\n"
+            f"    }}\n"
+            f"}}\n"
+        )
+
+    def _build_nginx_ssl_config(domain: str, port: int) -> str:
+        """Full SSL config: HTTP → HTTPS redirect + HTTPS reverse proxy."""
+        cert = f"/etc/letsencrypt/live/{domain}"
+        return (
+            f"server {{\n"
+            f"    listen 80;\n"
+            f"    server_name {domain};\n"
+            f"    location /.well-known/acme-challenge/ {{ root /var/www/certbot; }}\n"
+            f"    location / {{ return 301 https://$host$request_uri; }}\n"
+            f"}}\n\n"
+            f"server {{\n"
+            f"    listen 443 ssl;\n"
+            f"    server_name {domain};\n"
+            f"    client_max_body_size 100M;\n\n"
+            f"    ssl_certificate {cert}/fullchain.pem;\n"
+            f"    ssl_certificate_key {cert}/privkey.pem;\n"
+            f"    ssl_protocols TLSv1.2 TLSv1.3;\n"
+            f"    ssl_ciphers HIGH:!aNULL:!MD5;\n\n"
+            f"    location /.well-known/acme-challenge/ {{ root /var/www/certbot; }}\n\n"
             f"    location / {{\n"
             f"        proxy_pass http://127.0.0.1:{port};\n"
             f"        proxy_set_header Host $host;\n"
@@ -1599,6 +1637,13 @@ def create_webhook_app(bot_controller_instance):
             ], timeout=300, extra_env={"DEBIAN_FRONTEND": "noninteractive"})
             _nginx_start()
 
+        # --- Create ACME webroot (needed by nginx config and certbot) ---
+        try:
+            os.makedirs(_ACME_WEBROOT, exist_ok=True)
+            _step("Директория ACME-webroot", "ok", _ACME_WEBROOT)
+        except Exception as exc:
+            _step("Директория ACME-webroot", "error", str(exc)[:300])
+
         # --- Write nginx config ---
         wrote_cfg = False
         try:
@@ -1644,25 +1689,24 @@ def create_webhook_app(bot_controller_instance):
 
         _nginx_reload("Перезагрузка Nginx")
 
-        # --- DNS pre-check before certbot ---
-        import socket as _socket
-        try:
-            resolved = _socket.getaddrinfo(domain, 80, _socket.AF_INET)[0][4][0]
-            _step("DNS-проверка домена", "ok", f"{domain} → {resolved}")
-        except Exception as dns_exc:
-            _step("DNS-проверка домена", "error",
-                  f"Домен не разрешается: {dns_exc}. Добавьте A-запись DNS, указывающую на IP этого сервера.")
-            return jsonify({"success": False, "steps": steps})
-
-        # --- Certbot SSL ---
+        # --- Certbot SSL via webroot (no --nginx authenticator, avoids redirect/conflict issues) ---
         certbot_ok = _run("SSL-сертификат (Let's Encrypt)", [
-            "certbot", "--nginx",
+            "certbot", "certonly", "--webroot",
+            "-w", _ACME_WEBROOT,
             "-d", domain,
             "--email", email,
-            "--agree-tos", "--non-interactive", "--redirect", "--no-eff-email"
+            "--agree-tos", "--non-interactive", "--no-eff-email"
         ], timeout=180)
 
         if certbot_ok:
+            # Replace HTTP-only config with full HTTPS config
+            ssl_cfg = _build_nginx_ssl_config(domain, port_int)
+            try:
+                with open(nginx_conf_path, 'w') as fh:
+                    fh.write(ssl_cfg)
+                _step("Конфиг Nginx (HTTPS)", "ok", f"SSL-конфиг записан: {nginx_conf_path}")
+            except Exception as exc:
+                _step("Конфиг Nginx (HTTPS)", "error", str(exc)[:300])
             _nginx_reload("Финальная перезагрузка Nginx")
 
         all_ok = all(s["status"] in ("ok", "skip") for s in steps)
