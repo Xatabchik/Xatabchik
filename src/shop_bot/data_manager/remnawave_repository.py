@@ -402,6 +402,26 @@ _LEGACY_FORWARDERS = (
     "is_subscription_expiry_notifications_enabled",
     "toggle_subscription_expiry_notifications",
     "update_user_stats",
+    "set_key_auto_renew",
+    "set_all_keys_auto_renew_for_user",
+    "get_keys_for_auto_renew",
+
+    # Broadcast campaigns
+    "create_broadcast_campaign",
+    "get_broadcast_campaigns",
+    "get_broadcast_campaign",
+    "update_broadcast_campaign",
+    "toggle_broadcast_campaign",
+    "delete_broadcast_campaign",
+    "get_inactive_subscribers",
+    "get_pending_broadcast_recipients",
+    "record_broadcast_sends",
+    "mark_broadcast_run",
+    "get_broadcast_stats",
+
+    # Key management
+    "update_key_name",
+    "get_transactions_paginated",
 
     # User gifts (неактивированные подарки)
     "create_user_gift",
@@ -412,6 +432,7 @@ _LEGACY_FORWARDERS = (
     "get_user_inactive_gifts",
     "activate_user_gift",
     "delete_user_gift",
+    "set_referred_by_from_gift",
     "link_key_to_gift",
 
     "get_all_ssh_targets",

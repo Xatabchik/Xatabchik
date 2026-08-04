@@ -1,6 +1,6 @@
 [project]
 name = "Xatabchik"
-version = "1.3.0"
+version = "2.0"
 description = "Remnawave Control Bot для автоматизации продаж VLESS VPN"
 dependencies = [
     "aiogram==3.21.0",

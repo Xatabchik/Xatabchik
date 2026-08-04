@@ -1,4 +1,6 @@
 import os
+import re
+import subprocess
 import logging
 import asyncio
 import threading
@@ -16,7 +18,7 @@ from hmac import compare_digest
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from math import ceil
-from flask import Flask, request, render_template, redirect, url_for, flash, session, current_app, jsonify, send_file
+from flask import Flask, request, render_template, redirect, url_for, flash, session, current_app, jsonify, send_file, Response
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 import secrets
 import urllib.parse
@@ -88,6 +90,12 @@ from shop_bot.data_manager.database import (
     create_server_cost_entry, update_server_cost_entry, delete_server_cost_entry,
     get_economics_summary, get_revenue_forecast, get_utm_links, create_utm_link,
     get_utm_analytics, delete_utm_link,
+)
+from shop_bot.data_manager.database import (
+    create_broadcast_campaign, get_broadcast_campaigns, get_broadcast_campaign,
+    update_broadcast_campaign, toggle_broadcast_campaign, delete_broadcast_campaign,
+    get_pending_broadcast_recipients, record_broadcast_sends, mark_broadcast_run,
+    get_broadcast_stats,
 )
 from shop_bot.data_manager.database import (
     list_referral_payout_methods, list_referral_withdrawal_requests,
@@ -314,8 +322,13 @@ ALL_SETTINGS_KEYS = [
     "franchise_commission_percent",
     "franchise_min_withdraw_rub",
 
+    "auto_renew_globally_enabled",
+    "auto_renew_hours_before",
+
     "webapp_enabled",
     "webapp_domain",
+    "webapp_port",
+    "webapp_ssl_email",
     "webapp_title",
     "webapp_logo",
     "webapp_icon",
@@ -1027,7 +1040,7 @@ def create_webhook_app(bot_controller_instance):
         )
         buf = io.StringIO()
         writer = csv.writer(buf, delimiter=';')
-        writer.writerow(['ID', 'Пользователь', 'Сумма RUB', 'Статус', 'Метод оплаты', 'Тариф', 'Действие', 'Дата'])
+        writer.writerow(['ID', 'Пользователь', 'Сумма RUB', 'Статус', 'Метод оплаты', 'ID провайдера', 'Тариф', 'Действие', 'Дата'])
         for t in transactions:
             writer.writerow([
                 t.get('transaction_id'),
@@ -1035,6 +1048,7 @@ def create_webhook_app(bot_controller_instance):
                 t.get('amount_rub'),
                 t.get('status'),
                 t.get('payment_method'),
+                t.get('provider_transaction_id'),
                 t.get('plan_name'),
                 t.get('action_label'),
                 t.get('created_date'),
@@ -1351,6 +1365,279 @@ def create_webhook_app(bot_controller_instance):
             plans=plans,
             **common_data,
         )
+
+    # ─── Рассылки ───────────────────────────────────────────────────────────────
+
+    @flask_app.route('/analytics/broadcasts')
+    @login_required
+    def analytics_broadcasts_page():
+        campaigns = get_broadcast_campaigns()
+        for c in campaigns:
+            c['stats'] = get_broadcast_stats(c['id'])
+        common_data = get_common_template_data()
+        return render_template(
+            'analytics/broadcasts.html',
+            active_tab='broadcasts',
+            campaigns=campaigns,
+            **common_data,
+        )
+
+    @flask_app.route('/analytics/broadcasts/create', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_create():
+        name = (request.form.get('name') or '').strip()
+        text_html = (request.form.get('text_html') or '').strip()
+        interval_hours = request.form.get('interval_hours', '72')
+        target_segment = request.form.get('target_segment', 'inactive')
+        if not name or not text_html:
+            flash('Заполните название и текст рассылки.', 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        try:
+            interval_hours = max(1, int(interval_hours))
+        except (ValueError, TypeError):
+            interval_hours = 72
+        cid = create_broadcast_campaign(name, text_html, interval_hours, target_segment)
+        if cid:
+            flash(f'Рассылка «{name}» создана.', 'success')
+        else:
+            flash('Ошибка при создании рассылки.', 'danger')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/update', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_update(campaign_id):
+        name = (request.form.get('name') or '').strip()
+        text_html = (request.form.get('text_html') or '').strip()
+        interval_hours = request.form.get('interval_hours', '72')
+        if not name or not text_html:
+            flash('Заполните название и текст рассылки.', 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        try:
+            interval_hours = max(1, int(interval_hours))
+        except (ValueError, TypeError):
+            interval_hours = 72
+        ok = update_broadcast_campaign(campaign_id, name=name, text_html=text_html, interval_hours=interval_hours)
+        flash('Рассылка обновлена.' if ok else 'Ошибка при обновлении.', 'success' if ok else 'danger')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/toggle', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_toggle(campaign_id):
+        new_state = toggle_broadcast_campaign(campaign_id)
+        flash(f"Рассылка {'включена' if new_state else 'выключена'}.", 'success')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/delete', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_delete(campaign_id):
+        c = get_broadcast_campaign(campaign_id)
+        ok = delete_broadcast_campaign(campaign_id)
+        name = (c or {}).get('name', f'#{campaign_id}')
+        flash(f'Рассылка «{name}» удалена.' if ok else 'Ошибка при удалении.', 'success' if ok else 'danger')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/send-now', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_send_now(campaign_id):
+        c = get_broadcast_campaign(campaign_id)
+        if not c:
+            flash('Рассылка не найдена.', 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        interval_hours = int(c.get('interval_hours') or 72)
+        recipients = get_pending_broadcast_recipients(campaign_id, interval_hours)
+        mark_broadcast_run(campaign_id)
+        if not recipients:
+            flash('Нет пользователей для отправки (все уже получили или нет неактивных).', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
+        text = c.get('text_html') or ''
+        sent = 0
+        failed = 0
+        for uid in recipients:
+            try:
+                _dispatch_bot_notification(int(uid), text)
+                sent += 1
+            except Exception:
+                failed += 1
+        if sent:
+            record_broadcast_sends(campaign_id, recipients)
+        flash(f'Отправлено: {sent}, не доставлено: {failed}.', 'success' if sent else 'warning')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    # ─── Webapp auto-setup ────────────────────────────────────────────────────
+
+    _DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)+$')
+    _EMAIL_RE  = re.compile(r'^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,}$')
+
+    def _build_nginx_config(domain: str, port: int) -> str:
+        return (
+            f"server {{\n"
+            f"    listen 80;\n"
+            f"    server_name {domain};\n"
+            f"    client_max_body_size 100M;\n\n"
+            f"    location / {{\n"
+            f"        proxy_pass http://127.0.0.1:{port};\n"
+            f"        proxy_set_header Host $host;\n"
+            f"        proxy_set_header X-Real-IP $remote_addr;\n"
+            f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
+            f"        proxy_http_version 1.1;\n"
+            f"        proxy_set_header Upgrade $http_upgrade;\n"
+            f"        proxy_set_header Connection \"upgrade\";\n"
+            f"    }}\n"
+            f"}}\n"
+        )
+
+    @flask_app.route('/settings/webapp/nginx-config')
+    @login_required
+    def webapp_nginx_config_route():
+        domain = (get_setting('webapp_domain') or '').strip().lower()
+        port_str = (get_setting('webapp_port') or '8001').strip()
+        try:
+            port_int = max(1, min(65535, int(port_str)))
+        except (ValueError, TypeError):
+            port_int = 8001
+        if not domain:
+            return Response("# Домен не указан — сохраните настройки сначала.\n", mimetype='text/plain')
+        cfg = _build_nginx_config(domain, port_int)
+        return Response(cfg, mimetype='text/plain',
+                        headers={"Content-Disposition": "attachment; filename=remnawave-webapp.conf"})
+
+    @flask_app.route('/settings/webapp/setup', methods=['POST'])
+    @login_required
+    def webapp_setup_route():
+        domain = (request.form.get('webapp_domain') or '').strip().lower()
+        email  = (request.form.get('ssl_email') or '').strip()
+        port_s = (request.form.get('webapp_port') or '8001').strip()
+
+        steps = []
+
+        def _step(name, status, message):
+            steps.append({"name": name, "status": status, "message": message})
+
+        def _run(name, cmd, timeout=90):
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                ok = r.returncode == 0
+                _step(name, "ok" if ok else "error", ((r.stdout + r.stderr).strip()[:800]) or ("OK" if ok else "ошибка"))
+                return ok
+            except FileNotFoundError:
+                _step(name, "skip", f"Команда не найдена: {cmd[0]}")
+                return False
+            except subprocess.TimeoutExpired:
+                _step(name, "error", "Таймаут выполнения")
+                return False
+            except Exception as exc:
+                _step(name, "error", str(exc)[:400])
+                return False
+
+        # --- Validate inputs ---
+        if not _DOMAIN_RE.match(domain):
+            return jsonify({"success": False, "steps": [{"name": "Валидация", "status": "error", "message": "Некорректный домен (допустимы латинские буквы, цифры, дефис, точки)."}]})
+        if not _EMAIL_RE.match(email):
+            return jsonify({"success": False, "steps": [{"name": "Валидация", "status": "error", "message": "Некорректный e-mail для Let's Encrypt."}]})
+        try:
+            port_int = int(port_s)
+            if not (1 <= port_int <= 65535):
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({"success": False, "steps": [{"name": "Валидация", "status": "error", "message": "Некорректный порт (1–65535)."}]})
+
+        _step("Валидация", "ok", f"Домен: {domain}, порт: {port_int}")
+
+        # --- Save settings ---
+        update_setting('webapp_domain', domain)
+        update_setting('webapp_port', str(port_int))
+        update_setting('webapp_ssl_email', email)
+        _step("Сохранение настроек", "ok", "Домен, порт и e-mail сохранены в базе.")
+
+        nginx_conf_name = "remnawave-webapp"
+        nginx_conf_path = f"/etc/nginx/sites-available/{nginx_conf_name}.conf"
+        nginx_link_path = f"/etc/nginx/sites-enabled/{nginx_conf_name}.conf"
+        nginx_cfg = _build_nginx_config(domain, port_int)
+
+        # --- Check / install nginx ---
+        nginx_ok = _run("Проверка Nginx", ["which", "nginx"])
+        if not nginx_ok:
+            _run("Установка Nginx + certbot", [
+                "apt-get", "install", "-y", "--no-install-recommends",
+                "nginx", "certbot", "python3-certbot-nginx"
+            ], timeout=240)
+
+        # --- Write nginx config ---
+        wrote_cfg = False
+        try:
+            os.makedirs(os.path.dirname(nginx_conf_path), exist_ok=True)
+            with open(nginx_conf_path, 'w') as fh:
+                fh.write(nginx_cfg)
+            _step("Конфиг Nginx", "ok", f"Записан: {nginx_conf_path}")
+            wrote_cfg = True
+        except PermissionError:
+            # Try sudo tee
+            r = subprocess.run(["sudo", "tee", nginx_conf_path],
+                               input=nginx_cfg, capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                _step("Конфиг Nginx", "ok", f"Записан через sudo: {nginx_conf_path}")
+                wrote_cfg = True
+            else:
+                _step("Конфиг Nginx", "error",
+                      "Нет прав записи. Скопируйте конфигурацию вручную (кнопка «Скачать конфиг»).")
+        except Exception as exc:
+            _step("Конфиг Nginx", "error", str(exc)[:400])
+
+        if not wrote_cfg:
+            return jsonify({"success": False, "steps": steps, "nginx_config": nginx_cfg})
+
+        # --- Create symlink ---
+        if not os.path.lexists(nginx_link_path):
+            try:
+                os.symlink(nginx_conf_path, nginx_link_path)
+                _step("Symlink sites-enabled", "ok", "Создан")
+            except PermissionError:
+                _run("Symlink sites-enabled", ["sudo", "ln", "-sf", nginx_conf_path, nginx_link_path])
+            except Exception as exc:
+                _step("Symlink sites-enabled", "error", str(exc)[:300])
+        else:
+            _step("Symlink sites-enabled", "ok", "Уже существует")
+
+        # --- Test and reload nginx ---
+        if not _run("Проверка конфига Nginx", ["nginx", "-t"]):
+            return jsonify({"success": False, "steps": steps, "nginx_config": nginx_cfg})
+
+        _run("Перезагрузка Nginx", ["systemctl", "reload", "nginx"])
+
+        # --- Certbot SSL ---
+        certbot_ok = _run("SSL-сертификат (Let's Encrypt)", [
+            "certbot", "--nginx",
+            "-d", domain,
+            "--email", email,
+            "--agree-tos", "--non-interactive", "--redirect", "--no-eff-email"
+        ], timeout=180)
+
+        if certbot_ok:
+            _run("Финальная перезагрузка Nginx", ["systemctl", "reload", "nginx"])
+
+        all_ok = all(s["status"] in ("ok", "skip") for s in steps)
+        return jsonify({"success": all_ok, "steps": steps})
+
+    @flask_app.route('/settings/webapp/check', methods=['POST'])
+    @login_required
+    def webapp_check_route():
+        domain = (get_setting('webapp_domain') or '').strip()
+        if not domain:
+            return jsonify({"ok": False, "message": "Домен не задан. Сохраните настройки."})
+        url = f"https://{domain}/"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "XatabchikBot/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return jsonify({"ok": True, "message": f"Доступен ✓  (HTTP {resp.status})"})
+        except Exception as exc:
+            # Try HTTP fallback
+            try:
+                req2 = urllib.request.Request(f"http://{domain}/", headers={"User-Agent": "XatabchikBot/1.0"})
+                with urllib.request.urlopen(req2, timeout=8) as resp2:
+                    return jsonify({"ok": True, "message": f"HTTP доступен (статус {resp2.status}), но HTTPS не отвечает: {exc}"})
+            except Exception as exc2:
+                return jsonify({"ok": False, "message": f"Недоступен по HTTPS: {exc}. HTTP: {exc2}"})
 
     @flask_app.route('/monitor')
     @login_required
@@ -3111,6 +3398,7 @@ def create_webhook_app(bot_controller_instance):
                 "yoomoney_enabled",
                 "franchise_enabled",
                 "webapp_enabled",
+                "auto_renew_globally_enabled",
             ]
             for checkbox_key in checkbox_keys:
                 values = request.form.getlist(checkbox_key) or ['off']

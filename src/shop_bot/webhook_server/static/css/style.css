@@ -3670,6 +3670,7 @@ body.login-page {
 	--ui-radius: 18px;
 	--ui-radius-sm: 14px;
 	--sidebar-w: 272px;
+	--mobile-header-h: 56px;
 	--shadow-soft: 0 10px 28px rgba(0,0,0,.35);
 	--shadow-card: 0 14px 36px rgba(0,0,0,.45);
 }
@@ -4225,8 +4226,11 @@ select option:checked{
 		display: flex;
 	}
 
-	/* Скрываем бренд в сайдбаре на мобильных */
+	/* Скрываем бренд и версию в сайдбаре на мобильных (mobile-header заменяет их) */
 	.sidebar .brand {
+		display: none;
+	}
+	.sidebar .brand-version {
 		display: none;
 	}
 
@@ -4267,13 +4271,15 @@ select option:checked{
 	.sidebar-navigation .nav-link{ flex: 0 0 auto; }
 
 	.content-shell{ 
-		padding: 14px 14px calc(80px + env(safe-area-inset-bottom)); /* Отступ снизу для нижнего меню */
+		/* Отступ сверху = высота фиксированного mobile-header + safe-area + зазор */
+		padding: calc(var(--mobile-header-h) + env(safe-area-inset-top) + 8px) 14px calc(80px + env(safe-area-inset-bottom));
 	}
 
 	/* Topbar: show burger button, hide dropdown menu (we use sidebar drawer instead) */
 	.topbar{ 
-		justify-content: flex-start; 
-		padding-top: 0;
+		justify-content: flex-start;
+		padding-top: 4px;
+		padding-bottom: 6px;
 	}
 	.bm{ display: flex !important; position: relative; margin-right: 10px; }
 	label.burger_img{ display: inline-flex !important; }
@@ -4287,6 +4293,24 @@ select option:checked{
 	/* Добавляем отступ снизу для контента, чтобы он не перекрывался нижним меню */
 	.page-content {
 		padding-bottom: calc(80px + env(safe-area-inset-bottom));
+	}
+}
+
+/* === Tablet (768–992px): скрываем bot-controls в topbar — mobile-header уже показывает их === */
+@media (min-width: 768px) and (max-width: 992px) {
+	.topbar .header-controls {
+		display: none !important;
+	}
+}
+
+/* === Phones (≤576px): topbar минимальный — только иконка бургера === */
+@media (max-width: 576px) {
+	.topbar {
+		padding-bottom: 2px;
+		min-height: 0;
+	}
+	.bm {
+		margin-right: 0;
 	}
 }
 

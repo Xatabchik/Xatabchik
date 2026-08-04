@@ -385,8 +385,8 @@ def _process_key_data(key: dict) -> dict:
     percent = max(0, min(100, percent))
     percent_str = f"{percent:.1f}%"
     
-    # 4. Display Name
-    key_name = key.get('name')
+    # 4. Display Name (prefer user-set name, fall back to email/uuid)
+    key_name = key.get('user_key_name') or key.get('name')
     if not key_name:
         # User requested: Key #email_username (sannilo@bot.local -> Ключ #sannilo)
         email = key.get('email') or key.get('key_email') or ""
@@ -470,6 +470,7 @@ def _process_key_data(key: dict) -> dict:
         "status_bg": status_bg,
         "comment_key": key.get('comment_key') or "",
         "host_name": key.get('host_name') or "",
+        "user_key_name": key.get('user_key_name') or "",
     }
 
 def _get_key_html(key: dict) -> str:
@@ -659,6 +660,20 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                             регистрации:</span>
                         <span class="text-[10px] text-gray-300 font-black">{reg_date_str} ({time_since_str})</span>
                     </div>
+
+                    <!-- Action buttons: transactions history + key search -->
+                    <div class="grid grid-cols-2 gap-2 mt-1">
+                        <button onclick="openActionModal('transactions', null)"
+                            class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                            <span class="material-icons-round text-sm">receipt_long</span>
+                            <span>История</span>
+                        </button>
+                        <button onclick="openActionModal('search_keys', null)"
+                            class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                            <span class="material-icons-round text-sm">search</span>
+                            <span>Поиск ключей</span>
+                        </button>
+                    </div>
                     {sync_btn_html}
                 </div>
             </div>
@@ -759,16 +774,21 @@ def _get_profile_keys_html(keys: list) -> str:
                          <span>Подключить</span>
                      </button>
                      
-                     <div class="grid grid-cols-2 gap-2 mt-1">
+                     <div class="grid grid-cols-3 gap-2 mt-1">
                          <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
-                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-icons-round text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
+                         <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
+                             <span class="material-icons-round text-sm">drive_file_rename_outline</span>
+                             <span>Название</span>
+                         </button>
                          <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
-                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-icons-round text-sm">edit_note</span>
-                             <span>Комментарии</span>
+                             <span>Заметка</span>
                          </button>
                      </div>
                 </div>
@@ -845,16 +865,21 @@ def _get_setup_keys_html(keys: list) -> str:
                          <span>Открыть инструкцию</span>
                      </button>
                      
-                     <div class="grid grid-cols-2 gap-2 mt-1">
+                     <div class="grid grid-cols-3 gap-2 mt-1">
                          <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
-                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-icons-round text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
+                         <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
+                             <span class="material-icons-round text-sm">drive_file_rename_outline</span>
+                             <span>Название</span>
+                         </button>
                          <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
-                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
+                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-icons-round text-sm">edit_note</span>
-                             <span>Комментарии</span>
+                             <span>Заметка</span>
                          </button>
                      </div>
                 </div>
@@ -1469,6 +1494,23 @@ class ApplyPromoRequest(BaseModel):
     promo_code: str
     plan_id: int | None = None
     price: float | None = None
+
+class RenameKeyRequest(BaseModel):
+    user_id: int
+    key_id: int
+    new_name: str
+    token: str | None = None
+
+class DeleteAllDevicesRequest(BaseModel):
+    user_id: int
+    key_id: int
+    host_name: str | None = None
+    token: str | None = None
+
+class SearchKeysRequest(BaseModel):
+    user_id: int
+    query: str
+    token: str | None = None
 
 # ===== API Endpoints =====
 
@@ -2502,6 +2544,221 @@ async def api_user_status(user_id: int):
     except Exception as e:
         logger.error(f"User status error: {e}")
         return {"ok": False, "error": str(e)}
+
+@app.post("/api/key/rename")
+async def api_key_rename(req: RenameKeyRequest, request: Request):
+    try:
+        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        if not user or user.get('is_banned'):
+            return {"ok": False, "error": "Access denied"}
+
+        from shop_bot.data_manager.remnawave_repository import get_key_by_id, update_key_name
+        key = get_key_by_id(req.key_id)
+        if not key or key.get("user_id") != req.user_id:
+            return {"ok": False, "error": "Ключ не найден"}
+
+        new_name = req.new_name.strip() if req.new_name else ""
+        if new_name and len(new_name) > 30:
+            return {"ok": False, "error": "Название слишком длинное (макс. 30 символов)"}
+
+        success = update_key_name(req.key_id, new_name or None)
+        if success:
+            return {"ok": True}
+        return {"ok": False, "error": "Не удалось обновить название"}
+    except Exception as e:
+        logger.error(f"Error renaming key: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/key/devices/delete-all")
+async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Request):
+    try:
+        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        if not user or user.get('is_banned'):
+            return {"ok": False, "error": "Access denied"}
+
+        from shop_bot.data_manager.remnawave_repository import get_key_by_id
+        from shop_bot.modules import remnawave_api
+        from shop_bot.data_manager import database
+
+        key = get_key_by_id(req.key_id)
+        if not key or key.get("user_id") != req.user_id:
+            return {"ok": False, "error": "Ключ не найден"}
+
+        uuid_val = key.get("remnawave_user_uuid")
+        if not uuid_val:
+            return {"ok": False, "error": "Ключ не имеет привязки к серверу"}
+
+        cooldown = database.get_device_delete_cooldown(req.user_id, req.key_id, 72)
+        if not cooldown.get("allowed"):
+            remaining = int(cooldown.get("remaining_sec") or 0)
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            return {"ok": False, "error": f"Удалять устройства можно 1 раз в 72 часа. Осталось: {hours}ч {minutes}м"}
+
+        host = req.host_name or key.get("host_name")
+        devices_data = await remnawave_api.get_connected_devices_count(uuid_val, host_name=host)
+        devices = (devices_data or {}).get("devices") or []
+
+        if not devices:
+            return {"ok": True, "deleted": 0}
+
+        deleted = 0
+        for d in devices:
+            device_id = d.get("hwid") if isinstance(d, dict) else str(d)
+            if device_id:
+                success = await remnawave_api.delete_user_device(uuid_val, device_id, host_name=host)
+                if success:
+                    deleted += 1
+
+        if deleted > 0:
+            database.record_device_delete(req.user_id, req.key_id)
+
+        return {"ok": True, "deleted": deleted, "total": len(devices)}
+    except Exception as e:
+        logger.error(f"Error deleting all devices: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/user/transactions")
+async def api_user_transactions(user_id: int, page: int = 1, per_page: int = 10, request: Request = None):
+    try:
+        user = get_user(user_id)
+        if not user or user.get('is_banned'):
+            return {"ok": False, "error": "Access denied"}
+
+        from shop_bot.data_manager.remnawave_repository import get_transactions_paginated
+        transactions, total = get_transactions_paginated(page=page, per_page=per_page, user_id=user_id)
+
+        safe_txs = []
+        for tx in transactions:
+            safe_txs.append({
+                "transaction_id": tx.get("transaction_id"),
+                "amount_rub": tx.get("amount_rub"),
+                "payment_method": tx.get("payment_method") or "—",
+                "status": tx.get("status"),
+                "created_date": tx.get("created_date"),
+                "action_label": tx.get("action_label") or "Оплата",
+                "plan_name": tx.get("plan_name") or "—",
+                "host_name": tx.get("host_name") or "—",
+            })
+
+        return {
+            "ok": True,
+            "transactions": safe_txs,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "has_more": (page * per_page) < total,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching transactions: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/keys/search")
+async def api_keys_search(req: SearchKeysRequest, request: Request):
+    try:
+        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        if not user or user.get('is_banned'):
+            return {"ok": False, "error": "Access denied"}
+
+        from shop_bot.data_manager.remnawave_repository import search_user_keys_by_email
+        q = (req.query or "").strip()
+        if not q:
+            return {"ok": False, "error": "Запрос поиска пустой"}
+        if len(q) < 2:
+            return {"ok": False, "error": "Минимум 2 символа для поиска"}
+
+        keys = search_user_keys_by_email(req.user_id, q)
+        results = []
+        for key in keys[:20]:
+            data = _process_key_data(key)
+            results.append({
+                "key_id": data["key_id"],
+                "name": data["name"],
+                "expire_date_str": data["expire_date_str"],
+                "status_text": data["status_text"],
+                "status_color": data["status_color"],
+                "status_bg": data["status_bg"],
+                "sub_url": data["sub_url"],
+                "host_name": data["host_name"],
+                "user_key_name": data["user_key_name"],
+            })
+
+        return {"ok": True, "results": results, "total": len(results)}
+    except Exception as e:
+        logger.error(f"Error searching keys: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/ref/{referrer_id}")
+async def web_referral_page(referrer_id: str, request: Request):
+    try:
+        bot_username = get_setting("telegram_bot_username") or ""
+        webapp_settings = get_webapp_settings()
+        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
+        logo_url = webapp_settings.get("webapp_logo") or ""
+        deeplink = f"https://t.me/{bot_username}?start=ref_{referrer_id}" if bot_username else ""
+        html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{project_name} — Реферальная ссылка</title>
+<style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}}
+.card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
+h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
+.btn{{display:block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s}}
+.btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}</style></head>
+<body><div class="card">
+{"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else ""}
+<h2>{project_name}</h2>
+<p>Вас пригласили воспользоваться VPN-сервисом. Нажмите кнопку ниже, чтобы начать через Telegram.</p>
+{"<a class='btn' href='" + deeplink + "'>Открыть в Telegram</a>" if deeplink else "<p style='color:#f87171'>Бот не настроен.</p>"}
+</div></body></html>"""
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error(f"Referral page error: {e}")
+        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
+
+@app.get("/gift/{gift_code}")
+async def web_gift_page(gift_code: str, request: Request):
+    try:
+        from shop_bot.data_manager.remnawave_repository import get_gift_by_code
+        bot_username = get_setting("telegram_bot_username") or ""
+        webapp_settings = get_webapp_settings()
+        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
+        logo_url = webapp_settings.get("webapp_logo") or ""
+
+        gift = get_gift_by_code(gift_code) if gift_code else None
+        deeplink = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
+
+        if not gift:
+            title = "Подарочный ключ"
+            desc = "Активируйте подарок через Telegram."
+        elif gift.get("is_activated"):
+            title = "Подарок уже активирован"
+            desc = "Этот подарочный ключ уже был использован."
+            deeplink = ""
+        else:
+            title = "Подарочный VPN-ключ"
+            desc = "Нажмите кнопку ниже, чтобы активировать подарок в Telegram."
+
+        html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{project_name} — {title}</title>
+<style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}}
+.card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
+h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
+.btn{{display:block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s}}
+.btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
+.gift-icon{{font-size:3rem;margin-bottom:.5rem}}</style></head>
+<body><div class="card">
+{"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else "<div class='gift-icon'>🎁</div>"}
+<h2>{title}</h2>
+<p>{desc}</p>
+{"<a class='btn' href='" + deeplink + "'>Активировать в Telegram</a>" if deeplink else ""}
+</div></body></html>"""
+        return HTMLResponse(content=html)
+    except Exception as e:
+        logger.error(f"Gift page error: {e}")
+        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
 
 @app.get("/{path_param}")
 async def dynamic_route(request: Request, path_param: str):

@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}Продажи и аналитика — Рассылки{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+  <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
+</div>
+
+{% include "analytics/_tabs.html" %}
+
+{# ── Flash messages ─────────────────────────────────────────────────────────── #}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ 'success' if category == 'success' else ('warning' if category == 'warning' else 'danger') }} alert-dismissible fade show mb-3" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+{# ── Create campaign card ──────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header"><h3 class="card-title">Создать рассылку</h3></div>
+  <form method="post" action="{{ url_for('analytics_broadcasts_create') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+    <div class="card-body">
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label">Название <span class="text-danger">*</span></label>
+          <input type="text" name="name" class="form-control" placeholder="Напр.: Реактивация февраль" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Повтор (часы) <span class="text-danger">*</span></label>
+          <input type="number" name="interval_hours" class="form-control" value="72" min="1" max="8760" required>
+          <div class="form-text">Раз в N часов для каждого пользователя.</div>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Сегмент</label>
+          <select name="target_segment" class="form-select">
+            <option value="inactive" selected>Без активной подписки</option>
+          </select>
+        </div>
+      </div>
+      <div class="row g-2 mt-1">
+        <div class="col-12">
+          <label class="form-label">Текст сообщения (HTML) <span class="text-danger">*</span></label>
+          <textarea name="text_html" class="form-control font-monospace" rows="5"
+            placeholder="Поддерживается HTML-разметка Telegram: &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;, &lt;a href=&quot;...&quot;&gt;ссылка&lt;/a&gt; и т.д." required></textarea>
+          <div class="form-text">Telegram HTML: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;u&gt;</code>, <code>&lt;a href="..."&gt;</code>, <code>&lt;code&gt;</code>.</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-footer text-end">
+      <button type="submit" class="btn btn-primary"><i class="ti ti-plus me-1"></i>Создать рассылку</button>
+    </div>
+  </form>
+</div>
+
+{# ── Campaigns table ───────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header"><h3 class="card-title">Рассылки</h3></div>
+  <div class="card-body border-bottom py-2 text-secondary small">
+    Активные рассылки автоматически отправляются планировщиком с заданной периодичностью.
+    Кнопка «Отправить сейчас» запускает мгновенную рассылку пользователям, ещё не получившим её.
+  </div>
+  <div class="table-responsive">
+    <table class="table table-vcenter card-table">
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Сегмент</th>
+          <th>Повтор</th>
+          <th>Отправлено (всего)</th>
+          <th>Последний запуск</th>
+          <th>Статус</th>
+          <th class="w-1">Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in campaigns %}
+        <tr>
+          <td>
+            <div class="fw-semibold">{{ c.name }}</div>
+            <div class="text-secondary small text-truncate" style="max-width:320px;" title="{{ c.text_html }}">{{ c.text_html[:120] }}{% if c.text_html|length > 120 %}…{% endif %}</div>
+          </td>
+          <td>
+            {% if c.target_segment == 'inactive' %}<span class="badge bg-blue-lt">Без подписки</span>{% else %}<span class="badge bg-secondary-lt">{{ c.target_segment }}</span>{% endif %}
+          </td>
+          <td class="text-nowrap">
+            каждые {{ c.interval_hours }} ч.
+          </td>
+          <td>{{ c.stats.total_sends }}</td>
+          <td class="text-nowrap small">
+            {% if c.last_run_at %}{{ c.last_run_at[:16] }}{% else %}<span class="text-secondary">—</span>{% endif %}
+          </td>
+          <td>
+            {% if c.is_active %}<span class="badge bg-green-lt">активна</span>{% else %}<span class="badge bg-secondary-lt">приостановлена</span>{% endif %}
+          </td>
+          <td class="text-nowrap">
+            {# Toggle #}
+            <form method="post" action="{{ url_for('analytics_broadcasts_toggle', campaign_id=c.id) }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm {{ 'btn-outline-secondary' if c.is_active else 'btn-outline-success' }}"
+                title="{{ 'Приостановить' if c.is_active else 'Включить' }}">
+                {% if c.is_active %}<i class="ti ti-player-pause"></i>{% else %}<i class="ti ti-player-play"></i>{% endif %}
+              </button>
+            </form>
+            {# Send now #}
+            <form method="post" action="{{ url_for('analytics_broadcasts_send_now', campaign_id=c.id) }}" class="d-inline"
+              onsubmit="return confirm('Отправить рассылку «{{ c.name }}» прямо сейчас всем неактивным пользователям, ещё не получавшим её?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-primary" title="Отправить сейчас">
+                <i class="ti ti-send"></i>
+              </button>
+            </form>
+            {# Edit (toggle modal) #}
+            <button type="button" class="btn btn-sm btn-outline-warning" title="Редактировать"
+              data-bs-toggle="modal" data-bs-target="#editModal{{ c.id }}">
+              <i class="ti ti-pencil"></i>
+            </button>
+            {# Delete #}
+            <form method="post" action="{{ url_for('analytics_broadcasts_delete', campaign_id=c.id) }}" class="d-inline"
+              onsubmit="return confirm('Удалить рассылку «{{ c.name }}»? История отправок также будет удалена.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Удалить"><i class="ti ti-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+
+        {# Edit modal #}
+        <div class="modal fade" id="editModal{{ c.id }}" tabindex="-1">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Редактировать рассылку</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <form method="post" action="{{ url_for('analytics_broadcasts_update', campaign_id=c.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                <div class="modal-body">
+                  <div class="mb-3">
+                    <label class="form-label">Название</label>
+                    <input type="text" name="name" class="form-control" value="{{ c.name }}" required>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">Повтор (часы)</label>
+                    <input type="number" name="interval_hours" class="form-control" value="{{ c.interval_hours }}" min="1" max="8760" required>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">Текст сообщения (HTML)</label>
+                    <textarea name="text_html" class="form-control font-monospace" rows="7" required>{{ c.text_html }}</textarea>
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                  <button type="submit" class="btn btn-primary">Сохранить</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-secondary py-4">Рассылки не созданы. Создайте первую рассылку выше.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

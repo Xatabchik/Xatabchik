@@ -681,6 +681,10 @@ def initialize_db():
                 "franchise_enabled": "false",
                 "franchise_commission_percent": "35.0",
                 "franchise_min_withdraw_rub": "1500.0",
+
+                # Auto-renewal
+                "auto_renew_globally_enabled": "false",
+                "auto_renew_hours_before": "24",
             }
             run_migration()
             for key, value in default_settings.items():
@@ -1203,6 +1207,8 @@ def run_migration():
                 ''')
             except Exception:
                 pass
+            # Auto-renewal column
+            _ensure_table_column(cursor, "vpn_keys", "auto_renew", "INTEGER DEFAULT 0")
             cursor.execute("PRAGMA foreign_keys = ON")
             conn.commit()
     except sqlite3.Error as e:
@@ -1999,6 +2005,35 @@ def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:
 
     # utm_slug на пользователе — first-touch атрибуция
     _ensure_table_column(cursor, "users", "utm_slug", "TEXT")
+
+    # Рассылки (автоматические сообщения пользователям без активных подписок)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcast_campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            text_html TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            interval_hours INTEGER NOT NULL DEFAULT 72,
+            target_segment TEXT NOT NULL DEFAULT 'inactive',
+            send_count INTEGER DEFAULT 0,
+            last_run_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcast_sends (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    _ensure_index(cursor, "idx_broadcast_sends_cuid_time", "broadcast_sends", "campaign_id, user_id, sent_at")
 
 
 def get_all_ssh_targets() -> list[dict]:
@@ -3007,6 +3042,192 @@ def get_utm_analytics() -> list[dict]:
     except sqlite3.Error as e:
         logging.error(f"Failed to get utm analytics: {e}")
     return result
+
+
+# =============================
+# Рассылки
+# =============================
+
+def create_broadcast_campaign(name: str, text_html: str, interval_hours: int = 72, target_segment: str = "inactive") -> int | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO broadcast_campaigns (name, text_html, interval_hours, target_segment) VALUES (?, ?, ?, ?)",
+                (name.strip(), text_html.strip(), int(interval_hours), target_segment),
+            )
+            conn.commit()
+            return cursor.lastrowid
+    except sqlite3.Error as e:
+        logging.error("Failed to create broadcast campaign: %s", e)
+        return None
+
+
+def get_broadcast_campaigns() -> list[dict]:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM broadcast_campaigns ORDER BY created_at DESC")
+            return [dict(r) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to get broadcast campaigns: %s", e)
+        return []
+
+
+def get_broadcast_campaign(campaign_id: int) -> dict | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error("Failed to get broadcast campaign %s: %s", campaign_id, e)
+        return None
+
+
+def update_broadcast_campaign(campaign_id: int, *, name: str, text_html: str, interval_hours: int) -> bool:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE broadcast_campaigns SET name=?, text_html=?, interval_hours=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (name.strip(), text_html.strip(), int(interval_hours), int(campaign_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to update broadcast campaign %s: %s", campaign_id, e)
+        return False
+
+
+def toggle_broadcast_campaign(campaign_id: int) -> bool:
+    """Flip is_active. Returns new is_active state."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT is_active FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            new_state = 0 if row[0] else 1
+            cursor.execute(
+                "UPDATE broadcast_campaigns SET is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (new_state, int(campaign_id)),
+            )
+            conn.commit()
+            return bool(new_state)
+    except sqlite3.Error as e:
+        logging.error("Failed to toggle broadcast campaign %s: %s", campaign_id, e)
+        return False
+
+
+def delete_broadcast_campaign(campaign_id: int) -> bool:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM broadcast_sends WHERE campaign_id = ?", (int(campaign_id),))
+            cursor.execute("DELETE FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to delete broadcast campaign %s: %s", campaign_id, e)
+        return False
+
+
+def get_inactive_subscribers() -> list[int]:
+    """User IDs with no active keys (expire_at in the past or no keys at all), not banned."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT u.telegram_id FROM users u
+                WHERE u.is_banned = 0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM vpn_keys k
+                    WHERE k.user_id = u.telegram_id
+                      AND k.expire_at > datetime('now')
+                  )
+                """
+            )
+            return [row[0] for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to get inactive subscribers: %s", e)
+        return []
+
+
+def get_pending_broadcast_recipients(campaign_id: int, interval_hours: int) -> list[int]:
+    """Inactive users who haven't been sent this campaign in the last `interval_hours`."""
+    inactive = set(get_inactive_subscribers())
+    if not inactive:
+        return []
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT user_id FROM broadcast_sends
+                WHERE campaign_id = ?
+                  AND sent_at > datetime('now', '-' || ? || ' hours')
+                """,
+                (int(campaign_id), int(interval_hours)),
+            )
+            recently_sent = {row[0] for row in cursor.fetchall()}
+        return [uid for uid in inactive if uid not in recently_sent]
+    except sqlite3.Error as e:
+        logging.error("Failed to get pending broadcast recipients: %s", e)
+        return []
+
+
+def record_broadcast_sends(campaign_id: int, user_ids: list[int]) -> int:
+    """Insert send records and bump campaign send_count. Returns count inserted."""
+    if not user_ids:
+        return 0
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                "INSERT INTO broadcast_sends (campaign_id, user_id) VALUES (?, ?)",
+                [(int(campaign_id), int(uid)) for uid in user_ids],
+            )
+            cursor.execute(
+                "UPDATE broadcast_campaigns SET last_run_at=CURRENT_TIMESTAMP, send_count=COALESCE(send_count,0)+?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (len(user_ids), int(campaign_id)),
+            )
+            conn.commit()
+            return len(user_ids)
+    except sqlite3.Error as e:
+        logging.error("Failed to record broadcast sends for campaign %s: %s", campaign_id, e)
+        return 0
+
+
+def mark_broadcast_run(campaign_id: int) -> None:
+    """Update last_run_at even when there are no recipients (avoids tight retry loops)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE broadcast_campaigns SET last_run_at=CURRENT_TIMESTAMP WHERE id=?",
+                (int(campaign_id),),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to mark broadcast run for campaign %s: %s", campaign_id, e)
+
+
+def get_broadcast_stats(campaign_id: int) -> dict:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*), MAX(sent_at) FROM broadcast_sends WHERE campaign_id = ?", (int(campaign_id),))
+            row = cursor.fetchone()
+            return {"total_sends": int(row[0] or 0), "last_sent_at": row[1]}
+    except sqlite3.Error as e:
+        logging.error("Failed to get broadcast stats for campaign %s: %s", campaign_id, e)
+        return {"total_sends": 0, "last_sent_at": None}
 
 
 def get_all_keys() -> list[dict]:
@@ -6007,6 +6228,57 @@ def get_keys_for_host(host_name: str) -> list[dict]:
         return []
 
 
+def set_key_auto_renew(key_id: int, enabled: bool) -> bool:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE vpn_keys SET auto_renew = ? WHERE key_id = ?", (1 if enabled else 0, int(key_id)))
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to set auto_renew for key %s: %s", key_id, e)
+        return False
+
+
+def set_all_keys_auto_renew_for_user(user_id: int, enabled: bool) -> int:
+    """Mass-update auto_renew for all keys of a user. Returns count of updated rows."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE vpn_keys SET auto_renew = ? WHERE user_id = ?", (1 if enabled else 0, int(user_id)))
+            conn.commit()
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        logging.error("Failed to set auto_renew for all keys of user %s: %s", user_id, e)
+        return 0
+
+
+def get_keys_for_auto_renew(hours_before: int = 24) -> list[dict]:
+    """Return keys with auto_renew=1 expiring within the next `hours_before` hours."""
+    now = datetime.now()
+    deadline = now + timedelta(hours=int(hours_before))
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM vpn_keys
+                WHERE auto_renew = 1
+                  AND expire_at IS NOT NULL
+                  AND expire_at > ?
+                  AND expire_at <= ?
+                ORDER BY expire_at ASC
+                """,
+                (now.strftime("%Y-%m-%d %H:%M:%S"), deadline.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            rows = cursor.fetchall()
+            return [_normalize_key_row(row) for row in rows]
+    except sqlite3.Error as e:
+        logging.error("Failed to get keys for auto-renewal: %s", e)
+        return []
+
+
 def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
     """Поиск ключей пользователя по key_email или user_key_name."""
     if not search_query or not search_query.strip():
@@ -7482,6 +7754,55 @@ def activate_user_gift(
     except Exception as e:
         logger.error(f"Failed to activate gift {gift_code}: {e}")
         return False, None
+
+
+def set_referred_by_from_gift(user_id: int, from_user_id: int, *, max_age_seconds: int = 1800) -> bool:
+    """Set referred_by to the gift sender when a new user activates a gift.
+
+    Guard: skips if the user's registration_date is older than max_age_seconds
+    (meaning they were already registered before this gift activation).
+    """
+    uid = int(user_id)
+    fid = int(from_user_id)
+    if fid <= 0 or fid == uid:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT referred_by, registration_date FROM users WHERE telegram_id = ?", (uid,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            current_ref, reg_date_raw = row
+            if current_ref:
+                return False  # already has a referrer
+            if reg_date_raw:
+                try:
+                    reg_dt = datetime.fromisoformat(str(reg_date_raw).replace("Z", "+00:00"))
+                    # Strip timezone for naive comparison
+                    if reg_dt.tzinfo is not None:
+                        reg_dt = reg_dt.replace(tzinfo=None)
+                    age = (datetime.now() - reg_dt).total_seconds()
+                    if age > max_age_seconds:
+                        # Account predates this activation window — not a new user
+                        logging.info(
+                            "set_referred_by_from_gift: skipped user %s "
+                            "(registered %.0f s ago, threshold %d s)", uid, age, max_age_seconds
+                        )
+                        return False
+                except Exception:
+                    pass
+            cursor.execute(
+                "UPDATE users SET referred_by = ? WHERE telegram_id = ? AND referred_by IS NULL",
+                (fid, uid),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logging.error("set_referred_by_from_gift failed for user %s: %s", user_id, e)
+        return False
 
 
 def delete_user_gift(gift_id: int) -> bool:

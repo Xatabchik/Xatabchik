@@ -21,6 +21,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link {% if active_tab == 'broadcasts' %}active{% endif %}" href="{{ url_for('analytics_broadcasts_page') }}">
+      <i class="ti ti-mail me-1"></i> Рассылки
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link {% if active_tab == 'utm' %}active{% endif %}" href="{{ url_for('analytics_utm_page') }}">
       <i class="ti ti-link me-1"></i> UTM
     </a>

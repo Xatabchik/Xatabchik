@@ -78,6 +78,8 @@ from shop_bot.data_manager.remnawave_repository import (
     set_referral_start_bonus_received,
     set_referral_trial_day_bonus_received,
     set_trial_used,
+    set_key_auto_renew,
+    set_all_keys_auto_renew_for_user,
     update_user_stats,
     log_transaction,
     is_admin,
@@ -528,7 +530,10 @@ async def grant_referrer_day_bonus_for_trial(*, referred_user_id: int, bot: Bot)
         pass
 
 
-async def _activate_gift_directly(message: types.Message, bot: Bot, user_id: int, gift_code: str) -> None:
+async def _activate_gift_directly(
+    message: types.Message, bot: Bot, user_id: int, gift_code: str,
+    *, is_new_user: bool = False
+) -> None:
     """Активировать подарок для пользователя."""
     try:
         gift = rw_repo.get_gift_by_code(gift_code)
@@ -554,6 +559,15 @@ async def _activate_gift_directly(message: types.Message, bot: Bot, user_id: int
                 reply_markup=keyboards.main_reply_keyboard
             )
             return
+
+        # Привязываем нового пользователя к отправителю подарка как реферала
+        if is_new_user:
+            try:
+                from_user_id = int((activated_gift or gift or {}).get("from_user_id") or 0)
+                if from_user_id > 0:
+                    rw_repo.set_referred_by_from_gift(user_id, from_user_id)
+            except Exception:
+                pass
         
         # Получаем информацию о ключе
         key_id = gift.get('key_id')
@@ -1262,22 +1276,24 @@ def get_user_router() -> Router:
         # Обрабатываем активацию подарка
         if command.args and command.args.startswith('gift_'):
             gift_code = command.args[5:]  # Убираем "gift_"
-            
+
+            # Запоминаем ДО регистрации — нужно для определения нового пользователя
+            _gift_user_is_new = (get_user(user_id) is None)
+
             # Пользователь должен быть зарегистрирован или зарегистрируется
             register_user_if_not_exists(user_id, username, None)
-            
+
             # Проверяем, нужна ли капча для активации подарка
             captcha_enabled = get_setting("captcha_enabled") == "true"
-            
+
             if captcha_enabled and not has_passed_captcha(user_id):
-                # Сохраняем gift_code в FSM для обработки после капчи
-                await state.update_data(gift_code=gift_code, is_gift_activation=True)
-                # Показываем капчу
+                # Сохраняем gift_code и флаг нового пользователя в FSM
+                await state.update_data(gift_code=gift_code, is_gift_activation=True, gift_user_is_new=_gift_user_is_new)
                 await show_captcha(message, state, user_id)
                 return
             else:
                 # Капча отключена или уже пройдена, активируем подарок
-                await _activate_gift_directly(message, bot, user_id, gift_code)
+                await _activate_gift_directly(message, bot, user_id, gift_code, is_new_user=_gift_user_is_new)
                 return
         
         # Обрабатываем реферальную ссылку
@@ -1490,18 +1506,20 @@ def get_user_router() -> Router:
                 # Проверяем, активируем ли мы подарок
                 gift_code = data.get("gift_code")
                 if gift_code:
+                    # Captcha is only shown to new users — default True, but honour FSM flag if stored
+                    _is_new = data.get("gift_user_is_new", True)
                     await state.clear()
-                    await _activate_gift_directly(message, message.bot, user_id, gift_code)
+                    await _activate_gift_directly(message, message.bot, user_id, gift_code, is_new_user=_is_new)
                     return
-                
+
                 # Продолжаем onboarding
                 await state.clear()
-                
+
                 # Выполняем логику регистрации с согласием
                 terms_url = get_setting("terms_url")
                 privacy_url = get_setting("privacy_url")
                 channel_url = get_setting("channel_url")
-                
+
                 if not channel_url and (not terms_url or not privacy_url):
                     set_terms_agreed(user_id)
                     # Переходим прямо в главное меню
@@ -1570,18 +1588,19 @@ def get_user_router() -> Router:
                 # Проверяем, активируем ли мы подарок
                 gift_code = data.get("gift_code")
                 if gift_code:
+                    _is_new = data.get("gift_user_is_new", True)
                     await state.clear()
-                    await _activate_gift_directly(callback.message, callback.bot, user_id, gift_code)
+                    await _activate_gift_directly(callback.message, callback.bot, user_id, gift_code, is_new_user=_is_new)
                     return
-                
+
                 # Продолжаем onboarding
                 await state.clear()
-                
+
                 # Выполняем логику регистрации с согласием
                 terms_url = get_setting("terms_url")
                 privacy_url = get_setting("privacy_url")
                 channel_url = get_setting("channel_url")
-                
+
                 if not channel_url and (not terms_url or not privacy_url):
                     set_terms_agreed(user_id)
                     # Редактируем или отправляем главное меню
@@ -1713,13 +1732,20 @@ def get_user_router() -> Router:
                 notifications_enabled = rw_repo.is_subscription_expiry_notifications_enabled(user_id)
             except Exception:
                 notifications_enabled = True
-        
+
+        # Автопродление: показываем переключатель если у пользователя есть хотя бы один ключ с тарифом
+        non_gift_keys = [k for k in user_keys if str(k.get("tag") or "").strip().lower() not in ("user_gift", "gift")]
+        show_auto_renew_toggle = bool(non_gift_keys)
+        auto_renew_any_enabled = any(bool(int(k.get("auto_renew") or 0)) for k in non_gift_keys)
+
         await callback.message.edit_text(
             final_text,
             reply_markup=keyboards.create_profile_keyboard(
                 show_notification_toggle=show_notification_toggle,
                 notifications_enabled=notifications_enabled,
                 gifts_count=gifts_count,
+                show_auto_renew_toggle=show_auto_renew_toggle,
+                auto_renew_any_enabled=auto_renew_any_enabled,
             )
         )
 
@@ -6026,11 +6052,49 @@ def get_user_router() -> Router:
                     show_traffic_topup=show_traffic_topup,
                     show_lte_topup=show_lte_topup,
                     show_main_reset=show_main_reset,
+                    auto_renew=bool(int(key_data.get("auto_renew") or 0)),
                 )
             )
         except Exception as e:
             logger.error(f"Error showing key {key_id_to_show}: {e}")
             await callback.message.edit_text("❌ Произошла ошибка при получении данных ключа.")
+
+    @user_router.callback_query(F.data.startswith("auto_renew_key_"))
+    @registration_required
+    async def auto_renew_key_toggle(callback: types.CallbackQuery):
+        await callback.answer()
+        try:
+            key_id = int(callback.data[len("auto_renew_key_"):])
+        except ValueError:
+            await callback.answer("Некорректный ID ключа.", show_alert=True)
+            return
+
+        key_data = rw_repo.get_key_by_id(key_id)
+        if not key_data or key_data["user_id"] != callback.from_user.id:
+            await callback.answer("Ключ не найден.", show_alert=True)
+            return
+
+        new_state = not bool(int(key_data.get("auto_renew") or 0))
+        rw_repo.set_key_auto_renew(key_id, new_state)
+        state_text = "✅ Автопродление включено" if new_state else "❌ Автопродление отключено"
+        await callback.answer(state_text, show_alert=True)
+        # Обновляем карточку ключа
+        callback.data = f"show_key_{key_id}"
+        await show_key_handler(callback)
+
+    @user_router.callback_query(F.data == "toggle_auto_renew_profile")
+    @registration_required
+    async def toggle_auto_renew_profile(callback: types.CallbackQuery):
+        await callback.answer()
+        user_id = callback.from_user.id
+        user_keys = rw_repo.get_user_keys(user_id)
+        any_enabled = any(bool(int(k.get("auto_renew") or 0)) for k in user_keys)
+        # Инвертируем: если хоть один включён — выключаем все, иначе включаем все
+        new_state = not any_enabled
+        rw_repo.set_all_keys_auto_renew_for_user(user_id, new_state)
+        state_text = "✅ Автопродление включено для всех ключей" if new_state else "❌ Автопродление отключено для всех ключей"
+        await callback.answer(state_text, show_alert=True)
+        await profile_handler_callback(callback)
 
     @user_router.callback_query(F.data.startswith("switch_server_"))
     @registration_required

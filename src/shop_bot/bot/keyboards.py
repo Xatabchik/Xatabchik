@@ -212,8 +212,9 @@ def create_admin_settings_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🛡️ Капча", callback_data="admin_captcha_settings")
     builder.button(text="💰 LTE / Сброс трафика", callback_data="admin_lte_settings_menu")
     builder.button(text="🧩 Конструктор кнопок", callback_data="admin_btn_constructor")
+    builder.button(text="🔄 Автопродление", callback_data="admin_auto_renew")
     builder.button(text="⬅️ Назад", callback_data="admin_menu")
-    builder.adjust(2, 2, 2, 2, 2, 1, 1, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -353,6 +354,16 @@ def create_admin_franchise_settings_keyboard(enabled: bool) -> InlineKeyboardMar
     builder.button(text="⬅️ Назад в админку", callback_data="admin_settings_menu")
     
     builder.adjust(1, 2, 1)
+    return builder.as_markup()
+
+
+def create_admin_auto_renew_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    status_text = "\ud83d\udfe2 \u0412\u044b\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0430\u0432\u0442\u043e\u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435" if enabled else "\ud83d\udd34 \u0412\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0430\u0432\u0442\u043e\u043f\u0440\u043e\u0434\u043b\u0435\u043d\u0438\u0435"
+    builder.button(text=status_text, callback_data="admin_auto_renew_toggle")
+    builder.button(text="\u23f0 \u041e\u043a\u043d\u043e \u0441\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u043d\u0438\u044f (\u0447\u0430\u0441\u043e\u0432)", callback_data="admin_auto_renew_set_hours")
+    builder.button(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434 \u0432 \u0430\u0434\u043c\u0438\u043d\u043a\u0443", callback_data="admin_settings_menu")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -1707,7 +1718,7 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
     builder.adjust(1)
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False) -> InlineKeyboardMarkup:
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False, auto_renew: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
     # Для подарочных ключей не показываем кнопку продления
@@ -1755,6 +1766,11 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
     if gift_code and gift_id:
         builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
     
+    # Кнопка автопродления (только для обычных ключей)
+    if not gift_code:
+        ar_text = "🔄 Авто-продление: ВКЛ ✓" if auto_renew else "⏸ Авто-продление: ВЫКЛ"
+        builder.button(text=ar_text, callback_data=f"auto_renew_key_{key_id}")
+
     # Кнопка переименования ключа (для всех ключей)
     builder.button(text="📝 Переименовать ключ", callback_data=f"rename_key_{key_id}")
     
@@ -1794,6 +1810,8 @@ def create_profile_keyboard(
     show_notification_toggle: bool = False,
     notifications_enabled: bool = True,
     gifts_count: int | None = None,
+    auto_renew_any_enabled: bool = False,
+    show_auto_renew_toggle: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
@@ -1801,6 +1819,11 @@ def create_profile_keyboard(
     # Кнопка для просмотра неактивных подарков
     gifts_label = f"🎁 Мои подарки ({gifts_count})" if gifts_count is not None else "🎁 Мои подарки"
     builder.button(text=gifts_label, callback_data="show_inactive_gifts")
+
+    # Переключатель автопродления всех ключей
+    if show_auto_renew_toggle:
+        ar_text = "🔄 Авто-продление: ВЫКЛ всё" if auto_renew_any_enabled else "🔄 Авто-продление: ВКЛ всё"
+        builder.button(text=ar_text, callback_data="toggle_auto_renew_profile")
     
     # Кнопка для переключения уведомлений об истечении ключей
     if show_notification_toggle:

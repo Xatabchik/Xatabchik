@@ -19,7 +19,9 @@ from shop_bot.bot import keyboards
 
 CHECK_INTERVAL_SECONDS = 300
 NOTIFY_BEFORE_HOURS = {72, 48, 24, 1}
+AUTO_RENEW_RETRY_COOLDOWN_HOURS = 6
 notified_users = {}
+_auto_renew_attempts: dict[int, datetime] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -1152,6 +1154,170 @@ async def _maybe_enforce_dual_traffic_limits(bot: Bot | None = None):
         logger.error(f"Scheduler: Ошибка учёта двух пулов трафика: {e}", exc_info=True)
 
 
+async def _notify_auto_renew_success(
+    bot: Bot, user_id: int, key_id: int, price: float, days_added: int, key_name: str | None = None
+):
+    try:
+        label = f"«{key_name}»" if key_name else f"#{key_id}"
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
+        builder.button(text="👤 Профиль", callback_data="show_profile")
+        builder.adjust(2)
+        await bot.send_message(
+            user_id,
+            f"✅ <b>Автопродление выполнено</b>\n\n"
+            f"Ключ {label} продлён на <b>{days_added} дн.</b>\n"
+            f"Списано: <b>{price:.0f} ₽</b> с баланса.",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup(),
+        )
+    except Exception as e:
+        logger.error(f"Auto-renew: не удалось уведомить {user_id} об успехе: {e}")
+
+
+async def _notify_auto_renew_no_balance(
+    bot: Bot, user_id: int, key_id: int, price: float, key_name: str | None = None
+):
+    try:
+        label = f"«{key_name}»" if key_name else f"#{key_id}"
+        builder = InlineKeyboardBuilder()
+        builder.button(text="💳 Пополнить баланс", callback_data="top_up_start")
+        builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
+        builder.adjust(1)
+        await bot.send_message(
+            user_id,
+            f"⚠️ <b>Автопродление не выполнено</b>\n\n"
+            f"Для продления ключа {label} нужно <b>{price:.0f} ₽</b>,\n"
+            f"но на балансе недостаточно средств.\n\n"
+            f"Пополните баланс или отключите автопродление для этого ключа.",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup(),
+        )
+    except Exception as e:
+        logger.error(f"Auto-renew: не удалось уведомить {user_id} о нехватке баланса: {e}")
+
+
+async def check_auto_renewals(bot: Bot):
+    global _auto_renew_attempts
+    if not _is_true(rw_repo.get_setting("auto_renew_globally_enabled") or "false"):
+        return
+
+    try:
+        hours_before = int(rw_repo.get_setting("auto_renew_hours_before") or 24)
+    except Exception:
+        hours_before = 24
+
+    logger.debug("Scheduler: Проверяю ключи для автопродления...")
+    keys = rw_repo.get_keys_for_auto_renew(hours_before=hours_before)
+    if not keys:
+        return
+
+    logger.info(f"Scheduler: Найдено {len(keys)} ключей для автопродления.")
+    now = datetime.now()
+
+    for key in keys:
+        try:
+            key_id = int(key["key_id"])
+            user_id = int(key["user_id"])
+            key_name = key.get("user_key_name") or None
+
+            last_attempt = _auto_renew_attempts.get(key_id)
+            if last_attempt and (now - last_attempt).total_seconds() < AUTO_RENEW_RETRY_COOLDOWN_HOURS * 3600:
+                continue
+            _auto_renew_attempts[key_id] = now
+
+            meta = _parse_origin_meta_from_description(key.get("description"))
+            plan = None
+            if isinstance(meta, dict):
+                pid = _try_int(meta.get("plan_id"))
+                if pid:
+                    try:
+                        plan = rw_repo.get_plan_by_id(pid)
+                    except Exception:
+                        pass
+
+            if not plan:
+                logger.debug(f"Auto-renew: ключ {key_id} пропущен — тариф не определён.")
+                continue
+
+            price = float(plan.get("price") or 0)
+            if price <= 0:
+                logger.debug(f"Auto-renew: ключ {key_id} пропущен — цена тарифа = 0.")
+                continue
+
+            plan_months = int(plan.get("months") or 0)
+            plan_days = int(plan.get("duration_days") or 0)
+            days_to_add = plan_days if plan_days > 0 else (plan_months * 30 if plan_months > 0 else 30)
+
+            if not rw_repo.deduct_from_balance(user_id, price):
+                logger.info(f"Auto-renew: пользователь {user_id}, ключ {key_id} — нехватка баланса ({price:.2f}).")
+                await _notify_auto_renew_no_balance(bot, user_id, key_id, price, key_name)
+                continue
+
+            host_name = key.get("host_name")
+            email = key.get("key_email") or key.get("email")
+            try:
+                expire_str = key.get("expire_at") or key.get("expiry_date")
+                exp_dt = _parse_dt_safe(expire_str) or now
+                base_ms = max(int(exp_dt.timestamp() * 1000), int(now.timestamp() * 1000))
+                new_expiry_ms = base_ms + days_to_add * 86400000
+
+                result = await remnawave_api.create_or_update_key_on_host(
+                    host_name=host_name,
+                    email=email,
+                    days_to_add=days_to_add,
+                    expiry_timestamp_ms=new_expiry_ms,
+                )
+                if result:
+                    effective_ms = result.get("expiry_timestamp_ms") or new_expiry_ms
+                    rw_repo.update_key_fields(key_id, expire_at_ms=int(effective_ms))
+                    _auto_renew_attempts.pop(key_id, None)
+                    logger.info(f"Auto-renew: ключ {key_id} продлён на {days_to_add} дн. (пользователь {user_id}).")
+                    await _notify_auto_renew_success(bot, user_id, key_id, price, days_to_add, key_name)
+                else:
+                    rw_repo.add_to_balance(user_id, price)
+                    logger.error(f"Auto-renew: Remnawave API вернул None для ключа {key_id}. Средства возвращены.")
+            except Exception as exc:
+                rw_repo.add_to_balance(user_id, price)
+                logger.error(f"Auto-renew: ошибка продления ключа {key_id}: {exc}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"Auto-renew: ошибка обработки ключа {key.get('key_id')}: {exc}", exc_info=True)
+
+
+async def check_broadcast_campaigns(bot: Bot):
+    """Send queued broadcast campaigns to inactive subscribers."""
+    campaigns = rw_repo.get_broadcast_campaigns()
+    now = datetime.now()
+    for c in campaigns:
+        if not c.get("is_active"):
+            continue
+        interval_hours = int(c.get("interval_hours") or 72)
+        last_run_raw = c.get("last_run_at")
+        if last_run_raw:
+            last_run = _parse_dt_safe(str(last_run_raw))
+            if last_run and (now - last_run).total_seconds() < interval_hours * 3600:
+                continue
+        campaign_id = int(c["id"])
+        recipients = rw_repo.get_pending_broadcast_recipients(campaign_id, interval_hours)
+        rw_repo.mark_broadcast_run(campaign_id)
+        if not recipients:
+            logger.debug(f"Broadcast {campaign_id}: нет получателей.")
+            continue
+        text = c.get("text_html") or ""
+        sent = 0
+        failed = 0
+        for uid in recipients:
+            try:
+                await bot.send_message(int(uid), text, parse_mode="HTML")
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)  # stay within Telegram rate limits
+        if sent:
+            rw_repo.record_broadcast_sends(campaign_id, recipients[:sent + failed])
+        logger.info(f"Broadcast {campaign_id} «{c.get('name')}»: отправлено {sent}, не доставлено {failed}.")
+
+
 async def periodic_subscription_check(bot_controller: BotController):
     logger.info("Scheduler: Планировщик фоновых задач запущен.")
     await asyncio.sleep(10)
@@ -1178,6 +1344,8 @@ async def periodic_subscription_check(bot_controller: BotController):
                 bot = bot_controller.get_bot_instance()
                 if bot:
                     await check_expiring_subscriptions(bot)
+                    await check_auto_renewals(bot)
+                    await check_broadcast_campaigns(bot)
                     await check_inactive_usage_reminders(bot)
                     await check_device_limit_violations(bot)
                     await check_traffic_boost_resets(bot)

@@ -38,6 +38,7 @@
       <li class="nav-item"><a class="nav-link" href="#referrals"><i class="ti ti-users-group me-1"></i> Рефералы</a></li>
       <li class="nav-item"><a class="nav-link" href="#trial"><i class="ti ti-gift me-1"></i> Триал</a></li>
       <li class="nav-item"><a class="nav-link" href="#franchise"><i class="ti ti-briefcase me-1"></i> Франшиза</a></li>
+      <li class="nav-item"><a class="nav-link" href="#auto-renew"><i class="ti ti-refresh me-1"></i> Автопродление</a></li>
       <li class="nav-item"><a class="nav-link" href="#webapp"><i class="ti ti-brand-telegram me-1"></i> Webapp</a></li>
       <li class="nav-item"><a class="nav-link" href="#content"><i class="ti ti-file-text me-1"></i> Контент</a></li>
       <li class="nav-item"><a class="nav-link" href="#monitoring"><i class="ti ti-chart-line me-1"></i> Мониторинг</a></li>
@@ -1373,6 +1374,44 @@
 				</div>
 			</section>
 
+			<section class="settings-section" id="auto-renew">
+				<div class="card">
+					<div class="card-header">
+						<h2 class="card-title">
+							<i class="ti ti-refresh me-2"></i>
+							Автопродление подписок
+						</h2>
+					</div>
+					<div class="card-body">
+						<div class="mb-3">
+							<div class="form-check">
+								<input type="hidden" name="auto_renew_globally_enabled" value="off">
+								<input class="form-check-input" type="checkbox" id="auto_renew_globally_enabled" name="auto_renew_globally_enabled" value="true"
+									{% if settings.auto_renew_globally_enabled == 'true' or settings.auto_renew_globally_enabled == '1' %}checked{% endif %}>
+								<label class="form-check-label" for="auto_renew_globally_enabled">Включить автопродление глобально</label>
+							</div>
+						</div>
+						<div class="form-text text-secondary mb-4">
+							Когда включено, бот автоматически списывает с баланса пользователя стоимость тарифа и продлевает ключ.
+							Работает только для ключей, у которых пользователь индивидуально включил автопродление в карточке ключа.
+						</div>
+
+						<hr class="my-4">
+
+						<div class="mb-3">
+							<label class="form-label" for="auto_renew_hours_before">Окно срабатывания (часов до окончания)</label>
+							<input class="form-control pill-md" type="number" id="auto_renew_hours_before" name="auto_renew_hours_before"
+								value="{{ settings.auto_renew_hours_before or '24' }}"
+								min="1" max="168" step="1" placeholder="24">
+							<small class="form-text text-secondary">
+								За сколько часов до истечения ключа запускать попытку автопродления. По умолчанию: 24 ч.
+								Допустимо от 1 до 168 часов (7 дней).
+							</small>
+						</div>
+					</div>
+				</div>
+			</section>
+
 			<section class="settings-section" id="payments">
 				<div class="card">
 					<div class="card-header">
@@ -1630,18 +1669,31 @@
 							<label class="form-check-label" for="webapp_enabled">Включить Telegram Mini App</label>
 							<div class="form-text text-secondary">Если выключено — приложение будет недоступно для пользователей.</div>
 						</div>
-						<div class="mb-3">
-							<label class="form-label" for="webapp_domain">Домен Webapp</label>
-							<input class="form-control" type="text" id="webapp_domain" name="webapp_domain" value="{{ settings.webapp_domain or '' }}" placeholder="app.example.com" />
-							<div class="form-text text-secondary">
-								Домен, на котором развёрнуто Mini App (без https:// и слэшей). Используется для формирования кнопки
-								открытия приложения в боте.
+
+						<div class="row g-2 mb-3">
+							<div class="col-12 col-md-8">
+								<label class="form-label" for="webapp_domain">Домен Webapp</label>
+								<input class="form-control" type="text" id="webapp_domain" name="webapp_domain"
+									value="{{ settings.webapp_domain or '' }}" placeholder="app.example.com"
+									autocomplete="off" spellcheck="false" />
+								<div class="form-text text-secondary">
+									Домен без <code>https://</code> и слэшей. Используется для кнопки Mini App в боте и для автонастройки Nginx.
+								</div>
+							</div>
+							<div class="col-12 col-md-4">
+								<label class="form-label" for="webapp_port">Порт Uvicorn (внутренний)</label>
+								<input class="form-control" type="number" id="webapp_port" name="webapp_port"
+									value="{{ settings.webapp_port or '8001' }}" min="1" max="65535" />
+								<div class="form-text text-secondary">
+									Порт на хосте, куда смотрит Nginx. По умолчанию <code>8001</code> (из docker-compose).
+								</div>
 							</div>
 						</div>
+
 						<div class="mb-3">
 							<label class="form-label" for="webapp_title">Название приложения</label>
 							<input class="form-control" type="text" id="webapp_title" name="webapp_title" value="{{ settings.webapp_title or '' }}" placeholder="Xatab VPN" />
-							<div class="form-text text-secondary">Отображается в шапке Mini App. Если пусто — используется название проекта.</div>
+							<div class="form-text text-secondary">Отображается в шапке Mini App.</div>
 						</div>
 						<div class="mb-3">
 							<label class="form-label" for="webapp_logo_file">Логотип</label>
@@ -1652,16 +1704,150 @@
 								{% elif settings.webapp_domain %}
 								<img src="https://{{ settings.webapp_domain }}{{ settings.webapp_logo }}" alt="Текущий логотип" style="max-height:64px; max-width:200px; border-radius:8px; background:#fff; padding:4px;" />
 								{% else %}
-								<div class="form-text text-warning">Логотип загружен, но не задан домен Webapp — превью недоступно. Файл: {{ settings.webapp_logo }}</div>
+								<div class="form-text text-warning">Логотип загружен, но домен не задан — превью недоступно.</div>
 								{% endif %}
 							</div>
 							{% endif %}
 							<input class="form-control" type="file" id="webapp_logo_file" name="webapp_logo_file" accept="image/*" />
-							<div class="form-text text-secondary">Загрузите изображение логотипа (png, jpg, webp, gif, svg). Если ничего не загружать — текущий логотип сохранится.</div>
+							<div class="form-text text-secondary">PNG, JPG, WebP, SVG. Если ничего не загружать — текущий логотип сохранится.</div>
+						</div>
+
+						<hr class="my-4">
+
+						{# ── Авто-настройка: Nginx + SSL ──────────────────────────────────────── #}
+						<h3 class="mb-1" style="font-size:1rem;font-weight:600;">
+							<i class="ti ti-wand me-1 text-primary"></i> Автоматическая настройка Nginx + SSL
+						</h3>
+						<p class="text-secondary small mb-3">
+							Генерирует конфиг Nginx и запускает <code>certbot</code> прямо с сервера.
+							Требуется: домен должен смотреть на IP сервера, порт 80 открыт.
+							В Docker-окружении кнопка <strong>«Скачать конфиг»</strong> поможет настроить Nginx на хосте вручную.
+						</p>
+
+						<div class="row g-2 mb-3">
+							<div class="col-12 col-md-6">
+								<label class="form-label" for="ssl_email">E-mail для Let's Encrypt</label>
+								<input class="form-control" type="email" id="ssl_email" name="ssl_email"
+									value="{{ settings.webapp_ssl_email or '' }}"
+									placeholder="admin@example.com" autocomplete="off" />
+								<div class="form-text text-secondary">Нужен для выпуска SSL-сертификата через certbot.</div>
+							</div>
+						</div>
+
+						<div class="d-flex flex-wrap gap-2 mb-3">
+							<button type="button" class="btn btn-primary" id="webapp-setup-btn" onclick="runWebappSetup()">
+								<i class="ti ti-wand me-1"></i> Настроить автоматически
+							</button>
+							<a href="{{ url_for('webapp_nginx_config_route') }}" class="btn btn-outline-secondary" download>
+								<i class="ti ti-download me-1"></i> Скачать конфиг Nginx
+							</a>
+							<button type="button" class="btn btn-outline-secondary" id="webapp-check-btn" onclick="checkWebappDomain()">
+								<i class="ti ti-wifi me-1"></i> Проверить домен
+							</button>
+						</div>
+
+						<div id="webapp-setup-progress" class="d-none">
+							<div class="d-flex align-items-center gap-2 mb-2">
+								<div id="webapp-setup-spinner" class="spinner-border spinner-border-sm text-primary d-none" role="status"></div>
+								<strong id="webapp-setup-title" class="small"></strong>
+							</div>
+							<div id="webapp-setup-steps" class="d-flex flex-column gap-1 mb-2" style="font-size:0.82rem;"></div>
+							<div id="webapp-setup-result" class="alert d-none mb-0 py-2 small"></div>
 						</div>
 					</div>
 				</div>
 			</section>
+
+			<script>
+			(function() {
+				// ── Webapp setup ─────────────────────────────────────────────────────────
+				window.runWebappSetup = function() {
+					const domain = document.getElementById('webapp_domain').value.trim().toLowerCase();
+					const port   = document.getElementById('webapp_port').value.trim();
+					const email  = document.getElementById('ssl_email').value.trim();
+
+					if (!domain) { alert('Укажите домен Webapp.'); return; }
+					if (!email)  { alert('Укажите e-mail для Let\'s Encrypt.'); return; }
+
+					const btn = document.getElementById('webapp-setup-btn');
+					const progress = document.getElementById('webapp-setup-progress');
+					const spinner  = document.getElementById('webapp-setup-spinner');
+					const title    = document.getElementById('webapp-setup-title');
+					const stepsEl  = document.getElementById('webapp-setup-steps');
+					const result   = document.getElementById('webapp-setup-result');
+
+					btn.disabled = true;
+					progress.classList.remove('d-none');
+					spinner.classList.remove('d-none');
+					title.textContent = 'Настройка запущена…';
+					stepsEl.innerHTML = '';
+					result.className = 'alert d-none mb-0 py-2 small';
+
+					const fd = new FormData();
+					fd.append('webapp_domain', domain);
+					fd.append('webapp_port', port);
+					fd.append('ssl_email', email);
+					fd.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+					fetch('{{ url_for("webapp_setup_route") }}', { method: 'POST', body: fd })
+						.then(r => r.json())
+						.then(data => {
+							spinner.classList.add('d-none');
+							(data.steps || []).forEach(s => {
+								const icons = { ok: '✔', error: '✘', skip: '—', warning: '⚠' };
+								const cls   = { ok: 'text-success', error: 'text-danger', skip: 'text-secondary', warning: 'text-warning' };
+								const el = document.createElement('div');
+								el.className = cls[s.status] || '';
+								el.textContent = `${icons[s.status] || '·'} ${s.name}: ${s.message}`;
+								stepsEl.appendChild(el);
+							});
+							if (data.nginx_config) {
+								const pre = document.createElement('pre');
+								pre.style.cssText = 'font-size:0.75rem;max-height:160px;overflow:auto;background:rgba(0,0,0,.35);padding:8px;border-radius:6px;margin-top:6px;';
+								pre.textContent = data.nginx_config;
+								stepsEl.appendChild(pre);
+							}
+							result.className = 'alert mb-0 py-2 small ' + (data.success ? 'alert-success' : 'alert-warning');
+							result.textContent = data.success
+								? '✔ Настройка завершена успешно! Webapp доступен по https://' + domain + '/'
+								: '⚠ Завершено с ошибками — проверьте детали выше. Скачайте конфиг и настройте Nginx вручную.';
+							title.textContent = data.success ? 'Готово' : 'Завершено с ошибками';
+						})
+						.catch(err => {
+							spinner.classList.add('d-none');
+							title.textContent = 'Ошибка';
+							result.className = 'alert alert-danger mb-0 py-2 small';
+							result.textContent = 'Сетевая ошибка: ' + err;
+						})
+						.finally(() => { btn.disabled = false; });
+				};
+
+				window.checkWebappDomain = function() {
+					const btn    = document.getElementById('webapp-check-btn');
+					const result = document.getElementById('webapp-setup-result');
+					const progress = document.getElementById('webapp-setup-progress');
+					progress.classList.remove('d-none');
+					result.className = 'alert alert-secondary mb-0 py-2 small';
+					result.textContent = 'Проверяю доступность домена…';
+					btn.disabled = true;
+
+					const fd = new FormData();
+					fd.append('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+
+					fetch('{{ url_for("webapp_check_route") }}', { method: 'POST', body: fd })
+						.then(r => r.json())
+						.then(data => {
+							result.className = 'alert mb-0 py-2 small ' + (data.ok ? 'alert-success' : 'alert-warning');
+							result.textContent = data.message;
+						})
+						.catch(err => {
+							result.className = 'alert alert-danger mb-0 py-2 small';
+							result.textContent = 'Ошибка: ' + err;
+						})
+						.finally(() => { btn.disabled = false; });
+				};
+			})();
+			</script>
 
 			<section class="settings-section" id="content">
 				<div class="card">
@@ -1669,6 +1855,11 @@
 						<h2 class="card-title">
 							<i class="ti ti-file-text me-2"></i>
 							Настройки Контента
+						</h2>
+					</div>
+					<div class="card-body">
+						<div class="mb-3">
+							<label class="form-label" for="about_text">Текст "О проекте"</label>
 						</h2>
 					</div>
 					<div class="card-body">

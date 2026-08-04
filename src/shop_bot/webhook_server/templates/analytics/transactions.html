@@ -4,6 +4,18 @@
 
 {% block content %}
 
+{% macro sort_th(label, col) %}
+  {% set active = (sort_by == col) or (col == 'date' and not sort_by) %}
+  {% set cur_dir = sort_dir if sort_by == col else 'desc' %}
+  {% set next_dir = 'asc' if cur_dir == 'desc' else 'desc' %}
+  <th style="cursor:pointer; white-space:nowrap; user-select:none;">
+    <a href="?page=1&q={{ search }}&sort_by={{ col }}&sort_dir={{ next_dir }}" class="text-reset text-decoration-none d-inline-flex align-items-center gap-1">
+      {{- label }}
+      <i class="ti {% if active %}{{ 'ti-sort-ascending' if cur_dir == 'asc' else 'ti-sort-descending' }}{% else %}ti-arrows-sort opacity-50{% endif %}"></i>
+    </a>
+  </th>
+{% endmacro %}
+
 <div class="page-header d-print-none mb-3">
   <div class="row align-items-center">
     <div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div>
@@ -23,46 +35,68 @@
   </div>
   <div class="card-body border-bottom py-2">
     <form method="get" class="d-flex flex-wrap gap-2">
-      <input type="text" name="q" class="form-control form-control-sm" style="max-width:260px" placeholder="Поиск: пользователь, ID, метод..." value="{{ search }}">
-      <select name="sort_by" class="form-select form-select-sm" style="max-width:180px">
-        <option value="date" {% if sort_by=='date' %}selected{% endif %}>По дате</option>
-        <option value="amount" {% if sort_by=='amount' %}selected{% endif %}>По сумме</option>
-        <option value="payment_method" {% if sort_by=='payment_method' %}selected{% endif %}>По методу</option>
-        <option value="status" {% if sort_by=='status' %}selected{% endif %}>По статусу</option>
-      </select>
-      <select name="sort_dir" class="form-select form-select-sm" style="max-width:120px">
-        <option value="desc" {% if sort_dir=='desc' %}selected{% endif %}>убыв.</option>
-        <option value="asc" {% if sort_dir=='asc' %}selected{% endif %}>возр.</option>
-      </select>
-      <button class="btn btn-primary btn-sm" type="submit">Применить</button>
+      <input type="hidden" name="sort_by" value="{{ sort_by }}">
+      <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+      <input type="text" name="q" class="form-control form-control-sm" style="max-width:300px" placeholder="Поиск: пользователь, ID, метод..." value="{{ search }}">
+      <button class="btn btn-primary btn-sm" type="submit">Найти</button>
+      {% if search %}
+      <a class="btn btn-outline-secondary btn-sm" href="?sort_by={{ sort_by }}&sort_dir={{ sort_dir }}">Сбросить</a>
+      {% endif %}
     </form>
   </div>
   <div class="table-responsive">
     <table class="table table-vcenter card-table">
       <thead>
         <tr>
-          <th>ID</th><th>Пользователь</th><th>Сумма</th><th>Статус</th><th>Метод</th><th>Тариф</th><th>Действие</th><th>Дата</th>
+          <th>ID</th>
+          <th>Пользователь</th>
+          {{ sort_th('Сумма', 'amount') }}
+          {{ sort_th('Статус', 'status') }}
+          {{ sort_th('Метод', 'payment_method') }}
+          <th>ID провайдера</th>
+          <th>Тариф</th>
+          <th>Действие</th>
+          {{ sort_th('Дата', 'date') }}
         </tr>
       </thead>
       <tbody>
         {% for t in transactions %}
         <tr>
-          <td>{{ t.transaction_id }}</td>
-          <td>{{ t.username or t.user_id }}</td>
-          <td>{{ "%.2f"|format(t.amount_rub or 0) }} {{ t.currency_name or '₽' }}</td>
-          <td><span class="badge {% if t.status in ['paid','success','succeeded'] %}bg-green-lt{% else %}bg-secondary-lt{% endif %}">{{ t.status }}</span></td>
+          <td class="text-secondary">{{ t.transaction_id }}</td>
+          <td>
+            <a href="{{ url_for('users_page') }}?search={{ t.user_id }}" class="text-reset">{{ t.username or t.user_id }}</a>
+            {% if t.username %}<br><small class="text-muted">{{ t.user_id }}</small>{% endif %}
+          </td>
+          <td><strong class="text-success">{{ "%.2f"|format(t.amount_rub or 0) }}</strong> {{ t.currency_name or '₽' }}</td>
+          <td>
+            {% set st = (t.status or '')|lower %}
+            {% if st in ('paid', 'success', 'succeeded', 'completed') %}<span class="badge bg-green-lt">{{ t.status }}</span>
+            {% elif st == 'pending' %}<span class="badge bg-yellow-lt">{{ t.status }}</span>
+            {% elif st in ('failed', 'canceled', 'cancelled') %}<span class="badge bg-red-lt">{{ t.status }}</span>
+            {% else %}<span class="badge bg-secondary-lt">{{ t.status or '—' }}</span>
+            {% endif %}
+          </td>
           <td>{{ t.payment_method or '—' }}</td>
+          <td>
+            {% if t.provider_transaction_id %}
+            <span class="text-truncate d-inline-block align-middle atx-copy" role="button" tabindex="0"
+                  data-pid="{{ t.provider_transaction_id }}" title="Скопировать ID провайдера"
+                  style="max-width:150px; cursor:pointer;">
+              <i class="ti ti-copy me-1 text-muted"></i>{{ t.provider_transaction_id }}
+            </span>
+            {% else %}<span class="text-secondary">—</span>{% endif %}
+          </td>
           <td>{{ t.plan_name or '—' }}</td>
           <td>
             {{ t.action_label or '—' }}
             {% if t.key_id %}
-              <a href="{{ url_for('admin_keys_page') }}?search={{ t.key_id }}" class="ms-1" title="Открыть ключ">#{{ t.key_id }}{% if t.key_id_guessed %} (предположительно){% endif %}</a>
+              <a href="{{ url_for('admin_keys_page') }}?search={{ t.key_id }}" class="ms-1" title="Открыть ключ">#{{ t.key_id }}{% if t.key_id_guessed %} <span class="text-muted">(предп.)</span>{% endif %}</a>
             {% endif %}
           </td>
-          <td>{{ t.created_date }}</td>
+          <td class="text-nowrap">{{ t.created_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="text-center text-secondary py-4">Нет данных</td></tr>
+        <tr><td colspan="9" class="text-center text-secondary py-4">Нет данных</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -79,5 +113,18 @@
     </ul>
   </div>
 </div>
+
+<script>
+document.querySelectorAll('.atx-copy').forEach(el => {
+  el.addEventListener('click', async () => {
+    const pid = el.dataset.pid || '';
+    if (!pid) return;
+    try {
+      await navigator.clipboard.writeText(pid);
+      try { window.showToast('success', 'ID скопирован'); } catch (_) {}
+    } catch (_) {}
+  });
+});
+</script>
 
 {% endblock %}
