@@ -196,6 +196,10 @@ ico_dir = os.path.join(os.path.dirname(__file__), "module", "ico")
 if os.path.exists(ico_dir):
     app.mount("/module/ico", StaticFiles(directory=ico_dir), name="ico")
 
+uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
 
 # Endpoint: list referral payout methods for current user
 @app.post("/api/referral/payout-methods/list")
