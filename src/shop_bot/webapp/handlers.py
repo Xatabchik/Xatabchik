@@ -2295,16 +2295,8 @@ async def api_key_devices(req: KeyActionRequest):
             
         host = req.host_name or key.get("host_name")
         devices_data = await remnawave_api.get_connected_devices_count(uuid_val, host_name=host)
-        from shop_bot.data_manager import database
-        cooldown = database.get_device_delete_cooldown(req.user_id, req.key_id, 72)
-        cooldown_payload = {
-            "allowed": bool(cooldown.get("allowed")),
-            "remaining_sec": int(cooldown.get("remaining_sec") or 0),
-        }
-        if devices_data and "devices" in devices_data:
-            return {"ok": True, "devices": devices_data["devices"], "delete_cooldown": cooldown_payload}
-            
-        return {"ok": True, "devices": [], "delete_cooldown": cooldown_payload}
+        devices = (devices_data or {}).get("devices") or []
+        return {"ok": True, "devices": devices}
     except Exception as e:
         logger.error(f"Error fetching devices: {e}")
         return {"ok": False, "error": str(e)}
@@ -2327,17 +2319,8 @@ async def api_key_device_delete(req: DeleteDeviceRequest):
             return {"ok": False, "error": "Ключ не имеет привязки"}
             
         host = req.host_name or key.get("host_name")
-        from shop_bot.data_manager import database
-        cooldown = database.get_device_delete_cooldown(req.user_id, req.key_id, 72)
-        if not cooldown.get("allowed"):
-            remaining = int(cooldown.get("remaining_sec") or 0)
-            hours = remaining // 3600
-            minutes = (remaining % 3600) // 60
-            return {"ok": False, "error": f"Удалять устройство можно 1 раз в 72 часа. Осталось: {hours}ч {minutes}м"}
-
         success = await remnawave_api.delete_user_device(uuid_val, req.device_id, host_name=host)
         if success:
-            database.record_device_delete(req.user_id, req.key_id)
             return {"ok": True}
         return {"ok": False, "error": "Не удалось удалить устройство"}
     except Exception as e:
@@ -2582,7 +2565,6 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
 
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
         from shop_bot.modules import remnawave_api
-        from shop_bot.data_manager import database
 
         key = get_key_by_id(req.key_id)
         if not key or key.get("user_id") != req.user_id:
@@ -2591,13 +2573,6 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
         uuid_val = key.get("remnawave_user_uuid")
         if not uuid_val:
             return {"ok": False, "error": "Ключ не имеет привязки к серверу"}
-
-        cooldown = database.get_device_delete_cooldown(req.user_id, req.key_id, 72)
-        if not cooldown.get("allowed"):
-            remaining = int(cooldown.get("remaining_sec") or 0)
-            hours = remaining // 3600
-            minutes = (remaining % 3600) // 60
-            return {"ok": False, "error": f"Удалять устройства можно 1 раз в 72 часа. Осталось: {hours}ч {minutes}м"}
 
         host = req.host_name or key.get("host_name")
         devices_data = await remnawave_api.get_connected_devices_count(uuid_val, host_name=host)
@@ -2613,9 +2588,6 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
                 success = await remnawave_api.delete_user_device(uuid_val, device_id, host_name=host)
                 if success:
                     deleted += 1
-
-        if deleted > 0:
-            database.record_device_delete(req.user_id, req.key_id)
 
         return {"ok": True, "deleted": deleted, "total": len(devices)}
     except Exception as e:
