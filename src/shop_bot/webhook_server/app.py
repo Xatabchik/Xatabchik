@@ -1699,133 +1699,218 @@ def create_webhook_app(bot_controller_instance):
 
         _nginx_reload("Перезагрузка Nginx")
 
-        # --- Certbot SSL via webroot ---
-        certbot_ok = _run("SSL-сертификат (Let's Encrypt)", [
-            "certbot", "certonly", "--webroot",
-            "-w", _ACME_WEBROOT,
-            "-d", domain,
-            "--email", email,
-            "--agree-tos", "--non-interactive", "--no-eff-email"
-        ], timeout=180)
+        # --- SSL: auto-detect Traefik (filesystem-first) or fall back to certbot ---
+        import json as _json
+        import re as _re2
 
-        if certbot_ok:
-            ssl_cfg = _build_nginx_ssl_config(domain, port_int)
+        def _find_traefik_dynamic_dir() -> tuple:
+            """Return (dynamic_dir, cert_resolver) scanning filesystem then docker."""
+            cert_resolver = "letsencrypt"
+
+            # 1. Scan writable candidate dirs directly (no docker needed)
+            for cdir in (
+                "/opt/traefik/dynamic",
+                "/etc/traefik/dynamic",
+                "/var/traefik/dynamic",
+                "/usr/local/etc/traefik/dynamic",
+            ):
+                if not os.path.isdir(cdir):
+                    continue
+                try:
+                    tp = os.path.join(cdir, ".wtest")
+                    with open(tp, "w") as _f:
+                        _f.write("")
+                    os.unlink(tp)
+                    return cdir, cert_resolver
+                except Exception:
+                    continue
+
+            # 2. Infer dynamic dir from traefik.yml
+            for cfg_path in (
+                "/etc/traefik/traefik.yml",
+                "/usr/local/etc/traefik/traefik.yml",
+            ):
+                try:
+                    with open(cfg_path) as _f:
+                        _content = _f.read()
+                    _m = _re2.search(r'directory:\s*["\']?([^\s"\'#\n]+)', _content)
+                    if _m:
+                        cdir = _m.group(1).rstrip("/")
+                        if os.path.isdir(cdir) and "/remnawave" not in cdir:
+                            try:
+                                tp = os.path.join(cdir, ".wtest")
+                                with open(tp, "w") as _f:
+                                    _f.write("")
+                                os.unlink(tp)
+                                _mr = _re2.search(
+                                    r"certificatesResolvers:\s*\n\s+(\w+)", _content
+                                )
+                                if _mr:
+                                    cert_resolver = _mr.group(1)
+                                return cdir, cert_resolver
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+
+            # 3. Try docker / sudo docker as last resort
+            for _prefix in ([], ["sudo"]):
+                try:
+                    _dc = _prefix + ["docker"]
+                    _r = subprocess.run(
+                        _dc + ["ps", "--filter", "name=traefik", "--format", "{{.Names}}"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if _r.returncode != 0 or not _r.stdout.strip():
+                        continue
+                    _ctr = _r.stdout.strip().splitlines()[0]
+                    _r2 = subprocess.run(
+                        _dc + ["inspect", "--format", "{{json .Mounts}}", _ctr],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if _r2.returncode != 0:
+                        continue
+                    for _mount in _json.loads(_r2.stdout or "[]"):
+                        _dst = _mount.get("Destination", "")
+                        _src = _mount.get("Source", "")
+                        if not _src or not any(
+                            kw in _dst for kw in ("/dynamic", "/conf", "/rules", "/config")
+                        ):
+                            continue
+                        if not os.path.isdir(_src):
+                            continue
+                        try:
+                            tp = os.path.join(_src, ".wtest")
+                            with open(tp, "w") as _f:
+                                _f.write("")
+                            os.unlink(tp)
+                            # Try to read cert resolver from container
+                            _r3 = subprocess.run(
+                                _dc + ["exec", _ctr, "cat", "/etc/traefik/traefik.yml"],
+                                capture_output=True, text=True, timeout=10,
+                            )
+                            if _r3.returncode == 0:
+                                _mr = _re2.search(
+                                    r"certificatesResolvers:\s*\n\s+(\w+)", _r3.stdout
+                                )
+                                if _mr:
+                                    cert_resolver = _mr.group(1)
+                            return _src, cert_resolver
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+            return None, cert_resolver
+
+        def _write_traefik_config(dynamic_dir: str, cert_resolver: str) -> tuple:
+            # Detect Docker bridge gateway so Traefik (in Docker) can reach host services
+            host_ip = "172.17.0.1"
+            for _prefix in ([], ["sudo"]):
+                try:
+                    _r = subprocess.run(
+                        _prefix + ["docker", "network", "inspect", "bridge",
+                                   "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if _r.returncode == 0 and _r.stdout.strip():
+                        host_ip = _r.stdout.strip()
+                        break
+                except Exception:
+                    continue
+
+            svc = f"webapp-{domain.replace('.', '-').replace('_', '-')}"
+            cfg_yaml = (
+                f"http:\n"
+                f"  routers:\n"
+                f"    {svc}:\n"
+                f'      rule: "Host(`{domain}`)"\n'
+                f"      service: {svc}\n"
+                f"      entryPoints:\n"
+                f"        - websecure\n"
+                f"      tls:\n"
+                f"        certResolver: {cert_resolver}\n"
+                f"  services:\n"
+                f"    {svc}:\n"
+                f"      loadBalancer:\n"
+                f"        servers:\n"
+                f'          - url: "http://{host_ip}:{port_int}"\n'
+            )
+            cfg_path = os.path.join(dynamic_dir, "webapp.yml")
             try:
-                with open(nginx_conf_path, 'w') as fh:
-                    fh.write(ssl_cfg)
-                _step("Конфиг Nginx (HTTPS)", "ok", f"SSL-конфиг записан: {nginx_conf_path}")
-            except Exception as exc:
-                _step("Конфиг Nginx (HTTPS)", "error", str(exc)[:300])
-            _nginx_reload("Финальная перезагрузка Nginx")
-        else:
-            # certbot failed (typical in Docker+Traefik: host port 80 is Traefik, not our nginx).
-            # Attempt Traefik file-provider config as automatic fallback.
-            import json as _json
-            import re as _re2
-
-            def _try_traefik():
-                # 1. Check traefik container is running
-                try:
-                    r = subprocess.run(
-                        ["docker", "ps", "--filter", "name=traefik", "--format", "{{.Names}}"],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if r.returncode != 0 or not r.stdout.strip():
-                        return False, "Контейнер traefik не найден (docker ps не вернул результата)"
-                    traefik_ctr = r.stdout.strip().splitlines()[0]
-                except FileNotFoundError:
-                    return False, "docker не найден на этом хосте"
-                except Exception as exc:
-                    return False, str(exc)[:200]
-
-                # 2. Find dynamic config directory from container mounts
-                dynamic_dir = None
-                try:
-                    r = subprocess.run(
-                        ["docker", "inspect", "--format", "{{json .Mounts}}", traefik_ctr],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if r.returncode == 0:
-                        for mount in _json.loads(r.stdout or "[]"):
-                            dst = mount.get("Destination", "")
-                            src = mount.get("Source", "")
-                            if src and any(kw in dst for kw in ("/dynamic", "/conf", "/rules", "/config")):
-                                dynamic_dir = src
-                                break
-                except Exception:
-                    pass
-
-                if not dynamic_dir:
-                    for path in ("/etc/traefik/dynamic", "/opt/remnawave/config/traefik",
-                                 "/opt/traefik/dynamic", "/root/remnawave/traefik/dynamic"):
-                        if os.path.isdir(path):
-                            dynamic_dir = path
-                            break
-
-                if not dynamic_dir:
-                    return False, ("Не удалось найти директорию динамической конфигурации Traefik. "
-                                   "Добавьте маршрут вручную: docker inspect traefik | grep Mounts")
-
-                # 3. Resolve cert resolver name from Traefik static config
-                cert_resolver = "letsencrypt"
-                try:
-                    r = subprocess.run(
-                        ["docker", "exec", traefik_ctr, "cat", "/etc/traefik/traefik.yml"],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if r.returncode == 0:
-                        m = _re2.search(r'certificatesResolvers:\s*\n\s+(\w+)', r.stdout)
-                        if m:
-                            cert_resolver = m.group(1)
-                except Exception:
-                    pass
-
-                # 4. Find Docker bridge gateway so Traefik container can reach host services
-                host_ip = "172.17.0.1"
-                try:
-                    r = subprocess.run(
-                        ["docker", "network", "inspect", "bridge",
-                         "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if r.returncode == 0 and r.stdout.strip():
-                        host_ip = r.stdout.strip()
-                except Exception:
-                    pass
-
-                # 5. Write Traefik dynamic config YAML
-                svc = f"webapp-{domain.replace('.', '-').replace('_', '-')}"
-                cfg_yaml = (
-                    f"http:\n"
-                    f"  routers:\n"
-                    f"    {svc}:\n"
-                    f"      rule: \"Host(`{domain}`)\"\n"
-                    f"      service: {svc}\n"
-                    f"      entryPoints:\n"
-                    f"        - websecure\n"
-                    f"      tls:\n"
-                    f"        certResolver: {cert_resolver}\n"
-                    f"  services:\n"
-                    f"    {svc}:\n"
-                    f"      loadBalancer:\n"
-                    f"        servers:\n"
-                    f"          - url: \"http://{host_ip}:{port_int}\"\n"
+                os.makedirs(dynamic_dir, exist_ok=True)
+                with open(cfg_path, "w") as _f:
+                    _f.write(cfg_yaml)
+                return True, (
+                    f"Конфиг записан: {cfg_path} "
+                    f"(certResolver: {cert_resolver}, upstream: {host_ip}:{port_int})"
                 )
-                cfg_path = os.path.join(dynamic_dir, "webapp.yml")
-                try:
-                    os.makedirs(dynamic_dir, exist_ok=True)
-                    with open(cfg_path, 'w') as f:
-                        f.write(cfg_yaml)
-                    return True, (f"Конфиг записан: {cfg_path} "
-                                  f"(certResolver: {cert_resolver}, upstream: {host_ip}:{port_int})")
-                except Exception as exc:
-                    return False, f"Не удалось записать {cfg_path}: {exc}"
+            except Exception as exc:
+                return False, f"Не удалось записать {cfg_path}: {exc}"
 
-            traefik_ok, traefik_msg = _try_traefik()
-            _step("Конфигурация Traefik (fallback)", "ok" if traefik_ok else "error", traefik_msg)
-            # Traefik watches the file directory and reloads automatically; sending HUP is belt-and-braces
-            if traefik_ok:
-                _run("Reload Traefik", ["docker", "kill", "-s", "HUP", "traefik"], timeout=10)
+        traefik_dir, traefik_resolver = _find_traefik_dynamic_dir()
+
+        if traefik_dir:
+            # Traefik detected — skip certbot entirely; Traefik handles ACME via TLS-ALPN
+            _step("Обнаружен Traefik", "ok", f"Конфиг директория: {traefik_dir}")
+            t_ok, t_msg = _write_traefik_config(traefik_dir, traefik_resolver)
+            _step("Конфигурация Traefik", "ok" if t_ok else "error", t_msg)
+            # Traefik auto-watches the dir; SIGHUP forces immediate reload
+            for _prefix in ([], ["sudo"]):
+                try:
+                    _r = subprocess.run(
+                        _prefix + ["docker", "kill", "-s", "HUP", "traefik"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if _r.returncode == 0:
+                        _step("Reload Traefik", "ok", "SIGHUP отправлен")
+                        break
+                except Exception:
+                    continue
+        else:
+            # No Traefik found: try install.sh (handles nginx install + certbot --nginx)
+            _install_sh = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "webapp", "install.sh")
+            )
+            if os.path.isfile(_install_sh):
+                try:
+                    os.chmod(_install_sh, 0o755)
+                except Exception:
+                    pass
+                _run(
+                    "Установка Nginx + SSL (install.sh)",
+                    ["bash", _install_sh],
+                    timeout=300,
+                    extra_env={
+                        "WEBAPP_DOMAIN": domain,
+                        "WEBAPP_EMAIL": email,
+                        "WEBAPP_PORT": str(port_int),
+                        "DEBIAN_FRONTEND": "noninteractive",
+                    },
+                )
+            else:
+                # install.sh not found — certbot webroot (nginx must own port 80)
+                certbot_ok = _run("SSL-сертификат (Let's Encrypt)", [
+                    "certbot", "certonly", "--webroot",
+                    "-w", _ACME_WEBROOT,
+                    "-d", domain,
+                    "--email", email,
+                    "--agree-tos", "--non-interactive", "--no-eff-email",
+                ], timeout=180)
+
+                if certbot_ok:
+                    ssl_cfg = _build_nginx_ssl_config(domain, port_int)
+                    try:
+                        with open(nginx_conf_path, "w") as fh:
+                            fh.write(ssl_cfg)
+                        _step("Конфиг Nginx (HTTPS)", "ok", f"SSL-конфиг записан: {nginx_conf_path}")
+                    except Exception as exc:
+                        _step("Конфиг Nginx (HTTPS)", "error", str(exc)[:300])
+                    _nginx_reload("Финальная перезагрузка Nginx")
+                else:
+                    _step("SSL", "error",
+                          "certbot не удался, и директория Traefik не обнаружена. "
+                          "Проверьте, что nginx занимает порт 80, или добавьте конфиг Traefik вручную.")
 
         all_ok = all(s["status"] in ("ok", "skip") for s in steps)
         return jsonify({"success": all_ok, "steps": steps})

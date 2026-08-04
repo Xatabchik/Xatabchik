@@ -13,7 +13,7 @@ NC='\033[0m'
 WEBAPP_CONF_NAME="remnawave-webapp"
 NGINX_CONF="/etc/nginx/sites-available/${WEBAPP_CONF_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${WEBAPP_CONF_NAME}.conf"
-WEBAPP_PORT="8000" # Порт, на котором запущен Uvicorn
+WEBAPP_PORT="${WEBAPP_PORT:-8000}"
 
 log_info() {
     echo -e "${BLUE}${BOLD}[INFO]${NC} $1"
@@ -153,12 +153,18 @@ obtain_ssl() {
 
 # --- Main Script ---
 
-clear
-echo -e "${BLUE}${BOLD}=== Настройка Webapp (Nginx + SSL) ===${NC}"
-echo ""
+# Non-interactive mode: skip prompts when env vars are provided by the admin panel
+NON_INTERACTIVE=false
+[[ -n "${WEBAPP_DOMAIN:-}" && -n "${WEBAPP_EMAIL:-}" ]] && NON_INTERACTIVE=true
 
-# Проверка прав root/sudo
-if [ "$EUID" -ne 0 ]; then
+if ! $NON_INTERACTIVE; then
+    clear
+    echo -e "${BLUE}${BOLD}=== Настройка Webapp (Nginx + SSL) ===${NC}"
+    echo ""
+fi
+
+# Проверка прав root/sudo (только в интерактивном режиме)
+if [ "$EUID" -ne 0 ] && ! $NON_INTERACTIVE; then
     log_warn "Запуск через sudo..."
     exec sudo "$0" "$@"
 fi
@@ -167,20 +173,30 @@ ensure_packages
 ensure_services
 
 DOMAIN=""
-while [[ -z "$DOMAIN" ]]; do
-    log_input "Введите домен для Webapp (например, app.example.com): "
-    read -r USER_DOMAIN_INPUT < /dev/tty || true
-    DOMAIN=$(sanitize_domain "$USER_DOMAIN_INPUT")
-    if [[ -z "$DOMAIN" ]]; then
-        log_warn "Некорректный домен."
-    fi
-done
+if [[ -n "${WEBAPP_DOMAIN:-}" ]]; then
+    DOMAIN=$(sanitize_domain "${WEBAPP_DOMAIN}")
+    log_info "Домен: $DOMAIN"
+else
+    while [[ -z "$DOMAIN" ]]; do
+        log_input "Введите домен для Webapp (например, app.example.com): "
+        read -r USER_DOMAIN_INPUT < /dev/tty || true
+        DOMAIN=$(sanitize_domain "$USER_DOMAIN_INPUT")
+        if [[ -z "$DOMAIN" ]]; then
+            log_warn "Некорректный домен."
+        fi
+    done
+fi
 
 EMAIL=""
-while [[ -z "$EMAIL" ]]; do
-    log_input "Введите Email для SSL (Let's Encrypt): "
-    read -r EMAIL < /dev/tty || true
-done
+if [[ -n "${WEBAPP_EMAIL:-}" ]]; then
+    EMAIL="${WEBAPP_EMAIL}"
+    log_info "Email: $EMAIL"
+else
+    while [[ -z "$EMAIL" ]]; do
+        log_input "Введите Email для SSL (Let's Encrypt): "
+        read -r EMAIL < /dev/tty || true
+    done
+fi
 
 echo ""
 configure_nginx "$DOMAIN"
