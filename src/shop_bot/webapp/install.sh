@@ -108,8 +108,22 @@ ensure_packages() {
     fi
 }
 
+nginx_start() {
+    # systemctl is unavailable inside Docker
+    _sudo service nginx start 2>/dev/null ||
+    _sudo nginx 2>/dev/null ||
+    true
+}
+
+nginx_reload() {
+    _sudo nginx -s reload 2>/dev/null ||
+    _sudo service nginx reload 2>/dev/null ||
+    _sudo systemctl reload nginx 2>/dev/null ||
+    true
+}
+
 ensure_services() {
-    run_with_spinner "Проверка Nginx" _sudo systemctl enable nginx --now || true
+    run_with_spinner "Запуск Nginx" nginx_start
 }
 
 configure_nginx() {
@@ -143,7 +157,7 @@ EOF
     fi
 
     run_with_spinner "Проверка конфигурации Nginx" _sudo nginx -t
-    run_with_spinner "Перезагрузка Nginx" _sudo systemctl reload nginx
+    run_with_spinner "Перезагрузка Nginx" nginx_reload
 }
 
 obtain_ssl() {
