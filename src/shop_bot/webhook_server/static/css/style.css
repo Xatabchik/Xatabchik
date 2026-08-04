@@ -3702,11 +3702,15 @@ body{
 	width: var(--sidebar-w);
 	min-width: var(--sidebar-w);
 	height: 100vh;
+	height: 100dvh;
 	position: sticky;
 	top: 0;
 	display: flex;
 	flex-direction: column;
 	padding: 26px 18px 22px;
+	padding-bottom: max(22px, env(safe-area-inset-bottom));
+	overflow-y: auto;
+	overscroll-behavior: contain;
 	background:
 		linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.02) 25%, rgba(255,255,255,.01) 100%),
 		linear-gradient(180deg, #0c141f 0%, #0a1018 100%);
@@ -3748,6 +3752,9 @@ body{
 	padding: 6px 10px;
 	line-height: 1;
 }
+
+/* hide scrollbar visually but keep scroll functionality */
+.sidebar::-webkit-scrollbar { display: none; }
 
 .sidebar-navigation{
 	display: flex;
@@ -4243,13 +4250,16 @@ select option:checked{
 		width: min(var(--sidebar-w), 88vw);
 		min-width: 0;
 		height: 100vh;
+		height: 100dvh;
 		position: fixed;
 		left: 0;
 		top: 0;
+		padding-bottom: max(24px, env(safe-area-inset-bottom));
 		transform: translateX(-110%);
 		transition: transform .22s ease;
 		z-index: 2000;
 		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 
 	body.sidebar-open .sidebar{ transform: translateX(0); }
