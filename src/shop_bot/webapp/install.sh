@@ -169,11 +169,19 @@ obtain_ssl() {
         return
     fi
 
-    # If an external proxy (Traefik) owns port 80 it redirects HTTP→HTTPS,
-    # which breaks the HTTP-01 challenge — detect and skip certbot in that case.
-    local redirect_url
-    redirect_url=$(curl -s -o /dev/null -w "%{redirect_url}" --max-time 8 \
-        "http://${domain}/.well-known/acme-challenge/probe" 2>/dev/null || true)
+    # Detect external proxy by checking if port-80 HTTP is redirected to HTTPS.
+    # Try curl first, fall back to wget, skip check if neither is available.
+    local probe_url="http://${domain}/.well-known/acme-challenge/probe"
+    local redirect_url=""
+    if command -v curl >/dev/null 2>&1; then
+        redirect_url=$(curl -s -o /dev/null -w "%{redirect_url}" \
+            --max-time 8 "$probe_url" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+        # wget -S shows headers; look for Location: https://
+        redirect_url=$(wget -q --server-response --spider --timeout=8 "$probe_url" 2>&1 \
+            | grep -i '^\s*Location:' | head -1 | awk '{print $2}' || true)
+    fi
+
     if [[ "$redirect_url" == https://* ]]; then
         log_warn "Обнаружен внешний прокси (HTTP→HTTPS редирект на порту 80)."
         log_warn "HTTP-01 challenge невозможен. Настройте SSL через Traefik или вручную."
@@ -182,8 +190,12 @@ obtain_ssl() {
     fi
     
     log_info "Получение SSL сертификата..."
+    # certbot failure is non-fatal: external proxy may handle SSL
     run_with_spinner "Certbot" \
-        _sudo certbot --nginx -d "$domain" --email "$email" --agree-tos --non-interactive --redirect --no-eff-email
+        _sudo certbot --nginx -d "$domain" --email "$email" --agree-tos --non-interactive --redirect --no-eff-email || {
+        log_warn "Certbot не удался. Если порт 80 занят Traefik/другим прокси — настройте SSL в нём."
+        return 0
+    }
 }
 
 # --- Main Script ---
