@@ -67,6 +67,15 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
+# Run directly as root, or through sudo otherwise
+_sudo() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 sanitize_domain() {
     if [[ -z "${1:-}" ]]; then
         echo ""
@@ -76,7 +85,7 @@ sanitize_domain() {
 }
 
 ensure_packages() {
-    run_with_spinner "Обновление списка пакетов" sudo apt-get update -qq
+    run_with_spinner "Обновление списка пакетов" _sudo apt-get update -qq
     
     declare -A packages=( 
         [nginx]='nginx' 
@@ -93,14 +102,14 @@ ensure_packages() {
 
     if ((${#missing[@]})); then
         run_with_spinner "Установка зависимостей (${missing[*]})" \
-            sudo bash -c "export DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends ${missing[*]}"
+            _sudo bash -c "export DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends ${missing[*]}"
     else
         log_success "Необходимые пакеты уже установлены"
     fi
 }
 
 ensure_services() {
-    run_with_spinner "Проверка Nginx" sudo systemctl enable nginx --now || true
+    run_with_spinner "Проверка Nginx" _sudo systemctl enable nginx --now || true
 }
 
 configure_nginx() {
@@ -108,7 +117,7 @@ configure_nginx() {
     
     log_info "Создание конфигурации Nginx для $domain..."
     
-    sudo tee "$NGINX_CONF" >/dev/null <<EOF
+    _sudo tee "$NGINX_CONF" >/dev/null <<EOF
 server {
     listen 80;
     server_name ${domain};
@@ -130,11 +139,11 @@ server {
 EOF
     
     if [[ ! -L "$NGINX_LINK" ]]; then
-        sudo ln -s "$NGINX_CONF" "$NGINX_LINK" 2>/dev/null || true
+        _sudo ln -s "$NGINX_CONF" "$NGINX_LINK" 2>/dev/null || true
     fi
 
-    run_with_spinner "Проверка конфигурации Nginx" sudo nginx -t
-    run_with_spinner "Перезагрузка Nginx" sudo systemctl reload nginx
+    run_with_spinner "Проверка конфигурации Nginx" _sudo nginx -t
+    run_with_spinner "Перезагрузка Nginx" _sudo systemctl reload nginx
 }
 
 obtain_ssl() {
@@ -148,7 +157,7 @@ obtain_ssl() {
     
     log_info "Получение SSL сертификата..."
     run_with_spinner "Certbot" \
-        sudo certbot --nginx -d "$domain" --email "$email" --agree-tos --non-interactive --redirect --no-eff-email
+        _sudo certbot --nginx -d "$domain" --email "$email" --agree-tos --non-interactive --redirect --no-eff-email
 }
 
 # --- Main Script ---
