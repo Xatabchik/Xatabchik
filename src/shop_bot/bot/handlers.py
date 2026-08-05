@@ -6079,8 +6079,7 @@ def get_user_router() -> Router:
         state_text = "✅ Автопродление включено" if new_state else "❌ Автопродление отключено"
         await callback.answer(state_text, show_alert=True)
         # Обновляем карточку ключа
-        callback.data = f"show_key_{key_id}"
-        await show_key_handler(callback)
+        await show_key_handler(callback.model_copy(update={"data": f"show_key_{key_id}"}))
 
     @user_router.callback_query(F.data == "toggle_auto_renew_profile")
     @registration_required
