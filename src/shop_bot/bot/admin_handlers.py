@@ -7584,9 +7584,17 @@ def get_admin_router() -> Router:
 
     @admin_router.message(Broadcast.waiting_for_message)
     async def broadcast_message_received_handler(message: types.Message, state: FSMContext):
+        import datetime
+        from enum import Enum
 
-        # model_dump_json() crashes on aiogram Default sentinel objects (e.g. link_preview_options when URL is sent)
-        msg_json = json.dumps(message.model_dump(), default=lambda o: None)
+        def _msg_json_default(o):
+            if isinstance(o, Enum):
+                return o.value
+            if isinstance(o, (datetime.datetime, datetime.date)):
+                return o.isoformat()
+            return None  # aiogram Default sentinel and other unknown types
+
+        msg_json = json.dumps(message.model_dump(), default=_msg_json_default)
         await state.update_data(message_to_send=msg_json)
         await message.answer(
             "Сообщение получено. Хотите добавить к нему кнопку со ссылкой?",
@@ -7678,7 +7686,7 @@ def get_admin_router() -> Router:
         elif msg.text:
             await bot.send_message(
                 chat_id=chat_id, text=msg.text,
-                entities=msg.entities, disable_web_page_preview=True, **kw,
+                entities=msg.entities, **kw,
             )
         else:
             await bot.copy_message(
