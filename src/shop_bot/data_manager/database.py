@@ -572,6 +572,7 @@ def initialize_db():
                 "trial_duration_days": "3",
                 "trial_traffic_limit_gb": "0",
                 "trial_device_limit": "0",
+                "trial_default_host": "",
                 "enable_referrals": "true",
                 "referral_percentage": "10",
                 "referral_discount": "5",

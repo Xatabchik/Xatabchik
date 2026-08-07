@@ -5395,13 +5395,15 @@ def get_user_router() -> Router:
                 pass
 
         all_user_keys = get_user_keys(user_id)
-        # Исключаем подарочные ключи (tag="user_gift") из списка
-        user_keys = [key for key in all_user_keys if key.get('tag') != 'user_gift']
+        # Разделяем личные ключи и отправленные подарки
+        user_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() not in ('user_gift', 'gift')]
+        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
         
+        has_any = bool(user_keys or gift_keys)
         await callback.message.edit_text(
-            "Ваши ключи:" if user_keys else "У вас пока нет ключей.",
+            "Ваши ключи:" if has_any else "У вас пока нет ключей.",
             # Передаем вычисленную страницу в клавиатуру
-            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=page)
+            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=page, gift_keys=gift_keys)
         )
 
     @user_router.callback_query(F.data == "search_my_keys")
@@ -5778,7 +5780,14 @@ def get_user_router() -> Router:
         if not hosts:
             await callback.message.edit_text("❌ В данный момент нет доступных серверов для создания пробного ключа.")
             return
-            
+
+        # Если в настройках задан хост по умолчанию — пропускаем выбор
+        default_host = (get_setting("trial_default_host") or "").strip()
+        if default_host and any(h['host_name'] == default_host for h in hosts):
+            await callback.answer()
+            await process_trial_key_creation(callback.message, default_host)
+            return
+
         if len(hosts) == 1:
             await callback.answer()
             await process_trial_key_creation(callback.message, hosts[0]['host_name'])
@@ -5918,11 +5927,6 @@ def get_user_router() -> Router:
 
         if not key_data or key_data['user_id'] != user_id:
             await callback.message.edit_text("❌ Ошибка: ключ не найден.")
-            return
-        
-        # Не показываем подарочные ключи в "Мои ключи"
-        if key_data.get('tag') == 'user_gift':
-            await callback.message.edit_text("❌ Это подарочный ключ. Используйте раздел 'Мои подарки' для управления им.")
             return
             
         try:

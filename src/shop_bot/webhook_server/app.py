@@ -2895,7 +2895,7 @@ def create_webhook_app(bot_controller_instance):
                 plan_device_limit = plan.get('hwid_device_limit')
         if custom_days_raw:
             try:
-                days_total += max(0, int(custom_days_raw))
+                days_total += int(custom_days_raw)
             except Exception:
                 pass
 

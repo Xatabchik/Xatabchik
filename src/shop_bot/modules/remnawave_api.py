@@ -1210,7 +1210,7 @@ async def create_or_update_key_on_host(
             target_dt = datetime.fromtimestamp(expiry_timestamp_ms / 1000, tz=timezone.utc)
         else:
             days = days_to_add if days_to_add is not None else int(rw_repo.get_setting('default_extension_days') or 30)
-            if days <= 0:
+            if days == 0:
                 days = 1
 
             # IMPORTANT: extend from the current expiry date (if it's in the future),

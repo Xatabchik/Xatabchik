@@ -242,6 +242,77 @@ async def api_referral_payout_methods_add(request: Request):
     return {"ok": ok, "message": msg, "method_id": new_id}
 
 
+@app.post("/api/referral/available-method-types")
+async def api_referral_available_method_types(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        return {"ok": False, "error": "Unauthorized"}
+
+    def _is_enabled(key: str) -> bool:
+        raw = str(get_setting(key) or "false").strip().lower()
+        return raw in {"1", "true", "yes", "on", "y"}
+
+    method_configs = [
+        {"type": "sbp",       "label": "СБП",         "icon": "phone_android",    "placeholder": "+7 900 000 00 00",     "setting": "referral_withdraw_sbp_enabled"},
+        {"type": "card",      "label": "Номер карты",  "icon": "credit_card",      "placeholder": "Номер карты (16 цифр)", "setting": "referral_withdraw_card_enabled"},
+        {"type": "usdt_trc20","label": "USDT TRC20",   "icon": "currency_bitcoin", "placeholder": "TRC20 адрес кошелька", "setting": "referral_withdraw_usdt_enabled"},
+    ]
+    enabled = [
+        {"type": m["type"], "label": m["label"], "icon": m["icon"], "placeholder": m["placeholder"]}
+        for m in method_configs if _is_enabled(m["setting"])
+    ]
+    raw_banks = get_setting("referral_withdraw_sbp_banks") or ""
+    sbp_banks = [b.strip() for b in raw_banks.split(",") if b.strip()]
+    return {"ok": True, "methods": enabled, "sbp_banks": sbp_banks}
+
+
+@app.post("/api/referral/payout-methods/delete")
+async def api_referral_payout_methods_delete(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid JSON"}
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        return {"ok": False, "error": "Unauthorized"}
+    method_id = data.get("method_id")
+    if not method_id:
+        return {"ok": False, "error": "Missing method_id"}
+    method = rw_repo.get_referral_payout_method(int(method_id))
+    if not method or method.get("user_id") != user.get("telegram_id"):
+        return {"ok": False, "error": "Method not found"}
+    ok = rw_repo.delete_referral_payout_method(int(method_id))
+    return {"ok": bool(ok)}
+
+
+@app.post("/api/key/auto-renew")
+async def api_key_auto_renew(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid JSON"}
+
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        return {"ok": False, "error": "Unauthorized"}
+
+    key_id = data.get("key_id")
+    enabled = data.get("enabled")
+    if key_id is None or enabled is None:
+        return {"ok": False, "error": "Missing key_id or enabled"}
+
+    key = get_key_by_id(int(key_id))
+    if not key or key.get("user_id") != user.get("telegram_id"):
+        return {"ok": False, "error": "Key not found"}
+
+    rw_repo.set_key_auto_renew(int(key_id), bool(enabled))
+    return {"ok": True, "auto_renew": bool(enabled)}
+
+
 # Endpoint: referral withdraw request from webapp
 @app.post("/api/referral/request-withdrawal")
 async def api_referral_request_withdraw(request: Request):
@@ -479,6 +550,7 @@ def _process_key_data(key: dict) -> dict:
         "comment_key": key.get('comment_key') or "",
         "host_name": key.get('host_name') or "",
         "user_key_name": key.get('user_key_name') or "",
+        "auto_renew": bool(int(key.get('auto_renew') or 0)),
     }
 
 def _get_key_html(key: dict) -> str:
@@ -755,14 +827,9 @@ def _get_profile_keys_html(keys: list) -> str:
                      </div>
                  
                      <!-- COMMENTS BLOCK -->
-                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-center opacity-90 px-1 py-1 mb-2 mt-1 relative">
-                         <div class="w-1/2 flex items-center pr-2">
-                             <span class="text-[9px] text-gray-500 font-bold uppercase tracking-wider whitespace-nowrap">Комментарий:</span>
-                         </div>
-                         <div class="absolute left-1/2 -translate-x-1/2 w-px h-3 bg-white/10 shrink-0"></div>
-                         <div class="w-1/2 pl-2 text-right overflow-hidden flex justify-end">
-                             <span id="comment-text-{data['key_id']}" class="text-[10px] text-gray-300 break-words">{data.get('comment_key', '')}</span>
-                         </div>
+                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
+                         <span class="material-icons-round text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
+                         <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
                      </div>
 
                      <div class="flex items-center gap-2 bg-black/20 rounded-xl p-2 border border-white/5 group/copy hover:border-primary/30 transition-colors">
@@ -797,6 +864,18 @@ def _get_profile_keys_html(keys: list) -> str:
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-icons-round text-sm">edit_note</span>
                              <span>Заметка</span>
+                         </button>
+                     </div>
+                     <div class="grid grid-cols-2 gap-2 mt-1">
+                         <button onclick="goToRenewKey({data['key_id']})"
+                             class="w-full bg-primary/10 border border-primary/20 text-primary py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1">
+                             <span class="material-icons-round text-sm">autorenew</span>
+                             <span>Продлить</span>
+                         </button>
+                         <button id="auto-renew-btn-{data['key_id']}" onclick="toggleKeyAutoRenew({data['key_id']}, {'true' if data['auto_renew'] else 'false'}, this)"
+                             class="w-full py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-1 border {'border-primary/30 text-primary bg-primary/10' if data['auto_renew'] else 'border-white/5 text-white bg-white/5 hover:bg-white/10'}">
+                             <span class="material-icons-round text-sm">{'update' if data['auto_renew'] else 'pause_circle'}</span>
+                             <span class="auto-renew-label">{'Авто: ВКЛ' if data['auto_renew'] else 'Авто: ВЫКЛ'}</span>
                          </button>
                      </div>
                 </div>
@@ -846,14 +925,9 @@ def _get_setup_keys_html(keys: list) -> str:
                  <div class="pb-3 pt-2 flex flex-col gap-2 border-t border-white/5">
                  
                      <!-- COMMENTS BLOCK -->
-                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-center opacity-90 px-1 py-1 mb-2 mt-1 relative">
-                         <div class="w-1/2 flex items-center pr-2">
-                             <span class="text-[9px] text-gray-500 font-bold uppercase tracking-wider whitespace-nowrap">Комментарий:</span>
-                         </div>
-                         <div class="absolute left-1/2 -translate-x-1/2 w-px h-3 bg-white/10 shrink-0"></div>
-                         <div class="w-1/2 pl-2 text-right overflow-hidden flex justify-end">
-                             <span id="comment-text-{data['key_id']}" class="text-[10px] text-gray-300 break-words">{data.get('comment_key', '')}</span>
-                         </div>
+                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
+                         <span class="material-icons-round text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
+                         <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
                      </div>
 
                      <div class="flex items-center gap-2 bg-black/20 rounded-xl p-2 border border-white/5 group/copy hover:border-primary/30 transition-colors">

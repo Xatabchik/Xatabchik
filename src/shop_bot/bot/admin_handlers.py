@@ -2941,14 +2941,17 @@ def get_admin_router() -> Router:
         days = _get_trial_days()
         traffic_txt = _format_trial_value_gb(get_setting("trial_traffic_limit_gb"))
         devices_txt = _format_trial_value_int(get_setting("trial_device_limit"))
+        default_host = (get_setting("trial_default_host") or "").strip()
 
         status = "🟢 включён" if enabled else "🔴 выключен"
+        host_line = f"Хост: <b>{default_host}</b>" if default_host else "Хост: <b>авто (все доступные)</b>"
         text_out = (
             "🎁 <b>Пробный период (Trial)</b>\n\n"
             f"Статус: {status}\n"
             f"Длительность: <b>{days}</b> дн.\n"
             f"Лимит трафика: <b>{traffic_txt}</b>\n"
-            f"Лимит устройств: <b>{devices_txt}</b>\n\n"
+            f"Лимит устройств: <b>{devices_txt}</b>\n"
+            f"{host_line}\n\n"
             "Подсказка: 0 = без лимита (для трафика и устройств)."
         )
 
@@ -2957,6 +2960,7 @@ def get_admin_router() -> Router:
             days=days,
             traffic_text=traffic_txt,
             devices_text=devices_txt,
+            default_host=default_host,
         )
 
         if edit_message:
@@ -3034,6 +3038,34 @@ def get_admin_router() -> Router:
             reply_markup=keyboards.create_cancel_keyboard("admin_trial"),
             parse_mode="HTML",
         )
+
+    @admin_router.callback_query(F.data == "admin_trial_set_host")
+    async def admin_trial_set_host(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminTrial.menu)
+        hosts = get_all_hosts()
+        await callback.message.edit_text(
+            "🖥 <b>Хост по умолчанию для триала</b>\n\n"
+            "Выберите хост, на котором будут создаваться пробные ключи.\n"
+            "<b>Авто</b> — пользователь выбирает сам (или берётся единственный доступный).",
+            reply_markup=keyboards.create_admin_trial_host_keyboard(hosts),
+            parse_mode="HTML",
+        )
+
+    @admin_router.callback_query(F.data.startswith("admin_trial_select_host_"))
+    async def admin_trial_select_host(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        host_name = callback.data[len("admin_trial_select_host_"):]
+        rw_repo.update_setting("trial_default_host", host_name)
+        label = f"хост «{host_name}»" if host_name else "авто"
+        await callback.answer(f"✅ Хост триала: {label}", show_alert=True)
+        await state.set_state(AdminTrial.menu)
+        await show_admin_trial_menu(callback.message, edit_message=True)
 
     @admin_router.message(AdminTrial.waiting_for_days)
     async def admin_trial_days_input(message: types.Message, state: FSMContext):
@@ -6518,7 +6550,8 @@ def get_admin_router() -> Router:
         await state.update_data(extend_key_id=key_id)
         await state.set_state(AdminExtendSingleKey.waiting_days)
         await callback.message.edit_text(
-            f"Укажите, на сколько дней продлить ключ #{key_id} (число):",
+            f"Укажите, на сколько дней изменить срок ключа #{key_id}\n"
+            "Положительное — продление, отрицательное — уменьшение срока:",
             reply_markup=keyboards.create_admin_cancel_keyboard()
         )
 
@@ -6535,10 +6568,10 @@ def get_admin_router() -> Router:
         try:
             days = int((message.text or '').strip())
         except Exception:
-            await message.answer("❌ Введите число дней")
+            await message.answer("❌ Введите целое число дней (можно отрицательное)")
             return
-        if days <= 0:
-            await message.answer("❌ Дней должно быть положительное число")
+        if days == 0:
+            await message.answer("❌ Введите ненулевое значение")
             return
         key = rw_repo.get_key_by_id(key_id)
         if not key:
@@ -7622,6 +7655,37 @@ def get_admin_router() -> Router:
         await state.update_data(button_text=None, button_url=None)
         await show_broadcast_preview(callback.message, state, bot)
 
+    async def _send_broadcast_to(bot: Bot, chat_id: int, msg: types.Message, keyboard) -> None:
+        """Send broadcast, using specific send methods for media so reply_markup is applied correctly."""
+        kw = dict(reply_markup=keyboard)
+        ckw = dict(caption=msg.caption, caption_entities=msg.caption_entities, **kw)
+        if msg.photo:
+            await bot.send_photo(chat_id=chat_id, photo=msg.photo[-1].file_id, **ckw)
+        elif msg.video:
+            await bot.send_video(chat_id=chat_id, video=msg.video.file_id, **ckw)
+        elif msg.animation:
+            await bot.send_animation(chat_id=chat_id, animation=msg.animation.file_id, **ckw)
+        elif msg.document:
+            await bot.send_document(chat_id=chat_id, document=msg.document.file_id, **ckw)
+        elif msg.audio:
+            await bot.send_audio(chat_id=chat_id, audio=msg.audio.file_id, **ckw)
+        elif msg.voice:
+            await bot.send_voice(chat_id=chat_id, voice=msg.voice.file_id, **kw)
+        elif msg.sticker:
+            await bot.send_sticker(chat_id=chat_id, sticker=msg.sticker.file_id, **kw)
+        elif msg.text:
+            await bot.send_message(
+                chat_id=chat_id, text=msg.text,
+                entities=msg.entities, disable_web_page_preview=True, **kw,
+            )
+        else:
+            await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=msg.chat.id,
+                message_id=msg.message_id,
+                **kw,
+            )
+
     async def show_broadcast_preview(message: types.Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         message_json = data.get('message_to_send')
@@ -7631,26 +7695,25 @@ def get_admin_router() -> Router:
         button_url = data.get('button_url')
         button_callback = data.get('button_callback')
 
-        preview_keyboard = None
+        preview_builder = InlineKeyboardBuilder()
         if button_text and (button_url or button_callback):
-            builder = InlineKeyboardBuilder()
             if button_url:
-                builder.button(text=button_text, url=button_url)
+                preview_builder.button(text=button_text, url=button_url)
             else:
-                builder.button(text=button_text, callback_data=button_callback)
-            preview_keyboard = builder.as_markup()
+                preview_builder.button(text=button_text, callback_data=button_callback)
+        preview_builder.button(
+            text=(get_setting("btn_back_to_menu_text") or "⬅️ Главное меню"),
+            callback_data="back_to_main_menu",
+        )
+        preview_builder.adjust(1)
+        preview_keyboard = preview_builder.as_markup()
 
         await message.answer(
             "Вот так будет выглядеть ваше сообщение. Отправляем?",
             reply_markup=keyboards.create_broadcast_confirmation_keyboard()
         )
 
-        await bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=original_message.chat.id,
-            message_id=original_message.message_id,
-            reply_markup=preview_keyboard
-        )
+        await _send_broadcast_to(bot, message.chat.id, original_message, preview_keyboard)
 
         await state.set_state(Broadcast.waiting_for_confirmation)
 
@@ -7666,14 +7729,18 @@ def get_admin_router() -> Router:
         button_url = data.get('button_url')
         button_callback = data.get('button_callback')
 
-        final_keyboard = None
+        final_builder = InlineKeyboardBuilder()
         if button_text and (button_url or button_callback):
-            builder = InlineKeyboardBuilder()
             if button_url:
-                builder.button(text=button_text, url=button_url)
+                final_builder.button(text=button_text, url=button_url)
             else:
-                builder.button(text=button_text, callback_data=button_callback)
-            final_keyboard = builder.as_markup()
+                final_builder.button(text=button_text, callback_data=button_callback)
+        final_builder.button(
+            text=(get_setting("btn_back_to_menu_text") or "⬅️ Главное меню"),
+            callback_data="back_to_main_menu",
+        )
+        final_builder.adjust(1)
+        final_keyboard = final_builder.as_markup()
 
         await state.clear()
 
@@ -7690,12 +7757,7 @@ def get_admin_router() -> Router:
                 banned_count += 1
                 continue
             try:
-                await bot.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=original_message.chat.id,
-                    message_id=original_message.message_id,
-                    reply_markup=final_keyboard
-                )
+                await _send_broadcast_to(bot, user_id, original_message, final_keyboard)
                 sent_count += 1
                 await asyncio.sleep(0.1)
             except Exception as e:

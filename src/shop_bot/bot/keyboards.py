@@ -505,6 +505,7 @@ def create_admin_trial_settings_keyboard(
     days: int | None = None,
     traffic_text: str | None = None,
     devices_text: str | None = None,
+    default_host: str | None = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     toggle_text = "🔴 Выключить" if trial_enabled else "🟢 Включить"
@@ -513,12 +514,29 @@ def create_admin_trial_settings_keyboard(
     days_label = f"⏳ Дни: {days}" if days is not None else "⏳ Дни"
     traffic_label = f"📶 Трафик: {traffic_text}" if traffic_text else "📶 Лимит трафика (ГБ)"
     devices_label = f"📱 Устройства: {devices_text}" if devices_text else "📱 Лимит устройств"
+    host_short = (default_host or "").strip()
+    if len(host_short) > 20:
+        host_short = host_short[:17] + "…"
+    host_label = f"🖥 Хост: {host_short}" if host_short else "🖥 Хост: авто"
 
     builder.button(text=days_label, callback_data="admin_trial_set_days")
     builder.button(text=traffic_label, callback_data="admin_trial_set_traffic")
     builder.button(text=devices_label, callback_data="admin_trial_set_devices")
+    builder.button(text=host_label, callback_data="admin_trial_set_host")
     builder.button(text="⬅️ В админ-меню", callback_data="admin_menu")
-    builder.adjust(1, 2, 1, 1)
+    builder.adjust(1, 2, 2, 1)
+    return builder.as_markup()
+
+
+def create_admin_trial_host_keyboard(hosts: list[dict]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Авто (все хосты)", callback_data="admin_trial_select_host_")
+    for h in hosts:
+        name = h.get('host_name') or ''
+        short = name if len(name) <= 32 else name[:29] + "…"
+        builder.button(text=f"🖥 {short}", callback_data=f"admin_trial_select_host_{name}")
+    builder.button(text="⬅️ Отмена", callback_data="admin_trial")
+    builder.adjust(1)
     return builder.as_markup()
 
 def create_admin_notifications_settings_keyboard(
@@ -795,15 +813,18 @@ def create_admin_user_actions_keyboard(user_id: int, is_banned: bool | None = No
     builder.adjust(2, 2, 1, 2, 1, 2)
     return builder.as_markup()
 
-def create_keys_management_keyboard(keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
+def create_keys_management_keyboard(keys: list[dict], page: int = 0, gift_keys: list[dict] | None = None) -> InlineKeyboardMarkup:
     """Клавиатура списка ключей пользователя (раздел 'Мои ключи') с пагинацией."""
     builder = InlineKeyboardBuilder()
     items_per_page = 5
+    gift_keys = gift_keys or []
 
     start_idx = page * items_per_page
     end_idx = start_idx + items_per_page
     current_keys = keys[start_idx:end_idx]
 
+    # --- Раздел "Личные" ---
+    builder.button(text="─── 👤 Личные ───", callback_data="noop")
     if current_keys:
         for i, key in enumerate(current_keys):
             num = start_idx + i + 1
@@ -820,7 +841,22 @@ def create_keys_management_keyboard(keys: list[dict], page: int = 0) -> InlineKe
 
             builder.button(text=button_text, callback_data=f"show_key_{kid}")
     else:
-        builder.button(text="Ключей нет", callback_data="noop")
+        builder.button(text="Нет личных ключей", callback_data="noop")
+
+    # --- Раздел "Отправленные подарки" ---
+    if gift_keys:
+        builder.button(text="─── 🎁 Отправленные подарки ───", callback_data="noop")
+        for key in gift_keys:
+            kid = key.get('key_id')
+            expiry_date = datetime.fromisoformat(key['expiry_date'])
+            status_icon = "✅" if expiry_date > datetime.now() else "❌"
+            user_key_name = key.get('user_key_name')
+            if user_key_name:
+                button_text = f"{status_icon} 🎁 {user_key_name}"
+            else:
+                host_name = key.get('host_name', '...')
+                button_text = f"{status_icon} 🎁 Подарок #{kid} ({host_name})"
+            builder.button(text=button_text, callback_data=f"show_key_{kid}")
 
     builder.adjust(1)
 
@@ -1721,17 +1757,15 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
 def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False, auto_renew: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
-    # Для подарочных ключей не показываем кнопку продления
-    if not gift_code:
-        builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
+    builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
 
-    if show_traffic_topup and not gift_code:
+    if show_traffic_topup:
         builder.button(text="📶 Докупить ГБ", callback_data=f"traffic_gb_start_{key_id}")
 
-    if show_lte_topup and not gift_code:
+    if show_lte_topup:
         builder.button(text="💰 Докупить LTE", callback_data=f"lte_gb_start_{key_id}")
 
-    if show_main_reset and not gift_code:
+    if show_main_reset:
         builder.button(text="♻️ Сбросить основной", callback_data=f"main_reset_start_{key_id}")
 
     show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
@@ -1766,19 +1800,13 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
     if gift_code and gift_id:
         builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
     
-    # Кнопка автопродления (только для обычных ключей)
-    if not gift_code:
-        ar_text = "🔄 Авто-продление: ВКЛ ✓" if auto_renew else "⏸ Авто-продление: ВЫКЛ"
-        builder.button(text=ar_text, callback_data=f"auto_renew_key_{key_id}")
+    ar_text = "🔄 Авто-продление: ВКЛ ✓" if auto_renew else "⏸ Авто-продление: ВЫКЛ"
+    builder.button(text=ar_text, callback_data=f"auto_renew_key_{key_id}")
 
     # Кнопка переименования ключа (для всех ключей)
     builder.button(text="📝 Переименовать ключ", callback_data=f"rename_key_{key_id}")
     
-    # Если это подарочный ключ, показываем кнопку "К списку подарков", иначе "Назад к списку ключей"
-    if gift_code:
-        builder.button(text="⬅️ К списку подарков", callback_data="show_inactive_gifts")
-    else:
-        builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
+    builder.button(text="⬅️ Назад к списку ключей", callback_data="manage_keys")
     builder.adjust(1)
     return builder.as_markup()
 def create_howto_vless_keyboard() -> InlineKeyboardMarkup:
