@@ -739,6 +739,93 @@ body {
 
 .btn.btn-xs { padding: 4px 10px; font-size: .78rem; line-height: 1.2; border-radius: 10px; }
 
+/* === Sidebar: Reference Design === */
+
+.sidebar {
+  background: var(--surface-0, #161A20) !important;
+  border-right: 1px solid var(--border-1, rgba(255,255,255,.10)) !important;
+  box-shadow: none !important;
+}
+
+.nav-section {
+  margin-bottom: 14px;
+}
+
+.nav-section-title,
+.sidebar-navigation .nav-section-title {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: .12em !important;
+  color: var(--text-2, rgba(246,247,248,.36)) !important;
+  text-transform: uppercase !important;
+  padding: 2px 10px 6px !important;
+  margin-top: 4px !important;
+}
+
+/* nav-link: remove Bootstrap me-2 margin from icons, use flex gap instead */
+.sidebar-navigation .nav-link {
+  color: var(--text-1, rgba(246,247,248,.60)) !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  margin-bottom: 2px !important;
+  gap: 8px !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.sidebar-navigation .nav-link i[class*="ti"] {
+  margin-right: 0 !important;
+  margin-inline-end: 0 !important;
+  opacity: .72;
+  font-size: 1.05rem;
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+}
+
+.sidebar-navigation .nav-link:hover {
+  color: var(--text-primary, #F6F7F8) !important;
+}
+
+.sidebar-navigation .nav-link:hover i[class*="ti"] {
+  opacity: 1;
+}
+
+.sidebar-navigation .nav-link.active {
+  color: var(--text-primary, #F6F7F8) !important;
+}
+
+.sidebar-navigation .nav-link.active i[class*="ti"] {
+  opacity: 1;
+}
+
+.brand-link {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-primary, #F6F7F8) !important;
+  text-decoration: none !important;
+}
+
+.brand-version {
+  padding-left: 12px;
+  margin-bottom: 8px;
+}
+
+.brand-version small {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: .10em;
+  color: var(--text-2, rgba(246,247,248,.36));
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--border-1, rgba(255,255,255,.10)) !important;
+  padding-top: 12px !important;
+  margin-top: 4px !important;
+}
+
 
 .tiny { font-size: .86rem; opacity: .92; }
 
