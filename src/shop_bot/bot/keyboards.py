@@ -111,8 +111,7 @@ def create_main_menu_keyboard(
         builder.button(text=buy_text, callback_data="buy_new_key")
     
     # Показываем кнопку подарков со счётчиком, если они есть
-    if gifts_count > 0:
-        builder.button(text=f"🎁 Мои подарки ({gifts_count})", callback_data="show_inactive_gifts")
+    
     
     builder.button(text=(get_setting("btn_gift_key_text") or "🎁 Подарить"), callback_data="gift_new_key")
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
