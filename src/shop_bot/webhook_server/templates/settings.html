@@ -473,6 +473,38 @@
 
   .settings-actions { margin-top: 20px; text-align: center; width: 100%; }
   .settings-actions .btn { display: inline-block; width: auto; }
+
+  /* Host tile: vertical layout for edit rows */
+  .host-tile .rw-drawer-body .edit-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 4px !important;
+    margin: 6px 0 !important;
+  }
+  .host-tile .rw-drawer-body .edit-row .form-label {
+    font-size: 0.70rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: rgba(255,255,255,.45) !important;
+    margin-bottom: 0 !important;
+  }
+  .host-tile .rw-drawer-body .edit-row .form-control,
+  .host-tile .rw-drawer-body .edit-row .password-wrapper {
+    width: 100% !important;
+    flex: none !important;
+  }
+  .host-tile .rw-drawer-body .edit-row .edit-actions {
+    display: flex;
+    gap: 5px;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+  .host-tile .rw-drawer-body .edit-row .edit-actions .btn {
+    padding: 0.3rem 0.55rem !important;
+    font-size: 0.85rem !important;
+    line-height: 1;
+  }
 </style>
 
 <div class="settings-container">
@@ -549,9 +581,9 @@
 								<label class="form-label" for="host_url_{{ loop.index }}">URL панели Remnawave:</label>
 								<input id="host_url_{{ loop.index }}" class="form-control pill" type="text" name="host_url" value="{{ host.host_url or '' }}" data-edit-target readonly />
 								<div class="edit-actions">
-									<button type="button" class="btn btn-outline-secondary btn-sm pill" data-action="edit">Редактировать</button>
-									<button type="submit" class="btn btn-primary btn-sm pill d-none" data-action="save">Сохранить</button>
-									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" data-action="cancel">Отмена</button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill" title="Редактировать" data-action="edit"><i class="ti ti-pencil"></i></button>
+									<button type="submit" class="btn btn-primary btn-sm pill d-none" title="Сохранить" data-action="save"><i class="ti ti-device-floppy"></i></button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" title="Отмена" data-action="cancel"><i class="ti ti-x"></i></button>
 								</div>
 							</form>
 
@@ -561,17 +593,20 @@
 								<label class="form-label" for="new_host_name_{{ loop.index }}">Имя хоста:</label>
 								<input id="new_host_name_{{ loop.index }}" class="form-control pill" type="text" name="new_host_name" value="{{ host.host_name or '' }}" data-edit-target readonly />
 								<div class="edit-actions">
-									<button type="button" class="btn btn-outline-secondary btn-sm pill" data-action="edit">Редактировать</button>
-									<button type="submit" class="btn btn-primary btn-sm pill d-none" data-action="save">Сохранить</button>
-									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" data-action="cancel">Отмена</button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill" title="Редактировать" data-action="edit"><i class="ti ti-pencil"></i></button>
+									<button type="submit" class="btn btn-primary btn-sm pill d-none" title="Сохранить" data-action="save"><i class="ti ti-device-floppy"></i></button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" title="Отмена" data-action="cancel"><i class="ti ti-x"></i></button>
 								</div>
 							</form>
 
-							<form action="{{ url_for('update_host_subscription_route') }}" method="post" class="form-inline" style="margin: 8px 0;">
+							<form action="{{ url_for('update_host_subscription_route') }}" method="post" class="form-inline edit-row" style="margin: 8px 0;">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 								<input type="hidden" name="host_name" value="{{ host.host_name }}" />
-								<input class="form-control pill" type="text" name="host_subscription_url" placeholder="Ссылка подписки для этого хоста" value="{{ host.subscription_url or '' }}" />
-								<button type="submit" class="btn btn-outline-secondary btn-sm pill" style="margin-left:6px;">Сохранить ссылку</button>
+								<label class="form-label">Ссылка подписки:</label>
+								<input class="form-control pill" type="text" name="host_subscription_url" placeholder="https://..." value="{{ host.subscription_url or '' }}" />
+								<div class="edit-actions">
+									<button type="submit" class="btn btn-primary btn-sm pill" title="Сохранить"><i class="ti ti-device-floppy"></i></button>
+								</div>
 							</form>
 
 							<form action="{{ url_for('update_host_remnawave_route') }}" method="post" class="form-inline edit-row" data-edit-row>
@@ -585,9 +620,9 @@
 									<button type="button" class="toggle-password">👁️</button>
 								</div>
 								<div class="edit-actions">
-									<button type="button" class="btn btn-outline-secondary btn-sm pill" data-action="edit">Изменить</button>
-									<button type="submit" class="btn btn-primary btn-sm pill d-none" data-action="save">Сохранить</button>
-									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" data-action="cancel">Отмена</button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill" title="Изменить" data-action="edit"><i class="ti ti-pencil"></i></button>
+									<button type="submit" class="btn btn-primary btn-sm pill d-none" title="Сохранить" data-action="save"><i class="ti ti-device-floppy"></i></button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" title="Отмена" data-action="cancel"><i class="ti ti-x"></i></button>
 								</div>
 							</form>
 
