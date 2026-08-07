@@ -7585,7 +7585,9 @@ def get_admin_router() -> Router:
     @admin_router.message(Broadcast.waiting_for_message)
     async def broadcast_message_received_handler(message: types.Message, state: FSMContext):
 
-        await state.update_data(message_to_send=message.model_dump_json())
+        # model_dump_json() crashes on aiogram Default sentinel objects (e.g. link_preview_options when URL is sent)
+        msg_json = json.dumps(message.model_dump(), default=lambda o: None)
+        await state.update_data(message_to_send=msg_json)
         await message.answer(
             "Сообщение получено. Хотите добавить к нему кнопку со ссылкой?",
             reply_markup=keyboards.create_broadcast_options_keyboard()
