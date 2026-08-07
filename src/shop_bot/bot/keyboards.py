@@ -111,7 +111,8 @@ def create_main_menu_keyboard(
         builder.button(text=buy_text, callback_data="buy_new_key")
     
     # Показываем кнопку подарков со счётчиком, если они есть
-    
+    if gifts_count > 0:
+        builder.button(text=f"🎁 Мои подарки ({gifts_count})", callback_data="show_inactive_gifts")
     
     builder.button(text=(get_setting("btn_gift_key_text") or "🎁 Подарить"), callback_data="gift_new_key")
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
@@ -1878,10 +1879,6 @@ def create_profile_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=(get_setting("btn_topup_text") or "💳 Пополнить баланс"), callback_data="top_up_start")
-    
-    # Кнопка для просмотра неактивных подарков
-    gifts_label = f"🎁 Мои подарки ({gifts_count})" if gifts_count is not None else "🎁 Мои подарки"
-    builder.button(text=gifts_label, callback_data="show_inactive_gifts")
 
     # Переключатель автопродления всех ключей
     if show_auto_renew_toggle:
