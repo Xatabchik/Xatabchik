@@ -882,13 +882,15 @@
       const m = document.querySelector('meta[name="csrf-token"]');
       return m ? m.getAttribute('content') : '';
     }
+    // Strip @ so users can paste @username without breaking search
+    function cleanQ(v){ return (v||'').replace(/@/g,'').trim(); }
 
     // Синхронизируем поиск с сервером при паузе ввода (debounce)
     (function(){
       let t=null; const DEBOUNCE=400; const tbody=document.getElementById('users-tbody');
       async function pushQuery(){
         const url = new URL(tbody.getAttribute('data-fetch-url'), window.location.origin);
-        url.searchParams.set('q', input.value||'');
+        url.searchParams.set('q', cleanQ(input.value));
         url.searchParams.set('page','1');
         try{
           const resp = await fetch(url.toString(), { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' });
@@ -898,13 +900,14 @@
           const pag = document.getElementById('users-pagination');
           if (pag){
             const purl = new URL(pag.getAttribute('data-src'), window.location.origin);
-            purl.searchParams.set('q', input.value||''); purl.searchParams.set('page','1');
+            purl.searchParams.set('q', cleanQ(input.value)); purl.searchParams.set('page','1');
             const presp = await fetch(purl.toString(), { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' });
             const phtml = await presp.text(); if (phtml) pag.innerHTML = phtml;
             pag.setAttribute('data-src', purl.pathname + '?' + purl.searchParams.toString());
           }
           try {
-            const qs = input.value ? ('&q=' + encodeURIComponent(input.value)) : '';
+            const _cq = cleanQ(input.value);
+            const qs = _cq ? ('&q=' + encodeURIComponent(_cq)) : '';
             const sVal = url.searchParams.get('sort');
             const ss = sVal ? ('&sort=' + encodeURIComponent(sVal)) : '';
             history.replaceState(null,'', '/users?page=1' + qs + ss);
@@ -928,7 +931,7 @@
         try{
           const turl = new URL(tbody.getAttribute('data-fetch-url'), window.location.origin);
           turl.searchParams.set('page', url.searchParams.get('page') || '1');
-          const qVal = url.searchParams.get('q') || (input.value || '');
+          const qVal = cleanQ(url.searchParams.get('q') || input.value);
           turl.searchParams.set('q', qVal);
           const sVal = url.searchParams.get('sort') || turl.searchParams.get('sort') || '';
           if (sVal) turl.searchParams.set('sort', sVal); else turl.searchParams.delete('sort');
