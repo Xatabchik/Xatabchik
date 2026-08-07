@@ -825,7 +825,7 @@ def create_keys_management_keyboard(keys: list[dict], page: int = 0, gift_keys: 
 
     if current_keys:
         for i, key in enumerate(current_keys):
-            num = start_idx + i + 1
+            num = len(keys) - (start_idx + i)  # oldest key = #1, newest = #N
             kid = key.get('key_id')
             expiry_date = datetime.fromisoformat(key['expiry_date'])
             status_icon = "✅" if expiry_date > datetime.now() else "❌"
