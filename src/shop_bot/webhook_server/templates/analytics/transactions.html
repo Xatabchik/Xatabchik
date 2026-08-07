@@ -87,10 +87,31 @@
             {% else %}<span class="text-secondary">—</span>{% endif %}
           </td>
           <td>{{ t.plan_name or '—' }}</td>
-          <td>
-            {{ t.action_label or '—' }}
+          <td class="text-nowrap">
+            {% set act = t.action %}
+            {% set has_key = t.key_id and (act in ('new', 'gift', 'extend', 'traffic_gb_topup', 'lte_gb_topup', 'main_traffic_reset') or act is none) %}
+            {% if act == 'new' %}
+              <span class="badge bg-green-lt"><i class="ti ti-key me-1"></i>{{ t.action_label }}</span>
+            {% elif act == 'gift' %}
+              <span class="badge bg-purple-lt"><i class="ti ti-gift me-1"></i>{{ t.action_label }}</span>
+            {% elif act == 'extend' %}
+              <span class="badge bg-blue-lt"><i class="ti ti-refresh me-1"></i>{{ t.action_label }}</span>
+            {% elif act == 'top_up' %}
+              <span class="badge bg-cyan-lt"><i class="ti ti-wallet me-1"></i>{{ t.action_label }}</span>
+            {% elif act in ('traffic_gb_topup', 'lte_gb_topup') %}
+              <span class="badge bg-orange-lt"><i class="ti ti-database me-1"></i>{{ t.action_label }}{% if t.size_gb %} (+{{ t.size_gb|round(0, 'floor')|int }} ГБ){% endif %}</span>
+            {% elif act == 'main_traffic_reset' %}
+              <span class="badge bg-teal-lt"><i class="ti ti-refresh-dot me-1"></i>{{ t.action_label }}</span>
+            {% else %}
+              <span class="badge bg-secondary-lt">{{ t.action_label or '—' }}</span>
+            {% endif %}
             {% if t.key_id %}
-              <a href="{{ url_for('admin_keys_page') }}?search={{ t.key_id }}" class="ms-1" title="Открыть ключ">#{{ t.key_id }}{% if t.key_id_guessed %} <span class="text-muted">(предп.)</span>{% endif %}</a>
+              <br><small>
+                <span class="{{ 'text-primary atx-open-key' if has_key else 'text-secondary' }}"
+                  {% if has_key %}role="button" tabindex="0" data-key-id="{{ t.key_id }}" title="Открыть карточку ключа #{{ t.key_id }}" style="cursor:pointer;"{% endif %}>
+                  <i class="ti ti-key-filled me-1"></i>Ключ #{{ t.key_id }}{% if t.key_id_guessed %} <span class="text-secondary">(предп.)</span>{% endif %}{% if has_key %} <i class="ti ti-external-link"></i>{% endif %}
+                </span>
+              </small>
             {% endif %}
           </td>
           <td class="text-nowrap">{{ t.created_date }}</td>
@@ -125,6 +146,344 @@ document.querySelectorAll('.atx-copy').forEach(el => {
     } catch (_) {}
   });
 });
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.atx-open-key');
+  if (!el) return;
+  const kid = parseInt(el.getAttribute('data-key-id') || '0', 10);
+  if (kid) openKeyDetails(kid);
+});
+</script>
+
+<!-- ===== Key Details Modal ===== -->
+<div class="modal modal-blur fade" id="keyDetailsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="ti ti-key me-2"></i>Ключ <span id="kd-key-id">—</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div id="kd-loading" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></div>
+        <div id="kd-content" class="d-none">
+          <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-kd-tab="info" type="button">Информация</button></li>
+            <li class="nav-item"><button class="nav-link" data-kd-tab="devices" type="button">Устройства <span class="badge bg-secondary-lt ms-1" id="kd-devices-count">0</span></button></li>
+          </ul>
+          <div class="kd-tab-pane" data-kd-pane="info">
+            <div class="row g-3">
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Владелец</div><div class="fw-semibold" id="kd-owner">—</div></div>
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Хост</div><div class="fw-semibold" id="kd-host">—</div></div>
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Email ключа</div><div class="fw-semibold" id="kd-email">—</div></div>
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Истекает / создан</div><div class="fw-semibold"><span id="kd-expiry">—</span> / <span id="kd-created" class="text-secondary"></span></div></div>
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Текущий тариф</div><div class="fw-semibold" id="kd-plan">—</div></div>
+              <div class="col-12 col-md-6"><div class="text-secondary small mb-1">Трафик</div><div class="fw-semibold" id="kd-traffic">—</div></div>
+            </div>
+            <hr />
+            <div class="mb-3">
+              <label class="form-label small">Ссылка подписки</label>
+              <div class="input-group input-group-sm">
+                <input type="text" class="form-control" id="kd-sub-link" readonly />
+                <button type="button" class="btn btn-outline-secondary" id="kd-sub-copy" title="Скопировать"><i class="ti ti-copy"></i></button>
+                <button type="button" class="btn btn-outline-secondary" id="kd-sub-qr" title="Показать QR-код"><i class="ti ti-qrcode"></i> QR</button>
+              </div>
+              <div id="kd-qr-wrap" class="d-none text-center mt-3">
+                <img id="kd-qr-img" src="" alt="QR" style="max-width:220px; width:100%;" class="rounded border p-2 bg-white" />
+              </div>
+            </div>
+            <hr />
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label class="form-label small">Сменить тариф</label>
+                <div class="input-group input-group-sm">
+                  <select class="form-select" id="kd-plan-select"></select>
+                  <button type="button" class="btn btn-primary" id="kd-plan-apply">Применить</button>
+                </div>
+              </div>
+              <div class="col-12 col-md-3" id="kd-gb-wrap">
+                <label class="form-label small">Добавить ГБ</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" min="1" step="1" class="form-control" id="kd-add-gb" placeholder="Напр. 10" />
+                  <button type="button" class="btn btn-outline-primary" id="kd-add-gb-btn">+ ГБ</button>
+                </div>
+              </div>
+              <div class="col-12 col-md-3 d-none" id="kd-lte-wrap">
+                <label class="form-label small">Добавить LTE ГБ</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" min="1" step="1" class="form-control" id="kd-add-lte-gb" placeholder="Напр. 5" />
+                  <button type="button" class="btn btn-outline-warning" id="kd-add-lte-gb-btn">+ LTE</button>
+                </div>
+              </div>
+            </div>
+            <div class="collapse mt-3" id="kd-comment-collapse">
+              <div class="card card-body bg-body-tertiary">
+                <label class="form-label small">Комментарий к ключу</label>
+                <div class="input-group input-group-sm">
+                  <input type="text" class="form-control" id="kd-comment-input" placeholder="Введите комментарий" />
+                  <button type="button" class="btn btn-primary" id="kd-comment-save-btn"><i class="ti ti-check me-1"></i> Сохранить</button>
+                </div>
+              </div>
+            </div>
+            <div class="collapse mt-3" id="kd-expiry-collapse">
+              <div class="card card-body bg-body-tertiary">
+                <label class="form-label small">Изменить срок действия (сколько дней прибавить/убавить)</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" class="form-control" id="kd-expiry-delta" placeholder="Например, 7 или -7" />
+                  <button type="button" class="btn btn-primary" id="kd-expiry-save-btn"><i class="ti ti-check me-1"></i> Сохранить</button>
+                </div>
+                <small class="text-secondary mt-1">Положительное число — продление, отрицательное — уменьшение срока.</small>
+              </div>
+            </div>
+          </div>
+          <div class="kd-tab-pane d-none" data-kd-pane="devices">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+              <div class="text-secondary small" id="kd-devices-summary"></div>
+              <button type="button" class="btn btn-sm btn-outline-danger" id="kd-devices-delete-all"><i class="ti ti-trash me-1"></i> Удалить все устройства</button>
+            </div>
+            <div id="kd-devices-list" class="list-group list-group-flush"></div>
+            <div id="kd-devices-empty" class="text-secondary text-center py-3 d-none">Нет подключённых устройств</div>
+            <div id="kd-devices-pagination" class="d-flex justify-content-center align-items-center gap-2 mt-2 d-none">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="kd-devices-prev"><i class="ti ti-chevron-left"></i></button>
+              <span class="text-secondary small" id="kd-devices-page-info">1 / 1</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="kd-devices-next"><i class="ti ti-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer justify-content-between flex-wrap gap-2">
+        <div class="btn-list">
+          <button type="button" class="btn btn-outline-secondary" id="kd-comment-btn" data-bs-toggle="collapse" data-bs-target="#kd-comment-collapse"><i class="ti ti-message me-1"></i> Комментарий</button>
+          <button type="button" class="btn btn-outline-warning" id="kd-expiry-btn" data-bs-toggle="collapse" data-bs-target="#kd-expiry-collapse"><i class="ti ti-calendar-stats me-1"></i> Изменить срок</button>
+          <button type="button" class="btn btn-outline-danger" id="kd-delete-btn"><i class="ti ti-trash me-1"></i> Удалить ключ</button>
+        </div>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal modal-blur fade" id="kdDeleteConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-status bg-danger"></div>
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="ti ti-alert-triangle me-2 text-danger"></i>Удаление ключа</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">Удалить ключ <strong id="kd-delete-confirm-key-id">—</strong>? Это действие необратимо.</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" class="btn btn-danger" id="kd-delete-confirm-btn"><i class="ti ti-trash me-1"></i> Удалить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  function getCsrf(){ const m = document.querySelector('meta[name="csrf-token"]'); return m ? m.getAttribute('content') : ''; }
+  const modalEl = document.getElementById('keyDetailsModal');
+  const loadingEl = document.getElementById('kd-loading');
+  const contentEl = document.getElementById('kd-content');
+  let currentKeyId = null;
+  let bsModal = null;
+  let kdDevicesCache = [];
+  let kdDevicesPage = 1;
+
+  function fmtBytes(n){ const v = Number(n||0); if (!v||v<=0) return 'Безлимит'; return `${(v/(1024*1024*1024)).toFixed(1)} ГБ`; }
+
+  function switchKdTab(tab){
+    document.querySelectorAll('[data-kd-tab]').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-kd-tab')===tab));
+    document.querySelectorAll('[data-kd-pane]').forEach(p => p.classList.toggle('d-none', p.getAttribute('data-kd-pane')!==tab));
+  }
+  document.querySelectorAll('[data-kd-tab]').forEach(btn => btn.addEventListener('click', () => switchKdTab(btn.getAttribute('data-kd-tab'))));
+
+  function renderDevices(devices){
+    const list = document.getElementById('kd-devices-list');
+    const empty = document.getElementById('kd-devices-empty');
+    const countEl = document.getElementById('kd-devices-count');
+    const summaryEl = document.getElementById('kd-devices-summary');
+    const pagEl = document.getElementById('kd-devices-pagination');
+    const pageInfoEl = document.getElementById('kd-devices-page-info');
+    const deleteAllBtn = document.getElementById('kd-devices-delete-all');
+    list.innerHTML = '';
+    const total = (devices||[]).length;
+    countEl.textContent = String(total);
+    if (summaryEl) summaryEl.textContent = total > 0 ? `Всего устройств: ${total}` : '';
+    if (deleteAllBtn) deleteAllBtn.classList.toggle('d-none', total===0);
+    if (!devices||devices.length===0){ empty.classList.remove('d-none'); if (pagEl) pagEl.classList.add('d-none'); return; }
+    empty.classList.add('d-none');
+    const perPage=5; const totalPages=Math.max(1,Math.ceil(total/perPage));
+    if (kdDevicesPage>totalPages) kdDevicesPage=totalPages;
+    if (kdDevicesPage<1) kdDevicesPage=1;
+    devices.slice((kdDevicesPage-1)*perPage, kdDevicesPage*perPage).forEach(d => {
+      const platform=d.platform||d.deviceOS||d.os||'—'; const model=d.deviceModel||d.model||''; const hwid=d.hwid||d.hwId||d.id||'';
+      const item=document.createElement('div'); item.className='list-group-item';
+      item.innerHTML=`<div class="d-flex align-items-center justify-content-between flex-wrap gap-1"><div><div class="fw-semibold"><i class="ti ti-device-mobile me-1"></i>${platform}${model?' — '+model:''}</div><div class="text-secondary small text-truncate" style="max-width:360px">${hwid}</div></div><button type="button" class="btn btn-sm btn-outline-danger kd-device-delete-btn" data-hwid="${hwid}" title="Удалить"><i class="ti ti-trash"></i></button></div>`;
+      list.appendChild(item);
+    });
+    if (pagEl){ pagEl.classList.toggle('d-none',totalPages<=1); if (pageInfoEl) pageInfoEl.textContent=`${kdDevicesPage} / ${totalPages}`;
+      const p=document.getElementById('kd-devices-prev'); const n=document.getElementById('kd-devices-next');
+      if (p) p.disabled=kdDevicesPage<=1; if (n) n.disabled=kdDevicesPage>=totalPages; }
+  }
+
+  async function openKeyDetails(keyId){
+    currentKeyId = keyId;
+    document.getElementById('kd-key-id').textContent = '#' + keyId;
+    loadingEl.classList.remove('d-none'); contentEl.classList.add('d-none');
+    document.getElementById('kd-qr-wrap').classList.add('d-none');
+    try { bsModal = new bootstrap.Modal(modalEl); bsModal.show(); } catch(_){}
+    try {
+      const url = `{{ url_for('admin_key_details_json', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(keyId)}/`);
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      const data = await resp.json();
+      if (!data||!data.ok) throw new Error('bad response');
+      const k=data.key||{}; const owner=data.owner||{}; const plan=data.plan;
+      document.getElementById('kd-owner').textContent = owner.username ? `@${owner.username} (${owner.telegram_id})` : String(owner.telegram_id||k.user_id||'—');
+      document.getElementById('kd-host').textContent = k.host_name||'—';
+      document.getElementById('kd-email').textContent = k.key_email||'—';
+      document.getElementById('kd-expiry').textContent = k.expire_at||'—';
+      document.getElementById('kd-created').textContent = k.created_at||'';
+      document.getElementById('kd-plan').textContent = plan ? `${plan.plan_name} (${plan.months} мес., ${Number(plan.price||0).toFixed(0)} RUB)` : 'Не определён';
+      const tp=[`База: ${fmtBytes(k.traffic_limit_bytes)}`];
+      if (Number(k.traffic_boost_bytes||0)>0) tp.push(`+ буст: ${fmtBytes(k.traffic_boost_bytes)}`);
+      document.getElementById('kd-traffic').textContent = tp.join(' ');
+      document.getElementById('kd-sub-link').value = k.subscription_url||'';
+      const ci=document.getElementById('kd-comment-input'); if (ci) ci.value=k.comment||'';
+      const ed=document.getElementById('kd-expiry-delta'); if (ed) ed.value='';
+      try { bootstrap.Collapse.getInstance(document.getElementById('kd-comment-collapse'))?.hide(); } catch(_){}
+      try { bootstrap.Collapse.getInstance(document.getElementById('kd-expiry-collapse'))?.hide(); } catch(_){}
+      const qrImg=document.getElementById('kd-qr-img'); qrImg.src=data.qr_data_url||'';
+      document.getElementById('kd-sub-qr').disabled=!data.qr_data_url;
+      const ps=document.getElementById('kd-plan-select'); const plans=data.plans_for_host||[];
+      ps.innerHTML=plans.map(p=>`<option value="${p.plan_id}" ${plan&&plan.plan_id===p.plan_id?'selected':''}>${p.plan_name} (${p.months} мес., ${Number(p.price||0).toFixed(0)} RUB)</option>`).join('')||'<option value="">Нет тарифов</option>';
+      const gbWrap=document.getElementById('kd-gb-wrap'); if (gbWrap) gbWrap.classList.toggle('d-none',!(plan&&Number(plan.traffic_limit_bytes||0)>0));
+      const lteWrap=document.getElementById('kd-lte-wrap'); lteWrap.classList.toggle('d-none',!(plan&&Number(plan.lte_limit_bytes||0)>0));
+      kdDevicesCache=data.devices||[]; kdDevicesPage=1; renderDevices(kdDevicesCache);
+      switchKdTab('info');
+      loadingEl.classList.add('d-none'); contentEl.classList.remove('d-none');
+    } catch(e) {
+      try { window.showToast('danger','Не удалось загрузить данные ключа'); } catch(_){}
+      try { bsModal?.hide(); } catch(_){}
+    }
+  }
+  window.openKeyDetails = openKeyDetails;
+
+  document.getElementById('kd-sub-copy')?.addEventListener('click', async () => {
+    const v=document.getElementById('kd-sub-link').value||'';
+    try { await navigator.clipboard.writeText(v); try { window.showToast('success','Ссылка скопирована'); } catch(_){} } catch(_){}
+  });
+  document.getElementById('kd-sub-qr')?.addEventListener('click', () => document.getElementById('kd-qr-wrap').classList.toggle('d-none'));
+
+  document.getElementById('kd-comment-save-btn')?.addEventListener('click', async () => {
+    if (!currentKeyId) return;
+    const input=document.getElementById('kd-comment-input'); const btn=document.getElementById('kd-comment-save-btn'); btn.disabled=true;
+    try {
+      const url=`{{ url_for('update_key_comment_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf()); fd.append('comment',input.value||'');
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      if (resp.ok){ try { window.showToast('success','Комментарий сохранён'); } catch(_){} try { bootstrap.Collapse.getInstance(document.getElementById('kd-comment-collapse'))?.hide(); } catch(_){} }
+      else { try { window.showToast('danger','Не удалось сохранить'); } catch(_){} }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  });
+
+  document.getElementById('kd-expiry-save-btn')?.addEventListener('click', async () => {
+    if (!currentKeyId) return;
+    const delta=Number(document.getElementById('kd-expiry-delta').value||0);
+    if (!delta||Math.abs(delta)>3650){ try { window.showToast('warning','Некорректное значение'); } catch(_){} return; }
+    const btn=document.getElementById('kd-expiry-save-btn'); btn.disabled=true;
+    try {
+      const url=`{{ url_for('adjust_key_expiry_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf()); fd.append('delta_days',String(delta));
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      if (resp.ok){ try { window.showToast('success','Срок обновлён'); } catch(_){} try { bootstrap.Collapse.getInstance(document.getElementById('kd-expiry-collapse'))?.hide(); } catch(_){} await openKeyDetails(currentKeyId); }
+      else { try { window.showToast('danger','Не удалось обновить'); } catch(_){} }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  });
+
+  document.getElementById('kd-plan-apply')?.addEventListener('click', async () => {
+    if (!currentKeyId) return;
+    const planId=document.getElementById('kd-plan-select').value;
+    if (!planId){ try { window.showToast('warning','Выберите тариф'); } catch(_){} return; }
+    const btn=document.getElementById('kd-plan-apply'); btn.disabled=true;
+    try {
+      const url=`{{ url_for('admin_key_change_plan_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf()); fd.append('plan_id',planId);
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      const data=await resp.json().catch(()=>({ok:false}));
+      if (data&&data.ok){ try { window.showToast('success','Тариф изменён'); } catch(_){} await openKeyDetails(currentKeyId); }
+      else { try { window.showToast('danger','Не удалось сменить тариф'); } catch(_){} }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  });
+
+  async function addTraffic(routeName, inputId, btnId){
+    if (!currentKeyId) return;
+    const gb=Number(document.getElementById(inputId).value||0);
+    if (!gb||gb<=0){ try { window.showToast('warning','Введите ГБ'); } catch(_){} return; }
+    const btn=document.getElementById(btnId); btn.disabled=true;
+    try {
+      const url=`{{ url_for('admin_key_add_traffic_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`).replace('add-traffic',routeName);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf()); fd.append('gb',String(gb));
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      const data=await resp.json().catch(()=>({ok:false}));
+      if (data&&data.ok){ try { window.showToast('success','Трафик добавлен'); } catch(_){} document.getElementById(inputId).value=''; await openKeyDetails(currentKeyId); }
+      else { try { window.showToast('danger','Не удалось добавить трафик'); } catch(_){} }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  }
+  document.getElementById('kd-add-gb-btn')?.addEventListener('click', () => addTraffic('add-traffic','kd-add-gb','kd-add-gb-btn'));
+  document.getElementById('kd-add-lte-gb-btn')?.addEventListener('click', () => addTraffic('add-lte-traffic','kd-add-lte-gb','kd-add-lte-gb-btn'));
+
+  document.getElementById('kd-devices-prev')?.addEventListener('click', () => { if (kdDevicesPage>1){ kdDevicesPage-=1; renderDevices(kdDevicesCache); } });
+  document.getElementById('kd-devices-next')?.addEventListener('click', () => { kdDevicesPage+=1; renderDevices(kdDevicesCache); });
+
+  document.getElementById('kd-devices-list')?.addEventListener('click', async (e) => {
+    const btn=e.target.closest('.kd-device-delete-btn'); if (!btn||!currentKeyId) return;
+    const hwid=btn.getAttribute('data-hwid'); if (!hwid) return;
+    if (!window.confirm('Удалить это устройство?')) return;
+    btn.disabled=true;
+    try {
+      const url=`{{ url_for('admin_key_delete_device_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf()); fd.append('hwid',hwid);
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      const data=await resp.json().catch(()=>({ok:false}));
+      if (data&&data.ok){ try { window.showToast('success','Устройство удалено'); } catch(_){} kdDevicesCache=kdDevicesCache.filter(d=>(d.hwid||d.hwId||d.id)!==hwid); renderDevices(kdDevicesCache); }
+      else { try { window.showToast('danger','Не удалось удалить'); } catch(_){} btn.disabled=false; }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} btn.disabled=false; }
+  });
+
+  document.getElementById('kd-devices-delete-all')?.addEventListener('click', async () => {
+    if (!currentKeyId) return;
+    if (!window.confirm('Удалить ВСЕ устройства? Это необратимо.')) return;
+    const btn=document.getElementById('kd-devices-delete-all'); btn.disabled=true;
+    try {
+      const url=`{{ url_for('admin_key_delete_all_devices_route', key_id=0) }}`.replace('/0/',`/${encodeURIComponent(currentKeyId)}/`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf());
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      const data=await resp.json().catch(()=>({ok:false}));
+      if (data&&data.ok){ try { window.showToast('success',`Удалено: ${data.deleted||0}`); } catch(_){} kdDevicesPage=1; kdDevicesCache=[]; renderDevices(kdDevicesCache); }
+      else { try { window.showToast('warning',`Удалено: ${data?.deleted||0}, ошибок: ${data?.failed||0}`); } catch(_){} await openKeyDetails(currentKeyId); }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  });
+
+  const deleteConfirmModalEl=document.getElementById('kdDeleteConfirmModal');
+  let deleteConfirmBsModal=null;
+  document.getElementById('kd-delete-btn')?.addEventListener('click', () => {
+    if (!currentKeyId) return;
+    document.getElementById('kd-delete-confirm-key-id').textContent='#'+currentKeyId;
+    try { deleteConfirmBsModal=new bootstrap.Modal(deleteConfirmModalEl); deleteConfirmBsModal.show(); } catch(_){}
+  });
+  document.getElementById('kd-delete-confirm-btn')?.addEventListener('click', async () => {
+    if (!currentKeyId) return;
+    const btn=document.getElementById('kd-delete-confirm-btn'); btn.disabled=true;
+    try {
+      const url=`{{ url_for('delete_key_route', key_id=0) }}`.replace('/0',`/${encodeURIComponent(currentKeyId)}`);
+      const fd=new FormData(); fd.append('csrf_token',getCsrf());
+      const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
+      if (resp.ok){ try { window.showToast('success','Ключ удалён'); } catch(_){} try { deleteConfirmBsModal?.hide(); } catch(_){} try { bsModal?.hide(); } catch(_){} }
+      else { try { window.showToast('danger','Не удалось удалить'); } catch(_){} }
+    } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
+  });
+})();
 </script>
 
 {% endblock %}
