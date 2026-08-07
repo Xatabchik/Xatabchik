@@ -1355,7 +1355,7 @@ async def _render_main_page(user_id: int):
                     host = k.get('host_name')
                     
                     if target_uuid:
-                        sub_tasks.append(remnawave_api.get_subscription_info(str(target_uuid), host_name=host))
+                        sub_tasks.append(remnawave_api.get_user_by_uuid(str(target_uuid), host_name=host))
                     else:
                         sub_tasks.append(asyncio.sleep(0, None))
 
@@ -1366,8 +1366,7 @@ async def _render_main_page(user_id: int):
                     # Try to find traffic in subscription response
                     found_traffic = None
                     if not isinstance(sub_res, Exception) and sub_res and isinstance(sub_res, dict):
-                        # check common keys
-                        for key_name in ['trafficUsed', 'traffic', 'used_traffic']:
+                        for key_name in ['usedTrafficBytes', 'trafficUsedBytes', 'traffic_used_bytes', 'usedBytes', 'trafficUsed', 'traffic', 'used_traffic']:
                             val = sub_res.get(key_name)
                             if val is not None:
                                 found_traffic = val
@@ -1894,7 +1893,7 @@ async def api_device_tiers(req: DeviceTiersRequest):
         mode = host_data.get('device_mode', 'plan')
         lock = int(host_data.get('tier_lock_extend', 0) or 0)
         from shop_bot.data_manager import database
-        base_devices = int(database.get_setting(f"base_device_{req.host_name}", "1"))
+        base_devices = int(database.get_setting(f"base_device_{req.host_name}") or "1")
         tiers = []
         if mode == 'tiers':
             raw = get_device_tiers(req.host_name)

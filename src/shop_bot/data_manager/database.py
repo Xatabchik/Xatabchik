@@ -801,6 +801,7 @@ def _ensure_traffic_packages_table(cursor: sqlite3.Cursor) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_traffic_packages_plan_id ON traffic_packages(plan_id)")
     _ensure_table_column(cursor, "vpn_keys", "traffic_boost_bytes", "INTEGER DEFAULT 0")
     _ensure_table_column(cursor, "vpn_keys", "next_traffic_reset_at", "TIMESTAMP")
+    _ensure_table_column(cursor, "vpn_keys", "comment_key", "TEXT")
     _ensure_table_column(cursor, "traffic_packages", "pool", "TEXT DEFAULT 'main'")
     # Идемпотентность enable/disable воркера двух пулов трафика:
     # 'enabled' | 'disabled_main' | 'disabled_premium' (legacy, host-level disable)
@@ -1631,7 +1632,7 @@ def update_key_comment(key_id: int, comment: str) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE vpn_keys SET comment = ? WHERE key_id = ?", (comment, key_id))
+            cursor.execute("UPDATE vpn_keys SET comment_key = ? WHERE key_id = ?", (comment, key_id))
             conn.commit()
             return cursor.rowcount > 0
     except sqlite3.Error as e:
