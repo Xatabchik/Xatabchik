@@ -7715,6 +7715,31 @@ def get_admin_router() -> Router:
         await state.update_data(button_text=None, button_url=None)
         await show_broadcast_preview(callback.message, state, bot)
 
+    def _escape_md2(text: str) -> str:
+        """Escape MarkdownV2 special chars in plain-text parts, leaving inline entities intact."""
+        import re as _re
+
+        # Match valid MarkdownV2 entities to keep as-is
+        ENTITY_RE = _re.compile(
+            r'(\[(?:[^\[\]\\]|\\.)*\]\((?:[^()\\]|\\.)*\))'  # [text](url)
+            r'|(\*\*(?:[^*\\]|\\.|\*(?!\*))*\*\*)'  # **bold**
+            r'|(__(?:[^_\\]|\\.)*__)'  # __italic__
+            r'|(~~(?:[^~\\]|\\.)*~~)'  # ~~strike~~
+            r'|(`[^`\n]+`)'  # `code`
+            r'|(\|\|(?:[^|\\]|\\.)*\|\|)',  # ||spoiler||
+        )
+
+        def _esc(s: str) -> str:
+            return _re.sub(r'([_*\[\]()~`>#+=|{}.!\-\\])', r'\\\1', s)
+
+        parts, last = [], 0
+        for m in ENTITY_RE.finditer(text):
+            parts.append(_esc(text[last:m.start()]))
+            parts.append(m.group(0))
+            last = m.end()
+        parts.append(_esc(text[last:]))
+        return ''.join(parts)
+
     async def _send_broadcast_to(bot: Bot, chat_id: int, msg: types.Message, keyboard, parse_mode: str | None = None) -> None:
         """Send broadcast, using specific send methods for media so reply_markup is applied correctly."""
         kw = dict(reply_markup=keyboard)
@@ -7739,7 +7764,8 @@ def get_admin_router() -> Router:
             await bot.send_sticker(chat_id=chat_id, sticker=msg.sticker.file_id, **kw)
         elif msg.text:
             if parse_mode:
-                await bot.send_message(chat_id=chat_id, text=msg.text, parse_mode=parse_mode, **kw)
+                text = _escape_md2(msg.text) if parse_mode == 'MarkdownV2' else msg.text
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kw)
             else:
                 await bot.send_message(chat_id=chat_id, text=msg.text, entities=msg.entities, **kw)
         else:
