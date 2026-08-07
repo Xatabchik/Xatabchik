@@ -2542,12 +2542,13 @@ async def api_key_comment(req: CommentRequest):
         if not user or user.get('is_banned'):
             return {"ok": False, "error": "Access denied"}
             
-        from shop_bot.data_manager.remnawave_repository import get_key_by_id, update_key
+        from shop_bot.data_manager.remnawave_repository import get_key_by_id
+        from shop_bot.data_manager.database import update_key_comment
         key = get_key_by_id(req.key_id)
         if not key or key.get("user_id") != req.user_id:
             return {"ok": False, "error": "Ключ не найден"}
-            
-        update_key(req.key_id, comment_key=req.comment)
+
+        update_key_comment(req.key_id, req.comment)
         return {"ok": True}
     except Exception as e:
         logger.error(f"Error updating comment: {e}")
