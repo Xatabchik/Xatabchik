@@ -7763,11 +7763,12 @@ def get_admin_router() -> Router:
         elif msg.sticker:
             await bot.send_sticker(chat_id=chat_id, sticker=msg.sticker.file_id, **kw)
         elif msg.text:
+            no_preview = types.LinkPreviewOptions(is_disabled=True)
             if parse_mode:
                 text = _escape_md2(msg.text) if parse_mode == 'MarkdownV2' else msg.text
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kw)
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, link_preview_options=no_preview, **kw)
             else:
-                await bot.send_message(chat_id=chat_id, text=msg.text, entities=msg.entities, **kw)
+                await bot.send_message(chat_id=chat_id, text=msg.text, entities=msg.entities, link_preview_options=no_preview, **kw)
         else:
             await bot.copy_message(
                 chat_id=chat_id,
