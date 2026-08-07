@@ -1047,6 +1047,16 @@ def create_admin_promo_description_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+def create_broadcast_parse_mode_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔤 Без форматирования", callback_data="broadcast_pm_none")
+    builder.button(text="🌐 HTML", callback_data="broadcast_pm_html")
+    builder.button(text="✏️ MarkdownV2", callback_data="broadcast_pm_md2")
+    builder.button(text="❌ Отмена", callback_data="cancel_broadcast")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def create_broadcast_options_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Добавить кнопку", callback_data="broadcast_add_button")

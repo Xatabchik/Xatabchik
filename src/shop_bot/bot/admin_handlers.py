@@ -115,6 +115,7 @@ class AdminModules(StatesGroup):
 
 class Broadcast(StatesGroup):
     waiting_for_message = State()
+    waiting_for_parse_mode = State()
     waiting_for_button_option = State()
     waiting_for_button_type = State()
     waiting_for_button_text = State()
@@ -7594,11 +7595,60 @@ def get_admin_router() -> Router:
                 return o.isoformat()
             return None  # aiogram Default sentinel and other unknown types
 
+        import re
+
+        def _detect_parse_mode(text: str) -> str | None:
+            """Auto-detect parse mode: HTML tags → HTML, Markdown links/bold/etc → MarkdownV2."""
+            if re.search(r'<(?:a|b|i|s|u|code|pre|tg-spoiler)\b', text, re.IGNORECASE):
+                return 'HTML'
+            if re.search(r'\[.+?\]\(https?://', text) or re.search(r'\*\*.+?\*\*|__.+?__|~~.+?~~|`[^`\n]+`|\|\|.+?\|\|', text):
+                return 'MarkdownV2'
+            return None
+
         msg_json = json.dumps(message.model_dump(), default=_msg_json_default)
         await state.update_data(message_to_send=msg_json)
-        await message.answer(
-            "Сообщение получено. Хотите добавить к нему кнопку со ссылкой?",
-            reply_markup=keyboards.create_broadcast_options_keyboard()
+        if message.text:
+            auto_pm = _detect_parse_mode(message.text)
+            if auto_pm:
+                await state.update_data(parse_mode=auto_pm)
+                await message.answer(
+                    f"Сообщение получено. Обнаружена разметка — формат <b>{auto_pm}</b> применён автоматически.\n"
+                    "Хотите добавить к нему кнопку со ссылкой?",
+                    reply_markup=keyboards.create_broadcast_options_keyboard(),
+                    parse_mode="HTML",
+                )
+                await state.set_state(Broadcast.waiting_for_button_option)
+            else:
+                await message.answer(
+                    "Сообщение получено.\n\n"
+                    "<b>Выберите формат</b> (нужен если в тексте есть ссылки или разметка):\n"
+                    "• <b>Без форматирования</b> — текст как есть\n"
+                    "• <b>HTML</b> — <code>&lt;b&gt;жирный&lt;/b&gt;</code>, <code>&lt;a href='url'&gt;текст&lt;/a&gt;</code>\n"
+                    "• <b>MarkdownV2</b> — <code>[текст](url)</code> → кликабельная ссылка",
+                    reply_markup=keyboards.create_broadcast_parse_mode_keyboard(),
+                    parse_mode="HTML",
+                )
+                await state.set_state(Broadcast.waiting_for_parse_mode)
+        else:
+            await state.update_data(parse_mode=None)
+            await message.answer(
+                "Сообщение получено. Хотите добавить к нему кнопку со ссылкой?",
+                reply_markup=keyboards.create_broadcast_options_keyboard()
+            )
+            await state.set_state(Broadcast.waiting_for_button_option)
+
+    @admin_router.callback_query(
+        Broadcast.waiting_for_parse_mode,
+        F.data.in_({"broadcast_pm_none", "broadcast_pm_html", "broadcast_pm_md2"}),
+    )
+    async def broadcast_parse_mode_handler(callback: types.CallbackQuery, state: FSMContext):
+        pm_map = {"broadcast_pm_none": None, "broadcast_pm_html": "HTML", "broadcast_pm_md2": "MarkdownV2"}
+        parse_mode = pm_map[callback.data]
+        await state.update_data(parse_mode=parse_mode)
+        await callback.answer()
+        await callback.message.edit_text(
+            "Хотите добавить к нему кнопку со ссылкой?",
+            reply_markup=keyboards.create_broadcast_options_keyboard(),
         )
         await state.set_state(Broadcast.waiting_for_button_option)
 
@@ -7665,10 +7715,14 @@ def get_admin_router() -> Router:
         await state.update_data(button_text=None, button_url=None)
         await show_broadcast_preview(callback.message, state, bot)
 
-    async def _send_broadcast_to(bot: Bot, chat_id: int, msg: types.Message, keyboard) -> None:
+    async def _send_broadcast_to(bot: Bot, chat_id: int, msg: types.Message, keyboard, parse_mode: str | None = None) -> None:
         """Send broadcast, using specific send methods for media so reply_markup is applied correctly."""
         kw = dict(reply_markup=keyboard)
-        ckw = dict(caption=msg.caption, caption_entities=msg.caption_entities, **kw)
+        # When parse_mode is set, use it instead of entities (they are mutually exclusive)
+        if parse_mode:
+            ckw = dict(caption=msg.caption, parse_mode=parse_mode, **kw)
+        else:
+            ckw = dict(caption=msg.caption, caption_entities=msg.caption_entities, **kw)
         if msg.photo:
             await bot.send_photo(chat_id=chat_id, photo=msg.photo[-1].file_id, **ckw)
         elif msg.video:
@@ -7684,10 +7738,10 @@ def get_admin_router() -> Router:
         elif msg.sticker:
             await bot.send_sticker(chat_id=chat_id, sticker=msg.sticker.file_id, **kw)
         elif msg.text:
-            await bot.send_message(
-                chat_id=chat_id, text=msg.text,
-                entities=msg.entities, **kw,
-            )
+            if parse_mode:
+                await bot.send_message(chat_id=chat_id, text=msg.text, parse_mode=parse_mode, **kw)
+            else:
+                await bot.send_message(chat_id=chat_id, text=msg.text, entities=msg.entities, **kw)
         else:
             await bot.copy_message(
                 chat_id=chat_id,
@@ -7700,6 +7754,7 @@ def get_admin_router() -> Router:
         data = await state.get_data()
         message_json = data.get('message_to_send')
         original_message = types.Message.model_validate_json(message_json)
+        parse_mode = data.get('parse_mode')
 
         button_text = data.get('button_text')
         button_url = data.get('button_url')
@@ -7723,7 +7778,7 @@ def get_admin_router() -> Router:
             reply_markup=keyboards.create_broadcast_confirmation_keyboard()
         )
 
-        await _send_broadcast_to(bot, message.chat.id, original_message, preview_keyboard)
+        await _send_broadcast_to(bot, message.chat.id, original_message, preview_keyboard, parse_mode=parse_mode)
 
         await state.set_state(Broadcast.waiting_for_confirmation)
 
@@ -7734,6 +7789,7 @@ def get_admin_router() -> Router:
         data = await state.get_data()
         message_json = data.get('message_to_send')
         original_message = types.Message.model_validate_json(message_json)
+        parse_mode = data.get('parse_mode')
 
         button_text = data.get('button_text')
         button_url = data.get('button_url')
@@ -7755,7 +7811,7 @@ def get_admin_router() -> Router:
         await state.clear()
 
         users = get_all_users()
-        logger.info(f"Рассылка: Начинаем итерацию по {len(users)} пользователям.")
+        logger.info(f"Рассылка: Начинаем итерацию по {len(users)} пользователями.")
 
         sent_count = 0
         failed_count = 0
@@ -7767,7 +7823,7 @@ def get_admin_router() -> Router:
                 banned_count += 1
                 continue
             try:
-                await _send_broadcast_to(bot, user_id, original_message, final_keyboard)
+                await _send_broadcast_to(bot, user_id, original_message, final_keyboard, parse_mode=parse_mode)
                 sent_count += 1
                 await asyncio.sleep(0.1)
             except Exception as e:
