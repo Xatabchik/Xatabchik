@@ -823,8 +823,6 @@ def create_keys_management_keyboard(keys: list[dict], page: int = 0, gift_keys: 
     end_idx = start_idx + items_per_page
     current_keys = keys[start_idx:end_idx]
 
-    # --- Раздел "Личные" ---
-    builder.button(text="─── 👤 Личные ───", callback_data="noop")
     if current_keys:
         for i, key in enumerate(current_keys):
             num = start_idx + i + 1
@@ -841,22 +839,7 @@ def create_keys_management_keyboard(keys: list[dict], page: int = 0, gift_keys: 
 
             builder.button(text=button_text, callback_data=f"show_key_{kid}")
     else:
-        builder.button(text="Нет личных ключей", callback_data="noop")
-
-    # --- Раздел "Отправленные подарки" ---
-    if gift_keys:
-        builder.button(text="─── 🎁 Отправленные подарки ───", callback_data="noop")
-        for key in gift_keys:
-            kid = key.get('key_id')
-            expiry_date = datetime.fromisoformat(key['expiry_date'])
-            status_icon = "✅" if expiry_date > datetime.now() else "❌"
-            user_key_name = key.get('user_key_name')
-            if user_key_name:
-                button_text = f"{status_icon} 🎁 {user_key_name}"
-            else:
-                host_name = key.get('host_name', '...')
-                button_text = f"{status_icon} 🎁 Подарок #{kid} ({host_name})"
-            builder.button(text=button_text, callback_data=f"show_key_{kid}")
+        builder.button(text="Ключей нет", callback_data="noop")
 
     builder.adjust(1)
 
@@ -871,7 +854,50 @@ def create_keys_management_keyboard(keys: list[dict], page: int = 0, gift_keys: 
     if len(keys) > 10:
         builder.row(InlineKeyboardButton(text="🔍 Найти ключ", callback_data="search_my_keys"))
 
+    if gift_keys:
+        gift_label = f"🎁 Отправленные подарки ({len(gift_keys)})"
+        builder.row(InlineKeyboardButton(text=gift_label, callback_data="sent_gifts"))
+
     builder.row(InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_main_menu"))
+
+    return builder.as_markup()
+
+
+def create_sent_gifts_keyboard(gift_keys: list[dict], page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура раздела «Отправленные подарки»."""
+    builder = InlineKeyboardBuilder()
+    items_per_page = 5
+
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_keys = gift_keys[start_idx:end_idx]
+
+    if current_keys:
+        for key in current_keys:
+            kid = key.get('key_id')
+            expiry_date = datetime.fromisoformat(key['expiry_date'])
+            status_icon = "✅" if expiry_date > datetime.now() else "❌"
+            user_key_name = key.get('user_key_name')
+            if user_key_name:
+                button_text = f"{status_icon} 🎁 {user_key_name}"
+            else:
+                host_name = key.get('host_name', '...')
+                button_text = f"{status_icon} 🎁 Подарок #{kid} ({host_name})"
+            builder.button(text=button_text, callback_data=f"show_key_{kid}")
+    else:
+        builder.button(text="Нет отправленных подарков", callback_data="noop")
+
+    builder.adjust(1)
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"gift_keys_page_{page-1}"))
+    if end_idx < len(gift_keys):
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"gift_keys_page_{page+1}"))
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    builder.row(InlineKeyboardButton(text="⬅️ К моим ключам", callback_data="manage_keys"))
 
     return builder.as_markup()
 

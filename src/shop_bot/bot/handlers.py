@@ -5380,20 +5380,15 @@ def get_user_router() -> Router:
                         pass
 
         return removed
-    # Меняем фильтр: теперь ловим и точный текст, и начало текста для страниц
     @user_router.callback_query(F.data.in_({"manage_keys"}) | F.data.startswith("keys_page_"))
     @registration_required
     async def manage_keys_handler(callback: types.CallbackQuery):
         await callback.answer()
         user_id = callback.from_user.id
-        # Определяем текущую страницу. Если нажали "manage_keys", это 0.
-        # Если нажали "keys_page_N", вытаскиваем число N.
         page = 0
         if callback.data.startswith("keys_page_"):
             page = int(callback.data.split("_")[-1])
 
-        # Синхронизацию делаем только при первом входе (на 0-й странице), 
-        # чтобы не тормозить перелистывание.
         if page == 0:
             try:
                 await sync_user_keys_with_remnawave(user_id)
@@ -5401,15 +5396,30 @@ def get_user_router() -> Router:
                 pass
 
         all_user_keys = get_user_keys(user_id)
-        # Разделяем личные ключи и отправленные подарки
         user_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() not in ('user_gift', 'gift')]
         gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
-        
+
         has_any = bool(user_keys or gift_keys)
         await callback.message.edit_text(
             "Ваши ключи:" if has_any else "У вас пока нет ключей.",
-            # Передаем вычисленную страницу в клавиатуру
             reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=page, gift_keys=gift_keys)
+        )
+
+    @user_router.callback_query(F.data.in_({"sent_gifts"}) | F.data.startswith("gift_keys_page_"))
+    @registration_required
+    async def sent_gifts_handler(callback: types.CallbackQuery):
+        await callback.answer()
+        user_id = callback.from_user.id
+        page = 0
+        if callback.data.startswith("gift_keys_page_"):
+            page = int(callback.data.split("_")[-1])
+
+        all_user_keys = get_user_keys(user_id)
+        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+
+        await callback.message.edit_text(
+            "🎁 Отправленные подарки:" if gift_keys else "У вас нет отправленных подарков.",
+            reply_markup=keyboards.create_sent_gifts_keyboard(gift_keys, page=page)
         )
 
     @user_router.callback_query(F.data == "search_my_keys")
