@@ -1670,6 +1670,12 @@ def get_user_router() -> Router:
         await callback.answer()
         await show_main_menu(callback.message, edit_message=True)
 
+    @user_router.callback_query(F.data == "open_main_menu")
+    @registration_required
+    async def open_main_menu_handler(callback: types.CallbackQuery):
+        await callback.answer()
+        await show_main_menu(callback.message, edit_message=False)
+
     @user_router.callback_query(F.data == "show_main_menu")
     @registration_required
     async def show_main_menu_cb(callback: types.CallbackQuery):

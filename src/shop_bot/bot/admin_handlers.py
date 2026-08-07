@@ -7703,7 +7703,7 @@ def get_admin_router() -> Router:
                 preview_builder.button(text=button_text, callback_data=button_callback)
         preview_builder.button(
             text=(get_setting("btn_back_to_menu_text") or "⬅️ Главное меню"),
-            callback_data="back_to_main_menu",
+            callback_data="open_main_menu",
         )
         preview_builder.adjust(1)
         preview_keyboard = preview_builder.as_markup()
@@ -7737,7 +7737,7 @@ def get_admin_router() -> Router:
                 final_builder.button(text=button_text, callback_data=button_callback)
         final_builder.button(
             text=(get_setting("btn_back_to_menu_text") or "⬅️ Главное меню"),
-            callback_data="back_to_main_menu",
+            callback_data="open_main_menu",
         )
         final_builder.adjust(1)
         final_keyboard = final_builder.as_markup()
