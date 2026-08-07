@@ -3009,6 +3009,7 @@
                     <div class="flex flex-col gap-3">
                         <div class="text-[10px] text-gray-500 font-medium px-1">Введите название (макс. 30 символов). Оставьте пустым — удалить название.</div>
                         <input type="text" id="action-rename-input" maxlength="30"
+                            enterkeyhint="done"
                             class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white focus:border-white/20 transition-all outline-none"
                             placeholder="Напр: Рабочий VPN"
                             value="${currentName.replace(/"/g, '&quot;')}">
@@ -3027,7 +3028,18 @@
                 `;
                 const inp = document.getElementById('action-rename-input');
                 const counter = document.getElementById('action-rename-counter');
-                if (inp) inp.addEventListener('input', () => { counter.textContent = inp.value.length + '/30'; });
+                if (inp) {
+                    inp.addEventListener('input', () => { counter.textContent = inp.value.length + '/30'; });
+                    inp.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); renameKey(keyId); }
+                    });
+                    // scroll save button into view after virtual keyboard opens
+                    inp.addEventListener('focus', () => {
+                        setTimeout(() => {
+                            document.getElementById('action-rename-btn')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        }, 350);
+                    });
+                }
             } else if (type === 'transactions') {
                 const modal = document.getElementById('action-modal');
                 const backdrop = document.getElementById('action-backdrop');
