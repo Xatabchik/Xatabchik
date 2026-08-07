@@ -574,6 +574,23 @@
 								<button type="submit" class="btn btn-outline-secondary btn-sm pill" style="margin-left:6px;">Сохранить ссылку</button>
 							</form>
 
+							<form action="{{ url_for('update_host_remnawave_route') }}" method="post" class="form-inline edit-row" data-edit-row>
+								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+								<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+								<label class="form-label" for="rmw_token_{{ loop.index }}">API Token:</label>
+								<div class="password-wrapper" style="flex:1; position:relative;">
+									<input id="rmw_token_{{ loop.index }}" class="form-control pill" type="password" name="remnawave_api_token"
+										placeholder="{{ '●●●● токен задан' if host.remnawave_api_token else 'Токен не задан' }}"
+										data-edit-target readonly />
+									<button type="button" class="toggle-password">👁️</button>
+								</div>
+								<div class="edit-actions">
+									<button type="button" class="btn btn-outline-secondary btn-sm pill" data-action="edit">Изменить</button>
+									<button type="submit" class="btn btn-primary btn-sm pill d-none" data-action="save">Сохранить</button>
+									<button type="button" class="btn btn-outline-secondary btn-sm pill d-none" data-action="cancel">Отмена</button>
+								</div>
+							</form>
+
 							<details class="rw-drawer nested-drawer" style="margin: 8px 0;">
 							  <summary class="rw-drawer-summary">
 								<span><i class="ti ti-affiliate me-1"></i> Сквады Remnawave (двухпуловая схема)</span>
