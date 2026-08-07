@@ -99,12 +99,23 @@
             -webkit-tap-highlight-color: transparent;
         }
 
-        #main-page,
+        #home-page,
+        #keys-page,
+        #finance-page,
+        #referral-page,
+        #support-page {
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            overscroll-behavior-y: contain;
+            padding-top: max(env(safe-area-inset-top), 8px);
+            padding-bottom: max(calc(64px + env(safe-area-inset-bottom)), 84px);
+        }
+
         #purchase-page,
         #renew-page,
-        #setup-page,
-        #profile-page,
-        #support-page {
+        #setup-page {
             overflow-y: auto;
             overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
@@ -114,13 +125,28 @@
             padding-bottom: max(env(safe-area-inset-bottom), 80px);
         }
 
-        #main-page::-webkit-scrollbar,
+        #home-page::-webkit-scrollbar,
+        #keys-page::-webkit-scrollbar,
+        #finance-page::-webkit-scrollbar,
+        #referral-page::-webkit-scrollbar,
+        #support-page::-webkit-scrollbar,
         #purchase-page::-webkit-scrollbar,
         #renew-page::-webkit-scrollbar,
-        #setup-page::-webkit-scrollbar,
-        #profile-page::-webkit-scrollbar,
-        #support-page::-webkit-scrollbar {
+        #setup-page::-webkit-scrollbar {
             display: none;
+        }
+
+        #bottom-nav {
+            height: calc(64px + env(safe-area-inset-bottom));
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .nav-tab {
+            transition: color 0.2s ease;
+        }
+
+        .nav-tab.active {
+            color: #10b981;
         }
 
         body {
@@ -163,35 +189,37 @@
         .rotate-icon.expanded {
             transform: rotate(180deg);
         }
+
+        .pb-safe {
+            padding-bottom: max(calc(64px + env(safe-area-inset-bottom)), 16px) !important;
+        }
+
+        #support-chat-view {
+            height: calc(100dvh - 64px - 64px - 20px);
+        }
     </style>
 </head>
 
 <body
     class="bg-background-light dark:bg-background-dark text-gray-900 dark:text-gray-100 h-screen [height:100dvh] flex justify-center antialiased selection:bg-primary selection:text-white transition-colors duration-300">
-    <!-- ======== ГЛАВНОЕ МЕНЮ ======== -->
-    <div id="main-page" class="w-full max-w-md mx-auto h-full relative flex flex-col justify-between px-4">
+    <!-- ======== ГЛАВНАЯ ======== -->
+    <div id="home-page" class="w-full max-w-md mx-auto h-full relative flex flex-col px-4">
         <header class="w-full flex items-center justify-between py-4 relative z-[100]">
-            <!-- Левая невидимая часть для баланса -->
             <div class="flex-1 flex items-center"></div>
-            <!-- Центральная часть -->
             <div class="flex items-center justify-center gap-2.5 whitespace-nowrap">
-                <img src="{{ webapp_logo }}" class="w-8 h-8 rounded-full object-cover flex-shrink-0 bg-black/30 border border-white/10" alt="LOGO" {{ logo_hidden
-                    }} />
+                <img src="{{ webapp_logo }}" class="w-8 h-8 rounded-full object-cover flex-shrink-0 bg-black/30 border border-white/10" alt="LOGO" {{ logo_hidden }} />
                 <h1 class="text-xl font-bold tracking-wide uppercase leading-none">{{ panel_brand_title }}</h1>
             </div>
-            <!-- Правая часть с кнопкой -->
             <div class="flex-1 flex justify-end">
                 <button id="menu-dots-btn" onclick="toggleSettingsMenu(event)"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors active:scale-95 flex items-center justify-center">
                     <span class="material-icons-round">more_horiz</span>
                 </button>
-                <!-- Dropdown Menu -->
                 <div id="settings-menu"
                     class="hidden absolute right-0 mt-2 w-40 glass-card border border-white/10 rounded-xl shadow-2xl py-1 z-[9999999] animate-in fade-in slide-in-from-top-2 duration-200">
                     <button onclick="location.reload()"
                         class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-white/5 transition-colors group">
-                        <span
-                            class="material-icons-round text-[16px] text-gray-400 group-hover:text-primary">refresh</span>
+                        <span class="material-icons-round text-[16px] text-gray-400 group-hover:text-primary">refresh</span>
                         <span class="text-[13px] font-medium">Обновить</span>
                     </button>
                     <div class="h-[1px] bg-white/5 my-0.5"></div>
@@ -203,48 +231,98 @@
                 </div>
             </div>
         </header>
-        <div class="flex flex-col gap-4">
+        <main class="flex flex-col gap-4">
+            <div class="grid grid-cols-2 gap-3">
+                <div class="glass-card border border-white/10 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <div class="flex items-center gap-1.5">
+                        <span class="material-icons-round text-sm text-blue-400">account_balance_wallet</span>
+                        <span class="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Баланс</span>
+                    </div>
+                    <div id="home-balance" class="text-xl font-black text-white">—</div>
+                </div>
+                <div class="glass-card border border-white/10 rounded-2xl p-4 flex flex-col gap-1.5">
+                    <div class="flex items-center gap-1.5">
+                        <span class="material-icons-round text-sm text-emerald-400">group_add</span>
+                        <span class="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Рефералы</span>
+                    </div>
+                    <div id="home-referral" class="text-xl font-black text-emerald-400">—</div>
+                </div>
+            </div>
             <button id="purchase-btn"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
-                <div
-                    class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700">
-                </div>
+                <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
                 <span class="material-icons-round text-lg">shopping_cart</span>
                 <span>Купить ключ от {{ min_price }}</span>
             </button>
-            <div class="grid grid-cols-2 gap-3">
-                <button id="renew-btn"
-                    class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-surface-highlight-dark rounded-xl p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 dark:hover:bg-surface-highlight-dark transition-colors group">
-                    <span
-                        class="material-icons-round text-2xl text-gray-400 group-hover:text-primary transition-colors">autorenew</span>
-                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Продлить</span>
-                </button>
-                <button id="setup-btn"
-                    class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-surface-highlight-dark rounded-xl p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 dark:hover:bg-surface-highlight-dark transition-colors group">
-                    <span
-                        class="material-icons-round text-2xl text-gray-400 group-hover:text-primary transition-colors">download</span>
-                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Настройка</span>
-                </button>
-                <button id="profile-btn"
-                    class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-surface-highlight-dark rounded-xl p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 dark:hover:bg-surface-highlight-dark transition-colors group">
-                    <span
-                        class="material-icons-round text-2xl text-gray-400 group-hover:text-primary transition-colors">person</span>
-                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Профиль</span>
-                </button>
-                <button id="support-btn"
-                    class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-surface-highlight-dark rounded-xl p-4 flex flex-col items-center justify-center gap-2 hover:bg-gray-50 dark:hover:bg-surface-highlight-dark transition-colors group">
-                    <span
-                        class="material-icons-round text-2xl text-gray-400 group-hover:text-primary transition-colors">headset_mic</span>
-                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">Поддержка</span>
+            <button id="renew-btn"
+                class="w-full glass-card border border-white/10 text-white py-3.5 px-4 rounded-xl font-bold text-sm hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                <span class="material-icons-round text-lg">autorenew</span>
+                <span>Продлить ключ</span>
+            </button>
+            <div id="user-profile-card-container">
+                {{ user_profile_card }}
+            </div>
+        </main>
+    </div>
+    <!-- ======== Конец ГЛАВНАЯ ======== -->
+
+    <!-- ======== КЛЮЧИ ======== -->
+    <div id="keys-page" class="w-full max-w-md mx-auto h-full relative flex flex-col px-4" style="display: none;">
+        <header class="w-full flex items-center justify-between py-4 relative z-[100]">
+            <div class="flex-1"></div>
+            <h1 class="text-xl font-bold tracking-wide uppercase leading-none">Ключи</h1>
+            <div class="flex-1 flex justify-end">
+                <button onclick="openActionModal('search_keys', null)"
+                    class="p-2 text-gray-400 hover:text-gray-200 transition-colors active:scale-95">
+                    <span class="material-icons-round">search</span>
                 </button>
             </div>
-        </div>
-        <footer class="text-center pb-4 opacity-40 hover:opacity-100 transition-opacity">
-            <p class="text-[10px] text-gray-500 dark:text-gray-400">v2.0
-            </p>
-        </footer>
+        </header>
+        <main class="flex flex-col gap-4">
+            <div class="grid grid-cols-3 gap-2">
+                <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('new'),50);"
+                    class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
+                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-primary transition-colors">add_card</span>
+                    <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Купить</span>
+                </button>
+                <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('gift'),50);"
+                    class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
+                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-amber-400 transition-colors">card_giftcard</span>
+                    <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Подарок</span>
+                </button>
+                <button onclick="window.location.hash='rebay'"
+                    class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
+                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-primary transition-colors">autorenew</span>
+                    <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Продлить</span>
+                </button>
+            </div>
+            <div class="flex flex-col gap-3">
+                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Ваши ключи</div>
+                <div id="profile-keys-list-container">
+                    {{ profile_keys_list }}
+                </div>
+            </div>
+            <div class="flex flex-col gap-3">
+                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Подарочные ключи</div>
+                <div id="gifts-section" class="flex flex-col gap-2">
+                    <div id="gifts-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
+                    <div id="gifts-content" class="hidden flex flex-col gap-2"></div>
+                </div>
+            </div>
+            <button onclick="window.location.hash='setup'"
+                class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
+                <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
+                    <span class="material-icons-round text-primary text-sm">download</span>
+                </div>
+                <div class="text-left flex-1">
+                    <div class="text-xs font-bold text-white">Настройка подключения</div>
+                    <div class="text-[9px] text-gray-500">Инструкции для ваших устройств</div>
+                </div>
+                <span class="material-icons-round text-gray-600 text-base">chevron_right</span>
+            </button>
+        </main>
     </div>
-    <!-- ======== Конец ГЛАВНОЕ МЕНЮ ======== -->
+    <!-- ======== Конец КЛЮЧИ ======== -->
 
     <!-- ======== Страница покупки ======== -->
     <div id="purchase-page" class="w-full max-w-md mx-auto h-full relative flex flex-col justify-between px-4"
@@ -525,85 +603,93 @@
     </div>
     <!-- ======== Конец Страница установки ======== -->
 
-    <!-- ======== Страница профиля ======== -->
-    <div id="profile-page" class="w-full max-w-md mx-auto h-full relative flex flex-col justify-between px-4"
-        style="display: none;">
-        <header class="w-full flex items-center justify-between py-4 relative z-10 px-0">
-            <div class="flex-1 flex justify-start items-center">
-                <button id="back-profile-btn"
-                    class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex items-center justify-center">
-                    <span class="material-icons-round">arrow_back_ios_new</span>
-                </button>
-            </div>
-            <div class="flex items-center justify-center gap-2.5 whitespace-nowrap">
-                <img src="{{ webapp_logo }}" class="w-8 h-8 rounded-full object-cover flex-shrink-0 bg-black/30 border border-white/10" alt="LOGO" {{ logo_hidden
-                    }} />
-                <h1 class="text-xl font-bold tracking-wide uppercase leading-none">{{ panel_brand_title }}</h1>
-            </div>
-            <div class="flex-1 flex items-center"></div>
+    <!-- ======== ФИНАНСЫ ======== -->
+    <div id="finance-page" class="w-full max-w-md mx-auto h-full relative flex flex-col px-4" style="display: none;">
+        <header class="w-full flex items-center justify-between py-4 relative z-[100]">
+            <div class="flex-1"></div>
+            <h1 class="text-xl font-bold tracking-wide uppercase leading-none">Финансы</h1>
+            <div class="flex-1"></div>
         </header>
-        <div class="absolute -top-20 -left-20 w-64 h-64 bg-primary/10 rounded-full blur-[100px] pointer-events-none">
-        </div>
-
-        <main class="flex-grow flex flex-col gap-5 pt-6 relative z-10">
-            <div id="user-profile-card-container">
-                {{ user_profile_card }}
-            </div>
-
-            <!-- User Keys Section -->
-            <div class="flex flex-col gap-3">
-                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Ваши ключи</div>
-
-                <div id="profile-keys-list-container">
-                    {{ profile_keys_list }}
+        <main class="flex flex-col gap-4">
+            <div class="bg-gradient-to-br from-blue-500/10 to-primary/5 border border-blue-500/20 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
+                <div class="absolute -top-4 -right-4 opacity-10 rotate-12">
+                    <span class="material-icons-round text-5xl">account_balance_wallet</span>
+                </div>
+                <div class="relative z-10 flex flex-col gap-1">
+                    <div class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Ваш баланс</div>
+                    <div id="finance-balance" class="text-3xl font-black text-white">—</div>
+                    <div class="text-[10px] text-gray-500 mt-1">Для оплаты подписки и других услуг</div>
                 </div>
             </div>
-
-            <!-- Referral Program Section -->
-            <div class="flex flex-col gap-3">
-                <button onclick="toggleSection('referral-section')" class="flex items-center justify-between px-1 w-full text-left group">
-                    <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest group-hover:text-gray-300 transition-colors flex items-center gap-1.5">
-                        <span class="material-icons-round text-[13px] text-emerald-400">group_add</span>
-                        Реферальная программа
-                    </div>
-                    <span id="referral-section-icon" class="material-icons-round text-gray-600 text-[15px] transition-transform">expand_more</span>
-                </button>
-                <div id="referral-section" class="hidden flex flex-col gap-2">
-                    <div id="referral-info-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
-                    <div id="referral-info-content" class="hidden flex flex-col gap-2"></div>
-                </div>
-            </div>
-
-            <!-- Gifts Section -->
-            <div class="flex flex-col gap-3">
-                <button onclick="toggleSection('gifts-section')" class="flex items-center justify-between px-1 w-full text-left group">
-                    <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest group-hover:text-gray-300 transition-colors flex items-center gap-1.5">
-                        <span class="material-icons-round text-[13px] text-amber-400">card_giftcard</span>
-                        Мои подарки
-                    </div>
-                    <span id="gifts-section-icon" class="material-icons-round text-gray-600 text-[15px] transition-transform">expand_more</span>
-                </button>
-                <div id="gifts-section" class="hidden flex flex-col gap-2">
-                    <div id="gifts-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
-                    <div id="gifts-content" class="hidden flex flex-col gap-2"></div>
-                </div>
-            </div>
-        </main>
-
-        <footer class="py-6 relative z-10 flex flex-col gap-3">
+            <button onclick="openTopUpModal()"
+                class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
+                <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
+                <span class="material-icons-round text-lg">add_card</span>
+                <span>Пополнить баланс</span>
+            </button>
             <button id="webapp-promo-btn" onclick="openPromoModal()"
                 class="w-full bg-primary/10 border border-primary/20 text-primary py-3 rounded-xl font-bold text-xs hover:bg-primary/20 transition-all flex items-center justify-center gap-2">
                 <span class="material-icons-round text-sm">redeem</span>
                 <span>Ввести промокод</span>
             </button>
+            <div class="flex flex-col gap-3">
+                <div class="flex items-center justify-between px-1">
+                    <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest">История транзакций</div>
+                    <button onclick="openActionModal('transactions', null)" class="text-[9px] text-primary font-bold hover:text-primary/70 transition-colors">Все →</button>
+                </div>
+                <div id="finance-transactions-preview" class="flex flex-col gap-2">
+                    <div class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
+                </div>
+            </div>
             <button id="logout-btn"
-                class="w-full bg-white/5 border border-white/10 text-white py-3 rounded-xl font-medium text-xs hover:bg-white/10 transition-all flex items-center justify-center gap-2">
+                class="w-full bg-white/5 border border-white/10 text-white py-3 rounded-xl font-medium text-xs hover:bg-white/10 transition-all flex items-center justify-center gap-2 mt-2">
                 <span class="material-icons-round text-sm">logout</span>
                 <span>Выйти из аккаунта</span>
             </button>
-        </footer>
+        </main>
     </div>
-    <!-- ======== Конец Страница профиля ======== -->
+    <!-- ======== Конец ФИНАНСЫ ======== -->
+
+    <!-- ======== РЕФЕРАЛКА ======== -->
+    <div id="referral-page" class="w-full max-w-md mx-auto h-full relative flex flex-col px-4" style="display: none;">
+        <header class="w-full flex items-center justify-between py-4 relative z-[100]">
+            <div class="flex-1"></div>
+            <h1 class="text-xl font-bold tracking-wide uppercase leading-none">Рефералка</h1>
+            <div class="flex-1"></div>
+        </header>
+        <div class="absolute -top-20 -left-20 w-64 h-64 bg-primary/10 rounded-full blur-[100px] pointer-events-none"></div>
+        <main class="flex flex-col gap-4 relative z-10">
+            <div id="referral-info-loading" class="text-center text-[11px] text-gray-500 py-6">
+                <span class="material-icons-round text-primary text-2xl animate-spin block mx-auto mb-2">refresh</span>
+                Загрузка...
+            </div>
+            <div id="referral-info-content" class="hidden flex flex-col gap-2"></div>
+            <button onclick="requestReferralWithdraw()"
+                class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
+                <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
+                <span class="material-icons-round text-lg">payments</span>
+                <span>Запросить вывод</span>
+            </button>
+            <button onclick="openReferralMethodsModal()"
+                class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
+                <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
+                    <span class="material-icons-round text-primary text-sm">account_balance</span>
+                </div>
+                <div class="text-left flex-1">
+                    <div class="text-xs font-bold text-white">Методы получения</div>
+                    <div class="text-[9px] text-gray-500">Реквизиты для вывода средств</div>
+                </div>
+                <span class="material-icons-round text-gray-600 text-base">chevron_right</span>
+            </button>
+            <div class="flex flex-col gap-3">
+                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Заявки на вывод</div>
+                <div id="referral-withdrawals" class="flex flex-col gap-2">
+                    <div class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <!-- ======== Конец РЕФЕРАЛКА ======== -->
 
     <!-- ======== Страница поддержки ======== -->
     <div id="support-page" class="w-full max-w-md mx-auto h-full relative flex flex-col px-4" style="display: none;">
@@ -724,6 +810,36 @@
     </div>
     <!-- ======== Конец Страница поддержки ======== -->
 
+    <!-- ======== НИЖНЕЕ МЕНЮ НАВИГАЦИИ ======== -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 z-[200] bg-[#0a0a0a]/95 backdrop-blur-xl border-t border-white/5 flex items-center justify-around px-1">
+        <button id="nav-keys" onclick="navigateTo('keys')"
+            class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
+            <span class="material-icons-round text-[22px]">vpn_key</span>
+            <span class="text-[9px] font-bold">Ключи</span>
+        </button>
+        <button id="nav-finance" onclick="navigateTo('finance')"
+            class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
+            <span class="material-icons-round text-[22px]">account_balance_wallet</span>
+            <span class="text-[9px] font-bold">Финансы</span>
+        </button>
+        <button id="nav-home" onclick="navigateTo('home')"
+            class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
+            <span class="material-icons-round text-[26px]">home</span>
+            <span class="text-[9px] font-bold">Главная</span>
+        </button>
+        <button id="nav-referral" onclick="navigateTo('referral')"
+            class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
+            <span class="material-icons-round text-[22px]">group_add</span>
+            <span class="text-[9px] font-bold">Рефералка</span>
+        </button>
+        <button id="nav-support" onclick="navigateTo('support')"
+            class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
+            <span class="material-icons-round text-[22px]">headset_mic</span>
+            <span class="text-[9px] font-bold">Поддержка</span>
+        </button>
+    </nav>
+    <!-- ======== Конец НИЖНЕЕ МЕНЮ НАВИГАЦИИ ======== -->
+
     <script>
         // Check local storage or system preference, default to dark for this "VPN" aesthetic
         if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
@@ -744,23 +860,23 @@
                 tgApp.setBackgroundColor('#0a0a0a');
             } catch (e) { }
         }
-        const mainPage = document.getElementById('main-page');
+        const homePage = document.getElementById('home-page');
+        const keysPage = document.getElementById('keys-page');
+        const financePage = document.getElementById('finance-page');
+        const referralPage = document.getElementById('referral-page');
         const purchasePage = document.getElementById('purchase-page');
         const renewPage = document.getElementById('renew-page');
         const setupPage = document.getElementById('setup-page');
-        const profilePage = document.getElementById('profile-page');
         const supportPage = document.getElementById('support-page');
-        const purchaseBtn = document.getElementById('purchase-btn');
-        const renewBtn = document.getElementById('renew-btn');
-        const setupBtn = document.getElementById('setup-btn');
-        const profileBtn = document.getElementById('profile-btn');
-        const supportBtn = document.getElementById('support-btn');
         const backBtn = document.getElementById('back-btn');
         const backRenewBtn = document.getElementById('back-renew-btn');
         const backSetupBtn = document.getElementById('back-setup-btn');
-        const backProfileBtn = document.getElementById('back-profile-btn');
         const backSupportBtn = document.getElementById('back-support-btn');
         const logoutBtn = document.getElementById('logout-btn');
+
+        const _ALL_PAGES = [homePage, keysPage, financePage, referralPage, purchasePage, renewPage, setupPage, supportPage];
+        const _MAIN_TABS = [homePage, keysPage, financePage, referralPage, supportPage];
+        const _PAGE_NAV_IDS = new Map([[homePage, 'nav-home'], [keysPage, 'nav-keys'], [financePage, 'nav-finance'], [referralPage, 'nav-referral'], [supportPage, 'nav-support']]);
 
         function updateThemeColor() {
             const meta = document.getElementById('dynamic-theme-color');
@@ -817,7 +933,7 @@
             }, 100);
         }
 
-        [mainPage, purchasePage, renewPage, setupPage, profilePage, supportPage].forEach(p => {
+        [homePage, keysPage, financePage, referralPage, purchasePage, renewPage, setupPage, supportPage].forEach(p => {
             if (p) p.addEventListener('scroll', onPageScroll, { passive: true });
         });
 
@@ -1035,14 +1151,26 @@
         });
 
 
+        function _updateBottomNav(activePage) {
+            const nav = document.getElementById('bottom-nav');
+            if (!nav) return;
+            const isMain = _MAIN_TABS.includes(activePage);
+            nav.style.display = isMain ? 'flex' : 'none';
+            document.querySelectorAll('.nav-tab').forEach(btn => {
+                btn.classList.remove('text-primary');
+                btn.classList.add('text-gray-500');
+            });
+            const navId = _PAGE_NAV_IDS.get(activePage);
+            if (navId) {
+                const btn = document.getElementById(navId);
+                if (btn) { btn.classList.remove('text-gray-500'); btn.classList.add('text-primary'); }
+            }
+        }
+
         function showPage(page) {
-            mainPage.style.display = 'none';
-            purchasePage.style.display = 'none';
-            renewPage.style.display = 'none';
-            setupPage.style.display = 'none';
-            profilePage.style.display = 'none';
-            supportPage.style.display = 'none';
-            page.style.display = 'flex';
+            _ALL_PAGES.forEach(p => { if (p) p.style.display = 'none'; });
+            if (page) page.style.display = 'flex';
+            _updateBottomNav(page);
 
             if (page === supportPage) {
                 document.getElementById('support-loading').classList.remove('hidden');
@@ -1053,29 +1181,37 @@
             } else {
                 stopSupportPolling();
             }
+            if (page === financePage) window._loadFinancePage && window._loadFinancePage();
+            if (page === referralPage) window._loadReferralPage && window._loadReferralPage();
+            if (page === homePage) window._loadHomeStats && window._loadHomeStats();
+            if (page === keysPage) window._loadKeysPage && window._loadKeysPage();
             setTimeout(updateThemeColor, 50);
         }
-        purchaseBtn.addEventListener('click', () => { window.location.hash = 'bay'; });
-        renewBtn.addEventListener('click', () => { window.location.hash = 'rebay'; });
-        setupBtn.addEventListener('click', () => { window.location.hash = 'setup'; });
-        profileBtn.addEventListener('click', () => { window.location.hash = 'pro'; });
-        supportBtn.addEventListener('click', () => { window.location.hash = 'support'; });
+        const purchaseBtn = document.getElementById('purchase-btn');
+        const renewBtn = document.getElementById('renew-btn');
+        if (purchaseBtn) purchaseBtn.addEventListener('click', () => { window.location.hash = 'bay'; });
+        if (renewBtn) renewBtn.addEventListener('click', () => { window.location.hash = 'rebay'; });
 
         const goBackToMain = () => { window.location.hash = ''; };
-        backBtn.addEventListener('click', goBackToMain);
-        backRenewBtn.addEventListener('click', goBackToMain);
-        backSetupBtn.addEventListener('click', goBackToMain);
-        backProfileBtn.addEventListener('click', goBackToMain);
-        backSupportBtn.addEventListener('click', goBackToMain);
+        if (backBtn) backBtn.addEventListener('click', goBackToMain);
+        if (backRenewBtn) backRenewBtn.addEventListener('click', goBackToMain);
+        if (backSetupBtn) backSetupBtn.addEventListener('click', goBackToMain);
+        if (backSupportBtn) backSupportBtn.addEventListener('click', goBackToMain);
+
+        function navigateTo(tab) {
+            window.location.hash = (tab === 'home') ? '' : tab;
+        }
 
         function handleHashChange() {
             const hash = window.location.hash.replace('#', '');
-            if (hash === 'pro') showPage(profilePage);
+            if (hash === 'keys') showPage(keysPage);
+            else if (hash === 'finance') showPage(financePage);
+            else if (hash === 'referral') showPage(referralPage);
+            else if (hash === 'support') showPage(supportPage);
             else if (hash === 'bay') showPage(purchasePage);
             else if (hash === 'rebay') showPage(renewPage);
             else if (hash === 'setup') showPage(setupPage);
-            else if (hash === 'support') showPage(supportPage);
-            else showPage(mainPage);
+            else showPage(homePage);
         }
 
         window.addEventListener('hashchange', handleHashChange);
@@ -3551,6 +3687,184 @@
             } catch (e) {
                 console.error('Gifts error:', e);
             }
+        }
+
+        // ── Загрузка данных для страниц новой навигации ──────────────────
+
+        window._loadHomeStats = async function () {
+            try {
+                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+                const resp = await fetch('/api/user-status?user_id=' + userId);
+                const data = await resp.json();
+                const balEl = document.getElementById('home-balance');
+                if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
+            } catch (e) { /* silent */ }
+            try {
+                const token = window.getAuthToken();
+                const resp = await fetch('/api/user/referral-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, user_id: window._currentUserId })
+                });
+                const d = await resp.json();
+                const refEl = document.getElementById('home-referral');
+                if (refEl && d.ok) refEl.textContent = d.available.toFixed(0) + ' ₽';
+            } catch (e) { /* silent */ }
+        };
+
+        window._loadKeysPage = async function () {
+            const giftsContent = document.getElementById('gifts-content');
+            const giftsLoading = document.getElementById('gifts-loading');
+            if (giftsContent && giftsLoading && giftsContent.classList.contains('hidden') && giftsLoading.style.display !== 'none') {
+                loadUserGifts();
+            }
+        };
+
+        window._loadFinancePage = async function () {
+            try {
+                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+                const resp = await fetch('/api/user-status?user_id=' + userId);
+                const data = await resp.json();
+                const balEl = document.getElementById('finance-balance');
+                if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
+            } catch (e) { /* silent */ }
+
+            const prevEl = document.getElementById('finance-transactions-preview');
+            if (!prevEl) return;
+            try {
+                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+                const res = await fetch('/api/user/transactions?user_id=' + userId + '&page=1&per_page=3');
+                const data = await res.json();
+                if (data.ok && data.transactions && data.transactions.length) {
+                    let html = '<div class="flex flex-col gap-2">';
+                    data.transactions.slice(0, 3).forEach(tx => {
+                        const dateStr = tx.created_date ? tx.created_date.split(' ')[0] : '—';
+                        const amount = tx.amount_rub != null ? Number(tx.amount_rub).toFixed(0) + ' ₽' : '—';
+                        html += '<div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">' +
+                            '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-icons-round text-primary text-sm">receipt</span></div>' +
+                            '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white truncate">' + tx.action_label + '</div><div class="text-[9px] text-gray-500">' + dateStr + '</div></div>' +
+                            '<div class="text-xs font-black text-primary">' + amount + '</div></div>';
+                    });
+                    html += '</div>';
+                    prevEl.innerHTML = html;
+                } else {
+                    prevEl.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет транзакций</div>';
+                }
+            } catch (e) {
+                prevEl.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Ошибка загрузки</div>';
+            }
+        };
+
+        window._loadReferralPage = async function () {
+            const loadingEl = document.getElementById('referral-info-loading');
+            const contentEl = document.getElementById('referral-info-content');
+            if (loadingEl) { loadingEl.style.display = ''; loadingEl.classList.remove('hidden'); }
+            if (contentEl) { contentEl.classList.add('hidden'); contentEl.innerHTML = ''; }
+            await loadReferralInfo();
+            loadWithdrawalRequests();
+        };
+
+        async function loadWithdrawalRequests() {
+            const el = document.getElementById('referral-withdrawals');
+            if (!el) return;
+            const token = window.getAuthToken();
+            if (!token) { el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет заявок</div>'; return; }
+            try {
+                const resp = await fetch('/api/referral/withdrawals', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+                const d = await resp.json();
+                if (!d.ok || !d.withdrawals || !d.withdrawals.length) {
+                    el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет заявок</div>';
+                    return;
+                }
+                let html = '<div class="flex flex-col gap-2">';
+                d.withdrawals.forEach(w => {
+                    const statusColor = w.status === 'completed' ? 'text-emerald-400' : w.status === 'rejected' ? 'text-red-400' : 'text-yellow-400';
+                    html += '<div class="glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3">' +
+                        '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-icons-round text-primary text-sm">payments</span></div>' +
+                        '<div class="flex-1"><div class="text-[10px] font-bold text-white">' + (w.amount ? Number(w.amount).toFixed(0) + ' ₽' : '—') + '</div>' +
+                        '<div class="text-[9px] text-gray-500">' + (w.created_at ? w.created_at.slice(0, 10) : '') + '</div></div>' +
+                        '<span class="text-[9px] ' + statusColor + ' font-bold uppercase">' + (w.status || '—') + '</span></div>';
+                });
+                html += '</div>';
+                el.innerHTML = html;
+            } catch (e) {
+                el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Ошибка загрузки</div>';
+            }
+        }
+
+        function openTopUpModal() {
+            openPromoModal();
+        }
+
+        function openReferralMethodsModal() {
+            const modal = document.getElementById('action-modal');
+            const backdrop = document.getElementById('action-backdrop');
+            const card = document.getElementById('action-card');
+            const titleEl = document.getElementById('action-modal-title');
+            const contentEl = document.getElementById('action-modal-content');
+            if (!modal) return;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            requestAnimationFrame(() => {
+                backdrop.classList.remove('opacity-0', 'pointer-events-none');
+                card.classList.remove('translate-y-full');
+            });
+            titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">account_balance</span> Методы получения';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            _loadReferralPayoutMethods(contentEl);
+        }
+
+        async function _loadReferralPayoutMethods(contentEl) {
+            const token = window.getAuthToken();
+            if (!token) { contentEl.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Требуется авторизация</div>'; return; }
+            try {
+                const resp = await fetch('/api/referral/payout-methods/list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+                const d = await resp.json();
+                if (!d.ok) { contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">' + (d.error || 'Ошибка') + '</div>'; return; }
+                const methods = d.methods || [];
+                let html = '<div class="flex flex-col gap-2">';
+                if (!methods.length) html += '<div class="text-center text-gray-500 text-[11px] py-3">Нет сохранённых методов</div>';
+                methods.forEach(m => {
+                    html += '<div class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl">' +
+                        '<div class="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-icons-round text-primary text-sm">account_balance</span></div>' +
+                        '<div class="flex-1"><div class="text-[10px] font-bold text-white">' + m.method_type + (m.bank_name ? ' · ' + m.bank_name : '') + '</div>' +
+                        '<div class="text-[9px] text-gray-500 font-mono">' + m.requisite_value + '</div></div></div>';
+                });
+                html += '<button onclick="_addReferralPayoutMethod()" class="w-full mt-2 bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">add</span>Добавить метод</button>';
+                html += '</div>';
+                contentEl.innerHTML = html;
+            } catch (e) {
+                contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка сети</div>';
+            }
+        }
+
+        async function _addReferralPayoutMethod() {
+            const methodType = prompt('Способ вывода (sbp / card / usdt_trc20):', 'sbp');
+            if (!methodType) return;
+            let bankName = null;
+            if (methodType.trim().toLowerCase() === 'sbp') bankName = prompt('Название банка:', '');
+            const requisite = prompt('Реквизиты:', '');
+            if (!requisite) return;
+            const token = window.getAuthToken();
+            if (!token) return;
+            try {
+                const resp = await fetch('/api/referral/payout-methods/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, method_type: methodType.trim().toLowerCase(), requisite_value: requisite.trim(), bank_name: bankName ? bankName.trim() : null })
+                });
+                const d = await resp.json();
+                showNotification(d.ok ? 'Метод добавлен' : (d.message || 'Ошибка'), d.ok ? 'success' : 'error');
+                if (d.ok) closeActionModal();
+            } catch (e) { showNotification('Ошибка сети', 'error'); }
         }
 
         // ── Auto-activate gift from URL param ────────────────────────────
