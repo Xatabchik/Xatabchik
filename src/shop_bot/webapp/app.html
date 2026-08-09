@@ -91,6 +91,7 @@
             width: 100%;
             height: 100vh;
             height: 100dvh; /* dynamic viewport: excludes browser chrome */
+            height: var(--app-vh, 100dvh); /* JS-tracked visible viewport height; shrinks when on-screen keyboard opens */
             overscroll-behavior: none;
         }
 
@@ -195,7 +196,34 @@
         }
 
         #support-chat-view {
-            height: calc(100dvh - 64px - 64px - 20px);
+            height: calc(var(--app-vh, 100dvh) - 64px - 64px - 20px);
+        }
+
+        /* Модальные окна (payment-modal, action-modal) должны быть строго выше
+           нижнего меню навигации (#bottom-nav, z-[200]) и подстраиваться под
+           видимую область (--app-vh), чтобы не обрезаться клавиатурой/меню. */
+        #payment-modal,
+        #action-modal {
+            height: var(--app-vh, 100vh);
+        }
+
+        #action-card {
+            max-height: calc(var(--app-vh, 100vh) * 0.85);
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        #payment-card {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        #payment-step-select {
+            max-height: calc(var(--app-vh, 100vh) * 0.7) !important;
+        }
+
+        /* Когда открыта экранная клавиатура, нижнее меню всё равно скрыто под
+           клавиатурой, поэтому убираем резерв под него в поле ввода чата поддержки. */
+        body.keyboard-open #support-input-area.pb-safe {
+            padding-bottom: max(env(safe-area-inset-bottom), 8px) !important;
         }
     </style>
 </head>
@@ -850,6 +878,54 @@
                 tgApp.setBackgroundColor('#0a0a0a');
             } catch (e) { }
         }
+
+        // --- Динамическая высота видимой области (клавиатура / UI Telegram) ---
+        // Поддерживает CSS-переменную --app-vh, отражающую реальную видимую высоту
+        // (visualViewport или Telegram viewportHeight), чтобы модальные окна и
+        // полноэкранные контейнеры не обрезались клавиатурой или чужим UI.
+        function updateAppViewportMetrics() {
+            const tgApp = window.Telegram?.WebApp;
+            let visibleHeight = window.innerHeight;
+            let stableHeight = window.innerHeight;
+
+            if (tgApp && typeof tgApp.viewportHeight === 'number' && tgApp.viewportHeight > 0) {
+                visibleHeight = tgApp.viewportHeight;
+                stableHeight = (typeof tgApp.viewportStableHeight === 'number' && tgApp.viewportStableHeight > 0)
+                    ? tgApp.viewportStableHeight
+                    : visibleHeight;
+            } else if (window.visualViewport) {
+                visibleHeight = window.visualViewport.height;
+            }
+
+            document.documentElement.style.setProperty('--app-vh', visibleHeight + 'px');
+
+            const keyboardInset = Math.max(0, Math.round(stableHeight - visibleHeight));
+            document.documentElement.style.setProperty('--kb-inset', keyboardInset + 'px');
+            document.body.classList.toggle('keyboard-open', keyboardInset > 80);
+        }
+
+        updateAppViewportMetrics();
+        window.addEventListener('resize', updateAppViewportMetrics);
+        window.addEventListener('orientationchange', updateAppViewportMetrics);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', updateAppViewportMetrics);
+            window.visualViewport.addEventListener('scroll', updateAppViewportMetrics);
+        }
+        if (window.Telegram?.WebApp?.onEvent) {
+            try { window.Telegram.WebApp.onEvent('viewportChanged', updateAppViewportMetrics); } catch (e) { }
+        }
+
+        // Автоматически подводим сфокусированное поле ввода в видимую область,
+        // когда открывается экранная клавиатура (работает для всех текущих и
+        // будущих полей внутри модалок/страниц — делегирование на document).
+        document.addEventListener('focusin', (e) => {
+            const el = e.target;
+            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return;
+            setTimeout(() => {
+                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }, 300);
+        });
+
         const homePage = document.getElementById('home-page');
         const keysPage = document.getElementById('keys-page');
         const financePage = document.getElementById('finance-page');
@@ -1589,7 +1665,7 @@
         }
     </style>
 
-    <div id="payment-modal" class="fixed inset-0 z-[100] hidden items-end sm:items-center justify-center">
+    <div id="payment-modal" class="fixed inset-0 z-[210] hidden items-end sm:items-center justify-center">
         <div class="fixed inset-0 bg-black/70 backdrop-blur-xl transition-opacity duration-300 opacity-0 pointer-events-none"
             id="payment-backdrop" onclick="closePaymentModal()"></div>
 
@@ -1792,7 +1868,7 @@
         class="fixed top-4 left-0 right-0 z-[9999] flex flex-col gap-2 items-center pointer-events-none"></div>
 
     <!-- ======== Универсальное модальное окно (Устройства / Комментарии) ======== -->
-    <div id="action-modal" class="fixed inset-0 z-[110] hidden items-end sm:items-center justify-center">
+    <div id="action-modal" class="fixed inset-0 z-[220] hidden items-end sm:items-center justify-center">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-black/60 backdrop-blur-md transition-opacity duration-300 opacity-0 pointer-events-none"
             id="action-backdrop" onclick="closeActionModal()"></div>
