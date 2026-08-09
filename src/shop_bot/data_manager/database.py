@@ -5241,7 +5241,7 @@ def create_referral_withdrawal_request(user_id: int, amount: float, method_id: i
     except Exception:
         min_withdraw = 100.0
     if amount < min_withdraw:
-        return False, f"Минимальная сумма для вывода — {min_withdraw:.0f} руб.", None
+        return False, f"Минимальная сумма для вывода — {min_withdraw:.0f} ₽", None
     method = get_referral_payout_method(method_id, user_id)
     if not method:
         return False, "Метод получения не найден.", None

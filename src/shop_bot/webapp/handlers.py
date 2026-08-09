@@ -1,4 +1,4 @@
-﻿from typing import Any
+from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -26,14 +26,14 @@ from shop_bot.data_manager.remnawave_repository import (
     redeem_promo_code, update_promo_code_status, record_key_from_payload, get_key_by_id,
     update_key, get_key_by_email,
     list_referral_payout_methods, add_referral_payout_method, delete_referral_payout_method,
-    get_referral_payout_method,
+    get_referral_payout_method, get_pending_status,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
 from shop_bot.data_manager.database import get_seller_user, get_device_tiers, get_host
 from shop_bot.modules import remnawave_api
 from shop_bot.config import get_purchase_success_text
 import re
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import logging
 from urllib.parse import urlencode
 
@@ -63,6 +63,21 @@ def _resolve_user_from_request_token(data: dict, request: Request) -> dict | Non
         pass
     return None
 
+
+def _ref_setting_is_true(key: str, default: bool = False) -> bool:
+    raw = str(get_setting(key) or ("true" if default else "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
+def _ref_method_type_enabled(method_type: str) -> bool:
+    setting_key = {
+        "sbp": "referral_withdraw_sbp_enabled",
+        "card": "referral_withdraw_card_enabled",
+        "usdt_trc20": "referral_withdraw_usdt_enabled",
+    }.get((method_type or "").strip().lower())
+    if not setting_key:
+        return False
+    return _ref_setting_is_true(setting_key)
 
 
 # ===== Utility Functions =====
@@ -216,7 +231,12 @@ async def api_referral_payout_methods_list(request: Request):
     except Exception as e:
         logger.error(f"Failed to list referral payout methods: {e}")
         methods = []
-    return {"ok": True, "methods": methods}
+    try:
+        min_withdraw = float(get_setting("minimum_withdrawal") or 100)
+    except Exception:
+        min_withdraw = 100.0
+    withdraw_enabled = _ref_setting_is_true("referral_withdraw_enabled")
+    return {"ok": True, "methods": methods, "min_withdraw": min_withdraw, "withdraw_enabled": withdraw_enabled}
 
 
 # Endpoint: add a new referral payout method for current user
@@ -236,6 +256,12 @@ async def api_referral_payout_methods_add(request: Request):
     if not method_type or not requisite_value:
         return {"ok": False, "error": "Заполните все поля"}
 
+    if not _ref_setting_is_true("referral_withdraw_enabled"):
+        return {"ok": False, "error": "Вывод средств временно недоступен."}
+
+    if not _ref_method_type_enabled(method_type):
+        return {"ok": False, "error": "Этот способ временно недоступен"}
+
     ok, msg, new_id = rw_repo.add_referral_payout_method(
         user.get("telegram_id"), method_type, requisite_value, bank_name
     )
@@ -252,21 +278,23 @@ async def api_referral_available_method_types(request: Request):
     if not user:
         return {"ok": False, "error": "Unauthorized"}
 
-    def _is_enabled(key: str) -> bool:
-        raw = str(get_setting(key) or "false").strip().lower()
-        return raw in {"1", "true", "yes", "on", "y"}
+    if not _ref_setting_is_true("referral_withdraw_enabled"):
+        return {"ok": True, "methods": [], "sbp_banks": []}
 
     method_configs = [
         {"type": "sbp",       "label": "СБП",         "icon": "phone_android",    "placeholder": "+7 900 000 00 00",     "setting": "referral_withdraw_sbp_enabled"},
         {"type": "card",      "label": "Номер карты",  "icon": "credit_card",      "placeholder": "Номер карты (16 цифр)", "setting": "referral_withdraw_card_enabled"},
         {"type": "usdt_trc20","label": "USDT TRC20",   "icon": "currency_bitcoin", "placeholder": "TRC20 адрес кошелька", "setting": "referral_withdraw_usdt_enabled"},
     ]
-    enabled = [
-        {"type": m["type"], "label": m["label"], "icon": m["icon"], "placeholder": m["placeholder"]}
-        for m in method_configs if _is_enabled(m["setting"])
-    ]
     raw_banks = get_setting("referral_withdraw_sbp_banks") or ""
     sbp_banks = [b.strip() for b in raw_banks.split(",") if b.strip()]
+    enabled = []
+    for m in method_configs:
+        if not _ref_setting_is_true(m["setting"]):
+            continue
+        if m["type"] == "sbp" and not sbp_banks:
+            continue
+        enabled.append({"type": m["type"], "label": m["label"], "icon": m["icon"], "placeholder": m["placeholder"]})
     return {"ok": True, "methods": enabled, "sbp_banks": sbp_banks}
 
 
@@ -279,14 +307,17 @@ async def api_referral_payout_methods_delete(request: Request):
     user = _resolve_user_from_request_token(data, request)
     if not user:
         return {"ok": False, "error": "Unauthorized"}
+    if not _ref_setting_is_true("referral_withdraw_enabled"):
+        return {"ok": False, "error": "Вывод средств временно недоступен."}
+
     method_id = data.get("method_id")
     if not method_id:
         return {"ok": False, "error": "Missing method_id"}
-    method = rw_repo.get_referral_payout_method(int(method_id))
-    if not method or method.get("user_id") != user.get("telegram_id"):
+    method = rw_repo.get_referral_payout_method(int(method_id), user.get("telegram_id"))
+    if not method:
         return {"ok": False, "error": "Method not found"}
-    ok = rw_repo.delete_referral_payout_method(int(method_id))
-    return {"ok": bool(ok)}
+    ok, msg = rw_repo.delete_referral_payout_method(int(method_id), user.get("telegram_id"))
+    return {"ok": bool(ok), "message": msg, "error": None if ok else msg}
 
 
 @app.post("/api/key/auto-renew")
@@ -336,6 +367,41 @@ async def api_referral_request_withdraw(request: Request):
     method_id = int(data.get("method_id") or 0)
     ok, msg, new_id = rw_repo.create_referral_withdrawal_request(user.get("telegram_id"), amount, method_id)
     return {"ok": ok, "message": msg, "request_id": new_id}
+
+
+# Endpoint: list referral withdrawal request history for the current user
+@app.post("/api/referral/withdrawals")
+async def api_referral_list_withdrawals(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": False, "error": "Invalid JSON"}
+
+    user = _resolve_user_from_request_token(data, request)
+    if not user:
+        return {"ok": False, "error": "Unauthorized"}
+
+    try:
+        requests_list = rw_repo.list_referral_withdrawal_requests(user_id=user.get("telegram_id"))
+    except Exception as e:
+        logger.error(f"Failed to list referral withdrawals for {user.get('telegram_id')}: {e}")
+        return {"ok": False, "error": "Server error"}
+
+    withdrawals = [
+        {
+            "id": r.get("id"),
+            "amount": r.get("amount"),
+            "status": r.get("status"),
+            "method_type": r.get("method_type"),
+            "bank_name": r.get("bank_name"),
+            "requisite_value": r.get("requisite_value"),
+            "reject_reason": r.get("reject_reason"),
+            "created_at": r.get("created_at"),
+            "processed_at": r.get("processed_at"),
+        }
+        for r in requests_list
+    ]
+    return {"ok": True, "withdrawals": withdrawals}
 
 
 def _format_remaining_details(remaining: timedelta) -> str:
@@ -578,7 +644,7 @@ def _get_key_html(key: dict) -> str:
                 <!-- Row 2: Key Name & Days Left Badge -->
                 <div class="flex justify-between items-center h-6">
                     <div class="flex items-center gap-1.5 text-gray-500 dark:text-gray-400 text-sm">
-                        <span class="material-icons-round text-base">vpn_key</span>
+                        <span class="material-symbols-rounded text-base">key</span>
                         <span>{data['name']}</span>
                     </div>
                     <div
@@ -655,7 +721,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
          bot_username = get_setting("telegram_bot_username") or "bot"
          sync_btn_html = f'''
                     <button onclick="syncTelegram('{bot_username}')" class="mt-2 w-full bg-[#0088cc]/20 hover:bg-[#0088cc]/30 text-[#00aaff] border border-[#0088cc]/30 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
-                        <span class="material-icons-round text-base">sync</span>
+                        <span class="material-symbols-rounded text-base">sync</span>
                         <span>Синхронизировать с Telegram</span>
                     </button>
          '''
@@ -673,7 +739,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
     if available_ref and available_ref >= min_withdraw and get_setting("referral_withdraw_enabled") == "true":
         withdraw_button_html = f"""
             <button onclick="requestReferralWithdraw()" class="mt-2 w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
-                <span class="material-icons-round text-base">payments</span>
+                <span class="material-symbols-rounded text-base">payments</span>
                 <span>Запросить вывод реферального баланса</span>
             </button>
         """
@@ -690,7 +756,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                         <div class="flex items-center gap-3">
                             <div
                                 class="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center border border-primary/20">
-                                <span class="material-icons-round text-primary">person</span>
+                                <span class="material-symbols-rounded text-primary">person</span>
                             </div>
                             <div>
                                 <div class="text-[10px] text-gray-500 uppercase font-black tracking-widest">ID
@@ -708,19 +774,19 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                     <div class="grid grid-cols-3 gap-2">
                         <div
                             class="bg-white/5 border border-white/5 rounded-2xl p-2.5 flex flex-col items-center justify-center text-center transition-all hover:bg-white/[0.08]">
-                            <span class="material-icons-round text-emerald-400 text-sm mb-1 opacity-80">group</span>
+                            <span class="material-symbols-rounded text-emerald-400 text-sm mb-1 opacity-80">group</span>
                             <div class="text-[9px] text-gray-400 uppercase font-black tracking-tight leading-none mb-1">Рефералы</div>
                             <div class="text-[11px] font-black text-white">{referral_count} чел.</div>
                         </div>
                         <div
                             class="bg-white/5 border border-white/5 rounded-2xl p-2.5 flex flex-col items-center justify-center text-center transition-all hover:bg-white/[0.08]">
-                            <span class="material-icons-round text-yellow-400 text-sm mb-1 opacity-80">payments</span>
+                            <span class="material-symbols-rounded text-yellow-400 text-sm mb-1 opacity-80">payments</span>
                             <div class="text-[9px] text-gray-400 uppercase font-black tracking-tight leading-none mb-1">Всего заработано</div>
                             <div class="text-[11px] font-black text-white truncate w-full px-1">{earned_str}</div>
                         </div>
                         <div
                             class="bg-white/5 border border-white/5 rounded-2xl p-2.5 flex flex-col items-center justify-center text-center transition-all hover:bg-white/[0.08]">
-                            <span class="material-icons-round text-primary text-sm mb-1 opacity-80">vpn_key</span>
+                            <span class="material-symbols-rounded text-primary text-sm mb-1 opacity-80">key</span>
                             <div class="text-[9px] text-gray-400 uppercase font-black tracking-tight leading-none mb-1">Ключи</div>
                             <div class="text-[11px] font-black text-white">{keys_count} шт.</div>
                         </div>
@@ -735,7 +801,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
 
                     <!-- Bottom: Meta Info -->
                     <div class="flex items-center justify-center gap-2 pt-1">
-                        <span class="material-icons-round text-[12px] text-gray-600">calendar_today</span>
+                        <span class="material-symbols-rounded text-[12px] text-gray-600">calendar_today</span>
                         <span class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Дата
                             регистрации:</span>
                         <span class="text-[10px] text-gray-300 font-black">{reg_date_str} ({time_since_str})</span>
@@ -745,12 +811,12 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                     <div class="grid grid-cols-2 gap-2 mt-1">
                         <button onclick="openActionModal('transactions', null)"
                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
-                            <span class="material-icons-round text-sm">receipt_long</span>
+                            <span class="material-symbols-rounded text-sm">receipt_long</span>
                             <span>История</span>
                         </button>
                         <button onclick="openActionModal('search_keys', null)"
                             class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
-                            <span class="material-icons-round text-sm">search</span>
+                            <span class="material-symbols-rounded text-sm">search</span>
                             <span>Поиск ключей</span>
                         </button>
                     </div>
@@ -775,7 +841,7 @@ def _get_profile_keys_html(keys: list) -> str:
             <button class="key-toggle w-full p-3 flex items-center justify-between relative z-10 transition-colors hover:bg-white/5">
                 <div class="flex items-center gap-3">
                     <div class="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
-                        <span class="material-icons-round text-gray-400 group-hover:text-primary transition-colors text-lg">vpn_key</span>
+                        <span class="material-symbols-rounded text-gray-400 group-hover:text-primary transition-colors text-lg">key</span>
                     </div>
                     
                     <div class="text-left overflow-hidden">
@@ -789,7 +855,7 @@ def _get_profile_keys_html(keys: list) -> str:
                 <div class="flex items-center gap-2 shrink-0">
                      <span class="text-[9px] {data['status_bg']} {data['status_color']} px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">{data['status_text']}</span>
                      <div class="w-7 h-7 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                        <span class="material-icons-round text-gray-500 text-sm group-hover:text-white transition-colors rotate-icon">expand_more</span>
+                        <span class="material-symbols-rounded text-gray-500 text-sm group-hover:text-white transition-colors rotate-icon">expand_more</span>
                      </div>
                 </div>
             </button>
@@ -828,7 +894,7 @@ def _get_profile_keys_html(keys: list) -> str:
                  
                      <!-- COMMENTS BLOCK -->
                      <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
-                         <span class="material-icons-round text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
+                         <span class="material-symbols-rounded text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
                          <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
                      </div>
 
@@ -839,42 +905,42 @@ def _get_profile_keys_html(keys: list) -> str:
                          </div>
                          <button onclick="copyKey(this, '{data['sub_url']}')" 
                             class="w-7 h-7 rounded-lg bg-white/5 text-white flex items-center justify-center hover:bg-white/10 transition-all active:scale-95 shrink-0 shadow-sm">
-                             <span class="material-icons-round text-sm">content_copy</span>
+                             <span class="material-symbols-rounded text-sm">content_copy</span>
                          </button>
                      </div>
 
                      <button onclick="openLinkSafe('{data['sub_url']}')"
                         class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                         <span class="material-icons-round text-sm">bolt</span>
+                         <span class="material-symbols-rounded text-sm">bolt</span>
                          <span>Подключить</span>
                      </button>
                      
                      <div class="grid grid-cols-3 gap-2 mt-1">
                          <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">devices</span>
+                             <span class="material-symbols-rounded text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
                          <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">drive_file_rename_outline</span>
+                             <span class="material-symbols-rounded text-sm">edit</span>
                              <span>Название</span>
                          </button>
                          <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">edit_note</span>
+                             <span class="material-symbols-rounded text-sm">edit_note</span>
                              <span>Заметка</span>
                          </button>
                      </div>
                      <div class="grid grid-cols-2 gap-2 mt-1">
                          <button onclick="goToRenewKey({data['key_id']})"
                              class="w-full bg-primary/10 border border-primary/20 text-primary py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1">
-                             <span class="material-icons-round text-sm">autorenew</span>
+                             <span class="material-symbols-rounded text-sm">autorenew</span>
                              <span>Продлить</span>
                          </button>
                          <button id="auto-renew-btn-{data['key_id']}" onclick="toggleKeyAutoRenew({data['key_id']}, {'true' if data['auto_renew'] else 'false'}, this)"
                              class="w-full py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-1 border {'border-primary/30 text-primary bg-primary/10' if data['auto_renew'] else 'border-white/5 text-white bg-white/5 hover:bg-white/10'}">
-                             <span class="material-icons-round text-sm">{'update' if data['auto_renew'] else 'pause_circle'}</span>
+                             <span class="material-symbols-rounded text-sm">{'update' if data['auto_renew'] else 'pause_circle'}</span>
                              <span class="auto-renew-label">{'Авто: ВКЛ' if data['auto_renew'] else 'Авто: ВЫКЛ'}</span>
                          </button>
                      </div>
@@ -902,7 +968,7 @@ def _get_setup_keys_html(keys: list) -> str:
             <button class="key-toggle w-full p-3 flex items-center justify-between relative z-10 transition-colors hover:bg-white/5">
                 <div class="flex items-center gap-3">
                     <div class="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
-                        <span class="material-icons-round text-gray-400 group-hover:text-primary transition-colors text-lg">vpn_key</span>
+                        <span class="material-symbols-rounded text-gray-400 group-hover:text-primary transition-colors text-lg">key</span>
                     </div>
                     
                     <div class="text-left overflow-hidden">
@@ -916,7 +982,7 @@ def _get_setup_keys_html(keys: list) -> str:
                 <div class="flex items-center gap-2 shrink-0">
                      <span class="text-[9px] {data['status_bg']} {data['status_color']} px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">{data['status_text']}</span>
                      <div class="w-7 h-7 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                        <span class="material-icons-round text-gray-500 text-sm group-hover:text-white transition-colors rotate-icon">expand_more</span>
+                        <span class="material-symbols-rounded text-gray-500 text-sm group-hover:text-white transition-colors rotate-icon">expand_more</span>
                      </div>
                 </div>
             </button>
@@ -926,7 +992,7 @@ def _get_setup_keys_html(keys: list) -> str:
                  
                      <!-- COMMENTS BLOCK -->
                      <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
-                         <span class="material-icons-round text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
+                         <span class="material-symbols-rounded text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
                          <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
                      </div>
 
@@ -937,30 +1003,30 @@ def _get_setup_keys_html(keys: list) -> str:
                          </div>
                          <button onclick="copyKey(this, '{data['sub_url']}')" 
                             class="w-7 h-7 rounded-lg bg-white/5 text-white flex items-center justify-center hover:bg-white/10 transition-all active:scale-95 shrink-0 shadow-sm">
-                             <span class="material-icons-round text-sm">content_copy</span>
+                             <span class="material-symbols-rounded text-sm">content_copy</span>
                          </button>
                      </div>
 
                      <button onclick="openLinkSafe('{data['sub_url']}')"
                         class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                         <span class="material-icons-round text-sm">bolt</span>
+                         <span class="material-symbols-rounded text-sm">bolt</span>
                          <span>Открыть инструкцию</span>
                      </button>
                      
                      <div class="grid grid-cols-3 gap-2 mt-1">
                          <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">devices</span>
+                             <span class="material-symbols-rounded text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
                          <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">drive_file_rename_outline</span>
+                             <span class="material-symbols-rounded text-sm">edit</span>
                              <span>Название</span>
                          </button>
                          <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
-                             <span class="material-icons-round text-sm">edit_note</span>
+                             <span class="material-symbols-rounded text-sm">edit_note</span>
                              <span>Заметка</span>
                          </button>
                      </div>
@@ -995,7 +1061,7 @@ def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, s
             class="dropdown-option w-full p-2.5 flex items-center justify-between rounded-lg hover:bg-white/5 transition-colors"
             data-key="#{data['key_id']}" data-name="{data['name']}" data-date="{data['expire_date_str']}" data-host="{host_name}" data-index="{index}">
             <div class="flex items-center gap-2.5 overflow-hidden">
-                <span class="material-icons-round {icon_color} text-sm shrink-0">vpn_key</span>
+                <span class="material-symbols-rounded {icon_color} text-sm shrink-0">key</span>
                 <div class="text-left overflow-hidden">
                     <div class="text-xs font-bold {text_color} truncate">{data['name']}</div>
                     <div class="flex items-center gap-2">
@@ -1004,7 +1070,7 @@ def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, s
                     </div>
                 </div>
             </div>
-            <span class="material-icons-round {check_class} text-xs selected-icon shrink-0">check</span>
+            <span class="material-symbols-rounded {check_class} text-xs selected-icon shrink-0">check</span>
         </button>
         """
         
@@ -1022,7 +1088,7 @@ def _get_no_key_html() -> str:
     return """
         <div class="glass-card border border-white/10 rounded-[2rem] p-5 flex flex-col items-center justify-center text-center shadow-lg mb-3">
             <div class="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center mb-3">
-                <span class="material-icons-round text-2xl text-gray-500">vpn_key_off</span>
+                <span class="material-symbols-rounded text-2xl text-gray-500">key_off</span>
             </div>
             <h3 class="text-sm font-black text-white mb-1 tracking-tight">Нет активных ключей</h3>
             <p class="text-[10px] text-gray-400 font-medium leading-tight max-w-[180px]">
@@ -1170,12 +1236,12 @@ def _get_servers_and_plans_html(user_id: int | None = None):
             class="server-option w-full p-2.5 flex items-center justify-between rounded-lg hover:bg-white/5 transition-colors"
             data-server="{host_name}" data-index="{index}" onclick="selectServer(this)">
             <div class="flex items-center gap-2.5">
-                <span class="material-icons-round {icon_color} text-sm">public</span>
+                <span class="material-symbols-rounded {icon_color} text-sm">public</span>
                 <div class="text-left">
                     <div class="text-xs font-bold {text_color}">{host_name}</div>
                 </div>
             </div>
-            <span class="material-icons-round {check_class} text-xs server-selected-icon">check</span>
+            <span class="material-symbols-rounded {check_class} text-xs server-selected-icon">check</span>
         </button>
         """
         
@@ -1202,7 +1268,7 @@ def _render_banned_page(webapp_settings: dict):
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{title}</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,-50..200&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {{
@@ -1233,7 +1299,7 @@ def _render_banned_page(webapp_settings: dict):
     </div>
 
     <div class="relative z-10 flex flex-col items-center text-center max-w-sm w-full">
-        {f'<img src="{logo}" class="h-20 mb-8 drop-shadow-[0_0_20px_rgba(16,185,129,0.3)]">' if logo else f'<div class="w-20 h-20 bg-primary/20 rounded-3xl flex items-center justify-center mb-8 border border-primary/30 shadow-[0_0_30px_rgba(16,185,129,0.2)]"><span class="material-icons-round text-primary text-4xl">block</span></div>'}
+        {f'<img src="{logo}" class="h-20 mb-8 drop-shadow-[0_0_20px_rgba(16,185,129,0.3)]">' if logo else f'<div class="w-20 h-20 bg-primary/20 rounded-3xl flex items-center justify-center mb-8 border border-primary/30 shadow-[0_0_30px_rgba(16,185,129,0.2)]"><span class="material-symbols-rounded text-primary text-4xl">block</span></div>'}
         
         <h1 class="text-3xl font-black mb-3 tracking-tight">Доступ ограничен</h1>
         <p class="text-gray-400 font-medium leading-relaxed mb-8">
@@ -1243,7 +1309,7 @@ def _render_banned_page(webapp_settings: dict):
         <div class="glass rounded-[2rem] p-6 w-full border border-red-500/20 shadow-2xl">
             <div class="flex items-center gap-4 text-left">
                 <div class="w-12 h-12 bg-red-500/10 rounded-2xl flex items-center justify-center shrink-0 border border-red-500/20">
-                    <span class="material-icons-round text-red-500">lock_person</span>
+                    <span class="material-symbols-rounded text-red-500">lock_person</span>
                 </div>
                 <div>
                     <div class="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-1">Статус аккаунта</div>
@@ -1255,7 +1321,7 @@ def _render_banned_page(webapp_settings: dict):
                 <p class="text-[11px] text-gray-500 font-semibold mb-4 text-center">Если вы считаете, что это ошибка, обратитесь в нашу поддержку</p>
                 <a href="https://t.me/{get_setting('support_bot_username')}" target="_blank"
                    class="flex items-center justify-center gap-2 w-full bg-white text-black py-4 rounded-2xl font-black text-sm uppercase tracking-wider hover:opacity-90 active:scale-[0.98] transition-all shadow-xl">
-                    <span class="material-icons-round text-lg">headset_mic</span>
+                    <span class="material-symbols-rounded text-lg">support_agent</span>
                     <span>Написать в поддержку</span>
                 </a>
             </div>
@@ -1570,7 +1636,18 @@ class CreatePaymentRequest(BaseModel):
     tier_device_count: int | None = None
     tier_price: float = 0
 
+class CreateTopUpPaymentRequest(BaseModel):
+    payment_method: str
+    amount: float
+    token: str | None = None
+    user_id: int | None = None
+
 class ApplyPromoRequest(BaseModel):
+    user_id: int
+    promo_code: str
+    plan_id: int | None = None
+    price: float | None = None
+
     user_id: int
     promo_code: str
     plan_id: int | None = None
@@ -2236,6 +2313,298 @@ async def api_create_payment(req: CreatePaymentRequest):
         logger.error(f"API Create Payment Error: {e}")
         return {"ok": False, "error": str(e), "details": traceback.format_exc()}
 
+
+def _platega_method_code_from_settings() -> int:
+    raw = (get_setting("platega_active_methods") or "2").strip()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            code = int(part)
+        except Exception:
+            continue
+        if code > 0:
+            return code
+    return 2
+
+
+@app.post("/api/create-topup-payment")
+async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Request):
+    """Create a balance top-up payment (action=top_up), mirroring the bot TopUpProcess flow."""
+    try:
+        user = _resolve_user_from_request_token(
+            {"token": req.token} if req.token else {},
+            request,
+        )
+        if not user and req.user_id:
+            user = get_user(int(req.user_id))
+        if not user or user.get("is_banned"):
+            return {"ok": False, "error": "Unauthorized"}
+
+        user_id = int(user["telegram_id"])
+        method_id = (req.payment_method or "").strip()
+        if method_id == "pay_balance":
+            return {"ok": False, "error": "Нельзя пополнить баланс с баланса"}
+
+        try:
+            amount = Decimal(str(req.amount)).quantize(Decimal("0.01"))
+        except Exception:
+            return {"ok": False, "error": "Введите корректную сумму, например: 300"}
+        if amount <= 0:
+            return {"ok": False, "error": "Сумма должна быть положительной"}
+        if amount < Decimal("10"):
+            return {"ok": False, "error": "Минимальная сумма пополнения: 10 RUB"}
+        if amount > Decimal("100000"):
+            return {"ok": False, "error": "Максимальная сумма пополнения: 100000 RUB"}
+
+        final_price = float(amount)
+        bot_username = get_setting("telegram_bot_username") or ""
+        return_url = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
+
+        # --- YooKassa ---
+        if method_id == "pay_yookassa":
+            shop_id, secret = get_setting("yookassa_shop_id"), get_setting("yookassa_secret_key")
+            if not shop_id or not secret:
+                return {"ok": False, "error": "YooKassa не настроена"}
+            YookassaConfiguration.account_id = shop_id
+            YookassaConfiguration.secret_key = secret
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "YooKassa",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            price_str = f"{amount:.2f}"
+            receipt = None
+            customer_email = get_setting("receipt_email")
+            if customer_email and "@" in str(customer_email):
+                receipt = {
+                    "customer": {"email": customer_email},
+                    "items": [{
+                        "description": "Пополнение баланса",
+                        "quantity": "1.00",
+                        "amount": {"value": price_str, "currency": "RUB"},
+                        "vat_code": "1",
+                        "payment_subject": "service",
+                        "payment_mode": "full_payment",
+                    }],
+                }
+            payload = {
+                "amount": {"value": price_str, "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": return_url},
+                "capture": True,
+                "description": f"Пополнение баланса на {price_str} RUB",
+                "metadata": {"payment_id": pid},
+            }
+            if receipt:
+                payload["receipt"] = receipt
+            try:
+                pay_obj = YookassaPayment.create(payload, uuid.uuid4())
+                pay_url = pay_obj.confirmation.confirmation_url
+                try:
+                    provider_payment_id = getattr(pay_obj, "id", None)
+                    if provider_payment_id:
+                        meta2 = dict(meta)
+                        meta2["yookassa_payment_id"] = str(provider_payment_id)
+                        create_payload_pending(pid, user_id, final_price, meta2)
+                except Exception as e:
+                    logger.warning(f"YooKassa topup: failed to store provider id for {pid}: {e}")
+                kb = create_payment_keyboard(pay_url)
+                await _send_telegram_message(
+                    user_id,
+                    f"<b>Пополнение баланса через ЮKassa</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Вы можете оплатить счёт здесь или в WebApp.</i>",
+                    kb,
+                )
+                return {"ok": True, "payment_url": pay_url, "payment_id": pid, "message": "Счёт создан"}
+            except Exception as e:
+                logger.error(f"YooKassa topup error: {e}")
+                return {"ok": False, "error": f"Ошибка YooKassa: {e}"}
+
+        # --- Platega ---
+        if method_id == "pay_platega":
+            mid, key = get_setting("platega_merchant_id"), get_setting("platega_secret")
+            if not mid or not key:
+                return {"ok": False, "error": "Platega не настроена"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "Platega",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            try:
+                platega = PlategaAPI(mid, key)
+                url, txid = await platega.create_payment(
+                    final_price,
+                    "Пополнение баланса",
+                    pid,
+                    return_url,
+                    return_url,
+                    _platega_method_code_from_settings(),
+                )
+                if url:
+                    if txid:
+                        try:
+                            meta2 = dict(meta)
+                            meta2["platega_transaction_id"] = txid
+                            create_payload_pending(pid, user_id, final_price, meta2)
+                        except Exception:
+                            pass
+                    kb = create_payment_keyboard(url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Пополнение баланса через Platega</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Счёт также доступен в WebApp.</i>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка получения ссылки Platega"}
+            except Exception as e:
+                return {"ok": False, "error": f"Ошибка Platega: {e}"}
+
+        # --- CryptoBot ---
+        if method_id == "pay_cryptobot":
+            if not get_setting("cryptobot_token"):
+                return {"ok": False, "error": "CryptoBot не настроен"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "CryptoBot",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            try:
+                res = await create_cryptobot_api_invoice(amount=final_price, payload_str=pid)
+                if res:
+                    kb = create_cryptobot_payment_keyboard(res[0], res[1])
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Пополнение баланса через CryptoBot</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Счёт также доступен в WebApp.</i>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": res[0], "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка API CryptoBot"}
+            except Exception as e:
+                return {"ok": False, "error": f"Ошибка CryptoBot: {e}"}
+
+        # --- Heleket ---
+        if method_id == "pay_heleket":
+            if not ((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")):
+                return {"ok": False, "error": "Heleket не настроен"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "Heleket",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            try:
+                result = await create_heleket_payment_request(
+                    amount=final_price,
+                    currency="RUB",
+                    description="Пополнение баланса",
+                    order_id=pid,
+                    return_url=return_url,
+                    user_id=user_id,
+                    email=user.get("email") or "no-email",
+                )
+                if result and result.get("payment_url"):
+                    pay_url = result["payment_url"]
+                    kb = create_payment_keyboard(pay_url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Пополнение баланса через Crypto (Heleket)</b>\n\nСумма: <b>{final_price:.2f} RUB</b>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": pay_url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка создания платежа Heleket"}
+            except Exception as e:
+                logger.error(f"Heleket topup error: {e}")
+                return {"ok": False, "error": f"Ошибка Heleket: {e}"}
+
+        # --- YooMoney ---
+        if method_id == "pay_yoomoney":
+            if (get_setting("yoomoney_enabled") or "false").strip().lower() != "true":
+                return {"ok": False, "error": "YooMoney недоступен"}
+            wallet = (get_setting("yoomoney_wallet") or "").strip()
+            secret = (get_setting("yoomoney_secret") or "").strip()
+            if not wallet or not secret:
+                return {"ok": False, "error": "YooMoney не настроен"}
+            if not (wallet.isdigit() and len(wallet) >= 11):
+                return {"ok": False, "error": "Некорректный номер кошелька YooMoney"}
+            if amount < Decimal("1.00"):
+                return {"ok": False, "error": "Минимальная сумма YooMoney — 1 RUB"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "YooMoney",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            link = _build_yoomoney_link(wallet, amount, pid, "Пополнение баланса")
+            kb = create_yoomoney_payment_keyboard(link, pid)
+            await _send_telegram_message(
+                user_id,
+                f"<b>Пополнение баланса через YooMoney</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Счёт также доступен в WebApp.</i>",
+                kb,
+            )
+            return {"ok": True, "payment_url": link, "payment_id": pid, "message": "Счёт создан"}
+
+        # --- TON Connect ---
+        if method_id == "pay_tonconnect":
+            return {"ok": False, "error": "TON Connect пока недоступен через WebApp"}
+
+        # --- Stars ---
+        if method_id == "pay_stars":
+            try:
+                stars_ratio = Decimal(str(get_setting("stars_per_rub") or "0"))
+            except Exception:
+                stars_ratio = Decimal("0")
+            if (get_setting("stars_enabled") or "false").strip().lower() != "true" or stars_ratio <= 0:
+                return {"ok": False, "error": "Stars отключены"}
+            stars_amount = int((amount * stars_ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if stars_amount <= 0:
+                stars_amount = 1
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "Telegram Stars",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            await _send_invoice_stars(
+                user_id,
+                "Пополнение баланса",
+                f"Пополнение на {final_price:.2f} RUB",
+                pid,
+                stars_amount,
+            )
+            return {
+                "ok": True,
+                "message": "Счёт Stars отправлен в бот",
+                "payment_id": pid,
+                "payment_url": f"tg://resolve?domain={bot_username}" if bot_username else None,
+                "stars": True,
+            }
+
+        return {"ok": False, "error": "Метод не поддерживается"}
+    except Exception as e:
+        logger.error(f"API Create TopUp Payment Error: {e}")
+        return {"ok": False, "error": str(e), "details": traceback.format_exc()}
+
 @app.post("/api/apply-promo")
 async def api_apply_promo(req: ApplyPromoRequest):
     try:
@@ -2323,16 +2692,35 @@ async def api_check_payment(req: CheckPaymentRequest):
     try:
         if not req.payment_id or req.payment_id == "undefined" or req.payment_id == "null":
             return {"ok": False, "error": "Invalid payment_id"}
-            
+
+        # Subscription purchases log with the same payment_id; top_up logs a new uuid,
+        # so also treat pending status 'paid' as success (webhook already completed it).
         exists = check_transaction_exists(req.payment_id)
         if not exists:
-            return {"ok": True, "paid": False}
-        
-        return {
-            "ok": True, 
+            try:
+                pending_status = (get_pending_status(req.payment_id) or "").lower()
+            except Exception:
+                pending_status = ""
+            if pending_status != "paid":
+                return {"ok": True, "paid": False}
+
+        balance = None
+        try:
+            # Best-effort: if we can resolve user from pending metadata, return balance for UI refresh.
+            meta = rw_repo.get_pending_metadata(req.payment_id)
+            if isinstance(meta, dict) and meta.get("user_id"):
+                balance = float(get_balance(int(meta["user_id"])) or 0)
+        except Exception:
+            pass
+
+        result = {
+            "ok": True,
             "paid": True,
-            "message": "Оплата успешно подтверждена"
+            "message": "Оплата успешно подтверждена",
         }
+        if balance is not None:
+            result["balance"] = balance
+        return result
     except Exception as e:
         logger.error(f"Check payment error: {e}")
         return {"ok": False, "error": str(e)}
