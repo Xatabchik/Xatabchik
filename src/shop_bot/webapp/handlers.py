@@ -2735,7 +2735,7 @@ async def api_user_status(user_id: int):
             keys.sort(key=lambda k: k.get('key_id', 0), reverse=True)
             formatted_keys = [_process_key_data(k) for k in keys]
         
-        return {"ok": True, "keys": formatted_keys}
+        return {"ok": True, "keys": formatted_keys, "balance": float(user.get("balance") or 0.0)}
     except Exception as e:
         logger.error(f"User status error: {e}")
         return {"ok": False, "error": str(e)}
