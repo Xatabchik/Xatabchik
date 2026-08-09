@@ -332,6 +332,12 @@ ALL_SETTINGS_KEYS = [
     "webapp_title",
     "webapp_logo",
     "webapp_icon",
+
+    "smtp_host",
+    "smtp_port",
+    "smtp_user",
+    "smtp_password",
+    "smtp_from_email",
 ]
 
 
@@ -3697,6 +3703,7 @@ def create_webhook_app(bot_controller_instance):
                 "franchise_enabled",
                 "webapp_enabled",
                 "auto_renew_globally_enabled",
+                "smtp_use_tls",
             ]
             for checkbox_key in checkbox_keys:
                 values = request.form.getlist(checkbox_key) or ['off']

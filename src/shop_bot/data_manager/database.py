@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import time
 import re
+import hashlib
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -744,6 +745,30 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
     _ensure_unique_index(cursor, "idx_users_auth_email", "users", "auth_email")
 
 
+def _ensure_email_verification_columns(cursor: sqlite3.Cursor) -> None:
+    """Добавляет поля для активации email (подтверждение владения адресом при веб-регистрации)."""
+    is_new_migration = "email_verified" not in _get_table_columns(cursor, "users")
+    mapping = {
+        "email_verified": "BOOLEAN DEFAULT 0",
+        "email_code_hash": "TEXT",
+        "email_code_expires_at": "TIMESTAMP",
+        "email_code_last_sent_at": "TIMESTAMP",
+    }
+    for column, definition in mapping.items():
+        _ensure_table_column(cursor, "users", column, definition)
+    if is_new_migration:
+        # Пользователи, зарегистрированные до появления обязательной активации email,
+        # уже могли входить в систему — не блокируем им доступ повторной верификацией.
+        try:
+            cursor.execute(
+                "UPDATE users SET email_verified = 1 "
+                "WHERE auth_email IS NOT NULL AND auth_pass IS NOT NULL "
+                "AND email_code_hash IS NULL AND email_verified = 0"
+            )
+        except sqlite3.Error as e:
+            logging.warning(f"Не удалось выполнить бэкфилл email_verified для существующих пользователей: {e}")
+
+
 def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
     extras = {
         "squad_uuid": "TEXT",
@@ -1168,6 +1193,7 @@ def run_migration():
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = OFF")
             _ensure_users_columns(cursor)
+            _ensure_email_verification_columns(cursor)
             _ensure_hosts_columns(cursor)
             _ensure_plans_columns(cursor)
             _ensure_support_tickets_columns(cursor)
@@ -8056,11 +8082,48 @@ def get_user_by_email(email: str) -> dict | None:
         return None
 
 
+def _hash_email_password(password: str, salt: int | str) -> str:
+    """Хеширует пароль веб-аккаунта email+пароль (hashlib.sha256 + соль на основе user_id).
+
+    bcrypt не входит в зависимости проекта (см. pyproject.toml) — для веб-аутентификации
+    по email используется hashlib.sha256 с солью как минимально достаточный вариант.
+    """
+    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+
+
+def verify_email_password(user: dict, password: str) -> bool:
+    """Проверить пароль пользователя веб-аккаунта (email+пароль).
+
+    Дополнительно поддерживает миграцию старых записей, где пароль ещё хранился в открытом
+    виде: при совпадении открытого пароля хеш обновляется на лету.
+    """
+    if not user or not password:
+        return False
+    stored = user.get("auth_pass")
+    if not stored:
+        return False
+    user_id = user.get("telegram_id")
+    if _hash_email_password(password, user_id) == stored:
+        return True
+    if stored == password:
+        try:
+            new_hash = _hash_email_password(password, user_id)
+            with sqlite3.connect(DB_FILE) as conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE users SET auth_pass = ? WHERE telegram_id = ?", (new_hash, int(user_id)))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to migrate legacy plaintext password for user {user_id}: {e}")
+        return True
+    return False
+
+
 def create_user_by_email(email: str, password: str) -> dict | None:
     """Создать "виртуального" (не привязанного к Telegram) пользователя webapp по email+паролю.
 
     Использует псевдо-telegram_id с префиксом 999, чтобы не пересекаться с реальными
     Telegram ID (см. handlers.py: str(user_id).startswith("999") — признак несинхронизированного аккаунта).
+    Пароль хранится хешированным (см. _hash_email_password).
     """
     norm = _normalize_email(email)
     if not norm:
@@ -8076,13 +8139,80 @@ def create_user_by_email(email: str, password: str) -> dict | None:
                 INSERT INTO users (telegram_id, username, agreed_to_terms, auth_email, auth_pass, registration_date)
                 VALUES (?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
                 """,
-                (next_id, norm.split('@')[0], norm, password),
+                (next_id, norm.split('@')[0], norm, _hash_email_password(password, next_id)),
             )
             conn.commit()
         return get_user(next_id)
     except Exception as e:
         logger.error(f"Failed to create user by email {email}: {e}")
         return None
+
+
+def set_email_verification_code(user_id: int, code_hash: str, expires_at: str) -> bool:
+    """Сохранить хеш одноразового кода активации email и время его истечения."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET email_code_hash = ?, email_code_expires_at = ? WHERE telegram_id = ?",
+                (code_hash, expires_at, int(user_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to set email verification code for user {user_id}: {e}")
+        return False
+
+
+def get_email_verification(user_id: int) -> dict | None:
+    """Получить данные о статусе активации email пользователя."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT email_verified, email_code_hash, email_code_expires_at, email_code_last_sent_at "
+                "FROM users WHERE telegram_id = ?",
+                (int(user_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Failed to get email verification data for user {user_id}: {e}")
+        return None
+
+
+def mark_email_verified(user_id: int) -> bool:
+    """Отметить email пользователя как подтверждённый и очистить одноразовый код."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET email_verified = 1, email_code_hash = NULL, email_code_expires_at = NULL "
+                "WHERE telegram_id = ?",
+                (int(user_id),),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to mark email verified for user {user_id}: {e}")
+        return False
+
+
+def update_email_code_last_sent(user_id: int, ts: str) -> bool:
+    """Обновить время последней отправки кода активации (для rate-limit повторной отправки)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET email_code_last_sent_at = ? WHERE telegram_id = ?",
+                (ts, int(user_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to update email_code_last_sent for user {user_id}: {e}")
+        return False
 
 
 def get_webapp_settings() -> dict:

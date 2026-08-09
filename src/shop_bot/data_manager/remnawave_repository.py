@@ -489,6 +489,12 @@ _LEGACY_FORWARDERS = (
     "get_user_by_email",
     "create_user_by_email",
     "get_webapp_settings",
+
+    # Email-верификация (активация аккаунта по коду из письма)
+    "set_email_verification_code",
+    "get_email_verification",
+    "mark_email_verified",
+    "update_email_code_last_sent",
 )
 
 for _name in _LEGACY_FORWARDERS:
