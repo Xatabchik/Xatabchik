@@ -106,6 +106,14 @@
             <p class="text-gray-400 text-sm leading-relaxed max-w-[280px]">Пожалуйста, авторизуйтесь через нашего Telegram бота для доступа к кабинету</p>
         </div>
 
+        <!-- Контекст pending action (подарок/реферальная ссылка) — заполняется JS до показа auth-methods -->
+        <div id="pending-action-banner" class="hidden w-full px-5 max-w-[340px] mx-auto -mt-2 mb-1">
+            <div class="flex items-start gap-2 bg-primary/10 border border-primary/20 rounded-2xl px-4 py-3 text-left">
+                <span id="pending-action-icon" class="material-symbols-rounded text-primary text-lg shrink-0">redeem</span>
+                <span id="pending-action-text" class="text-[11px] text-gray-200 leading-relaxed"></span>
+            </div>
+        </div>
+
         <div id="auth-methods" class="flex flex-col gap-3 w-full px-5 max-w-[340px] mx-auto mt-2">
             <a id="auth-link" href="#"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black font-bold py-4 rounded-2xl text-sm shadow-md hover:scale-[1.01] active:scale-[0.98] transition-all flex items-center justify-center gap-3">
@@ -214,6 +222,38 @@
     </div>
 
     <script>
+        // ── Pending action (подарок/реферальная ссылка), см. /gift/<code> и /ref/<id> ──
+        // Единственный источник истины — серверный pending_token; здесь он только
+        // передаётся по цепочке редиректов/входа, не более.
+        const PENDING_TOKEN = new URLSearchParams(window.location.search).get('pending_token') || '';
+
+        function appendPendingToken(url) {
+            if (!PENDING_TOKEN) return url;
+            return url + (url.includes('?') ? '&' : '?') + 'pending_token=' + encodeURIComponent(PENDING_TOKEN);
+        }
+
+        async function loadPendingActionBanner() {
+            if (!PENDING_TOKEN) return;
+            try {
+                const res = await fetch('/api/webapp/pending-actions/info?pending_token=' + encodeURIComponent(PENDING_TOKEN));
+                const data = await res.json();
+                const banner = document.getElementById('pending-action-banner');
+                const text = document.getElementById('pending-action-text');
+                const icon = document.getElementById('pending-action-icon');
+                if (!banner || !text) return;
+                if (data.valid) {
+                    text.textContent = data.message || (data.action_type === 'gift'
+                        ? 'После входа подарок будет активирован на ваш аккаунт.'
+                        : 'После регистрации вы станете участником реферальной программы.');
+                    icon.textContent = data.action_type === 'gift' ? 'redeem' : 'group_add';
+                    banner.classList.remove('hidden');
+                }
+                // Если ссылка невалидна (истекла/использована) — банер просто не показываем,
+                // вход всё равно должен продолжать работать в обычном режиме.
+            } catch (e) { /* тихо игнорируем — вход не должен зависеть от этого запроса */ }
+        }
+        loadPendingActionBanner();
+
         document.addEventListener("DOMContentLoaded", function () {
             const loader = document.getElementById('loader');
             const authContainer = document.getElementById('auth-container');
@@ -697,14 +737,18 @@
                 document.cookie = "auth_token=; max-age=0; path=/; SameSite=Lax";
             }
 
-            if (window.location.search.includes('token=') || window.location.pathname.includes('token=')) {
+            // Точный разбор query-параметра token=... (было: hasty includes('token=' ),
+            // что случайно совпадало и с pending_token=... — из-за чего сохранённый
+            // auth_token сбрасывался и URL обрезался до "/", теряя pending_token).
+            const _urlParams = new URLSearchParams(window.location.search);
+            if (_urlParams.has('token')) {
                 removeAuthToken();
-                window.history.replaceState(null, '', '/');
+                window.history.replaceState(null, '', appendPendingToken('/'));
             }
 
             const savedToken = getAuthToken();
             if (savedToken) {
-                window.location.href = "/?token=" + savedToken;
+                window.location.href = appendPendingToken("/?token=" + savedToken);
                 return;
             }
 
@@ -716,8 +760,7 @@
                         if (data.authorized) {
                             clearInterval(interval);
                             const finalToken = data.token || token;
-                            setAuthToken(finalToken);
-                            window.location.href = "/?token=" + finalToken;
+                            loginWithToken(finalToken);
                         }
                     } catch (e) { }
                 }, 2000);
@@ -738,7 +781,7 @@
 
             async function loginWithToken(token) {
                 setAuthToken(token);
-                window.location.href = "/?token=" + token;
+                window.location.href = appendPendingToken("/?token=" + token);
             }
 
             async function tryDirectAuth(userId) {

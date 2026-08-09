@@ -433,7 +433,15 @@ _LEGACY_FORWARDERS = (
     "activate_user_gift",
     "delete_user_gift",
     "set_referred_by_from_gift",
+    "link_referrer_if_eligible",
     "link_key_to_gift",
+
+    # Unified pending action (gift / referral link opened before login)
+    "create_pending_action",
+    "get_pending_action",
+    "claim_pending_action",
+    "set_pending_action_result",
+    "cleanup_expired_pending_actions",
 
     "get_all_ssh_targets",
     "get_ssh_target",

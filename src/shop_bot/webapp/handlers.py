@@ -1,7 +1,7 @@
 from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import aiohttp
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user_keys, get_msk_time, get_webapp_settings, get_user, get_referral_count, get_all_hosts, list_squads, get_plans_for_host
 import os
@@ -63,6 +63,30 @@ def _resolve_user_from_request_token(data: dict, request: Request) -> dict | Non
             return u
     except Exception:
         pass
+    return None
+
+
+def _resolve_authenticated_user(data: dict, request: Request) -> dict | None:
+    """Определить текущего пользователя ИСКЛЮЧИТЕЛЬНО по доверенным источникам:
+    существующей persistent auth-сессии (см. _resolve_user_from_request_token —
+    тот же токен, что хранится в localStorage/cookie webapp) или по подписанным
+    Telegram WebApp `init_data`.
+
+    Специально НЕ принимает и не доверяет `user_id`, присланному клиентом в теле
+    запроса — используется там, где подмена пользователя была бы небезопасна
+    (например, POST /api/webapp/pending-actions/complete).
+    """
+    user = _resolve_user_from_request_token(data, request)
+    if user:
+        return user
+
+    init_data = data.get("init_data")
+    if init_data:
+        bot_token = get_setting("telegram_bot_token")
+        if bot_token:
+            tg_user = validate_telegram_data(init_data, bot_token)
+            if tg_user and tg_user.get("id"):
+                return get_user(int(tg_user["id"]))
     return None
 
 
@@ -2968,6 +2992,84 @@ async def api_user_gifts(request: Request):
 
     return {"ok": True, "gifts": result}
 
+# ── Gift activation (shared business logic) ────────────────────────────────
+#
+# Единая точка активации подарка — используется и обычной кнопкой
+# "Активировать себе" (POST /api/gift/activate), и единым сценарием
+# pending action (POST /api/webapp/pending-actions/complete), чтобы не
+# дублировать бизнес-логику (создание/переназначение ключа, реферал от
+# дарителя) в двух местах.
+def _activate_gift_for_user(user_id: int, gift_code: str) -> dict:
+    """Активировать подарок `gift_code` для пользователя `user_id`.
+
+    Возвращает структурированный результат:
+        {"ok": bool, "status": str, "message": str}
+
+    status ∈ {"activated", "already_activated", "not_found", "expired", "error"}.
+
+    Идемпотентность: если ЭТОТ ЖЕ пользователь уже успешно активировал именно
+    этот подарок ранее (например, повторный вызов после сетевого сбоя), метод
+    возвращает ok=True/status="already_activated" без создания второго ключа
+    и без повторного назначения реферала. Если подарок был активирован ДРУГИМ
+    пользователем (обычная гонка/чужой подарок) — ok=False.
+
+    Атомарность/защита от гонки обеспечивается на уровне
+    database.activate_user_gift (условный UPDATE + проверка rowcount).
+    """
+    from shop_bot.data_manager import database
+    from shop_bot.data_manager import remnawave_repository as rw_repo
+
+    try:
+        gift = database.get_gift_by_code(gift_code)
+        if not gift:
+            return {"ok": False, "status": "not_found", "message": "Подарок не найден или код неверный"}
+
+        if gift.get("is_activated"):
+            if int(gift.get("activated_by_user_id") or 0) == int(user_id):
+                # Тот же пользователь уже активировал этот подарок — идемпотентный успех.
+                return {"ok": True, "status": "already_activated", "message": "Подарок уже активирован на ваш аккаунт."}
+            return {"ok": False, "status": "already_activated", "message": "Этот подарок уже был активирован"}
+
+        expires_at = gift.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
+                    return {"ok": False, "status": "expired", "message": "Срок действия подарка истёк"}
+            except Exception:
+                pass
+
+        success, activated_gift = database.activate_user_gift(gift_code, user_id)
+        if not success:
+            # Либо гонка (кто-то другой успел активировать первым), либо подарок
+            # истёк/удалён между проверкой и попыткой активации — перечитываем
+            # текущее состояние, чтобы дать пользователю точный ответ.
+            fresh = database.get_gift_by_code(gift_code) or gift
+            if fresh.get("is_activated") and int(fresh.get("activated_by_user_id") or 0) == int(user_id):
+                return {"ok": True, "status": "already_activated", "message": "Подарок уже активирован на ваш аккаунт."}
+            return {"ok": False, "status": "already_activated" if fresh.get("is_activated") else "error", "message": "Не удалось активировать подарок"}
+
+        # Переназначаем ключ активирующему пользователю (используем существующий сервис,
+        # не создаём новый ключ).
+        key_id = gift.get("key_id")
+        if key_id:
+            new_email = rw_repo.generate_key_email_for_user(user_id)
+            rw_repo.update_key(key_id, user_id=user_id, email=new_email, tag="")
+
+        # Привязываем реферала от дарителя (если применимо) — используя существующую
+        # бизнес-логику/условия (см. set_referred_by_from_gift).
+        try:
+            from_user_id = int((activated_gift or gift or {}).get("from_user_id") or 0)
+            if from_user_id > 0:
+                database.set_referred_by_from_gift(user_id, from_user_id)
+        except Exception:
+            pass
+
+        return {"ok": True, "status": "activated", "message": "Подарок успешно активирован! Ключ добавлен в ваш профиль."}
+    except Exception as e:
+        logger.error(f"Gift activate error for user {user_id}, gift {gift_code}: {e}")
+        return {"ok": False, "status": "error", "message": str(e)}
+
+
 # ── Gift activation via webapp ─────────────────────────────────────────────
 @app.post("/api/gift/activate")
 async def api_gift_activate(req: GiftActivateRequest):
@@ -2976,46 +3078,221 @@ async def api_gift_activate(req: GiftActivateRequest):
         if not user or user.get("is_banned"):
             return {"ok": False, "error": "Access denied"}
 
-        from shop_bot.data_manager import database
-        from shop_bot.data_manager import remnawave_repository as rw_repo
-
-        gift = database.get_gift_by_code(req.gift_code)
-        if not gift:
-            return {"ok": False, "error": "Подарок не найден или код неверный"}
-        if gift.get("is_activated"):
-            return {"ok": False, "error": "Этот подарок уже был активирован"}
-
-        expires_at = gift.get("expires_at")
-        if expires_at:
-            try:
-                from datetime import datetime
-                if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
-                    return {"ok": False, "error": "Срок действия подарка истёк"}
-            except Exception:
-                pass
-
-        success, activated_gift = database.activate_user_gift(req.gift_code, req.user_id)
-        if not success:
-            return {"ok": False, "error": "Не удалось активировать подарок"}
-
-        # Reassign the key to the activating user
-        key_id = gift.get("key_id")
-        if key_id:
-            new_email = rw_repo.generate_key_email_for_user(req.user_id)
-            rw_repo.update_key(key_id, user_id=req.user_id, email=new_email, tag="")
-
-        # Set referrer if from_user_id is known and user is new
-        try:
-            from_user_id = int((activated_gift or gift or {}).get("from_user_id") or 0)
-            if from_user_id > 0:
-                database.set_referred_by_from_gift(req.user_id, from_user_id)
-        except Exception:
-            pass
-
-        return {"ok": True, "message": "Подарок успешно активирован! Ключ добавлен в ваш профиль."}
+        result = _activate_gift_for_user(req.user_id, req.gift_code)
+        if not result["ok"]:
+            return {"ok": False, "error": result["message"]}
+        return {"ok": True, "message": result["message"]}
     except Exception as e:
         logger.error(f"Gift activate error: {e}")
         return {"ok": False, "error": str(e)}
+
+
+# ── Referral linking (shared business logic) ────────────────────────────────
+#
+# Единая точка привязки реферала — используется сценарием pending action.
+# Обычный бот-флоу (register_user_if_not_exists / set_referred_by_from_gift)
+# не тронут и продолжает работать как раньше.
+_REFERRAL_LINK_MESSAGES = {
+    "linked": "Вы стали участником реферальной программы!",
+    "already_linked": "У вас уже был указан реферер — эта ссылка ничего не меняет.",
+    "self_referral_forbidden": "Нельзя быть рефералом самого себя.",
+    "invalid_referrer": "Реферальная ссылка недействительна.",
+    "not_eligible": "Не удалось применить реферальную ссылку.",
+}
+
+
+def _apply_pending_referral(user_id: int, referrer_id: int) -> dict:
+    """Привязать пользователя к рефереру и, если применимо, выплатить
+    существующий стартовый бонус рефереру (тот же механизм и те же настройки,
+    что использует бот при обычной регистрации по `/start ref_<id>` —
+    см. reward_type == "fixed_start_referrer" в bot/handlers.py).
+
+    Возвращает {"ok": bool, "status": str, "message": str}, где status один из:
+    linked, already_linked, self_referral_forbidden, invalid_referrer, not_eligible.
+    """
+    from shop_bot.data_manager import database
+
+    status = database.link_referrer_if_eligible(user_id, referrer_id)
+    message = _REFERRAL_LINK_MESSAGES.get(status, "Не удалось применить реферальную ссылку.")
+    ok = status == "linked"
+
+    if ok:
+        try:
+            reward_type = (get_setting("referral_reward_type") or "percent_purchase").strip()
+        except Exception:
+            reward_type = "percent_purchase"
+
+        if reward_type == "fixed_start_referrer":
+            user = get_user(user_id)
+            if user and not user.get("referral_start_bonus_received"):
+                try:
+                    from decimal import Decimal
+                    amount_raw = get_setting("referral_on_start_referrer_amount") or "20"
+                    start_bonus = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+                except Exception:
+                    start_bonus = None
+                if start_bonus and start_bonus > 0:
+                    try:
+                        rw_repo.add_to_referral_balance(int(referrer_id), float(start_bonus))
+                        rw_repo.add_to_referral_balance_all(int(referrer_id), float(start_bonus))
+                        rw_repo.set_referral_start_bonus_received(user_id)
+                    except Exception as e:
+                        logger.warning(f"Referral start bonus failed for referrer {referrer_id}: {e}")
+
+    return {"ok": ok, "status": status, "message": message}
+
+
+# ── Unified pending action (gift/referral link opened before login) ────────
+class PendingActionCompleteRequest(BaseModel):
+    pending_token: str
+    token: str | None = None
+    init_data: str | None = None
+
+
+def _pending_action_public_info(pending: dict) -> dict:
+    """Собрать безопасный (без лишних деталей) ответ для UI по pending action —
+    для GET .../info (до входа) и как основа для complete (после входа)."""
+    from shop_bot.data_manager import database
+
+    action_type = pending.get("action_type")
+    now = datetime.utcnow()
+    try:
+        expires_at = datetime.strptime(str(pending["expires_at"]), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        expires_at = None
+
+    if pending.get("consumed_at"):
+        return {"ok": False, "valid": False, "action_type": action_type, "error": "already_used",
+                "message": "Эта ссылка уже была использована."}
+    if expires_at and expires_at < now:
+        return {"ok": False, "valid": False, "action_type": action_type, "error": "expired",
+                "message": "Срок действия ссылки истёк."}
+
+    if action_type == "gift":
+        gift = database.get_gift_by_code(pending.get("gift_code") or "")
+        if not gift:
+            return {"ok": False, "valid": False, "action_type": action_type, "error": "not_found",
+                    "message": "Подарок не найден."}
+        if gift.get("is_activated"):
+            return {"ok": False, "valid": False, "action_type": action_type, "error": "already_activated",
+                    "message": "Этот подарок уже был активирован."}
+        return {
+            "ok": True, "valid": True, "action_type": "gift",
+            "message": "Вам доступен подарок — VPN-ключ будет активирован на ваш аккаунт после входа.",
+            "host_name": gift.get("host_name"),
+        }
+
+    if action_type == "referral":
+        return {
+            "ok": True, "valid": True, "action_type": "referral",
+            "message": "Вы переходите по приглашению в сервис — после входа/регистрации вы станете рефералом.",
+        }
+
+    return {"ok": False, "valid": False, "action_type": action_type, "error": "invalid",
+            "message": "Ссылка недействительна."}
+
+
+@app.get("/api/webapp/pending-actions/info")
+async def api_pending_action_info(pending_token: str):
+    from shop_bot.data_manager import database
+    pending = database.get_pending_action(pending_token)
+    if not pending:
+        return {"ok": False, "valid": False, "error": "invalid", "message": "Ссылка недействительна."}
+    return _pending_action_public_info(pending)
+
+
+@app.post("/api/webapp/pending-actions/complete")
+async def api_pending_action_complete(req: PendingActionCompleteRequest, request: Request):
+    """Единая точка завершения pending action ПОСЛЕ успешной авторизации.
+
+    Безопасность:
+      - пользователь определяется ИСКЛЮЧИТЕЛЬНО через _resolve_authenticated_user
+        (доверенный persistent auth-токен ИЛИ подписанные Telegram init_data) —
+        `user_id` в теле запроса не принимается и не может быть подменён клиентом;
+      - gift_code/referrer_id/action_type берутся только из серверной записи
+        auth_pending_actions по pending_token — клиент не может их переопределить;
+      - claim_pending_action атомарно "забирает" токен ровно один раз, поэтому
+        параллельные/повторные запросы не могут применить действие дважды
+        (см. database.claim_pending_action, database.activate_user_gift,
+        database.link_referrer_if_eligible — везде решение по cursor.rowcount).
+    """
+    from shop_bot.data_manager import database
+
+    data = req.model_dump()
+    user = _resolve_authenticated_user(data, request)
+    if not user:
+        return {"ok": False, "error": "unauthorized", "message": "Требуется авторизация."}
+    if user.get("is_banned"):
+        return {"ok": False, "error": "access_denied", "message": "Доступ запрещён."}
+
+    user_id = int(user["telegram_id"])
+
+    pending = database.get_pending_action(req.pending_token)
+    if not pending:
+        return {"ok": False, "error": "invalid", "message": "Ссылка недействительна."}
+
+    action_type = pending.get("action_type")
+
+    # Уже использован именно этим пользователем ранее — идемпотентно возвращаем
+    # тот же результат, не выполняя бизнес-логику повторно.
+    if pending.get("consumed_at"):
+        if int(pending.get("consumed_by_user_id") or 0) == user_id:
+            stored_status = pending.get("result_status") or "done"
+            return {
+                "ok": True,
+                "already_completed": True,
+                "action_type": action_type,
+                "status": stored_status,
+                "message": "Действие уже было применено к вашему аккаунту ранее.",
+            }
+        return {"ok": False, "error": "already_used", "message": "Эта ссылка уже была использована."}
+
+    # Просрочен?
+    try:
+        expires_at = datetime.strptime(str(pending["expires_at"]), "%Y-%m-%d %H:%M:%S")
+        if expires_at < datetime.utcnow():
+            return {"ok": False, "error": "expired", "message": "Срок действия ссылки истёк."}
+    except Exception:
+        pass
+
+    # Атомарно "забираем" токен для этого пользователя. Если не получилось —
+    # значит кто-то (или этот же клиент параллельным запросом) уже успел его
+    # обработать между нашими проверками выше и этим вызовом.
+    if not database.claim_pending_action(req.pending_token, user_id):
+        pending_after = database.get_pending_action(req.pending_token) or {}
+        if int(pending_after.get("consumed_by_user_id") or 0) == user_id:
+            stored_status = pending_after.get("result_status") or "done"
+            return {
+                "ok": True,
+                "already_completed": True,
+                "action_type": action_type,
+                "status": stored_status,
+                "message": "Действие уже было применено к вашему аккаунту ранее.",
+            }
+        return {"ok": False, "error": "expired", "message": "Ссылка недействительна или уже использована."}
+
+    if action_type == "gift":
+        result = _activate_gift_for_user(user_id, pending.get("gift_code") or "")
+    elif action_type == "referral":
+        try:
+            referrer_id = int(pending.get("referrer_id") or 0)
+        except (TypeError, ValueError):
+            referrer_id = 0
+        result = _apply_pending_referral(user_id, referrer_id)
+    else:
+        result = {"ok": False, "status": "invalid", "message": "Неизвестный тип действия."}
+
+    try:
+        database.set_pending_action_result(req.pending_token, result.get("status") or ("ok" if result.get("ok") else "error"))
+    except Exception:
+        pass
+
+    return {
+        "ok": bool(result.get("ok")),
+        "action_type": action_type,
+        "status": result.get("status"),
+        "message": result.get("message"),
+    }
 
 @app.post("/api/key/devices")
 async def api_key_devices(req: KeyActionRequest):
@@ -3397,15 +3674,10 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
         logger.error(f"Error searching keys: {e}")
         return {"ok": False, "error": str(e)}
 
-@app.get("/ref/{referrer_id}")
-async def web_referral_page(referrer_id: str, request: Request):
-    try:
-        bot_username = get_setting("telegram_bot_username") or ""
-        webapp_settings = get_webapp_settings()
-        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
-        logo_url = webapp_settings.get("webapp_logo") or ""
-        deeplink = f"https://t.me/{bot_username}?start=ref_{referrer_id}" if bot_username else ""
-        html = f"""<!DOCTYPE html>
+def _referral_fallback_html(project_name: str, logo_url: str, deeplink: str, error_note: str = "") -> str:
+    """Резервная страница рефссылки (реферер не найден/бот не настроен) —
+    без единого сценария pending action, просто ссылка в Telegram, как раньше."""
+    return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{project_name} — Реферальная ссылка</title>
@@ -3417,86 +3689,52 @@ h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;marg
 <body><div class="card">
 {"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else ""}
 <h2>{project_name}</h2>
-<p>Вас пригласили воспользоваться VPN-сервисом. Нажмите кнопку ниже, чтобы начать через Telegram.</p>
-{"<a class='btn' href='" + deeplink + "'>Открыть в Telegram</a>" if deeplink else "<p style='color:#f87171'>Бот не настроен.</p>"}
+<p>{error_note or "Вас пригласили воспользоваться VPN-сервисом. Нажмите кнопку ниже, чтобы начать через Telegram."}</p>
+{"<a class='btn' href='" + deeplink + "'>Открыть в Telegram</a>" if (deeplink and not error_note) else ("" if not error_note else "<p style='color:#f87171'>Бот не настроен.</p>" if not deeplink else "")}
 </div></body></html>"""
-        return HTMLResponse(content=html)
-    except Exception as e:
-        logger.error(f"Referral page error: {e}")
-        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
 
-@app.get("/gift/{gift_code}")
-async def web_gift_page(gift_code: str, request: Request):
+
+@app.get("/ref/{referrer_id}")
+async def web_referral_page(referrer_id: str, request: Request):
+    """Публичная реферальная ссылка.
+
+    Раньше эта страница всегда вела только в Telegram (deep link), даже если
+    пользователь предпочёл бы войти по email. Теперь: если referrer_id
+    настоящий, создаём серверный pending action (единый сценарий — см.
+    /api/webapp/pending-actions/*) и ведём на общий вход, где пользователь сам
+    выбирает Telegram или email; после успешного входа привязка реферала
+    применяется автоматически ровно один раз.
+    """
     try:
-        from shop_bot.data_manager.remnawave_repository import get_gift_by_code
         bot_username = get_setting("telegram_bot_username") or ""
         webapp_settings = get_webapp_settings()
         project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
         logo_url = webapp_settings.get("webapp_logo") or ""
-        webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+        deeplink = f"https://t.me/{bot_username}?start=ref_{referrer_id}" if bot_username else ""
 
-        gift = get_gift_by_code(gift_code) if gift_code else None
-        deeplink = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
+        try:
+            rid = int(referrer_id)
+        except (TypeError, ValueError):
+            rid = None
 
-        # Detect if visitor is already authenticated in webapp
-        auth_token = request.cookies.get("auth_token") or request.query_params.get("token") or ""
-        authed_user = None
-        if auth_token:
-            from shop_bot.data_manager import database
-            authed_user = database.get_user_by_auth_token(auth_token)
+        referrer = get_user(rid) if rid else None
+        if not referrer:
+            return HTMLResponse(content=_referral_fallback_html(project_name, logo_url, deeplink))
 
-        if not gift:
-            title = "Подарочный ключ"
-            desc = "Активируйте подарок через Telegram."
-            action_html = f"<a class='btn' href='{deeplink}'>Открыть в Telegram</a>" if deeplink else ""
-        elif gift.get("is_activated"):
-            title = "Подарок уже активирован"
-            desc = "Этот подарочный ключ уже был использован."
-            action_html = ""
-        elif authed_user:
-            uid = authed_user.get("telegram_id")
-            title = "Подарочный VPN-ключ"
-            desc = "Нажмите кнопку ниже, чтобы активировать подарок прямо здесь."
-            webapp_url = f"{webapp_domain}/?token={auth_token}&activate_gift={gift_code}" if webapp_domain else deeplink
-            action_html = f"""
-<button class='btn' id='activate-btn' onclick='activateGift("{gift_code}", {uid})'>Активировать</button>
-<div id='activate-msg' style='display:none;margin-top:1rem;font-size:.8rem;color:#10b981'></div>
-<script>
-async function activateGift(code, userId) {{
-  document.getElementById('activate-btn').disabled = true;
-  document.getElementById('activate-btn').textContent = 'Активация...';
-  try {{
-    const r = await fetch('/api/gift/activate', {{
-      method: 'POST',
-      headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify({{user_id: userId, gift_code: code}})
-    }});
-    const d = await r.json();
-    const msg = document.getElementById('activate-msg');
-    msg.style.display = 'block';
-    if (d.ok) {{
-      msg.textContent = '✅ ' + d.message;
-      msg.style.color = '#10b981';
-      document.getElementById('activate-btn').style.display = 'none';
-      setTimeout(() => {{ window.location.href = '{webapp_domain or "/"}'; }}, 1800);
-    }} else {{
-      msg.textContent = '❌ ' + d.error;
-      msg.style.color = '#f87171';
-      document.getElementById('activate-btn').disabled = false;
-      document.getElementById('activate-btn').textContent = 'Активировать';
-    }}
-  }} catch(e) {{
-    document.getElementById('activate-btn').disabled = false;
-    document.getElementById('activate-btn').textContent = 'Активировать';
-  }}
-}}
-</script>"""
-        else:
-            title = "Подарочный VPN-ключ"
-            desc = "Нажмите кнопку ниже, чтобы активировать подарок в Telegram."
-            action_html = f"<a class='btn' href='{deeplink}'>Активировать в Telegram</a>" if deeplink else ""
+        from shop_bot.data_manager import database
+        token = database.create_pending_action("referral", referrer_id=rid)
+        if not token:
+            return HTMLResponse(content=_referral_fallback_html(project_name, logo_url, deeplink))
 
-        html = f"""<!DOCTYPE html>
+        return RedirectResponse(url=f"/?pending_token={token}", status_code=302)
+    except Exception as e:
+        logger.error(f"Referral page error: {e}")
+        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
+
+def _gift_fallback_html(project_name: str, logo_url: str, title: str, desc: str, action_html: str = "") -> str:
+    """Резервная страница подарка (не найден/уже активирован) — как и раньше,
+    без pending action, потому что действие в этих случаях всё равно не имеет смысла."""
+    return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{project_name} — {title}</title>
@@ -3504,8 +3742,7 @@ async function activateGift(code, userId) {{
 .card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
 h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
 .btn{{display:inline-block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s;cursor:pointer;border:none;width:100%;box-sizing:border-box}}
-.btn:hover{{opacity:.85}} .btn:disabled{{opacity:.5;cursor:not-allowed}}
-img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
+.btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
 .gift-icon{{font-size:3rem;margin-bottom:.5rem}}</style></head>
 <body><div class="card">
 {"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else "<div class='gift-icon'>🎁</div>"}
@@ -3513,7 +3750,62 @@ img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fi
 <p>{desc}</p>
 {action_html}
 </div></body></html>"""
-        return HTMLResponse(content=html)
+
+
+@app.get("/gift/{gift_code}")
+async def web_gift_page(gift_code: str, request: Request):
+    """Публичная ссылка активации подарка.
+
+    Раньше уже авторизованный (по cookie/`?token=`) посетитель мог активировать
+    подарок прямо со страницы, а неавторизованный — только через Telegram deep
+    link. Теперь для валидного, ещё не активированного подарка мы создаём
+    серверный pending action и ведём на единый вход (Telegram ИЛИ email);
+    страница активации внутри приложения (`/?pending_token=...`) сама решает,
+    показывать ли экран входа или сразу применить действие — в зависимости от
+    того, авторизован ли пользователь.
+    Невалидные случаи (подарок не найден / уже активирован) обрабатываются как
+    раньше — без создания pending action, отдельной простой страницей.
+    """
+    try:
+        from shop_bot.data_manager.remnawave_repository import get_gift_by_code
+        bot_username = get_setting("telegram_bot_username") or ""
+        webapp_settings = get_webapp_settings()
+        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
+        logo_url = webapp_settings.get("webapp_logo") or ""
+
+        gift = get_gift_by_code(gift_code) if gift_code else None
+        deeplink = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
+
+        if not gift:
+            action_html = f"<a class='btn' href='{deeplink}'>Открыть в Telegram</a>" if deeplink else ""
+            return HTMLResponse(content=_gift_fallback_html(
+                project_name, logo_url, "Подарочный ключ", "Активируйте подарок через Telegram.", action_html
+            ))
+        if gift.get("is_activated"):
+            return HTMLResponse(content=_gift_fallback_html(
+                project_name, logo_url, "Подарок уже активирован", "Этот подарочный ключ уже был использован."
+            ))
+
+        expires_at = gift.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
+                    return HTMLResponse(content=_gift_fallback_html(
+                        project_name, logo_url, "Срок действия истёк", "Срок действия этого подарка истёк."
+                    ))
+            except Exception:
+                pass
+
+        from shop_bot.data_manager import database
+        token = database.create_pending_action("gift", gift_code=gift_code)
+        if not token:
+            action_html = f"<a class='btn' href='{deeplink}'>Активировать в Telegram</a>" if deeplink else ""
+            return HTMLResponse(content=_gift_fallback_html(
+                project_name, logo_url, "Подарочный VPN-ключ",
+                "Нажмите кнопку ниже, чтобы активировать подарок в Telegram.", action_html
+            ))
+
+        return RedirectResponse(url=f"/?pending_token={token}", status_code=302)
     except Exception as e:
         logger.error(f"Gift page error: {e}")
         return HTMLResponse(content="<h1>Error</h1>", status_code=500)
