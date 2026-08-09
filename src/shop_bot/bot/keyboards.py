@@ -1752,7 +1752,7 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
     
     # Если подарок не активирован и есть ссылка, добавляем кнопку для отправки ссылки
     if not is_activated and gift_link:
-        builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+        builder.button(text="🎁 Отправить ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
     
     show_connect = (get_setting("key_info_show_connect_device") or "true").strip().lower() == "true"
     show_howto = (get_setting("key_info_show_howto") or "false").strip().lower() == "true"
@@ -1840,7 +1840,7 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
     
     # Кнопка отправки ссылки подарка (если это подарочный ключ)
     if gift_code and gift_id:
-        builder.button(text="🎁 Отпрвиать ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
+        builder.button(text="🎁 Отправить ссылку подарка", callback_data=f"send_gift_link_{gift_id}")
     
     ar_text = "🔄 Авто-продление: ВКЛ ✓" if auto_renew else "⏸ Авто-продление: ВЫКЛ"
     builder.button(text=ar_text, callback_data=f"auto_renew_key_{key_id}")
