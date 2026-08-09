@@ -10,6 +10,8 @@ from pydantic import BaseModel
 import uuid
 import asyncio
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, FSInputFile, LabeledPrice
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import json
@@ -157,7 +159,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
 async def _send_telegram_message(user_id: int, text: str, reply_markup=None, photo=None):
     token = get_setting("telegram_bot_token")
     if not token: return False
-    bot = Bot(token=token)
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         if photo:
             await bot.send_photo(chat_id=user_id, photo=photo, caption=text, reply_markup=reply_markup, parse_mode="HTML")
@@ -173,7 +175,7 @@ async def _send_telegram_message(user_id: int, text: str, reply_markup=None, pho
 async def _send_invoice_stars(user_id: int, title: str, description: str, payload: str, amount: int):
     token = get_setting("telegram_bot_token")
     if not token: return False
-    bot = Bot(token=token)
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         await bot.send_invoice(
             chat_id=user_id,
@@ -2414,7 +2416,7 @@ async def api_create_payment(req: CreatePaymentRequest):
             token = get_setting("telegram_bot_token")
             if not token: return {"ok": False, "error": "Бот не настроен (нет токена)"}
             
-            bot = Bot(token=token)
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 # process_successful_payment is imported at module level now
                 await process_successful_payment(bot, meta)
@@ -3464,7 +3466,7 @@ async def api_support_create(req: SupportTicketCreateRequest):
         from aiogram import Bot
         token = get_setting("support_bot_token")
         if token:
-            bot = Bot(token=token)
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 try:
                     user = await bot.get_chat(req.user_id)
@@ -3519,7 +3521,7 @@ async def api_support_send(req: SupportMessageSendRequest):
         from aiogram import Bot
         token = get_setting("support_bot_token")
         if token:
-            bot = Bot(token=token)
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 try:
                     user = await bot.get_chat(req.user_id)
