@@ -115,6 +115,44 @@ from shop_bot.data_manager.remnawave_repository import (..., get_webapp_settings
 `get_auth_token_by_user_id` / `get_user_by_email` / `create_user_by_email` (эти функции уже
 должны существовать в проектном `database.py` — требуется проверить/добавить при интеграции).
 
+## 5.1. Единый сценарий подарочных и реферальных ссылок (pending action)
+
+Раньше `/gift/<gift_code>` и `/ref/<referrer_id>` вели пользователя ТОЛЬКО в Telegram
+(deep link `?start=gift_<code>` / `?start=ref_<id>`), независимо от того, авторизован ли он
+уже, и не давая выбрать вход по email. Теперь обе ссылки используют единый серверный
+механизм "pending action":
+
+- **Таблица** `auth_pending_actions` (`database.py`): `token` (криптографически случайный,
+  `secrets.token_urlsafe(32)`), `action_type` (`gift`/`referral`), `gift_code`/`referrer_id`,
+  `expires_at` (по умолчанию 24 часа), `consumed_at`/`consumed_by_user_id`/`result_status`
+  (для идемпотентности повторных вызовов).
+- **`GET /gift/{gift_code}`** и **`GET /ref/{referrer_id}`**: если подарок/реферер валидны —
+  создают pending action и делают `302` на `/?pending_token=<token>`. Клиенту уходит только
+  токен — сам `gift_code`/`referrer_id` остаются на сервере и не могут быть подменены.
+  Невалидные случаи (подарок не найден/уже активирован, реферер не существует) — как раньше,
+  простая HTML-страница со ссылкой в Telegram, без pending action.
+- **`GET /api/webapp/pending-actions/info?pending_token=...`** — безопасная информация для
+  UI (`login.html` показывает баннер "Вам доступен подарок" / "Вы переходите по приглашению")
+  без раскрытия деталей, позволяющих обойти проверки.
+- **`POST /api/webapp/pending-actions/complete`** — вызывается автоматически после входа
+  (и `login.html`, и `app.html`). Тело: `{pending_token, token?, init_data?}` — **`user_id` не
+  принимается и не может быть передан клиентом**: пользователь определяется только через
+  `_resolve_authenticated_user` (существующий persistent auth-токен ИЛИ подписанные Telegram
+  `init_data`, та же проверка, что и в `/api/auth/token`). Атомарно "забирает" токен
+  (`claim_pending_action`, условный `UPDATE ... WHERE consumed_at IS NULL`) и применяет
+  действие ровно один раз — повторные/параллельные вызовы идемпотентны (`already_completed`).
+- Бизнес-логика не дублируется: активация подарка идёт через общую `_activate_gift_for_user`
+  (используется и здесь, и в уже существующем `POST /api/gift/activate`), привязка реферала —
+  через `database.link_referrer_if_eligible` (атомарный `UPDATE ... WHERE referred_by IS NULL`).
+  Классический Telegram-флоу (`bot/handlers.py`: `/start gift_<code>`, `/start ref_<id>`) не
+  изменён и продолжает работать как раньше.
+- `login.html`: если в URL есть `pending_token`, показывает баннер с контекстом ссылки над
+  выбором способа входа (Telegram/email — оба равноправны) и передаёт `pending_token` через
+  все переходы (включая обратный переход из Telegram) в финальный редирект `/?token=...`.
+- `app.html`: снимает `pending_token` из URL при загрузке и, если пользователь уже авторизован
+  (что для этой страницы всегда так — она рендерится только для авторизованных), сразу
+  вызывает `complete` и показывает тост с результатом — экран входа при этом не показывается.
+
 ## 6. Основные разделы интерфейса (SPA, одна страница `app.html`)
 
 На основе сгенерированных HTML-секций и id (`#main-page`, `#purchase-page`, `#renew-page`,

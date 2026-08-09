@@ -6,6 +6,7 @@ import json
 import time
 import re
 import hashlib
+import secrets
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -1208,6 +1209,7 @@ def run_migration():
             _ensure_subscription_lte_table(cursor)
             _ensure_host_squads_table(cursor)
             _ensure_analytics_tables(cursor)
+            _ensure_auth_pending_actions_table(cursor)
             try:
                 cursor.execute(
                     "UPDATE plans SET traffic_limit_strategy = 'MONTH_ROLLING' "
@@ -1910,6 +1912,155 @@ def _ensure_user_gifts_table(cursor: sqlite3.Cursor) -> None:
     _ensure_index(cursor, "idx_user_gifts_from_user", "user_gifts", "from_user_id")
     _ensure_index(cursor, "idx_user_gifts_gift_code", "user_gifts", "gift_code")
     _ensure_index(cursor, "idx_user_gifts_is_activated", "user_gifts", "is_activated")
+
+
+def _ensure_auth_pending_actions_table(cursor: sqlite3.Cursor) -> None:
+    """Миграция для таблицы pending action — единого механизма "открыл ссылку
+    подарка/рефералки → потом авторизовался (Telegram ИЛИ email) → действие
+    применяется автоматически". См. src/shop_bot/webapp/handlers.py:
+    web_gift_page, web_referral_page, api_pending_action_info,
+    api_pending_action_complete.
+    """
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_pending_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            action_type TEXT NOT NULL,
+            gift_code TEXT,
+            referrer_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP,
+            consumed_by_user_id INTEGER,
+            result_status TEXT
+        )
+        """
+    )
+    _ensure_unique_index(cursor, "idx_auth_pending_actions_token", "auth_pending_actions", "token")
+    _ensure_index(cursor, "idx_auth_pending_actions_expires_at", "auth_pending_actions", "expires_at")
+    _ensure_index(cursor, "idx_auth_pending_actions_gift_code", "auth_pending_actions", "gift_code")
+    _ensure_index(cursor, "idx_auth_pending_actions_referrer_id", "auth_pending_actions", "referrer_id")
+
+
+PENDING_ACTION_DEFAULT_TTL_HOURS = 24
+
+
+def create_pending_action(
+    action_type: str,
+    *,
+    gift_code: str | None = None,
+    referrer_id: int | None = None,
+    ttl_hours: int = PENDING_ACTION_DEFAULT_TTL_HOURS,
+) -> str | None:
+    """Создать pending action и вернуть одноразовый случайный токен.
+
+    Токен — единственное, что уходит клиенту; сам контекст (какой именно
+    подарок/реферер) остаётся только на сервере и не может быть подменён
+    клиентом на этапе завершения (см. get_pending_action/claim_pending_action).
+    """
+    if action_type not in ("gift", "referral"):
+        logging.error("create_pending_action: неизвестный action_type=%r", action_type)
+        return None
+    token = secrets.token_urlsafe(32)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO auth_pending_actions (token, action_type, gift_code, referrer_id, expires_at)
+                VALUES (?, ?, ?, ?, datetime('now', ?))
+                """,
+                (token, action_type, gift_code, referrer_id, f"+{int(ttl_hours)} hours"),
+            )
+            conn.commit()
+        return token
+    except sqlite3.Error as e:
+        logging.error("Failed to create pending action (%s): %s", action_type, e)
+        return None
+
+
+def get_pending_action(token: str) -> dict | None:
+    """Вернуть запись pending action по токену как есть (включая уже
+    истёкшие/использованные — вызывающий код сам решает, что показать
+    пользователю). Не выполняет побочных эффектов."""
+    if not token:
+        return None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM auth_pending_actions WHERE token = ?", (str(token),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error("Failed to get pending action: %s", e)
+        return None
+
+
+def claim_pending_action(token: str, user_id: int) -> bool:
+    """Атомарно "забрать" pending action для указанного пользователя.
+
+    Ключевой момент идемпотентности/защиты от гонки: UPDATE проверяет
+    `consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP` прямо в WHERE,
+    и именно `cursor.rowcount` (а не отдельный предварительный SELECT)
+    определяет, успел ли именно этот вызов "выиграть" право применить действие.
+    Если два параллельных запроса пришлют один и тот же pending_token —
+    claim_pending_action вернёт True ровно для одного из них.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE auth_pending_actions
+                SET consumed_at = CURRENT_TIMESTAMP, consumed_by_user_id = ?
+                WHERE token = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                """,
+                (int(user_id), str(token)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to claim pending action: %s", e)
+        return False
+
+
+def set_pending_action_result(token: str, result_status: str) -> bool:
+    """Сохранить итоговый статус применения действия — чтобы повторный вызов
+    complete (тем же пользователем, для уже использованного токена) мог
+    вернуть тот же самый структурированный результат без повторного выполнения
+    бизнес-логики."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE auth_pending_actions SET result_status = ? WHERE token = ?",
+                (result_status, str(token)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to set pending action result: %s", e)
+        return False
+
+
+def cleanup_expired_pending_actions(max_age_hours: int = 72) -> int:
+    """Удалить давно истёкшие pending actions (профилактическая очистка,
+    не обязательна для корректности — claim_pending_action и без этого не
+    применит просроченный токен)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM auth_pending_actions WHERE expires_at < datetime('now', ?)",
+                (f"-{int(max_age_hours)} hours",),
+            )
+            conn.commit()
+            return cursor.rowcount
+    except sqlite3.Error as e:
+        logging.error("Failed to cleanup expired pending actions: %s", e)
+        return 0
 
 
 def _ensure_promo_tables(cursor: sqlite3.Cursor) -> None:
@@ -7805,7 +7956,13 @@ def activate_user_gift(
     activated_by_user_id: int,
 ) -> tuple[bool, dict | None]:
     """Активировать подарок для пользователя.
-    
+
+    Атомарность/защита от race condition: сама активация — это одно UPDATE
+    с условием `is_activated = 0` прямо в WHERE, и именно `cursor.rowcount`
+    (а не предварительный SELECT) решает, "выиграл" ли этот вызов гонку.
+    Так два параллельных запроса на активацию одного и того же подарка не
+    могут оба посчитать себя успешными — только один получит rowcount=1.
+
     Returns: (success, gift_data)
     """
     try:
@@ -7828,11 +7985,16 @@ def activate_user_gift(
                 """
                 UPDATE user_gifts
                 SET is_activated = 1, activated_by_user_id = ?, activated_at = ?
-                WHERE gift_code = ?
+                WHERE gift_code = ? AND is_activated = 0
                 """,
                 (int(activated_by_user_id), _now_str(), gift_code),
             )
+            won_race = cur.rowcount > 0
             conn.commit()
+
+        if not won_race:
+            # Другой параллельный запрос уже успел активировать этот подарок первым.
+            return False, gift
         
         gift["is_activated"] = True
         gift["activated_by_user_id"] = int(activated_by_user_id)
@@ -7893,6 +8055,74 @@ def set_referred_by_from_gift(user_id: int, from_user_id: int, *, max_age_second
     except Exception as e:
         logging.error("set_referred_by_from_gift failed for user %s: %s", user_id, e)
         return False
+
+
+# Возможные статусы результата привязки реферала — используются как UI-статусы
+# в ответе POST /api/webapp/pending-actions/complete.
+REFERRAL_LINK_LINKED = "linked"
+REFERRAL_LINK_ALREADY_LINKED = "already_linked"
+REFERRAL_LINK_SELF_FORBIDDEN = "self_referral_forbidden"
+REFERRAL_LINK_INVALID_REFERRER = "invalid_referrer"
+REFERRAL_LINK_NOT_ELIGIBLE = "not_eligible"
+
+
+def link_referrer_if_eligible(user_id: int, referrer_id: int) -> str:
+    """Привязать пользователя к рефереру (users.referred_by), если это допустимо.
+
+    Атомарно: UPDATE сразу проверяет условие `referred_by IS NULL` в WHERE и
+    возвращает успех по `cursor.rowcount` — так что даже при параллельных
+    вызовах (например, два одновременных запроса complete по одному и тому же
+    pending-токену) привязка реферера не может произойти дважды и не может
+    затереть уже существующего реферера.
+
+    Не перепривязывает пользователей, у которых уже есть referred_by — это
+    соответствует уже существующей политике для обычной регистрации через бота
+    (см. register_user_if_not_exists: обновление реферера у существующего
+    пользователя тоже допускается только пока referred_by IS NULL, без
+    ограничения по "давности" регистрации).
+
+    Возвращает один из: linked, already_linked, self_referral_forbidden,
+    invalid_referrer, not_eligible.
+    """
+    try:
+        uid = int(user_id)
+        rid = int(referrer_id)
+    except (TypeError, ValueError):
+        return REFERRAL_LINK_INVALID_REFERRER
+
+    if rid <= 0:
+        return REFERRAL_LINK_INVALID_REFERRER
+    if rid == uid:
+        return REFERRAL_LINK_SELF_FORBIDDEN
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT 1 FROM users WHERE telegram_id = ?", (rid,))
+            if not cursor.fetchone():
+                return REFERRAL_LINK_INVALID_REFERRER
+
+            cursor.execute("SELECT referred_by FROM users WHERE telegram_id = ?", (uid,))
+            row = cursor.fetchone()
+            if not row:
+                return REFERRAL_LINK_NOT_ELIGIBLE
+
+            if row[0] is not None:
+                return REFERRAL_LINK_ALREADY_LINKED if int(row[0]) == rid else REFERRAL_LINK_ALREADY_LINKED
+
+            cursor.execute(
+                "UPDATE users SET referred_by = ? WHERE telegram_id = ? AND referred_by IS NULL AND telegram_id != ?",
+                (rid, uid, rid),
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return REFERRAL_LINK_LINKED
+            # Кто-то параллельно уже успел выставить referred_by между нашим SELECT и UPDATE.
+            return REFERRAL_LINK_ALREADY_LINKED
+    except Exception as e:
+        logging.error("link_referrer_if_eligible failed for user %s -> referrer %s: %s", user_id, referrer_id, e)
+        return REFERRAL_LINK_NOT_ELIGIBLE
 
 
 def delete_user_gift(gift_id: int) -> bool:

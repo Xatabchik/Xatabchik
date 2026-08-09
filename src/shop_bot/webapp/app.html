@@ -37,6 +37,12 @@
             document.cookie = "auth_token=; max-age=0; path=/; SameSite=Lax";
         };
 
+        // Pending action (подарок/реферальная ссылка, см. /gift/<code> и /ref/<id>):
+        // токен снимается из URL один раз при загрузке страницы и запоминается для
+        // отправки на /api/webapp/pending-actions/complete после того, как ниже будет
+        // понятно, что пользователь точно авторизован (см. конец файла).
+        window._pendingActionToken = null;
+
         if (window.history && window.history.replaceState) {
             const url = new URL(window.location.href);
             let changed = false;
@@ -47,6 +53,11 @@
                 changed = true;
             } else {
                 window.getAuthToken(); // Refresh cookie age if token exists
+            }
+            if (url.searchParams.has('pending_token')) {
+                window._pendingActionToken = url.searchParams.get('pending_token');
+                url.searchParams.delete('pending_token');
+                changed = true;
             }
             if (changed) {
                 window.history.replaceState(null, '', url.toString() || window.location.pathname);
@@ -4705,6 +4716,33 @@
                 } catch (e) { /* silent */ }
             });
         })();
+
+        // ── Единый сценарий pending action (подарок/реферальная ссылка) ──────
+        // window._pendingActionToken снят из URL ещё в начале файла (см. <head>).
+        // Пользователь на этот момент уже точно авторизован — эта страница
+        // (app.html) рендерится сервером только для авторизованных.
+        // Действие применяется на сервере ровно один раз (см.
+        // POST /api/webapp/pending-actions/complete — claim_pending_action).
+        window.addEventListener('appReady', async () => {
+            const pendingToken = window._pendingActionToken;
+            if (!pendingToken) return;
+            window._pendingActionToken = null; // не повторяем запрос на этой же загрузке страницы
+            try {
+                const authToken = window.getAuthToken();
+                const r = await fetch('/api/webapp/pending-actions/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pending_token: pendingToken, token: authToken })
+                });
+                const d = await r.json();
+                if (d.message) {
+                    showNotification(d.message, d.ok ? 'success' : 'error');
+                }
+                if (d.ok && d.action_type === 'gift' && d.status === 'activated') {
+                    setTimeout(() => location.reload(), 1800);
+                }
+            } catch (e) { /* тихо игнорируем — страница уже загружена и рабочая */ }
+        });
     </script>
 </body>
 

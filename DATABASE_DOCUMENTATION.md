@@ -642,7 +642,42 @@
 - `create_user_gift()` - создание подарка
 - `get_user_gift()` - получение подарка по ID
 - `get_gift_by_code()` - получение подарка по коду
-- `activate_user_gift()` - активация подарка
+- `activate_user_gift()` - активация подарка (атомарно, защищено от повторной активации гонкой)
+
+---
+
+### 26. `auth_pending_actions` - Отложенные действия по ссылкам (подарок/реферал)
+
+Единый механизм для ссылок `/gift/<gift_code>` и `/ref/<referrer_id>`, открытых без входа
+в систему: ссылка создаёт запись с одноразовым токеном, а после успешной авторизации
+(Telegram или email) исходное действие применяется автоматически и ровно один раз.
+См. также `WEBAPP_MINIAPP_DOCUMENTATION.md`, раздел 5.1.
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `id` | INTEGER PRIMARY KEY | ID записи (автоинкремент) |
+| `token` | TEXT UNIQUE NOT NULL | Одноразовый случайный токен (`secrets.token_urlsafe(32)`); единственное, что уходит клиенту |
+| `action_type` | TEXT NOT NULL | `gift` или `referral` |
+| `gift_code` | TEXT | Код подарка (только для `action_type='gift'`) |
+| `referrer_id` | INTEGER | ID реферера (только для `action_type='referral'`) |
+| `created_at` | TIMESTAMP | Дата создания (по умолчанию текущее время) |
+| `expires_at` | TIMESTAMP NOT NULL | Срок действия (по умолчанию 24 часа от создания) |
+| `consumed_at` | TIMESTAMP | Когда токен был использован (NULL — ещё не использован) |
+| `consumed_by_user_id` | INTEGER | Кто использовал токен |
+| `result_status` | TEXT | Итоговый статус применения (`activated`, `linked`, `already_linked` и т.д.) — для идемпотентного повторного ответа без повторного выполнения бизнес-логики |
+
+**Индексы:**
+- `idx_auth_pending_actions_token` - уникальный индекс на token
+- `idx_auth_pending_actions_expires_at` - индекс на expires_at (для очистки просроченных)
+- `idx_auth_pending_actions_gift_code` - индекс на gift_code
+- `idx_auth_pending_actions_referrer_id` - индекс на referrer_id
+
+**Функции для работы:**
+- `create_pending_action()` - создать pending action, вернуть токен
+- `get_pending_action()` - получить запись по токену (как есть, без побочных эффектов)
+- `claim_pending_action()` - атомарно "забрать" токен для пользователя (защита от гонки/повторов)
+- `set_pending_action_result()` - сохранить итоговый статус (для идемпотентных повторных ответов)
+- `cleanup_expired_pending_actions()` - профилактическая очистка старых записей
 
 ---
 
