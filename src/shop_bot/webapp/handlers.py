@@ -3708,7 +3708,12 @@ async def web_referral_page(referrer_id: str, request: Request):
     try:
         bot_username = get_setting("telegram_bot_username") or ""
         webapp_settings = get_webapp_settings()
-        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
+        project_name = (
+            webapp_settings.get("webapp_title")
+            or webapp_settings.get("project_name")
+            or get_setting("panel_brand_title")
+            or "VPN Bot"
+        )
         logo_url = webapp_settings.get("webapp_logo") or ""
         deeplink = f"https://t.me/{bot_username}?start=ref_{referrer_id}" if bot_username else ""
 
@@ -3770,7 +3775,12 @@ async def web_gift_page(gift_code: str, request: Request):
         from shop_bot.data_manager.remnawave_repository import get_gift_by_code
         bot_username = get_setting("telegram_bot_username") or ""
         webapp_settings = get_webapp_settings()
-        project_name = webapp_settings.get("webapp_title") or webapp_settings.get("project_name") or "VPN Bot"
+        project_name = (
+            webapp_settings.get("webapp_title")
+            or webapp_settings.get("project_name")
+            or get_setting("panel_brand_title")
+            or "VPN Bot"
+        )
         logo_url = webapp_settings.get("webapp_logo") or ""
 
         gift = get_gift_by_code(gift_code) if gift_code else None
