@@ -2886,6 +2886,77 @@ async def api_user_referral_info(request: Request):
     }
 
 # ── User sent gifts ────────────────────────────────────────────────────────
+def _gift_link_row_html(label: str, link: str, share_text: str) -> str:
+    """Одна строка со ссылкой активации подарка: текст ссылки + копировать + поделиться."""
+    safe_link = link.replace("'", "\\'")
+    return f"""
+    <div class="flex flex-col gap-1">
+        <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">{label}</div>
+        <div class="flex items-center gap-2">
+            <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">{link}</div>
+            <button onclick="copyToClipboard('{safe_link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+                <span class="material-symbols-rounded text-sm">content_copy</span>
+            </button>
+            <a href="https://t.me/share/url?url={quote(link, safe='')}&text={quote(share_text, safe='')}" target="_blank"
+               class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                <span class="material-symbols-rounded text-sm">send</span>
+            </a>
+        </div>
+    </div>"""
+
+
+def _get_gift_action_block_html(gift_code: str, webapp_link: str, telegram_link: str) -> str:
+    """Общий блок для неактивированного подарка: обе ссылки активации
+    (webapp + Telegram), каждая со своими кнопками копировать/поделиться,
+    и отдельно, с явным отступом, кнопка "Активировать себе" — специально
+    подальше от остальных кнопок, чтобы не нажать её случайно."""
+    share_text = "🎁 Получи подарочный VPN ключ!"
+    links_html = "".join(
+        _gift_link_row_html(label, link, share_text)
+        for label, link in (("Ссылка активации (в приложении)", webapp_link), ("Ссылка активации (в Telegram)", telegram_link))
+        if link
+    )
+    return f"""
+         <div class="flex flex-col gap-2 mt-1 pt-2 border-t border-white/5">
+             <div class="flex items-center gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">
+                 <span class="material-symbols-rounded text-amber-400 text-sm shrink-0">info</span>
+                 <span class="text-[9px] text-amber-200/80 leading-relaxed">Подарок ещё не активирован. Активируйте его себе или поделитесь ссылкой, чтобы отдать другому пользователю.</span>
+             </div>
+             {links_html}
+             <div class="mt-3 pt-2 border-t border-dashed border-white/10">
+                 <button onclick="activateOwnGift('{gift_code}', this)"
+                     class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                     <span class="material-symbols-rounded text-sm">redeem</span>
+                     <span>Активировать себе</span>
+                 </button>
+             </div>
+         </div>"""
+
+
+def _get_gift_fallback_card_html(g: dict, badge_html: str, action_block_html: str) -> str:
+    """Карточка подарка на случай, если связанный VPN-ключ не найден (например,
+    ещё не успел создаться) — но со всеми теми же полями/кнопками, что и у
+    полной карточки, чтобы подарок был полноценно управляемым в любом случае."""
+    host_name = g.get("host_name") or "Подарок"
+    created_at = (g.get("created_at") or "")[:10]
+    return f"""
+        <div class="glass-card border border-white/10 rounded-2xl p-3 flex flex-col gap-2 mb-3">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <div class="w-9 h-9 bg-white/5 rounded-xl flex items-center justify-center shrink-0">
+                        <span class="material-symbols-rounded text-amber-400 text-lg">card_giftcard</span>
+                    </div>
+                    <div>
+                        <div class="text-xs font-bold text-white">{host_name}</div>
+                        <div class="text-[9px] text-gray-500">{created_at}</div>
+                    </div>
+                </div>
+                {badge_html}
+            </div>
+            {action_block_html}
+        </div>"""
+
+
 @app.post("/api/user/gifts")
 async def api_user_gifts(request: Request):
     try:
@@ -2907,54 +2978,29 @@ async def api_user_gifts(request: Request):
     bot_username = get_setting("telegram_bot_username") or ""
     webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
 
+    badge_html = (
+        '<span class="text-[9px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full '
+        'font-bold uppercase tracking-wider flex items-center gap-0.5">'
+        '<span class="material-symbols-rounded text-[10px]">card_giftcard</span>Подарок</span>'
+    )
+
     result = []
     for g in gifts:
         code = g.get("gift_code") or ""
-        if webapp_domain:
-            link = f"{webapp_domain}/gift/{code}"
-        elif bot_username:
-            link = f"https://t.me/{bot_username}?start=gift_{code}"
-        else:
-            link = ""
+        webapp_link = f"{webapp_domain}/gift/{code}" if webapp_domain else ""
+        telegram_link = f"https://t.me/{bot_username}?start=gift_{code}" if bot_username else ""
+        # "link" оставлен для обратной совместимости (используется JS-фолбэком) — предпочитаем webapp-ссылку.
+        link = webapp_link or telegram_link
+
+        action_block_html = _get_gift_action_block_html(code, webapp_link, telegram_link)
 
         card_html = None
         key_id = g.get("key_id")
-        if key_id:
-            gift_key = database.get_key_by_id(int(key_id))
-            if gift_key:
-                badge_html = (
-                    '<span class="text-[9px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full '
-                    'font-bold uppercase tracking-wider flex items-center gap-0.5">'
-                    '<span class="material-symbols-rounded text-[10px]">card_giftcard</span>Подарок</span>'
-                )
-                share_row_html = ""
-                if link:
-                    safe_link = link.replace("'", "\\'")
-                    share_row_html = f"""
-                    <div class="flex items-center gap-2">
-                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">{link}</div>
-                        <button onclick="copyToClipboard('{safe_link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
-                            <span class="material-symbols-rounded text-sm">content_copy</span>
-                        </button>
-                        <a href="https://t.me/share/url?url={quote(link, safe='')}&text={quote('🎁 Получи подарочный VPN ключ!', safe='')}" target="_blank"
-                           class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
-                            <span class="material-symbols-rounded text-sm">send</span>
-                        </a>
-                    </div>"""
-                extra_content_html = f"""
-                     <div class="flex flex-col gap-2 mt-1 pt-2 border-t border-white/5">
-                         <div class="flex items-center gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">
-                             <span class="material-symbols-rounded text-amber-400 text-sm shrink-0">info</span>
-                             <span class="text-[9px] text-amber-200/80 leading-relaxed">Подарок ещё не активирован. Активируйте его себе или поделитесь ссылкой, чтобы отдать другому пользователю.</span>
-                         </div>
-                         {share_row_html}
-                         <button onclick="activateOwnGift('{code}', this)"
-                             class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                             <span class="material-symbols-rounded text-sm">redeem</span>
-                             <span>Активировать себе</span>
-                         </button>
-                     </div>"""
-                card_html = _get_key_card_html(gift_key, badge_html=badge_html, extra_content_html=extra_content_html)
+        gift_key = database.get_key_by_id(int(key_id)) if key_id else None
+        if gift_key:
+            card_html = _get_key_card_html(gift_key, badge_html=badge_html, extra_content_html=action_block_html)
+        else:
+            card_html = _get_gift_fallback_card_html(g, badge_html, action_block_html)
 
         result.append({
             "gift_id": g.get("gift_id"),
@@ -2963,6 +3009,8 @@ async def api_user_gifts(request: Request):
             "created_at": g.get("created_at"),
             "expires_at": g.get("expires_at"),
             "link": link,
+            "webapp_link": webapp_link,
+            "telegram_link": telegram_link,
             "card_html": card_html,
         })
 

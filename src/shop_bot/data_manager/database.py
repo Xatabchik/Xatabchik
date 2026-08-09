@@ -1647,6 +1647,10 @@ def delete_key_by_id(key_id: int) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
+            # Ключ может быть привязан к неактивированному подарку (user_gifts.key_id) —
+            # при удалении ключа (по истечении срока, вручную и т.д.) подарок должен
+            # пропадать из списка так же, как исчезает обычный ключ.
+            cursor.execute("DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0", (key_id,))
             cursor.execute("DELETE FROM vpn_keys WHERE key_id = ?", (key_id,))
             affected = cursor.rowcount
             conn.commit()
@@ -6182,6 +6186,18 @@ def delete_key_by_email(email: str) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
+            # Как и в delete_key_by_id: удаляем связанный неактивированный подарок,
+            # чтобы он пропал из списка так же, как исчезает обычный просроченный ключ.
+            cursor.execute(
+                "SELECT key_id FROM vpn_keys WHERE email = ? OR key_email = ?",
+                (lookup, lookup),
+            )
+            key_ids = [row[0] for row in cursor.fetchall()]
+            if key_ids:
+                cursor.executemany(
+                    "DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0",
+                    [(kid,) for kid in key_ids],
+                )
             cursor.execute(
                 "DELETE FROM vpn_keys WHERE email = ? OR key_email = ?",
                 (lookup, lookup),
@@ -6709,6 +6725,13 @@ def delete_user_keys(user_id: int):
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM user_gifts
+                WHERE is_activated = 0 AND key_id IN (SELECT key_id FROM vpn_keys WHERE user_id = ?)
+                """,
+                (user_id,),
+            )
             cursor.execute("DELETE FROM vpn_keys WHERE user_id = ?", (user_id,))
             conn.commit()
     except sqlite3.Error as e:
@@ -6739,6 +6762,15 @@ def delete_user_completely(user_id: int) -> bool:
             # Удалить тикеты поддержки
             cursor.execute(
                 "DELETE FROM support_tickets WHERE user_id = ?",
+                (user_id,),
+            )
+
+            # Удалить неактивированные подарки, привязанные к ключам пользователя
+            cursor.execute(
+                """
+                DELETE FROM user_gifts
+                WHERE is_activated = 0 AND key_id IN (SELECT key_id FROM vpn_keys WHERE user_id = ?)
+                """,
                 (user_id,),
             )
 
@@ -7784,11 +7816,28 @@ def get_gift_by_code(gift_code: str) -> dict | None:
 
 
 def get_user_inactive_gifts(from_user_id: int) -> list[dict]:
-    """Получить список неактивированных подарков пользователя."""
+    """Получить список неактивированных подарков пользователя.
+
+    Заодно подчищает "осиротевшие" подарки — те, чей связанный ключ (vpn_keys)
+    уже был удалён (например, стандартной чисткой просроченных ключей), но по
+    какой-то причине запись в user_gifts не была удалена вместе с ним. Такие
+    подарки не должны продолжать висеть в списке пользователя.
+    """
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
+            cur.execute(
+                """
+                DELETE FROM user_gifts
+                WHERE from_user_id = ? AND is_activated = 0
+                  AND key_id IS NOT NULL
+                  AND key_id NOT IN (SELECT key_id FROM vpn_keys)
+                """,
+                (int(from_user_id),),
+            )
+            if cur.rowcount:
+                conn.commit()
             cur.execute(
                 "SELECT * FROM user_gifts WHERE from_user_id = ? AND is_activated = 0 ORDER BY created_at DESC",
                 (int(from_user_id),),

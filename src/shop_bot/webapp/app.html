@@ -3899,11 +3899,34 @@
         const GIFTS_PAGE_SIZE = 5;
         window._giftsState = { gifts: [], page: 0 };
 
+        function _giftLinkRowHtml(label, link) {
+            if (!link) return '';
+            const text = encodeURIComponent('🎁 Получи подарочный VPN ключ!');
+            return `
+                <div class="flex flex-col gap-1">
+                    <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">${label}</div>
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${link}</div>
+                        <button onclick="copyToClipboard('${link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+                            <span class="material-symbols-rounded text-sm">content_copy</span>
+                        </button>
+                        <a href="https://t.me/share/url?url=${encodeURIComponent(link)}&text=${text}" target="_blank"
+                           class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                            <span class="material-symbols-rounded text-sm">send</span>
+                        </a>
+                    </div>
+                </div>`;
+        }
+
         function _giftCardHtml(g) {
             if (g.card_html) return g.card_html;
-            // Fallback (e.g. underlying key not found): simplified card
+            // Fallback (e.g. underlying key not found): simplified card, but with the same
+            // full set of fields/buttons as the server-rendered card (both activation links,
+            // copy/share, and the "Активировать себе" button kept visually separated below).
+            const webappLink = g.webapp_link || g.link || '';
+            const telegramLink = g.telegram_link || '';
             return `
-                <div class="glass-card border border-white/10 rounded-xl p-3 flex flex-col gap-2">
+                <div class="glass-card border border-white/10 rounded-xl p-3 flex flex-col gap-2 mb-3">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
                             <span class="material-symbols-rounded text-amber-400 text-base">card_giftcard</span>
@@ -3914,21 +3937,14 @@
                         </div>
                         <span class="text-[9px] text-amber-400 font-bold uppercase">Не активирован</span>
                     </div>
-                    ${g.link ? `
-                    <div class="flex items-center gap-2">
-                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${g.link}</div>
-                        <button onclick="copyToClipboard('${g.link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
-                            <span class="material-symbols-rounded text-sm">content_copy</span>
+                    ${_giftLinkRowHtml('Ссылка активации (в приложении)', webappLink)}
+                    ${_giftLinkRowHtml('Ссылка активации (в Telegram)', telegramLink)}
+                    <div class="mt-3 pt-2 border-t border-dashed border-white/10">
+                        <button onclick="activateOwnGift('${g.gift_code}', this)" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                            <span class="material-symbols-rounded text-sm">redeem</span>
+                            <span>Активировать себе</span>
                         </button>
-                        <a href="https://t.me/share/url?url=${encodeURIComponent(g.link)}&text=${encodeURIComponent('🎁 Получи подарочный VPN ключ!')}" target="_blank"
-                           class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
-                            <span class="material-symbols-rounded text-sm">send</span>
-                        </a>
-                    </div>` : ''}
-                    <button onclick="activateOwnGift('${g.gift_code}', this)" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                        <span class="material-symbols-rounded text-sm">redeem</span>
-                        <span>Активировать себе</span>
-                    </button>
+                    </div>
                 </div>`;
         }
 
