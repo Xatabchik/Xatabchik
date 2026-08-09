@@ -2994,11 +2994,9 @@ async def api_user_gifts(request: Request):
     bot_username = get_setting("telegram_bot_username") or ""
     webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
 
-    badge_html = (
-        '<span class="text-[9px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full '
-        'font-bold uppercase tracking-wider flex items-center gap-0.5">'
-        '<span class="material-symbols-rounded text-[10px]">card_giftcard</span>Подарок</span>'
-    )
+    # Бейдж "Подарок" на карточке ключа не нужен — карточки уже находятся на
+    # отдельной вкладке "Подарочные", подпись была избыточной.
+    badge_html = ""
 
     result = []
     for g in gifts:
