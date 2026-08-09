@@ -179,7 +179,10 @@
         }
 
         .key-content.expanded {
-            max-height: 350px;
+            /* Реальная высота выставляется через JS (см. toggleKeyCard) по фактическому
+               содержимому карточки — это лишь запасное значение на случай, если по какой-то
+               причине инлайн-стиль не применился. */
+            max-height: 2000px;
             opacity: 1;
         }
 
@@ -1335,13 +1338,29 @@
         // Signal that JS is ready (for deferred init like gift activation)
         setTimeout(() => window.dispatchEvent(new Event('appReady')), 200);
 
+        // Раскрытие/сворачивание карточки ключа. Раньше высота разворота была
+        // зафиксирована в CSS (max-height: 350px), из-за чего у карточек с большим
+        // содержимым (например, у подарков — с обеими ссылками активации и кнопками)
+        // часть контента обрезалась и была не видна. Теперь высота считается динамически
+        // по фактическому содержимому карточки.
+        function toggleKeyCard(button) {
+            const content = button.nextElementSibling;
+            const icon = button.querySelector('.rotate-icon');
+            if (!content) return;
+            const isExpanded = content.classList.contains('expanded');
+            if (isExpanded) {
+                content.classList.remove('expanded');
+                content.style.maxHeight = '0px';
+            } else {
+                content.classList.add('expanded');
+                content.style.maxHeight = content.scrollHeight + 'px';
+            }
+            if (icon) icon.classList.toggle('expanded');
+        }
+        window.toggleKeyCard = toggleKeyCard;
+
         document.querySelectorAll('.key-toggle').forEach(button => {
-            button.addEventListener('click', () => {
-                const content = button.nextElementSibling;
-                const icon = button.querySelector('.rotate-icon');
-                content.classList.toggle('expanded');
-                icon.classList.toggle('expanded');
-            });
+            button.addEventListener('click', () => toggleKeyCard(button));
         });
         // Dropdown Logic
         const dropdownTrigger = document.getElementById('dropdown-trigger');
@@ -2657,12 +2676,7 @@
 
                 // Re-bind accordion events
                 document.querySelectorAll('#setup-keys-list-container .key-toggle, #profile-keys-list-container .key-toggle').forEach(button => {
-                    button.addEventListener('click', () => {
-                        const content = button.nextElementSibling;
-                        const icon = button.querySelector('.rotate-icon');
-                        content.classList.toggle('expanded');
-                        icon.classList.toggle('expanded');
-                    });
+                    button.addEventListener('click', () => toggleKeyCard(button));
                 });
 
                 // Re-bind renew keys dropdown option clicks
@@ -3562,12 +3576,7 @@
 
                 // Re-bind accordion (expand/collapse) events for the newly injected cards.
                 resultsEl.querySelectorAll('.key-toggle').forEach(button => {
-                    button.addEventListener('click', () => {
-                        const content = button.nextElementSibling;
-                        const icon = button.querySelector('.rotate-icon');
-                        content.classList.toggle('expanded');
-                        icon.classList.toggle('expanded');
-                    });
+                    button.addEventListener('click', () => toggleKeyCard(button));
                 });
             } catch (e) {
                 if (resultsEl) resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
@@ -3903,10 +3912,10 @@
             if (!link) return '';
             const text = encodeURIComponent('🎁 Получи подарочный VPN ключ!');
             return `
-                <div class="flex flex-col gap-1">
+                <div class="flex flex-col gap-1 min-w-0">
                     <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">${label}</div>
-                    <div class="flex items-center gap-2">
-                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${link}</div>
+                    <div class="flex items-center gap-2 min-w-0">
+                        <div class="flex-1 min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${link}</div>
                         <button onclick="copyToClipboard('${link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
                             <span class="material-symbols-rounded text-sm">content_copy</span>
                         </button>
@@ -3962,12 +3971,7 @@
 
             // Re-bind accordion toggles for the freshly-inserted full key cards
             content.querySelectorAll('.key-toggle').forEach(button => {
-                button.addEventListener('click', () => {
-                    const cardContent = button.nextElementSibling;
-                    const icon = button.querySelector('.rotate-icon');
-                    cardContent.classList.toggle('expanded');
-                    if (icon) icon.classList.toggle('expanded');
-                });
+                button.addEventListener('click', () => toggleKeyCard(button));
             });
 
             if (paginationEl) {
