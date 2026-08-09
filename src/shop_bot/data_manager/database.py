@@ -708,6 +708,7 @@ def initialize_db():
 
             ensure_admin_plans_button()
             ensure_admin_trial_button()
+            ensure_admin_auto_renew_button()
             
 
             try:
@@ -4301,6 +4302,54 @@ def ensure_admin_trial_button():
             logging.info("Inserted missing admin_menu button: trial_settings")
     except sqlite3.Error as e:
         logging.error(f"Failed to ensure admin trial button: {e}")
+
+
+def ensure_admin_auto_renew_button():
+    """Ensure that the Admin settings submenu has a button for Автопродление (auto-renew).
+
+    We keep this separate from initialize_default_button_configs(), because that initializer
+    runs only when button_configs is empty. Existing databases created before this button
+    was introduced (button_configs already populated for admin_settings_menu) never get it
+    backfilled by "CREATE TABLE IF NOT EXISTS", so we do it here on every startup instead.
+    This only inserts the row if it is truly absent, so it never overwrites an admin's
+    existing customization of this button.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT 1 FROM button_configs WHERE menu_type = 'admin_settings_menu' AND button_id = 'auto_renew' LIMIT 1"
+            )
+            if cursor.fetchone():
+                return
+
+            cursor.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) FROM button_configs WHERE menu_type = 'admin_settings_menu'"
+            )
+            next_sort = int(cursor.fetchone()[0] or 0) + 1
+
+            cursor.execute(
+                "SELECT COALESCE(MAX(row_position), 0) FROM button_configs WHERE menu_type='admin_settings_menu'"
+            )
+            row_pos = int(cursor.fetchone()[0] or 0) + 1
+            col_pos = 0
+
+            cursor.execute(
+                """
+                INSERT INTO button_configs
+                    (menu_type, button_id, text, callback_data, row_position, column_position, sort_order, button_width, is_active)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                ("admin_settings_menu", "auto_renew", "🔄 Автопродление", "admin_auto_renew", row_pos, col_pos, next_sort, 1),
+            )
+            conn.commit()
+            logging.info("Inserted missing admin_settings_menu button: auto_renew")
+    except sqlite3.Error as e:
+        logging.error(f"Failed to ensure admin auto-renew button: {e}")
+
+
 def reorder_button_configs(menu_type: str, button_orders: list[dict]) -> bool:
     """Reorder button configurations for a menu type"""
     try:
@@ -4467,7 +4516,8 @@ def initialize_default_button_configs():
                 ("notifications", "🔔 Уведомления", "admin_notifications_menu", 4, 0, 8),
                 ("captcha", "🛡️ Капча", "admin_captcha_settings", 4, 1, 9),
                 ("btn_constructor", "🧩 Конструктор кнопок", "admin_btn_constructor", 5, 0, 10),
-                ("back_to_admin", "⬅️ Назад", "admin_menu", 6, 0, 11),
+                ("auto_renew", "🔄 Автопродление", "admin_auto_renew", 5, 1, 11),
+                ("back_to_admin", "⬅️ Назад", "admin_menu", 6, 0, 12),
             ]
             
             for button_id, text, callback_data, row_pos, col_pos, sort_order in admin_settings_menu_buttons:

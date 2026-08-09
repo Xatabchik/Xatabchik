@@ -258,6 +258,7 @@ ALL_SETTINGS_KEYS = [
     "trial_duration_days",
     "trial_traffic_limit_gb",
     "trial_device_limit",
+    "trial_default_host",
     "enable_referrals",
     "minimum_withdrawal",
     "enable_fixed_referral_bonus",

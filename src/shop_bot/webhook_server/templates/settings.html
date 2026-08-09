@@ -1380,6 +1380,16 @@
 							<label class="form-label" for="trial_device_limit">Ограничение устройств (HWID, 0 — без лимита)</label>
 							<input class="form-control" type="number" id="trial_device_limit" name="trial_device_limit" value="{{ settings.trial_device_limit or '0' }}" />
 						</div>
+						<div class="mb-3">
+							<label class="form-label" for="trial_default_host">Хост по умолчанию для триала</label>
+							<select class="form-select pill" id="trial_default_host" name="trial_default_host">
+								<option value="" {% if not settings.trial_default_host %}selected{% endif %}>Авто (пользователь выбирает сам)</option>
+								{% for host in hosts %}
+								<option value="{{ host.host_name }}" {% if settings.trial_default_host == host.host_name %}selected{% endif %}>{{ host.host_name }}</option>
+								{% endfor %}
+							</select>
+							<small class="form-hint">Хост, на котором будут создаваться пробные ключи. «Авто» — пользователь выбирает сам (или берётся единственный доступный).</small>
+						</div>
 					</div>
 				</div>
 			</section>

@@ -35,7 +35,7 @@ from shop_bot.config import get_purchase_success_text
 import re
 from decimal import Decimal, ROUND_HALF_UP
 import logging
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 
 logger = logging.getLogger(__name__)
@@ -825,16 +825,12 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
             </div>
     """
 
-def _get_profile_keys_html(keys: list) -> str:
-    if not keys:
-        return _get_no_key_html()
-    
-    html = ""
-    
-    for key in keys:
-        data = _process_key_data(key)
-        
-        html += f"""
+def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str = "") -> str:
+    """Render the full key-card block (used for regular keys and, with an extra
+    badge/CTA, for not-yet-activated gift keys so both share the same UI)."""
+    data = _process_key_data(key)
+
+    return f"""
         <div class="glass-card border border-white/10 rounded-2xl relative overflow-hidden shadow-lg transition-all hover:border-primary/30 group mb-3">
             <div class="absolute inset-0 bg-gradient-to-r from-primary/0 via-primary/5 to-primary/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 pointer-events-none"></div>
 
@@ -853,6 +849,7 @@ def _get_profile_keys_html(keys: list) -> str:
                 </div>
 
                 <div class="flex items-center gap-2 shrink-0">
+                     {badge_html}
                      <span class="text-[9px] {data['status_bg']} {data['status_color']} px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">{data['status_text']}</span>
                      <div class="w-7 h-7 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
                         <span class="material-symbols-rounded text-gray-500 text-sm group-hover:text-white transition-colors rotate-icon">expand_more</span>
@@ -944,10 +941,19 @@ def _get_profile_keys_html(keys: list) -> str:
                              <span class="auto-renew-label">{'Авто: ВКЛ' if data['auto_renew'] else 'Авто: ВЫКЛ'}</span>
                          </button>
                      </div>
+                     {extra_content_html}
                 </div>
             </div>
         </div>
         """
+
+def _get_profile_keys_html(keys: list) -> str:
+    if not keys:
+        return _get_no_key_html()
+
+    html = ""
+    for key in keys:
+        html += _get_key_card_html(key)
     return html
 
 def _get_setup_keys_html(keys: list) -> str:
@@ -2811,6 +2817,46 @@ async def api_user_gifts(request: Request):
             link = f"https://t.me/{bot_username}?start=gift_{code}"
         else:
             link = ""
+
+        card_html = None
+        key_id = g.get("key_id")
+        if key_id:
+            gift_key = database.get_key_by_id(int(key_id))
+            if gift_key:
+                badge_html = (
+                    '<span class="text-[9px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full '
+                    'font-bold uppercase tracking-wider flex items-center gap-0.5">'
+                    '<span class="material-symbols-rounded text-[10px]">card_giftcard</span>Подарок</span>'
+                )
+                share_row_html = ""
+                if link:
+                    safe_link = link.replace("'", "\\'")
+                    share_row_html = f"""
+                    <div class="flex items-center gap-2">
+                        <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">{link}</div>
+                        <button onclick="copyToClipboard('{safe_link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+                            <span class="material-symbols-rounded text-sm">content_copy</span>
+                        </button>
+                        <a href="https://t.me/share/url?url={quote(link, safe='')}&text={quote('🎁 Получи подарочный VPN ключ!', safe='')}" target="_blank"
+                           class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                            <span class="material-symbols-rounded text-sm">send</span>
+                        </a>
+                    </div>"""
+                extra_content_html = f"""
+                     <div class="flex flex-col gap-2 mt-1 pt-2 border-t border-white/5">
+                         <div class="flex items-center gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">
+                             <span class="material-symbols-rounded text-amber-400 text-sm shrink-0">info</span>
+                             <span class="text-[9px] text-amber-200/80 leading-relaxed">Подарок ещё не активирован. Активируйте его себе или поделитесь ссылкой, чтобы отдать другому пользователю.</span>
+                         </div>
+                         {share_row_html}
+                         <button onclick="activateOwnGift('{code}', this)"
+                             class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                             <span class="material-symbols-rounded text-sm">redeem</span>
+                             <span>Активировать себе</span>
+                         </button>
+                     </div>"""
+                card_html = _get_key_card_html(gift_key, badge_html=badge_html, extra_content_html=extra_content_html)
+
         result.append({
             "gift_id": g.get("gift_id"),
             "gift_code": code,
@@ -2818,6 +2864,7 @@ async def api_user_gifts(request: Request):
             "created_at": g.get("created_at"),
             "expires_at": g.get("expires_at"),
             "link": link,
+            "card_html": card_html,
         })
 
     return {"ok": True, "gifts": result}
@@ -3240,22 +3287,13 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
             return {"ok": False, "error": "Минимум 2 символа для поиска"}
 
         keys = search_user_keys_by_email(req.user_id, q)
-        results = []
-        for key in keys[:20]:
-            data = _process_key_data(key)
-            results.append({
-                "key_id": data["key_id"],
-                "name": data["name"],
-                "expire_date_str": data["expire_date_str"],
-                "status_text": data["status_text"],
-                "status_color": data["status_color"],
-                "status_bg": data["status_bg"],
-                "sub_url": data["sub_url"],
-                "host_name": data["host_name"],
-                "user_key_name": data["user_key_name"],
-            })
+        found_keys = keys[:20]
+        # Reuse the same card renderer as the main "Мои ключи" list so search
+        # results get full parity: same buttons, same onclick wiring (extend,
+        # rename, comment, devices, auto-renew, copy link, etc.).
+        html = _get_profile_keys_html(found_keys) if found_keys else ""
 
-        return {"ok": True, "results": results, "total": len(results)}
+        return {"ok": True, "html": html, "total": len(found_keys)}
     except Exception as e:
         logger.error(f"Error searching keys: {e}")
         return {"ok": False, "error": str(e)}
