@@ -27,11 +27,15 @@ dependencies = [
 dev = [
     "pip-tools",
     "pylint",
-    "black"
+    "black",
+    "pytest>=8.0"
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

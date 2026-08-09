@@ -1249,6 +1249,76 @@ def registration_required(f):
                 await event.answer(message_text)
     return decorated_function
 
+async def _maybe_pay_referral_start_bonus(bot: Bot, user_id: int, referrer_id: int | None) -> None:
+    """Выплатить рефереру фиксированный бонус за регистрацию приглашённого пользователя
+    (настройка "Фиксированный бонус при старте по ссылке", referral_reward_type ==
+    'fixed_start_referrer'), если это применимо и ещё не выплачено.
+
+    Вынесено в отдельную функцию и вызывается из ВСЕХ путей завершения регистрации
+    (обычный /start, капча текстом, капча кнопкой) — раньше эта логика была только в
+    прямом /start-хендлере, и если у бота включена капча (а по умолчанию она включена,
+    см. initialize_default_button_configs: "captcha_enabled": "true"), приглашённые
+    пользователи регистрировались через отдельные капча-хендлеры, где этот бонус вообще
+    не начислялся — реферер мог быть корректно привязан (`users.referred_by`), но так и
+    не получал вознаграждение при этом типе награды.
+    """
+    if not referrer_id:
+        return
+    try:
+        referrer_id = int(referrer_id)
+    except (TypeError, ValueError):
+        return
+    if referrer_id <= 0 or referrer_id == user_id:
+        return
+
+    user_data = get_user(user_id)
+    if not user_data or user_data.get('referral_start_bonus_received'):
+        return
+
+    try:
+        reward_type = (get_setting("referral_reward_type") or "percent_purchase").strip()
+    except Exception:
+        reward_type = "percent_purchase"
+    if reward_type != "fixed_start_referrer":
+        return
+
+    try:
+        amount_raw = get_setting("referral_on_start_referrer_amount") or "20"
+        start_bonus = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+    except Exception:
+        start_bonus = Decimal("20.00")
+    if start_bonus <= 0:
+        return
+
+    try:
+        add_to_referral_balance(referrer_id, float(start_bonus))
+    except Exception as e:
+        logger.warning(f"Реферальный стартовый бонус: не удалось добавить к балансу для реферера {referrer_id}: {e}")
+
+    try:
+        add_to_referral_balance_all(referrer_id, float(start_bonus))
+    except Exception as e:
+        logger.warning(f"Реферальный стартовый бонус: не удалось увеличить referral_balance_all для {referrer_id}: {e}")
+
+    try:
+        set_referral_start_bonus_received(user_id)
+    except Exception:
+        pass
+
+    try:
+        display_name = user_data.get("username") or str(user_id)
+        await bot.send_message(
+            chat_id=referrer_id,
+            text=(
+                "🎁 Начисление за приглашение!\n"
+                f"Новый пользователь: {display_name} (ID: {user_id})\n"
+                f"Бонус: {float(start_bonus):.2f} RUB"
+            )
+        )
+    except Exception:
+        pass
+
+
 def get_user_router() -> Router:
     user_router = Router()
 
@@ -1324,9 +1394,19 @@ def get_user_router() -> Router:
         if captcha_enabled and not user_exists:
             # НЕ регистрируем пользователя здесь - только показываем капчу
             # Регистрация произойдёт после успешного прохождения капчи
-            
-            # Сохраняем реферальную информацию в FSM для последующей регистрации
-            await state.update_data(referred_by=referrer_id)
+
+            # Сохраняем реферальную информацию в FSM для последующей регистрации.
+            # ВАЖНО: обновляем только если пришла НОВАЯ реферальная ссылка — если
+            # пользователь уже ждёт капчу (например, прошло много времени и он
+            # просто написал "/start" заново без параметра рефссылки), referrer_id
+            # здесь будет None, и его НЕЛЬЗЯ сохранять — это затрёт уже сохранённое
+            # значение из первого перехода по ссылке (FSMContext.update_data делает
+            # обычный dict.update, а не "установить, если ещё не задано").
+            if referrer_id:
+                await state.update_data(referred_by=referrer_id)
+            else:
+                existing_state_data = await state.get_data()
+                referrer_id = existing_state_data.get("referred_by")
             
             # Если капча уже пройдена ранее - пропускаем
             if not has_passed_captcha(user_id):
@@ -1340,52 +1420,13 @@ def get_user_router() -> Router:
             # Капча отключена или пользователь уже существует
             register_user_if_not_exists(user_id, username, referrer_id)
 
-        _before = get_user(user_id)
         # Важно: +1 день за реферала начисляем только после того, как реферал активирует триал.
 
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.full_name
         user_data = get_user(user_id)
 
-
-        try:
-            reward_type = (get_setting("referral_reward_type") or "percent_purchase").strip()
-        except Exception:
-            reward_type = "percent_purchase"
-        if reward_type == "fixed_start_referrer" and referrer_id and user_data and not user_data.get('referral_start_bonus_received'):
-            try:
-                amount_raw = get_setting("referral_on_start_referrer_amount") or "20"
-                start_bonus = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
-            except Exception:
-                start_bonus = Decimal("20.00")
-            if start_bonus > 0:
-                try:
-                    ok = add_to_referral_balance(int(referrer_id), float(start_bonus))
-                except Exception as e:
-                    logger.warning(f"Реферальный стартовый бонус: не удалось добавить к балансу для реферера {referrer_id}: {e}")
-                    ok = False
-
-                try:
-                    add_to_referral_balance_all(int(referrer_id), float(start_bonus))
-                except Exception as e:
-                    logger.warning(f"Реферальный стартовый бонус: не удалось увеличить referral_balance_all для {referrer_id}: {e}")
-
-                try:
-                    set_referral_start_bonus_received(user_id)
-                except Exception:
-                    pass
-
-                try:
-                    await bot.send_message(
-                        chat_id=int(referrer_id),
-                        text=(
-                            "🎁 Начисление за приглашение!\n"
-                            f"Новый пользователь: {message.from_user.full_name} (ID: {user_id})\n"
-                            f"Бонус: {float(start_bonus):.2f} RUB"
-                        )
-                    )
-                except Exception:
-                    pass
+        await _maybe_pay_referral_start_bonus(bot, user_id, referrer_id)
 
         if user_data and user_data.get('agreed_to_terms'):
             await message.answer(
@@ -1502,6 +1543,9 @@ def get_user_router() -> Router:
                 # Используем сохранённую реферальную информацию
                 username = message.from_user.username or message.from_user.full_name
                 register_user_if_not_exists(user_id, username, referred_by)
+                # Тот же фиксированный бонус рефереру, что и в прямом /start без капчи
+                # (см. _maybe_pay_referral_start_bonus) — раньше здесь не начислялся вообще.
+                await _maybe_pay_referral_start_bonus(message.bot, user_id, referred_by)
         
                 # Проверяем, активируем ли мы подарок
                 gift_code = data.get("gift_code")
@@ -1584,6 +1628,9 @@ def get_user_router() -> Router:
                 # Используем сохранённую реферальную информацию
                 username = callback.from_user.username or callback.from_user.full_name
                 register_user_if_not_exists(user_id, username, referred_by)
+                # Тот же фиксированный бонус рефереру, что и в прямом /start без капчи
+                # (см. _maybe_pay_referral_start_bonus) — раньше здесь не начислялся вообще.
+                await _maybe_pay_referral_start_bonus(callback.bot, user_id, referred_by)
                 
                 # Проверяем, активируем ли мы подарок
                 gift_code = data.get("gift_code")
