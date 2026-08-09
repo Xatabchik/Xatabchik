@@ -288,6 +288,11 @@
                         <span class="material-symbols-rounded text-[16px] text-gray-400 group-hover:text-primary">refresh</span>
                         <span class="text-[13px] font-medium">Обновить</span>
                     </button>
+                    <button id="edit-profile-btn-menu" onclick="toggleSettingsMenu(); openEditProfileModal();"
+                        class="hidden w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-white/5 transition-colors group">
+                        <span class="material-symbols-rounded text-[16px] text-gray-400 group-hover:text-primary">manage_accounts</span>
+                        <span class="text-[13px] font-medium">Профиль</span>
+                    </button>
                     <div class="h-[1px] bg-white/5 my-0.5"></div>
                     <button id="logout-btn-menu"
                         class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-red-500/10 transition-colors group">
@@ -4763,6 +4768,233 @@
                 }
             } catch (e) { /* тихо игнорируем — страница уже загружена и рабочая */ }
         });
+
+        // ── Профиль: смена пароля / email (пункт меню "Профиль") ─────────────
+        // Пункт меню видим только для аккаунтов с входом по email (auth_email
+        // заполнен на сервере) — для чисто Telegram-аккаунтов там нечего менять.
+        window.addEventListener('appReady', async () => {
+            const token = window.getAuthToken();
+            if (!token) return;
+            try {
+                const resp = await fetch('/api/user/profile-info', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
+                });
+                const d = await resp.json();
+                if (d.ok && d.has_email_auth) {
+                    const btn = document.getElementById('edit-profile-btn-menu');
+                    if (btn) btn.classList.remove('hidden');
+                }
+            } catch (e) { /* пункт меню просто останется скрытым */ }
+        });
+
+        async function openEditProfileModal() {
+            const token = window.getAuthToken();
+            if (!token) { showNotification('Требуется авторизация', 'error'); return; }
+            const modal = document.getElementById('action-modal');
+            const backdrop = document.getElementById('action-backdrop');
+            const card = document.getElementById('action-card');
+            const titleEl = document.getElementById('action-modal-title');
+            const contentEl = document.getElementById('action-modal-content');
+            if (!modal) return;
+            modal.classList.remove('hidden'); modal.classList.add('flex');
+            requestAnimationFrame(() => { backdrop.classList.remove('opacity-0', 'pointer-events-none'); card.classList.remove('translate-y-full'); });
+            titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">manage_accounts</span> Профиль';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
+            await _loadProfileMain(contentEl);
+        }
+
+        async function _loadProfileMain(contentEl) {
+            const token = window.getAuthToken();
+            try {
+                const resp = await fetch('/api/user/profile-info', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
+                });
+                const d = await resp.json();
+                if (!d.ok) { contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка загрузки профиля</div>'; return; }
+                window._profileInfo = d;
+                _renderProfileMain(contentEl, d);
+            } catch (e) {
+                contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка сети</div>';
+            }
+        }
+
+        function _renderProfileMain(contentEl, info) {
+            let html = '<div class="flex flex-col gap-3">';
+            html += `<div class="bg-black/20 rounded-xl p-3 border border-white/5">
+                <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Email</div>
+                <div class="text-[11px] text-gray-200 font-mono truncate">${info.auth_email || '—'}</div>
+            </div>`;
+
+            if (info.pending_email) {
+                html += `<div class="flex items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2.5">
+                    <span class="material-symbols-rounded text-amber-400 text-sm shrink-0 mt-0.5">mail</span>
+                    <span class="text-[10px] text-amber-200/80 leading-relaxed">Ожидает подтверждения смена email на <b class="text-amber-200">${info.pending_email}</b>.</span>
+                </div>`;
+                html += `<button onclick="_renderProfileVerifyEmailCode(document.getElementById('action-modal-content'), '${info.pending_email}')" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                    <span class="material-symbols-rounded text-sm">pin</span>Ввести код подтверждения
+                </button>`;
+                html += `<button onclick="_cancelProfileEmailChange()" class="w-full bg-white/5 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all border border-white/5">Отменить смену email</button>`;
+            } else {
+                html += `<button onclick="_renderProfileChangePassword(document.getElementById('action-modal-content'))" class="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5">
+                    <span class="material-symbols-rounded text-sm">lock_reset</span>Изменить пароль
+                </button>`;
+                html += `<button onclick="_renderProfileChangeEmailRequest(document.getElementById('action-modal-content'))" class="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5">
+                    <span class="material-symbols-rounded text-sm">alternate_email</span>Изменить email
+                </button>`;
+            }
+            html += '</div>';
+            contentEl.innerHTML = html;
+        }
+
+        function _renderProfileChangePassword(contentEl) {
+            contentEl.innerHTML = `
+                <div class="flex flex-col gap-3">
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Текущий пароль</div>
+                        <input type="password" id="profile-current-password" autocomplete="current-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    </div>
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Новый пароль</div>
+                        <input type="password" id="profile-new-password" autocomplete="new-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    </div>
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Повторите новый пароль</div>
+                        <input type="password" id="profile-new-password-confirm" autocomplete="new-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    </div>
+                    <button id="profile-password-submit-btn" onclick="_submitProfileChangePassword()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        <span class="material-symbols-rounded text-sm">check</span>Сохранить
+                    </button>
+                    <button onclick="_loadProfileMain(document.getElementById('action-modal-content'))" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
+                </div>`;
+        }
+
+        async function _submitProfileChangePassword() {
+            const token = window.getAuthToken();
+            const current = document.getElementById('profile-current-password')?.value || '';
+            const next = document.getElementById('profile-new-password')?.value || '';
+            const confirm = document.getElementById('profile-new-password-confirm')?.value || '';
+            if (!current || !next) { showNotification('Заполните все поля', 'error'); return; }
+            if (next !== confirm) { showNotification('Пароли не совпадают', 'error'); return; }
+            const btn = document.getElementById('profile-password-submit-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
+            try {
+                const resp = await fetch('/api/user/profile/change-password', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, current_password: current, new_password: next })
+                });
+                const d = await resp.json();
+                showNotification(d.ok ? (d.message || 'Пароль изменён') : (d.error || 'Ошибка'), d.ok ? 'success' : 'error');
+                if (d.ok) closeActionModal();
+            } catch (e) {
+                showNotification('Ошибка сети', 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">check</span>Сохранить'; }
+            }
+        }
+
+        function _renderProfileChangeEmailRequest(contentEl) {
+            contentEl.innerHTML = `
+                <div class="flex flex-col gap-3">
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Новый email</div>
+                        <input type="email" id="profile-new-email" autocomplete="email" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors" placeholder="name@example.com">
+                    </div>
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Пароль (для подтверждения)</div>
+                        <input type="password" id="profile-email-password" autocomplete="current-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    </div>
+                    <div class="text-[9px] text-gray-500 leading-relaxed">На новый адрес придёт код подтверждения. Текущий email продолжит работать для входа, пока код не будет подтверждён.</div>
+                    <button id="profile-email-request-btn" onclick="_submitProfileChangeEmailRequest()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        <span class="material-symbols-rounded text-sm">send</span>Отправить код
+                    </button>
+                    <button onclick="_loadProfileMain(document.getElementById('action-modal-content'))" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
+                </div>`;
+        }
+
+        async function _submitProfileChangeEmailRequest() {
+            const token = window.getAuthToken();
+            const newEmail = (document.getElementById('profile-new-email')?.value || '').trim();
+            const password = document.getElementById('profile-email-password')?.value || '';
+            if (!newEmail || !password) { showNotification('Заполните все поля', 'error'); return; }
+            const btn = document.getElementById('profile-email-request-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
+            try {
+                const resp = await fetch('/api/user/profile/change-email/request', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, new_email: newEmail, password })
+                });
+                const d = await resp.json();
+                if (d.ok) {
+                    showNotification(d.message || 'Код отправлен', 'success');
+                    _renderProfileVerifyEmailCode(document.getElementById('action-modal-content'), newEmail);
+                } else {
+                    showNotification(d.error || 'Ошибка', 'error');
+                }
+            } catch (e) {
+                showNotification('Ошибка сети', 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">send</span>Отправить код'; }
+            }
+        }
+
+        function _renderProfileVerifyEmailCode(contentEl, pendingEmail) {
+            contentEl.innerHTML = `
+                <div class="flex flex-col gap-3">
+                    <div class="text-[10px] text-gray-400 leading-relaxed">Код отправлен на <b class="text-white">${pendingEmail}</b>. Введите его ниже, чтобы подтвердить смену email.</div>
+                    <input type="text" id="profile-email-code" maxlength="6" inputmode="numeric" placeholder="000000" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-center text-lg tracking-[0.3em] font-mono text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    <button id="profile-email-verify-btn" onclick="_submitProfileVerifyEmailCode()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        <span class="material-symbols-rounded text-sm">check</span>Подтвердить
+                    </button>
+                    <div class="flex items-center justify-between gap-2">
+                        <button onclick="_resendProfileEmailChangeCode()" class="flex-1 text-primary py-1.5 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-colors">Отправить код повторно</button>
+                        <button onclick="_cancelProfileEmailChange()" class="flex-1 text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Отменить</button>
+                    </div>
+                </div>`;
+        }
+
+        async function _submitProfileVerifyEmailCode() {
+            const token = window.getAuthToken();
+            const code = (document.getElementById('profile-email-code')?.value || '').trim();
+            if (!code) { showNotification('Введите код', 'error'); return; }
+            const btn = document.getElementById('profile-email-verify-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
+            try {
+                const resp = await fetch('/api/user/profile/change-email/verify', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, code })
+                });
+                const d = await resp.json();
+                showNotification(d.ok ? (d.message || 'Email изменён') : (d.error || 'Ошибка'), d.ok ? 'success' : 'error');
+                if (d.ok) { closeActionModal(); }
+            } catch (e) {
+                showNotification('Ошибка сети', 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">check</span>Подтвердить'; }
+            }
+        }
+
+        async function _resendProfileEmailChangeCode() {
+            const token = window.getAuthToken();
+            try {
+                const resp = await fetch('/api/user/profile/change-email/resend', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
+                });
+                const d = await resp.json();
+                showNotification(d.ok ? 'Код отправлен повторно' : (d.error || 'Ошибка'), d.ok ? 'success' : 'error');
+            } catch (e) {
+                showNotification('Ошибка сети', 'error');
+            }
+        }
+
+        async function _cancelProfileEmailChange() {
+            const token = window.getAuthToken();
+            try {
+                await fetch('/api/user/profile/change-email/cancel', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
+                });
+            } catch (e) { /* игнорируем сетевые ошибки при отмене */ }
+            _loadProfileMain(document.getElementById('action-modal-content'));
+        }
     </script>
 </body>
 

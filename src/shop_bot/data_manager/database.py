@@ -759,6 +759,9 @@ def _ensure_email_verification_columns(cursor: sqlite3.Cursor) -> None:
         "email_code_hash": "TEXT",
         "email_code_expires_at": "TIMESTAMP",
         "email_code_last_sent_at": "TIMESTAMP",
+        # Новый email, ожидающий подтверждения кода при смене почты из профиля
+        # (текущий auth_email остаётся действующим, пока код не подтверждён).
+        "pending_email": "TEXT",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
@@ -8625,6 +8628,103 @@ def update_email_code_last_sent(user_id: int) -> bool:
     except Exception as e:
         logger.error(f"Failed to update email code last sent for user {user_id}: {e}")
         return False
+
+
+def update_user_password_by_id(user_id: int, new_password: str) -> bool:
+    """Обновить (хэшированный) пароль webapp-аккаунта по telegram_id (смена пароля из профиля,
+    когда пользователь уже авторизован и email известен только по сессии, а не по вводу)."""
+    try:
+        password_hash = hash_password(new_password)
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET auth_pass = ? WHERE telegram_id = ?", (password_hash, int(user_id)))
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to update password for user {user_id}: {e}")
+        return False
+
+
+def set_pending_email(user_id: int, new_email: str) -> bool:
+    """Сохранить новый email, ожидающий подтверждения кодом (смена почты из профиля).
+    Текущий auth_email остаётся действующим для входа, пока код не подтверждён."""
+    norm = _normalize_email(new_email)
+    if not norm:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET pending_email = ? WHERE telegram_id = ?", (norm, int(user_id)))
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to set pending email for user {user_id}: {e}")
+        return False
+
+
+def clear_pending_email(user_id: int) -> bool:
+    """Отменить ожидающую смену email (например, пользователь передумал или запросил другой адрес)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET pending_email = NULL, email_code_hash = NULL, email_code_expires_at = NULL "
+                "WHERE telegram_id = ?",
+                (int(user_id),),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to clear pending email for user {user_id}: {e}")
+        return False
+
+
+def finalize_pending_email_change(user_id: int) -> tuple[bool, str | None]:
+    """Подтвердить смену email кодом: перенести `pending_email` в `auth_email`.
+
+    Атомарно перепроверяет, что новый адрес не был занят другим аккаунтом за время
+    ожидания кода (защита от гонки, если два пользователя одновременно решили
+    переключиться на один и тот же email). Возвращает (ok, new_email_или_текст_ошибки).
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT pending_email FROM users WHERE telegram_id = ?", (int(user_id),))
+            row = cur.fetchone()
+            pending = row["pending_email"] if row else None
+            if not pending:
+                return False, "Нет ожидающей смены email"
+
+            cur.execute(
+                "SELECT telegram_id FROM users WHERE auth_email = ? AND telegram_id != ?",
+                (pending, int(user_id)),
+            )
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE users SET pending_email = NULL, email_code_hash = NULL, email_code_expires_at = NULL "
+                    "WHERE telegram_id = ?",
+                    (int(user_id),),
+                )
+                conn.commit()
+                return False, "Этот email уже используется другим аккаунтом"
+
+            cur.execute(
+                """
+                UPDATE users
+                SET auth_email = ?, pending_email = NULL, email_verified = 1,
+                    email_code_hash = NULL, email_code_expires_at = NULL
+                WHERE telegram_id = ?
+                """,
+                (pending, int(user_id)),
+            )
+            conn.commit()
+            return True, pending
+    except sqlite3.IntegrityError:
+        return False, "Этот email уже используется другим аккаунтом"
+    except Exception as e:
+        logger.error(f"Failed to finalize pending email change for user {user_id}: {e}")
+        return False, "Ошибка базы данных"
 
 
 def get_webapp_settings() -> dict:
