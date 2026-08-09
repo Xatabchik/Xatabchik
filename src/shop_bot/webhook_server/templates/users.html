@@ -207,6 +207,11 @@
           </div>
 
           <div class="ud-tab-pane d-none" data-ud-pane="referrals">
+            <div class="d-flex justify-content-end mb-2">
+              <button type="button" class="btn btn-sm btn-outline-primary" id="ud-assign-referral-btn">
+                <i class="ti ti-user-plus me-1"></i> Назначить реферала
+              </button>
+            </div>
             <ul class="list-unstyled mb-0" id="ud-reflist"></ul>
             <div id="ud-referrals-empty" class="text-secondary text-center py-3 d-none">Нет рефералов</div>
           </div>
@@ -292,6 +297,34 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
         <button type="button" class="btn btn-danger" id="udConfirmBtn">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка назначения реферала: живой поиск пользователя, который станет
+     рефералом (приглашённым) текущего пользователя карточки -->
+<div class="modal modal-blur fade" id="assignReferralModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-user-plus me-2"></i>
+          Назначить реферала
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-secondary small mb-2">Выберите пользователя, который будет считаться приглашённым текущим пользователем (<span id="arm-referrer-id">—</span>).</p>
+        <div class="input-group mb-3">
+          <span class="input-group-text"><i class="ti ti-search"></i></span>
+          <input type="text" class="form-control" id="arm-search-input" placeholder="Поиск по ID или Username..." autocomplete="off" />
+        </div>
+        <div id="arm-results" class="list-group" style="max-height: 320px; overflow-y: auto;"></div>
+        <div id="arm-hint" class="text-secondary text-center py-3 small">Начните вводить ID или username пользователя</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
       </div>
     </div>
   </div>
@@ -1458,6 +1491,124 @@
         try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
       }
     }
+
+    // --- Назначение реферала: живой поиск + добавление ---
+    (function(){
+      const modalEl = document.getElementById('assignReferralModal');
+      const input = document.getElementById('arm-search-input');
+      const resultsEl = document.getElementById('arm-results');
+      const hintEl = document.getElementById('arm-hint');
+      const referrerIdEl = document.getElementById('arm-referrer-id');
+      if (!modalEl || !input) return;
+      let armBsModal = null;
+      let searchTimer = null;
+      let searchSeq = 0;
+
+      document.getElementById('ud-assign-referral-btn')?.addEventListener('click', () => {
+        if (!currentUserId) return;
+        referrerIdEl.textContent = '#' + currentUserId;
+        input.value = '';
+        resultsEl.innerHTML = '';
+        hintEl.classList.remove('d-none');
+        hintEl.textContent = 'Начните вводить ID или username пользователя';
+        try { armBsModal = new bootstrap.Modal(modalEl); armBsModal.show(); } catch(_){ }
+        setTimeout(() => input.focus(), 200);
+      });
+
+      function escapeHtml(s){
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      function renderResults(items){
+        if (!items.length) {
+          resultsEl.innerHTML = '';
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Ничего не найдено';
+          return;
+        }
+        hintEl.classList.add('d-none');
+        resultsEl.innerHTML = items.map(u => {
+          const username = u.username ? ('@' + escapeHtml(u.username)) : 'без username';
+          const already = u.referred_by ? '<span class="badge bg-warning-lt ms-2">уже есть реферер</span>' : '';
+          return `
+            <div class="list-group-item d-flex align-items-center justify-content-between">
+              <div>
+                <div class="fw-bold">#${escapeHtml(u.telegram_id)} <span class="text-secondary">${username}</span>${already}</div>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary arm-pick-btn" data-uid="${escapeHtml(u.telegram_id)}">
+                <i class="ti ti-plus me-1"></i>Добавить
+              </button>
+            </div>`;
+        }).join('');
+      }
+
+      async function runSearch(){
+        const q = input.value.trim();
+        if (!q) {
+          resultsEl.innerHTML = '';
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Начните вводить ID или username пользователя';
+          return;
+        }
+        const mySeq = ++searchSeq;
+        try {
+          const url = new URL(`{{ url_for('users_search_json') }}`, window.location.origin);
+          url.searchParams.set('q', q);
+          url.searchParams.set('exclude', String(currentUserId || 0));
+          const resp = await fetch(url.toString(), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+          const data = await resp.json();
+          if (mySeq !== searchSeq) return; // устаревший ответ — пользователь уже ввёл что-то новое
+          if (data && data.ok) {
+            renderResults(data.items || []);
+          } else {
+            hintEl.classList.remove('d-none');
+            hintEl.textContent = 'Ошибка поиска';
+          }
+        } catch(_) {
+          if (mySeq !== searchSeq) return;
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Ошибка сети';
+        }
+      }
+
+      input.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(runSearch, 300);
+      });
+
+      resultsEl.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('.arm-pick-btn');
+        if (!btn || !currentUserId) return;
+        const uid = btn.getAttribute('data-uid');
+        btn.disabled = true;
+        try {
+          const url = `{{ url_for('assign_referral_route', referrer_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+          const fd = new FormData();
+          fd.append('csrf_token', getCsrf());
+          fd.append('user_id', uid);
+          const resp = await fetch(url, {
+            method: 'POST', body: fd,
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+          });
+          const data = await resp.json().catch(() => null);
+          if (resp.ok && data && data.ok) {
+            try { window.showToast('success', data.message || 'Реферал назначен'); } catch(_){ }
+            try { armBsModal?.hide(); } catch(_){ }
+            await openUserDetails(currentUserId);
+            try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+          } else {
+            const msg = (data && data.message) || 'Не удалось назначить реферала';
+            try { window.showToast('danger', msg); } catch(_){ }
+          }
+        } catch(_) {
+          try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    })();
+
     // --- Выдача ключа прямо из карточки пользователя ---
     (function(){
       const toggleBtn = document.getElementById('ud-issue-key-toggle');

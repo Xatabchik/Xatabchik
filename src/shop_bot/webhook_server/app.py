@@ -55,6 +55,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment, get_keys_paginated,
     get_balance, adjust_user_balance, get_referrals_for_user,
     get_referral_balance, adjust_user_referral_balance,
+    link_referrer_if_eligible,
 
     get_users_paginated, get_keys_counts_for_users,
 
@@ -2161,6 +2162,69 @@ def create_webhook_app(bot_controller_instance):
             return jsonify({"ok": True, "items": refs, "count": len(refs)})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @flask_app.route('/users/search.json')
+    @login_required
+    def users_search_json():
+        """Живой поиск пользователей по ID/username — для модалки "Назначить реферала"
+        на карточке пользователя (и для любых будущих похожих подборов пользователя)."""
+        q = (request.args.get('q') or '').strip()
+        try:
+            exclude_id = int(request.args.get('exclude', 0) or 0)
+        except (TypeError, ValueError):
+            exclude_id = 0
+        if not q:
+            return jsonify({"ok": True, "items": []})
+        try:
+            users, _total = get_users_paginated(page=1, per_page=8, q=q, sort=None)
+        except Exception as e:
+            logger.error(f"users_search_json failed: {e}")
+            return jsonify({"ok": False, "error": "search_failed"}), 500
+
+        items = [
+            {
+                "telegram_id": u.get("telegram_id"),
+                "username": u.get("username"),
+                "referred_by": u.get("referred_by"),
+            }
+            for u in (users or [])
+            if u.get("telegram_id") != exclude_id
+        ]
+        return jsonify({"ok": True, "items": items})
+
+    @flask_app.route('/users/<int:referrer_id>/referrals/assign', methods=['POST'])
+    @login_required
+    def assign_referral_route(referrer_id: int):
+        """Вручную назначить реферала: пользователь `user_id` (из формы) становится
+        приглашённым текущим пользователем `referrer_id` (users.referred_by)."""
+        try:
+            invitee_id = int(request.form.get('user_id', '0') or '0')
+        except (TypeError, ValueError):
+            invitee_id = 0
+
+        wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+        if not invitee_id:
+            payload = {"ok": False, "error": "Не указан пользователь"}
+            if wants_json:
+                return jsonify(payload), 400
+            flash(payload["error"], 'danger')
+            return redirect(url_for('users_page'))
+
+        status = link_referrer_if_eligible(invitee_id, referrer_id)
+        status_messages = {
+            "linked": (True, f"Пользователь #{invitee_id} назначен рефералом."),
+            "already_linked": (False, "У этого пользователя уже есть реферер."),
+            "self_referral_forbidden": (False, "Пользователь не может быть рефералом самого себя."),
+            "invalid_referrer": (False, "Текущий пользователь не найден."),
+            "not_eligible": (False, "Не удалось назначить реферала — пользователь не найден или недоступен."),
+        }
+        ok, message = status_messages.get(status, (False, "Не удалось назначить реферала."))
+
+        if wants_json:
+            return jsonify({"ok": ok, "status": status, "message": message})
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('users_page'))
 
 
     @flask_app.route('/users/pagination.partial')
