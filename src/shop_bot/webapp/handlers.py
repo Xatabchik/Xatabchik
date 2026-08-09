@@ -1595,6 +1595,13 @@ class EmailAuthRequest(BaseModel):
     email: str
     password: str
 
+class EmailVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+class EmailResendRequest(BaseModel):
+    email: str
+
 class PasswordResetRequest(BaseModel):
     email: str
 
@@ -1822,6 +1829,38 @@ def _validate_password(password: str) -> str | None:
         return "Пароль слишком простой — используйте разные символы"
     return None
 
+EMAIL_RESEND_COOLDOWN_SECONDS = 60
+EMAIL_CODE_TTL_SECONDS = 600
+
+
+def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool, str | None]:
+    """Сгенерировать, сохранить и отправить новый код подтверждения email.
+
+    Возвращает (ok, error). Не поднимает исключения наружу.
+    """
+    import random
+    from shop_bot.data_manager import database
+    from shop_bot.modules.email_sender import send_activation_code, is_smtp_configured
+
+    if not is_smtp_configured():
+        logger.error("Попытка отправить код активации email, но SMTP не настроен в админ-панели.")
+        return False, "Отправка писем временно недоступна. Попробуйте позже или обратитесь в поддержку."
+
+    code = f"{random.randint(0, 999999):06d}"
+    if not database.set_email_verification_code(user_id, code, ttl_seconds=EMAIL_CODE_TTL_SECONDS):
+        return False, "Ошибка базы данных"
+
+    try:
+        sent = send_activation_code(email, code)
+    except Exception as e:
+        logger.error(f"Unexpected error while sending activation code to {email}: {e}")
+        sent = False
+
+    if not sent:
+        return False, "Не удалось отправить письмо с кодом. Проверьте адрес почты или попробуйте позже."
+    return True, None
+
+
 @app.post("/api/auth/email/register")
 async def api_email_register(req: EmailAuthRequest):
     from shop_bot.data_manager import database
@@ -1835,20 +1874,79 @@ async def api_email_register(req: EmailAuthRequest):
     user = database.create_user_by_email(req.email, req.password)
     if not user:
         return {"ok": False, "error": "Ошибка при регистрации"}
-        
+
+    ok, err = _issue_email_verification_code(user['telegram_id'], req.email)
+    if not ok:
+        return {"ok": False, "error": err}
+
+    return {"ok": True, "requires_verification": True, "email": req.email}
+
+@app.post("/api/auth/email/verify")
+async def api_email_verify(req: EmailVerifyRequest):
+    from shop_bot.data_manager import database
+    user = database.get_user_by_email(req.email)
+    if not user:
+        return {"ok": False, "error": "Email не найден"}
+
+    if user.get('email_verified'):
+        token = database.get_auth_token_by_user_id(user['telegram_id']) or str(uuid.uuid4())
+        database.update_user_auth_token(user['telegram_id'], token)
+        return {"ok": True, "token": token}
+
+    code = (req.code or "").strip()
+    if not code or not database.check_email_verification_code(user['telegram_id'], code):
+        return {"ok": False, "error": "Неверный или устаревший код"}
+
+    if not database.mark_email_verified(user['telegram_id']):
+        return {"ok": False, "error": "Ошибка базы данных"}
+
     token = str(uuid.uuid4())
     database.update_user_auth_token(user['telegram_id'], token)
     return {"ok": True, "token": token}
+
+@app.post("/api/auth/email/resend")
+async def api_email_resend(req: EmailResendRequest):
+    import time
+    from shop_bot.data_manager import database
+    user = database.get_user_by_email(req.email)
+    if not user:
+        return {"ok": False, "error": "Email не найден"}
+
+    if user.get('email_verified'):
+        return {"ok": False, "error": "Email уже подтверждён"}
+
+    info = database.get_email_verification(user['telegram_id']) or {}
+    last_sent_raw = info.get('email_code_last_sent_at')
+    if last_sent_raw:
+        try:
+            last_sent = datetime.strptime(str(last_sent_raw), "%Y-%m-%d %H:%M:%S")
+            elapsed = (datetime.utcnow() - last_sent).total_seconds()
+            if elapsed < EMAIL_RESEND_COOLDOWN_SECONDS:
+                return {
+                    "ok": False,
+                    "error": f"Подождите {int(EMAIL_RESEND_COOLDOWN_SECONDS - elapsed)} сек. перед повторной отправкой",
+                    "retry_after": int(EMAIL_RESEND_COOLDOWN_SECONDS - elapsed),
+                }
+        except Exception:
+            pass
+
+    ok, err = _issue_email_verification_code(user['telegram_id'], req.email)
+    if not ok:
+        return {"ok": False, "error": err}
+    return {"ok": True}
 
 @app.post("/api/auth/email/login")
 async def api_email_login(req: EmailAuthRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
-    if not user or user.get('auth_pass') != req.password:
+    if not user or not database.verify_password(req.password, user.get('auth_pass')):
         return {"ok": False, "error": "Неверный email или пароль"}
         
     if user.get('is_banned'):
         return {"ok": False, "error": "Аккаунт заблокирован"}
+
+    if not user.get('email_verified'):
+        return {"ok": False, "error": "Email не подтверждён", "email_not_verified": True}
 
     token = str(uuid.uuid4())
     database.update_user_auth_token(user['telegram_id'], token)

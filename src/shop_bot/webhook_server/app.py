@@ -332,6 +332,12 @@ ALL_SETTINGS_KEYS = [
     "webapp_title",
     "webapp_logo",
     "webapp_icon",
+    "smtp_host",
+    "smtp_port",
+    "smtp_user",
+    "smtp_password",
+    "smtp_from_email",
+    "smtp_use_tls",
 ]
 
 
@@ -3697,6 +3703,7 @@ def create_webhook_app(bot_controller_instance):
                 "franchise_enabled",
                 "webapp_enabled",
                 "auto_renew_globally_enabled",
+                "smtp_use_tls",
             ]
             for checkbox_key in checkbox_keys:
                 values = request.form.getlist(checkbox_key) or ['off']
@@ -3706,6 +3713,9 @@ def create_webhook_app(bot_controller_instance):
 
             for key in ALL_SETTINGS_KEYS:
                 if key in checkbox_keys or key == 'panel_password':
+                    continue
+                if key == 'smtp_password' and not (request.form.get(key) or '').strip():
+                    # Пустое поле пароля SMTP при сохранении не должно затирать уже сохранённый пароль.
                     continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
@@ -4068,6 +4078,44 @@ def create_webhook_app(bot_controller_instance):
             pass
         return redirect(request.referrer or url_for('settings_page', tab='hosts'))
 
+
+    @flask_app.route('/settings/smtp/test', methods=['POST'])
+    @login_required
+    def smtp_test_route():
+        for key in ("smtp_host", "smtp_port", "smtp_user", "smtp_from_email"):
+            if key in request.form:
+                update_setting(key, request.form.get(key))
+        if (request.form.get('smtp_password') or '').strip():
+            update_setting('smtp_password', request.form.get('smtp_password'))
+        use_tls_raw = request.form.get('smtp_use_tls')
+        update_setting('smtp_use_tls', 'true' if str(use_tls_raw or '').lower() in ('on', 'true', '1', 'yes') else 'false')
+
+        to_email = (request.form.get('smtp_test_email') or '').strip()
+        if not to_email:
+            flash('Укажите адрес для тестового письма.', 'danger')
+            return redirect(url_for('settings_page', tab='email'))
+
+        try:
+            from shop_bot.modules.email_sender import send_activation_code, is_smtp_configured
+            if not is_smtp_configured():
+                flash('Заполните host/логин/пароль SMTP перед проверкой.', 'danger')
+                return redirect(url_for('settings_page', tab='email'))
+
+            ok = send_activation_code(to_email, "000000")
+            if ok:
+                flash(f'Тестовое письмо успешно отправлено на {to_email}.', 'success')
+            else:
+                flash(
+                    'Не удалось отправить тестовое письмо — проверьте логи сервера для подробностей '
+                    '(частая причина: неверный логин/пароль или для этого провайдера нужен '
+                    '«пароль для внешних приложений»).',
+                    'danger',
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при тестовой отправке SMTP письма: {e}", exc_info=True)
+            flash('Ошибка при отправке тестового письма.', 'danger')
+
+        return redirect(url_for('settings_page', tab='email'))
 
     @flask_app.route('/admin/db/backup', methods=['POST'])
     @login_required

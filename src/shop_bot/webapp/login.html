@@ -141,6 +141,34 @@
             </div>
         </div>
 
+        <!-- Email Verification Form -->
+        <div id="email-verify-form" class="hidden flex-col gap-4 w-full px-5 max-w-[340px] mx-auto mt-2">
+            <h3 class="text-white text-base font-black text-center mb-1 uppercase tracking-wide">Подтверждение Email</h3>
+            <p class="text-[11px] text-gray-400 text-center leading-relaxed">Мы отправили 6-значный код на <span id="verify-email-label" class="text-white font-bold"></span>. Введите его ниже.</p>
+
+            <div class="flex justify-between gap-2 w-full max-w-[280px] mx-auto" id="verify-code-inputs">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+                <input type="text" inputmode="numeric" maxlength="1" class="verify-digit w-10 h-14 bg-black/20 border border-white/10 rounded-xl text-center text-xl text-white font-mono focus:outline-none focus:border-primary/50 focus:bg-white/5 transition-all shadow-inner">
+            </div>
+
+            <div id="verify-error" class="hidden text-red-500 text-[11px] text-center font-bold">Ошибка</div>
+
+            <button id="verify-confirm-btn" class="w-full bg-primary text-white font-black py-3.5 text-xs uppercase tracking-wider rounded-2xl shadow-[0_0_15px_rgba(16,185,129,0.3)] hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-[0.98] transition-all">Подтвердить</button>
+
+            <div class="flex items-center justify-between px-1">
+                <button id="verify-resend-btn" class="text-primary text-[10px] font-black uppercase tracking-widest hover:text-emerald-400 transition-colors py-1 disabled:opacity-40 disabled:cursor-not-allowed">Отправить код повторно</button>
+                <span id="verify-resend-timer" class="hidden text-gray-500 text-[10px] font-black uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded-md"><span id="verify-timer-val">60</span>s</span>
+            </div>
+
+            <div class="flex justify-center w-full mt-1 pt-3 border-t border-white/5">
+                <button id="verify-back-btn" class="text-gray-500 text-[10px] font-black uppercase tracking-widest hover:text-white transition-colors py-1">Отмена</button>
+            </div>
+        </div>
+
         <!-- Reset Password Form -->
         <div id="reset-password-form" class="hidden flex-col gap-4 w-full px-5 max-w-[340px] mx-auto mt-2">
             <h3 class="text-white text-base font-black text-center mb-1 uppercase tracking-wide">Восстановление пароля</h3>
@@ -274,6 +302,10 @@
                     
                     if (data.ok && data.token) {
                         loginWithToken(data.token);
+                    } else if (data.ok && data.requires_verification) {
+                        openVerifyForm(email, true);
+                    } else if (!data.ok && data.email_not_verified) {
+                        openVerifyForm(email, false);
                     } else {
                         emailError.textContent = data.error || "Ошибка связи с сервером";
                         emailError.classList.remove('hidden');
@@ -290,6 +322,144 @@
 
             if(emailLoginBtn) emailLoginBtn.addEventListener('click', () => submitEmailAuth(false));
             if(emailRegisterBtn) emailRegisterBtn.addEventListener('click', () => submitEmailAuth(true));
+
+            // Email Verification Logic
+            const emailVerifyForm = document.getElementById('email-verify-form');
+            const verifyEmailLabel = document.getElementById('verify-email-label');
+            const verifyError = document.getElementById('verify-error');
+            const verifyConfirmBtn = document.getElementById('verify-confirm-btn');
+            const verifyResendBtn = document.getElementById('verify-resend-btn');
+            const verifyResendTimer = document.getElementById('verify-resend-timer');
+            const verifyTimerVal = document.getElementById('verify-timer-val');
+            const verifyBackBtn = document.getElementById('verify-back-btn');
+            const verifyDigitInputs = document.querySelectorAll('.verify-digit');
+            let verifyResendInterval;
+            let verifyPendingEmail = '';
+
+            function startVerifyResendCooldown(seconds) {
+                let timeLeft = seconds;
+                verifyResendBtn.disabled = true;
+                verifyResendTimer.classList.remove('hidden');
+                verifyTimerVal.textContent = timeLeft;
+                if (verifyResendInterval) clearInterval(verifyResendInterval);
+                verifyResendInterval = setInterval(() => {
+                    timeLeft--;
+                    verifyTimerVal.textContent = timeLeft;
+                    if (timeLeft <= 0) {
+                        clearInterval(verifyResendInterval);
+                        verifyResendBtn.disabled = false;
+                        verifyResendTimer.classList.add('hidden');
+                    }
+                }, 1000);
+            }
+
+            function openVerifyForm(email, autoStartCooldown) {
+                verifyPendingEmail = email;
+                verifyEmailLabel.textContent = email;
+                authHeader.classList.add('hidden');
+                authMethods.classList.add('hidden');
+                emailAuthForm.classList.add('hidden');
+                emailAuthForm.classList.remove('flex');
+                resetPasswordForm.classList.add('hidden');
+                resetPasswordForm.classList.remove('flex');
+                emailVerifyForm.classList.remove('hidden');
+                emailVerifyForm.classList.add('flex');
+                verifyError.classList.add('hidden');
+                verifyDigitInputs.forEach(i => i.value = '');
+                setTimeout(() => verifyDigitInputs[0].focus(), 100);
+                if (autoStartCooldown) startVerifyResendCooldown(60);
+            }
+
+            async function submitVerifyCode() {
+                let code = '';
+                verifyDigitInputs.forEach(i => code += i.value);
+                if (code.length !== 6) return;
+
+                verifyError.classList.add('hidden');
+                verifyConfirmBtn.disabled = true;
+                try {
+                    const res = await fetch('/api/auth/email/verify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: verifyPendingEmail, code })
+                    });
+                    const data = await res.json();
+                    if (data.ok && data.token) {
+                        loginWithToken(data.token);
+                    } else {
+                        verifyError.textContent = data.error || "Неверный код";
+                        verifyError.classList.remove('hidden');
+                        verifyDigitInputs.forEach(i => i.value = '');
+                        verifyDigitInputs[0].focus();
+                    }
+                } catch (e) {
+                    verifyError.textContent = "Ошибка сети";
+                    verifyError.classList.remove('hidden');
+                }
+                verifyConfirmBtn.disabled = false;
+            }
+
+            verifyDigitInputs.forEach((input, index) => {
+                input.addEventListener('input', async (e) => {
+                    if (e.target.value.length > 0) {
+                        e.target.value = e.target.value.replace(/\D/g, '');
+                        if (index < verifyDigitInputs.length - 1 && e.target.value) {
+                            verifyDigitInputs[index + 1].focus();
+                        } else if (index === verifyDigitInputs.length - 1 && e.target.value) {
+                            await submitVerifyCode();
+                        }
+                    }
+                });
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Backspace' && e.target.value === '') {
+                        if (index > 0) verifyDigitInputs[index - 1].focus();
+                    }
+                });
+                input.addEventListener('paste', async (e) => {
+                    e.preventDefault();
+                    const pasteData = (e.clipboardData || window.clipboardData).getData('text').trim().replace(/\D/g, '');
+                    if (pasteData.length >= 6) {
+                        for (let i = 0; i < 6; i++) verifyDigitInputs[i].value = pasteData[i];
+                        verifyDigitInputs[5].focus();
+                        await submitVerifyCode();
+                    }
+                });
+            });
+
+            if (verifyConfirmBtn) verifyConfirmBtn.addEventListener('click', submitVerifyCode);
+
+            if (verifyResendBtn) verifyResendBtn.addEventListener('click', async () => {
+                if (verifyResendBtn.disabled) return;
+                verifyError.classList.add('hidden');
+                verifyResendBtn.disabled = true;
+                try {
+                    const res = await fetch('/api/auth/email/resend', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: verifyPendingEmail })
+                    });
+                    const data = await res.json();
+                    if (data.ok) {
+                        startVerifyResendCooldown(60);
+                    } else {
+                        verifyError.textContent = data.error || "Не удалось отправить код повторно";
+                        verifyError.classList.remove('hidden');
+                        startVerifyResendCooldown(data.retry_after || 5);
+                    }
+                } catch (e) {
+                    verifyError.textContent = "Ошибка сети";
+                    verifyError.classList.remove('hidden');
+                    verifyResendBtn.disabled = false;
+                }
+            });
+
+            if (verifyBackBtn) verifyBackBtn.addEventListener('click', () => {
+                if (verifyResendInterval) clearInterval(verifyResendInterval);
+                emailVerifyForm.classList.add('hidden');
+                emailVerifyForm.classList.remove('flex');
+                emailAuthForm.classList.remove('hidden');
+                emailAuthForm.classList.add('flex');
+            });
 
             // Password Reset Logic
             const resetPasswordForm = document.getElementById('reset-password-form');

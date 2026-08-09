@@ -2,7 +2,10 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import logging
 from pathlib import Path
+import hashlib
+import hmac
 import json
+import secrets
 import time
 import re
 from typing import Any
@@ -737,6 +740,10 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "auth_pass": "TEXT",
         "seller_active": "BOOLEAN DEFAULT 0",
         "seller_sale": "REAL DEFAULT 0",
+        "email_verified": "BOOLEAN DEFAULT 0",
+        "email_code_hash": "TEXT",
+        "email_code_expires_at": "TIMESTAMP",
+        "email_code_last_sent_at": "TIMESTAMP",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
@@ -8039,6 +8046,32 @@ def update_user_auth_token(user_id: int, token: str) -> bool:
         return False
 
 
+def hash_password(password: str) -> str:
+    """Хэшировать пароль пользователя (PBKDF2-HMAC-SHA256 со случайной солью)."""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 200_000).hex()
+    return f"pbkdf2${salt}${digest}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    """Проверить пароль против сохранённого хэша.
+
+    Поддерживает как новый формат (pbkdf2$salt$hash), так и старые аккаунты,
+    у которых пароль ещё хранится в открытом виде (миграция «на лету»).
+    """
+    if not stored:
+        return False
+    try:
+        if stored.startswith("pbkdf2$"):
+            _, salt, digest = stored.split("$", 2)
+            check = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 200_000).hex()
+            return hmac.compare_digest(check, digest)
+    except Exception:
+        return False
+    # Legacy plaintext fallback for accounts created before hashing was introduced.
+    return hmac.compare_digest(stored, password)
+
+
 def get_user_by_email(email: str) -> dict | None:
     """Найти локального пользователя webapp по email (для входа по email+паролю)."""
     norm = _normalize_email(email)
@@ -8061,11 +8094,14 @@ def create_user_by_email(email: str, password: str) -> dict | None:
 
     Использует псевдо-telegram_id с префиксом 999, чтобы не пересекаться с реальными
     Telegram ID (см. handlers.py: str(user_id).startswith("999") — признак несинхронизированного аккаунта).
+    Пароль сохраняется в виде хэша (см. hash_password/verify_password).
+    Аккаунт создаётся неподтверждённым (email_verified=0) до прохождения проверки кода.
     """
     norm = _normalize_email(email)
     if not norm:
         return None
     try:
+        password_hash = hash_password(password)
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
             cur.execute("SELECT MAX(telegram_id) FROM users WHERE telegram_id BETWEEN 999000000000 AND 999999999999")
@@ -8073,16 +8109,130 @@ def create_user_by_email(email: str, password: str) -> dict | None:
             next_id = int(row[0]) + 1 if row and row[0] else 999000000001
             cur.execute(
                 """
-                INSERT INTO users (telegram_id, username, agreed_to_terms, auth_email, auth_pass, registration_date)
-                VALUES (?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO users (telegram_id, username, agreed_to_terms, auth_email, auth_pass, email_verified, registration_date)
+                VALUES (?, ?, 1, ?, ?, 0, CURRENT_TIMESTAMP)
                 """,
-                (next_id, norm.split('@')[0], norm, password),
+                (next_id, norm.split('@')[0], norm, password_hash),
             )
             conn.commit()
         return get_user(next_id)
     except Exception as e:
         logger.error(f"Failed to create user by email {email}: {e}")
         return None
+
+
+def update_user_password(email: str, new_password: str) -> bool:
+    """Обновить (хэшированный) пароль локального webapp-аккаунта по email."""
+    norm = _normalize_email(email)
+    if not norm:
+        return False
+    try:
+        password_hash = hash_password(new_password)
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET auth_pass = ? WHERE auth_email = ?", (password_hash, norm))
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to update password for {email}: {e}")
+        return False
+
+
+def _hash_verification_code(user_id: int, code: str) -> str:
+    return hashlib.sha256(f"{int(user_id)}:{code}".encode("utf-8")).hexdigest()
+
+
+def set_email_verification_code(user_id: int, code: str, ttl_seconds: int = 600) -> bool:
+    """Сохранить хэш одноразового кода подтверждения email и время его истечения."""
+    try:
+        code_hash = _hash_verification_code(user_id, code)
+        expires_at = (datetime.utcnow() + timedelta(seconds=ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE users
+                SET email_code_hash = ?, email_code_expires_at = ?, email_code_last_sent_at = CURRENT_TIMESTAMP
+                WHERE telegram_id = ?
+                """,
+                (code_hash, expires_at, int(user_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to set email verification code for user {user_id}: {e}")
+        return False
+
+
+def get_email_verification(user_id: int) -> dict | None:
+    """Вернуть данные о статусе подтверждения email и последнем отправленном коде."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT email_verified, email_code_hash, email_code_expires_at, email_code_last_sent_at, auth_email
+                FROM users WHERE telegram_id = ?
+                """,
+                (int(user_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Failed to get email verification for user {user_id}: {e}")
+        return None
+
+
+def check_email_verification_code(user_id: int, code: str) -> bool:
+    """Проверить введённый код подтверждения против сохранённого хэша (с учётом срока действия)."""
+    info = get_email_verification(user_id)
+    if not info or not info.get("email_code_hash") or not info.get("email_code_expires_at"):
+        return False
+    try:
+        expires_at = datetime.strptime(str(info["email_code_expires_at"]), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    if datetime.utcnow() > expires_at:
+        return False
+    expected = _hash_verification_code(user_id, str(code).strip())
+    return hmac.compare_digest(expected, str(info["email_code_hash"]))
+
+
+def mark_email_verified(user_id: int) -> bool:
+    """Отметить email пользователя как подтверждённый и очистить код."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE users
+                SET email_verified = 1, email_code_hash = NULL, email_code_expires_at = NULL
+                WHERE telegram_id = ?
+                """,
+                (int(user_id),),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to mark email verified for user {user_id}: {e}")
+        return False
+
+
+def update_email_code_last_sent(user_id: int) -> bool:
+    """Обновить время последней отправки кода (для rate-limit повторной отправки)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET email_code_last_sent_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+                (int(user_id),),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Failed to update email code last sent for user {user_id}: {e}")
+        return False
 
 
 def get_webapp_settings() -> dict:
