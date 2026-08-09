@@ -6331,43 +6331,55 @@ def get_keys_for_auto_renew(hours_before: int = 24) -> list[dict]:
         return []
 
 
+def _key_matches_search(data: dict, needle_lower: str) -> bool:
+    """Регистронезависимая (в т.ч. кириллица) проверка вхождения подстроки
+    в key_email, email или user_key_name. SQL LIKE/LOWER() в SQLite сворачивают
+    регистр только для ASCII, поэтому сравнение делается на стороне Python."""
+    for field in ("key_email", "email", "user_key_name"):
+        value = data.get(field)
+        if value and needle_lower in str(value).lower():
+            return True
+    return False
+
+
 def search_user_keys_by_email(user_id: int, search_query: str) -> list[dict]:
-    """Поиск ключей пользователя по key_email или user_key_name."""
+    """Поиск ключей пользователя по key_email, email или user_key_name."""
     if not search_query or not search_query.strip():
         return []
-    
+
     try:
-        search_term = f"%{search_query.strip()}%"
+        needle_lower = search_query.strip().lower()
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM vpn_keys WHERE user_id = ? AND (key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ?) ORDER BY datetime(created_at) DESC, key_id DESC",
-                (user_id, search_term, search_term, search_term),
+                "SELECT * FROM vpn_keys WHERE user_id = ? ORDER BY datetime(created_at) DESC, key_id DESC",
+                (user_id,),
             )
             rows = cursor.fetchall()
-            return [_normalize_key_row(row) for row in rows]
+            normalized = (_normalize_key_row(row) for row in rows)
+            return [data for data in normalized if _key_matches_search(data, needle_lower)]
     except sqlite3.Error as e:
         logging.error("Failed to search user keys by email for user %s: %s", user_id, e)
         return []
 
 
 def search_all_keys_by_email(search_query: str) -> list[dict]:
-    """Поиск всех ключей (администраторам) по key_email или user_key_name."""
+    """Поиск всех ключей (администраторам) по key_email, email или user_key_name."""
     if not search_query or not search_query.strip():
         return []
-    
+
     try:
-        search_term = f"%{search_query.strip()}%"
+        needle_lower = search_query.strip().lower()
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM vpn_keys WHERE key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ? ORDER BY datetime(created_at) DESC, key_id DESC",
-                (search_term, search_term, search_term),
+                "SELECT * FROM vpn_keys ORDER BY datetime(created_at) DESC, key_id DESC",
             )
             rows = cursor.fetchall()
-            return [_normalize_key_row(row) for row in rows]
+            normalized = (_normalize_key_row(row) for row in rows)
+            return [data for data in normalized if _key_matches_search(data, needle_lower)]
     except sqlite3.Error as e:
         logging.error("Failed to search all keys by email: %s", e)
         return []

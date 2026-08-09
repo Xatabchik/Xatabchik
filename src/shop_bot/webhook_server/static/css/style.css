@@ -3726,8 +3726,16 @@ body{
 	min-width: var(--sidebar-w);
 	height: 100vh;
 	height: 100dvh;
-	position: sticky;
+	/* Fixed (not sticky) so the sidebar's box escapes the 1rem padding that
+	   Tabler's body.layout-boxed applies to <body> — sticky was positioned
+	   relative to that padded box, which cut the background off short of
+	   the true top/left/bottom viewport edges. Fixed always measures from
+	   the viewport itself, matching the off-canvas behaviour already used
+	   on mobile. .content-shell gets a matching margin-left below so the
+	   content area's on-screen position is unchanged. */
+	position: fixed;
 	top: 0;
+	left: 0;
 	display: flex;
 	flex-direction: column;
 	padding: 26px 18px 22px;
@@ -3851,6 +3859,11 @@ body{
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
+	/* Compensates for .sidebar now being position: fixed (removed from
+	   normal flow) so the content area keeps its exact previous on-screen
+	   position/width. Reset to 0 on mobile/tablet where the sidebar is an
+	   off-canvas drawer instead of a docked column. */
+	margin-left: var(--sidebar-w);
 	padding: 18px 26px max(28px, env(safe-area-inset-bottom));
 }
 
@@ -4306,6 +4319,9 @@ select option:checked{
 	.sidebar-navigation .nav-link{ flex: 0 0 auto; }
 
 	.content-shell{ 
+		/* Sidebar is an off-canvas drawer here, not a docked column — cancel
+		   the desktop margin-left compensation so content spans full width. */
+		margin-left: 0;
 		/* Отступ сверху = высота фиксированного mobile-header + safe-area + зазор */
 		padding: calc(var(--mobile-header-h) + env(safe-area-inset-top) + 8px) 14px calc(80px + env(safe-area-inset-bottom));
 	}

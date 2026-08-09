@@ -27,24 +27,20 @@
 {% endif %}
 
 {# Навигация по разделам настроек #}
-<div class="card mb-4">
-  <div class="card-body py-2">
-    <ul class="nav nav-pills nav-fill">
-      <li class="nav-item"><a class="nav-link" href="#panel"><i class="ti ti-dashboard me-1"></i> Панель</a></li>
-      <li class="nav-item"><a class="nav-link" href="#bot"><i class="ti ti-robot me-1"></i> Бот</a></li>
-      <li class="nav-item"><a class="nav-link" href="#support-bot"><i class="ti ti-message-circle me-1"></i> Support‑бот</a></li>
-      <li class="nav-item"><a class="nav-link" href="#payments"><i class="ti ti-currency-ruble me-1"></i> Платежи</a></li>
-      <li class="nav-item"><a class="nav-link" href="#hosts"><i class="ti ti-server me-1"></i> Хосты/Тарифы</a></li>
-      <li class="nav-item"><a class="nav-link" href="#referrals"><i class="ti ti-users-group me-1"></i> Рефералы</a></li>
-      <li class="nav-item"><a class="nav-link" href="#trial"><i class="ti ti-gift me-1"></i> Триал</a></li>
-      <li class="nav-item"><a class="nav-link" href="#franchise"><i class="ti ti-briefcase me-1"></i> Франшиза</a></li>
-      <li class="nav-item"><a class="nav-link" href="#auto-renew"><i class="ti ti-refresh me-1"></i> Автопродление</a></li>
-      <li class="nav-item"><a class="nav-link" href="#webapp"><i class="ti ti-brand-telegram me-1"></i> Webapp</a></li>
-      <li class="nav-item"><a class="nav-link" href="#content"><i class="ti ti-file-text me-1"></i> Контент</a></li>
-      <li class="nav-item"><a class="nav-link" href="#monitoring"><i class="ti ti-chart-line me-1"></i> Мониторинг</a></li>
-    </ul>
-  </div>
-</div>
+<ul class="nav nav-tabs mb-4 flex-wrap">
+  <li class="nav-item"><a class="nav-link" href="#panel"><i class="ti ti-dashboard me-1"></i> Панель</a></li>
+  <li class="nav-item"><a class="nav-link" href="#bot"><i class="ti ti-robot me-1"></i> Бот</a></li>
+  <li class="nav-item"><a class="nav-link" href="#support-bot"><i class="ti ti-message-circle me-1"></i> Support‑бот</a></li>
+  <li class="nav-item"><a class="nav-link" href="#payments"><i class="ti ti-currency-ruble me-1"></i> Платежи</a></li>
+  <li class="nav-item"><a class="nav-link" href="#hosts"><i class="ti ti-server me-1"></i> Хосты/Тарифы</a></li>
+  <li class="nav-item"><a class="nav-link" href="#referrals"><i class="ti ti-users-group me-1"></i> Рефералы</a></li>
+  <li class="nav-item"><a class="nav-link" href="#trial"><i class="ti ti-gift me-1"></i> Триал</a></li>
+  <li class="nav-item"><a class="nav-link" href="#franchise"><i class="ti ti-briefcase me-1"></i> Франшиза</a></li>
+  <li class="nav-item"><a class="nav-link" href="#auto-renew"><i class="ti ti-refresh me-1"></i> Автопродление</a></li>
+  <li class="nav-item"><a class="nav-link" href="#webapp"><i class="ti ti-brand-telegram me-1"></i> Webapp</a></li>
+  <li class="nav-item"><a class="nav-link" href="#content"><i class="ti ti-file-text me-1"></i> Контент</a></li>
+  <li class="nav-item"><a class="nav-link" href="#monitoring"><i class="ti ti-chart-line me-1"></i> Мониторинг</a></li>
+</ul>
 
 <style>
   /* ==== Unified Compact Design System ==== */
@@ -2055,7 +2051,7 @@
       let hash = location.hash || '';
       // если hash пуст, пробуем взять активную ссылку pills
       if (!hash){
-        const active = document.querySelector('.nav.nav-pills .nav-link.active');
+        const active = document.querySelector('.nav.nav-tabs .nav-link.active');
         if (active && active.getAttribute('href')) hash = active.getAttribute('href');
       }
       if (!hash) hash = '#panel';

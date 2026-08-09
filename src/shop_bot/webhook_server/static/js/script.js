@@ -597,7 +597,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
     function initializeSettingsTabs() {
-        const nav = document.querySelector('.nav.nav-pills');
+        const nav = document.querySelector('.nav.nav-tabs');
         const container = document.querySelector('.settings-container');
         if (!nav || !container) return;
 
