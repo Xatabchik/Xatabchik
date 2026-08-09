@@ -738,11 +738,15 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "auth_pass": "TEXT",
         "seller_active": "BOOLEAN DEFAULT 0",
         "seller_sale": "REAL DEFAULT 0",
+        "is_unreachable": "BOOLEAN DEFAULT 0",
+        "unreachable_reason": "TEXT",
+        "unreachable_since": "TIMESTAMP",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
     _ensure_unique_index(cursor, "idx_users_auth_token", "users", "auth_token")
     _ensure_unique_index(cursor, "idx_users_auth_email", "users", "auth_email")
+    _ensure_index(cursor, "idx_users_is_unreachable", "users", "is_unreachable")
 
 
 def _ensure_email_verification_columns(cursor: sqlite3.Cursor) -> None:
@@ -3167,7 +3171,8 @@ def delete_broadcast_campaign(campaign_id: int) -> bool:
 
 
 def get_inactive_subscribers() -> list[int]:
-    """User IDs with no active keys (expire_at in the past or no keys at all), not banned."""
+    """User IDs with no active keys (expire_at in the past or no keys at all),
+    not banned and not marked unreachable (blocked the bot / deactivated account)."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -3175,6 +3180,7 @@ def get_inactive_subscribers() -> list[int]:
                 """
                 SELECT u.telegram_id FROM users u
                 WHERE u.is_banned = 0
+                  AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
                   AND NOT EXISTS (
                     SELECT 1 FROM vpn_keys k
                     WHERE k.user_id = u.telegram_id
@@ -6704,6 +6710,93 @@ def unban_user(telegram_id: int):
             conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to unban user {telegram_id}: {e}")
+
+
+# ── Недоступность пользователя в Telegram (заблокировал бота / деактивировал аккаунт) ──
+#
+# Позволяет автоматически исключать таких пользователей из будущих рассылок
+# (см. shop_bot.modules.telegram_reachability, вызывается из всех мест массовой
+# отправки сообщений) и вести статистику по реальному количеству подписчиков.
+
+UNREACHABLE_REASON_BLOCKED = "blocked"
+UNREACHABLE_REASON_DEACTIVATED = "deactivated"
+
+def mark_user_unreachable(telegram_id: int, reason: str) -> bool:
+    """Отметить пользователя как недоступного в Telegram.
+
+    `reason` — 'blocked' (заблокировал бота) или 'deactivated' (аккаунт удалён/деактивирован).
+    Пользователь будет исключён из последующих рассылок, пока не напишет боту снова
+    (см. mark_user_reachable — вызывается автоматически при любом входящем сообщении/callback).
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE users
+                SET is_unreachable = 1,
+                    unreachable_reason = ?,
+                    unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP)
+                WHERE telegram_id = ?
+                """,
+                (reason, int(telegram_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to mark user {telegram_id} unreachable: {e}")
+        return False
+
+def mark_user_reachable(telegram_id: int) -> bool:
+    """Снять отметку недоступности — пользователь снова взаимодействовал с ботом
+    (значит, разблокировал его или его аккаунт снова активен)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE users
+                SET is_unreachable = 0, unreachable_reason = NULL, unreachable_since = NULL
+                WHERE telegram_id = ? AND is_unreachable = 1
+                """,
+                (int(telegram_id),),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to mark user {telegram_id} reachable: {e}")
+        return False
+
+def get_reachability_stats() -> dict:
+    """Статистика по доступности пользователей в Telegram: сколько всего
+    пользователей, сколько реально доступны (не забанены и не недоступны),
+    сколько заблокировали бота, сколько деактивировали аккаунт."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN is_banned = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_unreachable = 1 AND unreachable_reason = 'blocked' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_unreachable = 1 AND unreachable_reason = 'deactivated' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN (is_unreachable IS NULL OR is_unreachable = 0) AND is_banned = 0 THEN 1 ELSE 0 END)
+                FROM users
+                """
+            )
+            row = cursor.fetchone()
+            total, banned, blocked_bot, deactivated, reachable = row if row else (0, 0, 0, 0, 0)
+            return {
+                "total": int(total or 0),
+                "banned": int(banned or 0),
+                "blocked_bot": int(blocked_bot or 0),
+                "deactivated": int(deactivated or 0),
+                "reachable": int(reachable or 0),
+            }
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get reachability stats: {e}")
+        return {"total": 0, "banned": 0, "blocked_bot": 0, "deactivated": 0, "reachable": 0}
 
 def delete_user_keys(user_id: int):
     try:

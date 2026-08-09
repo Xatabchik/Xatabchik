@@ -15,6 +15,7 @@ from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import backup_manager
 
 from shop_bot.modules import remnawave_api
+from shop_bot.modules import telegram_reachability
 from shop_bot.bot import keyboards
 
 CHECK_INTERVAL_SECONDS = 300
@@ -78,7 +79,8 @@ async def send_subscription_notification(bot: Bot, user_id: int, key_id: int, ti
         logger.debug(f"Scheduler: Отправлено уведомление пользователю {user_id} по ключу {key_id} (осталось {time_left_hours} ч).")
         
     except Exception as e:
-        logger.error(f"Scheduler: Ошибка отправки уведомления пользователю {user_id}: {e}")
+        if not telegram_reachability.handle_send_exception(user_id, e):
+            logger.error(f"Scheduler: Ошибка отправки уведомления пользователю {user_id}: {e}")
 
 def _cleanup_notified_users(all_db_keys: list[dict]):
     if not notified_users:
@@ -750,7 +752,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                             parse_mode="HTML",
                         )
                     except Exception as e:
-                        logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
+                        if not telegram_reachability.handle_send_exception(user_id, e):
+                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
             elif lte_transition_to_enabled:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул восстановлен для user_id={user_id} — доступ к premium-нодам включён.")
                 try:
@@ -768,7 +771,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                             parse_mode="HTML",
                         )
                     except Exception as e:
-                        logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
+                        if not telegram_reachability.handle_send_exception(user_id, e):
+                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
         except Exception as e:
             logger.error(f"Scheduler[dual-limits]: ошибка обработки пользователя {user_id}: {e}", exc_info=True)
 
@@ -1304,18 +1308,26 @@ async def check_broadcast_campaigns(bot: Bot):
             logger.debug(f"Broadcast {campaign_id}: нет получателей.")
             continue
         text = c.get("text_html") or ""
-        sent = 0
+        sent_ids: list[int] = []
         failed = 0
+        unreachable = 0
         for uid in recipients:
             try:
                 await bot.send_message(int(uid), text, parse_mode="HTML")
-                sent += 1
-            except Exception:
+                sent_ids.append(uid)
+            except Exception as e:
                 failed += 1
+                if telegram_reachability.handle_send_exception(int(uid), e):
+                    unreachable += 1
+                else:
+                    logger.warning(f"Broadcast {campaign_id}: не удалось отправить пользователю {uid}: {e}")
             await asyncio.sleep(0.05)  # stay within Telegram rate limits
-        if sent:
-            rw_repo.record_broadcast_sends(campaign_id, recipients[:sent + failed])
-        logger.info(f"Broadcast {campaign_id} «{c.get('name')}»: отправлено {sent}, не доставлено {failed}.")
+        if sent_ids:
+            rw_repo.record_broadcast_sends(campaign_id, sent_ids)
+        logger.info(
+            f"Broadcast {campaign_id} «{c.get('name')}»: отправлено {len(sent_ids)}, не доставлено {failed} "
+            f"(из них недоступны боту {unreachable})."
+        )
 
 
 async def periodic_subscription_check(bot_controller: BotController):
