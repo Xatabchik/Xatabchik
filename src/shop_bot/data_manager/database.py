@@ -740,6 +740,17 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "auth_pass": "TEXT",
         "seller_active": "BOOLEAN DEFAULT 0",
         "seller_sale": "REAL DEFAULT 0",
+    }
+    for column, definition in mapping.items():
+        _ensure_table_column(cursor, "users", column, definition)
+    _ensure_unique_index(cursor, "idx_users_auth_token", "users", "auth_token")
+    _ensure_unique_index(cursor, "idx_users_auth_email", "users", "auth_email")
+
+
+def _ensure_email_verification_columns(cursor: sqlite3.Cursor) -> None:
+    """Добавляет поля для активации email (подтверждение владения адресом при веб-регистрации)."""
+    is_new_migration = "email_verified" not in _get_table_columns(cursor, "users")
+    mapping = {
         "email_verified": "BOOLEAN DEFAULT 0",
         "email_code_hash": "TEXT",
         "email_code_expires_at": "TIMESTAMP",
@@ -747,8 +758,17 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
-    _ensure_unique_index(cursor, "idx_users_auth_token", "users", "auth_token")
-    _ensure_unique_index(cursor, "idx_users_auth_email", "users", "auth_email")
+    if is_new_migration:
+        # Пользователи, зарегистрированные до появления обязательной активации email,
+        # уже могли входить в систему — не блокируем им доступ повторной верификацией.
+        try:
+            cursor.execute(
+                "UPDATE users SET email_verified = 1 "
+                "WHERE auth_email IS NOT NULL AND auth_pass IS NOT NULL "
+                "AND email_code_hash IS NULL AND email_verified = 0"
+            )
+        except sqlite3.Error as e:
+            logging.warning(f"Не удалось выполнить бэкфилл email_verified для существующих пользователей: {e}")
 
 
 def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
@@ -1175,6 +1195,7 @@ def run_migration():
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = OFF")
             _ensure_users_columns(cursor)
+            _ensure_email_verification_columns(cursor)
             _ensure_hosts_columns(cursor)
             _ensure_plans_columns(cursor)
             _ensure_support_tickets_columns(cursor)
