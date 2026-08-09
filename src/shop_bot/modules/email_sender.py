@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import smtplib
 import ssl
+import time
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
@@ -65,8 +66,32 @@ def is_smtp_configured() -> bool:
     return bool(settings["host"] and settings["user"] and settings["password"])
 
 
-def send_activation_code(to_email: str, code: str) -> bool:
+def _send_once(host: str, port: int, settings: dict, to_email: str, message: MIMEText, connect_timeout: float) -> None:
+    if port == 465:
+        # Порт 465 — implicit TLS (SMTPS), STARTTLS здесь не нужен/не поддерживается.
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, timeout=connect_timeout, context=context) as server:
+            server.login(settings["user"], settings["password"])
+            server.sendmail(settings["user"], [to_email], message.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=connect_timeout) as server:
+            server.ehlo()
+            if settings["use_tls"]:
+                context = ssl.create_default_context()
+                server.starttls(context=context)
+                server.ehlo()
+            server.login(settings["user"], settings["password"])
+            server.sendmail(settings["user"], [to_email], message.as_string())
+
+
+def send_activation_code(to_email: str, code: str, max_attempts: int = 2, retry_delay_seconds: float = 1.5) -> bool:
     """Отправить письмо с одноразовым кодом активации email.
+
+    При кратковременных сетевых сбоях (обрыв соединения/таймаут) делает до
+    `max_attempts` попыток с небольшой паузой между ними — SMTP-серверы shared
+    хостинга нередко отвечают не сразу или временно недоступны на пару секунд.
+    Ошибки авторизации (неверный логин/пароль) не повторяются — повтор здесь
+    не поможет и может привести к временной блокировке аккаунта на стороне провайдера.
 
     Возвращает True при успешной отправке, False в случае любой ошибки
     (ошибка подробно логируется, но не поднимается наружу, чтобы не ронять запрос).
@@ -95,37 +120,33 @@ def send_activation_code(to_email: str, code: str) -> bool:
     host = settings["host"]
     port = settings["port"]
 
-    try:
-        if port == 465:
-            # Порт 465 — implicit TLS (SMTPS), STARTTLS здесь не нужен/не поддерживается.
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(host, port, timeout=15, context=context) as server:
-                server.login(settings["user"], settings["password"])
-                server.sendmail(settings["user"], [to_email], message.as_string())
-        else:
-            with smtplib.SMTP(host, port, timeout=15) as server:
-                server.ehlo()
-                if settings["use_tls"]:
-                    context = ssl.create_default_context()
-                    server.starttls(context=context)
-                    server.ehlo()
-                server.login(settings["user"], settings["password"])
-                server.sendmail(settings["user"], [to_email], message.as_string())
-        return True
-    except smtplib.SMTPAuthenticationError as e:
-        hint = _auth_hint_for_host(host)
-        logger.error(
-            "Не удалось отправить письмо активации на %s: SMTP-сервер отклонил логин/пароль (%s). %s",
-            to_email, e, hint,
-        )
-        return False
-    except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, ConnectionError, TimeoutError, OSError) as e:
-        logger.error(
-            "Не удалось отправить письмо активации на %s: не удалось подключиться к SMTP-серверу %s:%s (%s). "
-            "Проверьте адрес/порт сервера и доступность сети из контейнера.",
-            to_email, host, port, e,
-        )
-        return False
-    except Exception as e:
-        logger.error("Не удалось отправить письмо активации на %s: %s", to_email, e)
-        return False
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _send_once(host, port, settings, to_email, message, connect_timeout=10)
+            return True
+        except smtplib.SMTPAuthenticationError as e:
+            hint = _auth_hint_for_host(host)
+            logger.error(
+                "Не удалось отправить письмо активации на %s: SMTP-сервер отклонил логин/пароль (%s). %s",
+                to_email, e, hint,
+            )
+            return False
+        except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, ConnectionError, TimeoutError, OSError) as e:
+            if attempt < max_attempts:
+                logger.warning(
+                    "Попытка %s/%s подключиться к SMTP-серверу %s:%s для отправки письма на %s не удалась (%s). "
+                    "Повтор через %.1fс...",
+                    attempt, max_attempts, host, port, to_email, e, retry_delay_seconds,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
+            logger.error(
+                "Не удалось отправить письмо активации на %s: не удалось подключиться к SMTP-серверу %s:%s (%s) "
+                "после %s попыток. Проверьте адрес/порт сервера и доступность сети из контейнера.",
+                to_email, host, port, e, max_attempts,
+            )
+            return False
+        except Exception as e:
+            logger.error("Не удалось отправить письмо активации на %s: %s", to_email, e)
+            return False
+    return False

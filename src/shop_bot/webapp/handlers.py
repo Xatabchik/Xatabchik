@@ -1833,10 +1833,14 @@ EMAIL_RESEND_COOLDOWN_SECONDS = 60
 EMAIL_CODE_TTL_SECONDS = 600
 
 
-def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool, str | None]:
+async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool, str | None]:
     """Сгенерировать, сохранить и отправить новый код подтверждения email.
 
     Возвращает (ok, error). Не поднимает исключения наружу.
+
+    Отправка письма (блокирующий вызов smtplib, может делать несколько попыток
+    с паузами при сетевых сбоях) выполняется в отдельном потоке через
+    `asyncio.to_thread`, чтобы не блокировать event loop на время ожидания/повторов.
     """
     import random
     from shop_bot.data_manager import database
@@ -1851,7 +1855,7 @@ def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool, str 
         return False, "Ошибка базы данных"
 
     try:
-        sent = send_activation_code(email, code)
+        sent = await asyncio.to_thread(send_activation_code, email, code)
     except Exception as e:
         logger.error(f"Unexpected error while sending activation code to {email}: {e}")
         sent = False
@@ -1875,7 +1879,7 @@ async def api_email_register(req: EmailAuthRequest):
     if not user:
         return {"ok": False, "error": "Ошибка при регистрации"}
 
-    ok, err = _issue_email_verification_code(user['telegram_id'], req.email)
+    ok, err = await _issue_email_verification_code(user['telegram_id'], req.email)
     if not ok:
         return {"ok": False, "error": err}
 
@@ -1930,7 +1934,7 @@ async def api_email_resend(req: EmailResendRequest):
         except Exception:
             pass
 
-    ok, err = _issue_email_verification_code(user['telegram_id'], req.email)
+    ok, err = await _issue_email_verification_code(user['telegram_id'], req.email)
     if not ok:
         return {"ok": False, "error": err}
     return {"ok": True}
