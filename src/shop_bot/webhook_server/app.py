@@ -60,7 +60,6 @@ from shop_bot.data_manager.remnawave_repository import (
     get_all_ssh_targets, get_ssh_target, create_ssh_target, update_ssh_target_fields, delete_ssh_target,
     get_user,
     get_admin_stats,
-    list_gift_tokens,
 )
 from shop_bot.data_manager.database import (
     get_button_configs, get_button_configs_admin, create_button_config, update_button_config, 
@@ -854,22 +853,24 @@ def create_webhook_app(bot_controller_instance):
         except Exception:
             pass
 
-        # Gifts
+        # Gifts (user-to-user gifted subscriptions, see user_gifts table)
         gifts_total = 0
         gifts_used = 0
-        gifts_activations = 0
+        gifts_pending = 0
         try:
-            tokens = list_gift_tokens(active_only=False) or []
-            gifts_total = len(tokens)
-            for t in tokens:
-                try:
-                    gifts_used += int(t.get('activations_used') or 0)
-                except Exception:
-                    pass
-                try:
-                    gifts_activations += int(t.get('activation_limit') or 1)
-                except Exception:
-                    gifts_activations += 1
+            db_path = str(rw_repo.database.DB_FILE)
+            with sqlite3.connect(db_path) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_activated THEN 1 ELSE 0 END), 0)
+                    FROM user_gifts
+                    """
+                )
+                row = cur.fetchone() or (0, 0)
+                gifts_total = int(row[0] or 0)
+                gifts_used = int(row[1] or 0)
+                gifts_pending = max(0, gifts_total - gifts_used)
         except Exception:
             pass
 
@@ -889,7 +890,7 @@ def create_webhook_app(bot_controller_instance):
             'servers_disabled': servers_disabled,
             'gifts_total': gifts_total,
             'gifts_used': gifts_used,
-            'gifts_activations': gifts_activations,
+            'gifts_pending': gifts_pending,
         }
 
         # Charts

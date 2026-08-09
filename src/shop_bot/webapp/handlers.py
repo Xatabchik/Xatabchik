@@ -807,19 +807,6 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                         <span class="text-[10px] text-gray-300 font-black">{reg_date_str} ({time_since_str})</span>
                     </div>
 
-                    <!-- Action buttons: transactions history + key search -->
-                    <div class="grid grid-cols-2 gap-2 mt-1">
-                        <button onclick="openActionModal('transactions', null)"
-                            class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
-                            <span class="material-symbols-rounded text-sm">receipt_long</span>
-                            <span>История</span>
-                        </button>
-                        <button onclick="openActionModal('search_keys', null)"
-                            class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 border border-white/5 hover:border-white/10">
-                            <span class="material-symbols-rounded text-sm">search</span>
-                            <span>Поиск ключей</span>
-                        </button>
-                    </div>
                     {sync_btn_html}
                 </div>
             </div>

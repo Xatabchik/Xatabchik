@@ -226,42 +226,6 @@
             padding-bottom: max(env(safe-area-inset-bottom), 8px) !important;
         }
 
-        /* Поиск ключей: модалка над нижним меню, список результатов прокручивается внутри */
-        @media (max-width: 639px) {
-            #action-modal:has(#key-search-results) {
-                padding-bottom: calc(64px + env(safe-area-inset-bottom));
-            }
-
-            body.keyboard-open #action-modal:has(#key-search-results) {
-                padding-bottom: env(safe-area-inset-bottom);
-            }
-        }
-
-        #action-modal:has(#key-search-results) #action-card {
-            max-height: min(
-                calc(var(--app-vh, 100vh) * 0.85),
-                calc(var(--app-vh, 100vh) - 64px - env(safe-area-inset-bottom) - 24px)
-            );
-        }
-
-        body.keyboard-open #action-modal:has(#key-search-results) #action-card {
-            max-height: calc(var(--app-vh, 100vh) * 0.85);
-        }
-
-        #action-modal-content:has(#key-search-results) {
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        #key-search-results {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
-            -webkit-overflow-scrolling: touch;
-        }
-
         /* Material Symbols Rounded — modern variable icon font */
         .material-symbols-rounded {
             font-family: 'Material Symbols Rounded';
@@ -343,12 +307,7 @@
         <header class="w-full flex items-center justify-between py-4 relative z-[100]">
             <div class="flex-1"></div>
             <h1 class="text-xl font-bold tracking-wide uppercase leading-none">Ключи</h1>
-            <div class="flex-1 flex justify-end">
-                <button onclick="openActionModal('search_keys', null)"
-                    class="p-2 text-gray-400 hover:text-gray-200 transition-colors active:scale-95">
-                    <span class="material-symbols-rounded">search</span>
-                </button>
-            </div>
+            <div class="flex-1"></div>
         </header>
         <main class="flex flex-col gap-4">
             <div class="grid grid-cols-3 gap-2">
@@ -368,18 +327,42 @@
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Продлить</span>
                 </button>
             </div>
-            <div class="flex flex-col gap-3">
-                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Ваши ключи</div>
+            <div class="relative">
+                <span class="material-symbols-rounded absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-lg pointer-events-none">search</span>
+                <input type="search" id="keys-search-input" placeholder="Поиск по названию, email или UUID" autocomplete="off"
+                    oninput="onKeysSearchInput()"
+                    class="w-full bg-black/30 border border-white/10 rounded-xl py-2.5 pl-10 pr-9 text-xs text-white placeholder-gray-500 focus:border-white/20 outline-none transition-all">
+                <button id="keys-search-clear" onclick="clearKeysSearch()"
+                    class="hidden absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors">
+                    <span class="material-symbols-rounded text-base">close</span>
+                </button>
+            </div>
+            <div id="keys-tabs" class="flex items-center gap-1 bg-white/5 rounded-xl p-1">
+                <button id="keys-tab-btn-personal" onclick="switchKeysTab('personal')"
+                    class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all bg-white/10 text-white">
+                    Личные ключи
+                </button>
+                <button id="keys-tab-btn-gifts" onclick="switchKeysTab('gifts')"
+                    class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all text-gray-400">
+                    <span class="material-symbols-rounded text-[12px] align-middle mr-0.5">card_giftcard</span>Подарочные
+                </button>
+            </div>
+            <div id="keys-search-results-wrap" class="hidden flex flex-col gap-3">
+                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Результаты поиска</div>
+                <div id="keys-search-results"></div>
+            </div>
+            <div id="keys-tab-personal" class="flex flex-col gap-3">
                 <div id="profile-keys-list-container">
                     {{ profile_keys_list }}
                 </div>
+                <div id="profile-keys-pagination" class="hidden"></div>
             </div>
-            <div class="flex flex-col gap-3">
-                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Подарочные ключи</div>
+            <div id="keys-tab-gifts" class="hidden flex flex-col gap-3">
                 <div id="gifts-section" class="flex flex-col gap-2">
                     <div id="gifts-loading" class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
                     <div id="gifts-content" class="hidden flex flex-col gap-2"></div>
                 </div>
+                <div id="gifts-pagination" class="hidden"></div>
             </div>
             <button onclick="window.location.hash='setup'"
                 class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
@@ -2668,6 +2651,10 @@
                 updateContainer('renew-keys-dropdown-container');
                 updateContainer('renew-plans-grid-container');
 
+                // Personal keys list HTML was just replaced wholesale above,
+                // so re-scan it and reset client-side pagination state.
+                if (typeof initProfileKeysPagination === 'function') initProfileKeysPagination();
+
                 // Re-bind accordion events
                 document.querySelectorAll('#setup-keys-list-container .key-toggle, #profile-keys-list-container .key-toggle').forEach(button => {
                     button.addEventListener('click', () => {
@@ -3204,37 +3191,6 @@
                 titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">receipt_long</span> История транзакций';
                 contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
                 loadTransactions(1);
-            } else if (type === 'search_keys') {
-                const modal = document.getElementById('action-modal');
-                const backdrop = document.getElementById('action-backdrop');
-                const card = document.getElementById('action-card');
-                const titleEl = document.getElementById('action-modal-title');
-                const contentEl = document.getElementById('action-modal-content');
-
-                modal.classList.remove('hidden');
-                modal.classList.add('flex');
-                requestAnimationFrame(() => {
-                    backdrop.classList.remove('opacity-0', 'pointer-events-none');
-                    card.classList.remove('translate-y-full');
-                });
-
-                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">search</span> Поиск ключей';
-                contentEl.innerHTML = `
-                    <div class="flex flex-col gap-3 flex-1 min-h-0">
-                        <div class="flex gap-2 shrink-0">
-                            <input type="text" id="key-search-input" minlength="2" maxlength="60"
-                                class="flex-1 bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white focus:border-white/20 transition-all outline-none"
-                                placeholder="Email, UUID или название">
-                            <button onclick="searchKeys()" id="key-search-btn"
-                                class="w-12 bg-primary/20 text-primary border border-primary/30 rounded-xl flex items-center justify-center hover:bg-primary/30 active:scale-[0.98] transition-all shrink-0">
-                                <span class="material-symbols-rounded text-sm">search</span>
-                            </button>
-                        </div>
-                        <div id="key-search-results" class="custom-scrollbar"></div>
-                    </div>
-                `;
-                const inp = document.getElementById('key-search-input');
-                if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchKeys(); });
             } else {
                 return originalOpenActionModal(type, keyId, extraData);
             }
@@ -3470,18 +3426,118 @@
             }
         }
 
-        // ===== Key Search =====
-        async function searchKeys() {
-            const input = document.getElementById('key-search-input');
-            const resultsEl = document.getElementById('key-search-results');
-            const btn = document.getElementById('key-search-btn');
-            if (!input || !resultsEl) return;
+        // ===== Keys Page: Tabs (Личные / Подарочные) =====
+        let _activeKeysTab = 'personal';
+        function switchKeysTab(tab) {
+            _activeKeysTab = tab;
+            const personalBtn = document.getElementById('keys-tab-btn-personal');
+            const giftsBtn = document.getElementById('keys-tab-btn-gifts');
+            const personalPanel = document.getElementById('keys-tab-personal');
+            const giftsPanel = document.getElementById('keys-tab-gifts');
+            const isPersonal = tab === 'personal';
+            if (personalBtn) {
+                personalBtn.classList.toggle('bg-white/10', isPersonal);
+                personalBtn.classList.toggle('text-white', isPersonal);
+                personalBtn.classList.toggle('text-gray-400', !isPersonal);
+            }
+            if (giftsBtn) {
+                giftsBtn.classList.toggle('bg-white/10', !isPersonal);
+                giftsBtn.classList.toggle('text-white', !isPersonal);
+                giftsBtn.classList.toggle('text-gray-400', isPersonal);
+            }
+            if (personalPanel) personalPanel.classList.toggle('hidden', !isPersonal);
+            if (giftsPanel) giftsPanel.classList.toggle('hidden', isPersonal);
+        }
 
-            const q = input.value.trim();
-            if (q.length < 2) { showNotification('Минимум 2 символа', 'error'); return; }
+        // ===== Keys Page: Pagination for the personal keys list =====
+        // The personal keys list is rendered server-side (full HTML) into
+        // #profile-keys-list-container, so pagination here just shows/hides
+        // the already-rendered cards client-side (no extra requests, no
+        // re-binding of existing key-toggle listeners needed).
+        const PROFILE_KEYS_PAGE_SIZE = 5;
+        let _profileKeysPage = 0;
+        function initProfileKeysPagination() {
+            const container = document.getElementById('profile-keys-list-container');
+            if (!container) return;
+            window._profileKeysCards = Array.from(container.children).filter(el => el.querySelector && el.querySelector('.key-toggle'));
+            _profileKeysPage = 0;
+            renderProfileKeysPage();
+        }
+        function renderProfileKeysPage() {
+            const cards = window._profileKeysCards || [];
+            const paginationEl = document.getElementById('profile-keys-pagination');
+            if (!paginationEl) return;
+            if (!cards.length) { paginationEl.classList.add('hidden'); paginationEl.innerHTML = ''; return; }
 
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
-            resultsEl.innerHTML = '<div class="flex justify-center py-3"><span class="material-symbols-rounded animate-spin text-primary">progress_activity</span></div>';
+            const totalPages = Math.ceil(cards.length / PROFILE_KEYS_PAGE_SIZE);
+            const start = _profileKeysPage * PROFILE_KEYS_PAGE_SIZE;
+            cards.forEach((el, i) => { el.style.display = (i >= start && i < start + PROFILE_KEYS_PAGE_SIZE) ? '' : 'none'; });
+
+            if (totalPages > 1) {
+                paginationEl.classList.remove('hidden');
+                paginationEl.innerHTML = `
+                    <div class="flex items-center justify-between px-1">
+                        <button onclick="changeProfileKeysPage(-1)" ${_profileKeysPage === 0 ? 'disabled' : ''}
+                            class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
+                            <span class="material-symbols-rounded text-sm">chevron_left</span>
+                        </button>
+                        <span class="text-[10px] text-gray-500">${_profileKeysPage + 1} / ${totalPages} (${cards.length})</span>
+                        <button onclick="changeProfileKeysPage(1)" ${_profileKeysPage >= totalPages - 1 ? 'disabled' : ''}
+                            class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
+                            <span class="material-symbols-rounded text-sm">chevron_right</span>
+                        </button>
+                    </div>`;
+            } else {
+                paginationEl.classList.add('hidden');
+                paginationEl.innerHTML = '';
+            }
+        }
+        function changeProfileKeysPage(delta) {
+            const cards = window._profileKeysCards || [];
+            const totalPages = Math.ceil(cards.length / PROFILE_KEYS_PAGE_SIZE);
+            _profileKeysPage = Math.min(Math.max(0, _profileKeysPage + delta), totalPages - 1);
+            renderProfileKeysPage();
+        }
+
+        // ===== Keys Page: Live inline search (replaces the old search modal) =====
+        let _keysSearchDebounceTimer = null;
+        function onKeysSearchInput() {
+            const input = document.getElementById('keys-search-input');
+            const clearBtn = document.getElementById('keys-search-clear');
+            const q = (input?.value || '').trim();
+            if (clearBtn) clearBtn.classList.toggle('hidden', !q);
+            clearTimeout(_keysSearchDebounceTimer);
+            if (!q) { exitKeysSearchMode(); return; }
+            _keysSearchDebounceTimer = setTimeout(() => performKeysSearch(q), 350);
+        }
+        function clearKeysSearch() {
+            const input = document.getElementById('keys-search-input');
+            if (input) input.value = '';
+            const clearBtn = document.getElementById('keys-search-clear');
+            if (clearBtn) clearBtn.classList.add('hidden');
+            clearTimeout(_keysSearchDebounceTimer);
+            exitKeysSearchMode();
+        }
+        function exitKeysSearchMode() {
+            const wrap = document.getElementById('keys-search-results-wrap');
+            const tabsEl = document.getElementById('keys-tabs');
+            if (wrap) wrap.classList.add('hidden');
+            if (tabsEl) tabsEl.classList.remove('hidden');
+            switchKeysTab(_activeKeysTab);
+        }
+        async function performKeysSearch(q) {
+            if (q.length < 2) return;
+
+            const wrap = document.getElementById('keys-search-results-wrap');
+            const resultsEl = document.getElementById('keys-search-results');
+            const tabsEl = document.getElementById('keys-tabs');
+            const personalPanel = document.getElementById('keys-tab-personal');
+            const giftsPanel = document.getElementById('keys-tab-gifts');
+            if (tabsEl) tabsEl.classList.add('hidden');
+            if (personalPanel) personalPanel.classList.add('hidden');
+            if (giftsPanel) giftsPanel.classList.add('hidden');
+            if (wrap) wrap.classList.remove('hidden');
+            if (resultsEl) resultsEl.innerHTML = '<div class="flex justify-center py-3"><span class="material-symbols-rounded animate-spin text-primary">progress_activity</span></div>';
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
@@ -3491,6 +3547,7 @@
                     body: JSON.stringify({ user_id: userId, query: q })
                 });
                 const data = await res.json();
+                if (!resultsEl) return;
 
                 if (!data.ok) { resultsEl.innerHTML = `<div class="text-center text-red-400 text-xs py-2">${data.error || 'Ошибка'}</div>`; return; }
 
@@ -3501,7 +3558,6 @@
 
                 // Server reuses the same key-card renderer as the main "Мои ключи" list,
                 // so results come with full buttons/actions already wired up.
-                // (Cards already carry their own bottom margin, so no extra gap wrapper here.)
                 resultsEl.innerHTML = `<div class="mt-1">${data.html}</div>`;
 
                 // Re-bind accordion (expand/collapse) events for the newly injected cards.
@@ -3514,9 +3570,7 @@
                     });
                 });
             } catch (e) {
-                resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
-            } finally {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">search</span>'; }
+                if (resultsEl) resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
             }
         }
 
@@ -3842,30 +3896,13 @@
         }
 
         // ── User gifts ───────────────────────────────────────────────────
-        async function loadUserGifts() {
-            const token = window.getAuthToken();
-            const userId = window._currentUserId;
-            if (!token && !userId) return;
-            try {
-                const resp = await fetch('/api/user/gifts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, user_id: userId })
-                });
-                const d = await resp.json();
-                const loading = document.getElementById('gifts-loading');
-                const content = document.getElementById('gifts-content');
-                if (loading) loading.style.display = 'none';
-                if (!d.ok || !content) return;
-                content.classList.remove('hidden');
-                if (!d.gifts || !d.gifts.length) {
-                    content.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
-                    return;
-                }
-                content.innerHTML = d.gifts.map(g => {
-                    if (g.card_html) return g.card_html;
-                    // Fallback (e.g. underlying key not found): simplified card
-                    return `
+        const GIFTS_PAGE_SIZE = 5;
+        window._giftsState = { gifts: [], page: 0 };
+
+        function _giftCardHtml(g) {
+            if (g.card_html) return g.card_html;
+            // Fallback (e.g. underlying key not found): simplified card
+            return `
                 <div class="glass-card border border-white/10 rounded-xl p-3 flex flex-col gap-2">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
@@ -3893,17 +3930,82 @@
                         <span>Активировать себе</span>
                     </button>
                 </div>`;
-                }).join('');
+        }
 
-                // Re-bind accordion toggles for the freshly-inserted full key cards
-                content.querySelectorAll('.key-toggle').forEach(button => {
-                    button.addEventListener('click', () => {
-                        const cardContent = button.nextElementSibling;
-                        const icon = button.querySelector('.rotate-icon');
-                        cardContent.classList.toggle('expanded');
-                        if (icon) icon.classList.toggle('expanded');
-                    });
+        function renderGiftsPage() {
+            const s = window._giftsState;
+            const content = document.getElementById('gifts-content');
+            const paginationEl = document.getElementById('gifts-pagination');
+            if (!content) return;
+
+            const totalPages = Math.ceil(s.gifts.length / GIFTS_PAGE_SIZE);
+            const start = s.page * GIFTS_PAGE_SIZE;
+            const pageGifts = s.gifts.slice(start, start + GIFTS_PAGE_SIZE);
+
+            content.innerHTML = pageGifts.map(_giftCardHtml).join('');
+
+            // Re-bind accordion toggles for the freshly-inserted full key cards
+            content.querySelectorAll('.key-toggle').forEach(button => {
+                button.addEventListener('click', () => {
+                    const cardContent = button.nextElementSibling;
+                    const icon = button.querySelector('.rotate-icon');
+                    cardContent.classList.toggle('expanded');
+                    if (icon) icon.classList.toggle('expanded');
                 });
+            });
+
+            if (paginationEl) {
+                if (totalPages > 1) {
+                    paginationEl.classList.remove('hidden');
+                    paginationEl.innerHTML = `
+                        <div class="flex items-center justify-between px-1">
+                            <button onclick="changeGiftsPage(-1)" ${s.page === 0 ? 'disabled' : ''}
+                                class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
+                                <span class="material-symbols-rounded text-sm">chevron_left</span>
+                            </button>
+                            <span class="text-[10px] text-gray-500">${s.page + 1} / ${totalPages} (${s.gifts.length})</span>
+                            <button onclick="changeGiftsPage(1)" ${s.page >= totalPages - 1 ? 'disabled' : ''}
+                                class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
+                                <span class="material-symbols-rounded text-sm">chevron_right</span>
+                            </button>
+                        </div>`;
+                } else {
+                    paginationEl.classList.add('hidden');
+                    paginationEl.innerHTML = '';
+                }
+            }
+        }
+        function changeGiftsPage(delta) {
+            const s = window._giftsState;
+            const totalPages = Math.ceil(s.gifts.length / GIFTS_PAGE_SIZE);
+            s.page = Math.min(Math.max(0, s.page + delta), totalPages - 1);
+            renderGiftsPage();
+        }
+
+        async function loadUserGifts() {
+            const token = window.getAuthToken();
+            const userId = window._currentUserId;
+            if (!token && !userId) return;
+            try {
+                const resp = await fetch('/api/user/gifts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, user_id: userId })
+                });
+                const d = await resp.json();
+                const loading = document.getElementById('gifts-loading');
+                const content = document.getElementById('gifts-content');
+                const paginationEl = document.getElementById('gifts-pagination');
+                if (loading) loading.style.display = 'none';
+                if (!d.ok || !content) return;
+                content.classList.remove('hidden');
+                if (!d.gifts || !d.gifts.length) {
+                    content.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
+                    if (paginationEl) { paginationEl.classList.add('hidden'); paginationEl.innerHTML = ''; }
+                    return;
+                }
+                window._giftsState = { gifts: d.gifts, page: 0 };
+                renderGiftsPage();
             } catch (e) {
                 console.error('Gifts error:', e);
             }
@@ -3958,6 +4060,13 @@
         };
 
         window._loadKeysPage = async function () {
+            initProfileKeysPagination();
+            // Only reset the tab view if the user isn't currently in the middle
+            // of a live search (search mode already hides the tab panels itself).
+            const searchInput = document.getElementById('keys-search-input');
+            if (!searchInput || !searchInput.value.trim()) {
+                switchKeysTab(_activeKeysTab);
+            }
             const giftsContent = document.getElementById('gifts-content');
             const giftsLoading = document.getElementById('gifts-loading');
             if (giftsContent && giftsLoading && giftsContent.classList.contains('hidden') && giftsLoading.style.display !== 'none') {

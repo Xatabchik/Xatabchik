@@ -4385,6 +4385,104 @@ body{
 	color: rgba(255,255,255,.60);
 }
 
+/* =====================================================================
+   Sidebar navigation — modern refresh
+   Более современный вид вертикального меню: аккуратные отступы,
+   плавные переходы на hover/active, единый акцент-индикатор слева
+   (используется --primary-color, а не отдельный "неоновый" цвет),
+   без bloom/glow-эффектов. Явно переопределяет более старые правила
+   выше по файлу (там же выставлены !important), поэтому важные
+   свойства здесь также помечены !important — иначе унаследованная
+   специфичность старых блоков «пробивала» бы новый стиль.
+   ===================================================================== */
+
+.sidebar-navigation .nav-section {
+	margin-bottom: 22px !important;
+}
+
+.sidebar-navigation .nav-section:last-child {
+	margin-bottom: 0 !important;
+}
+
+.sidebar-navigation .nav-section-title {
+	font-family: var(--font-body, inherit) !important;
+	font-size: .72rem !important;
+	font-weight: 600 !important;
+	letter-spacing: .09em !important;
+	text-transform: uppercase !important;
+	color: var(--text-muted) !important;
+	padding: 0 12px 8px !important;
+	margin: 0 0 2px !important;
+}
+
+.sidebar-navigation .nav-link {
+	position: relative;
+	display: flex !important;
+	align-items: center !important;
+	gap: 10px !important;
+	padding: 10px 14px !important;
+	margin: 0 0 2px !important;
+	border: none !important;
+	border-radius: 10px !important;
+	background: transparent !important;
+	color: var(--text-muted) !important;
+	font-size: .875rem !important;
+	font-weight: 500 !important;
+	text-decoration: none !important;
+	box-shadow: none !important;
+	transition: background-color .15s ease, color .15s ease !important;
+}
+
+.sidebar-navigation .nav-link i[class*="ti"] {
+	font-size: 1.1rem;
+	width: 20px;
+	flex: 0 0 20px;
+	text-align: center;
+	opacity: .8;
+	transition: color .15s ease, opacity .15s ease;
+}
+
+.sidebar-navigation .nav-link:hover {
+	background: var(--border-color) !important;
+	color: var(--text-primary) !important;
+}
+
+.sidebar-navigation .nav-link:hover i[class*="ti"] {
+	opacity: 1;
+}
+
+.sidebar-navigation .nav-link:focus-visible {
+	outline: 2px solid var(--primary-color);
+	outline-offset: 2px;
+}
+
+.sidebar-navigation .nav-link.active {
+	background: color-mix(in oklab, var(--primary-color) 15%, transparent) !important;
+	border-color: transparent !important;
+	box-shadow: none !important;
+	color: var(--primary-color) !important;
+	font-weight: 600 !important;
+}
+
+.sidebar-navigation .nav-link.active i[class*="ti"] {
+	color: var(--primary-color);
+	opacity: 1;
+}
+
+/* Акцент-индикатор активного пункта — тонкая полоса слева вместо ring/glow */
+.sidebar-navigation .nav-link.active::before {
+	content: "";
+	position: absolute;
+	left: 3px;
+	top: 50%;
+	width: 3px;
+	height: 58%;
+	transform: translateY(-50%);
+	border-radius: 4px;
+	background: var(--primary-color);
+	transition: opacity .15s ease;
+}
+
 /* === Страница статистики (карточки + графики) === */
 .stats-cards{
 	display: grid;

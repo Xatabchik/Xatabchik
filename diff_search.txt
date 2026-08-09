@@ -1,0 +1,176 @@
+﻿
+   
+  -        /* ╨Я╨╛╨╕╤Б╨║ ╨║╨╗╤О╤З╨╡╨╣: ╨╝╨╛╨┤╨░╨╗╨║╨░ ╨╜╨░╨┤ ╨╜╨╕╨╢╨╜╨╕╨╝ ╨╝╨╡╨╜╤О, ╤Б╨┐╨╕╤Б╨╛╨║ ╤А╨╡╨╖╤Г╨╗╤М╤В╨░╤В╨╛╨▓
+ ╨┐╤А╨╛╨║╤А╤Г╤З╨╕╨▓╨░╨╡╤В╤Б╤П ╨▓╨╜╤Г╤В╤А╨╕ */
+  -        @media (max-width: 639px) {
+> -            #action-modal:has(#key-search-results) {
+  -                padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  -            }
+  -
+> -            body.keyboard-open #action-modal:has(#key-search-results) {
+  -                padding-bottom: env(safe-area-inset-bottom);
+  -            }
+  -        }
+  -
+> -        #action-modal:has(#key-search-results) #action-card {
+  -            max-height: min(
+  -                calc(var(--app-vh, 100vh) * 0.85),
+  -                calc(var(--app-vh, 100vh) - 64px - env(safe-area-inset-bottom) - 24px)
+  -            );
+  -        }
+  -
+> -        body.keyboard-open #action-modal:has(#key-search-results) #action-card {
+  -            max-height: calc(var(--app-vh, 100vh) * 0.85);
+  -        }
+  -
+> -        #action-modal-content:has(#key-search-results) {
+  -            display: flex;
+  -            flex-direction: column;
+  -            min-height: 0;
+  -            overflow: hidden;
+  -        }
+  -
+> -        #key-search-results {
+  -            flex: 1 1 auto;
+  -            min-height: 0;
+  -            overflow-y: auto;
+               <div class="flex-1"></div>
+               <h1 class="text-xl font-bold tracking-wide uppercase leading-none">╨Ъ╨╗╤О╤З╨╕</h1>
+  -            <div class="flex-1 flex justify-end">
+> -                <button onclick="openActionModal('search_keys', null)"
+  -                    class="p-2 text-gray-400 hover:text-gray-200 transition-colors active:scale-95">
+> -                    <span class="material-symbols-rounded">search</span>
+  -                </button>
+  -            </div>
+  +            <div class="flex-1"></div>
+  -            <div class="flex flex-col gap-3">
+  -                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">╨Т╨░╤И╨╕ ╨║╨╗╤О╤З╨╕<
+/div>
+  +            <div class="relative">
+> +                <span class="material-symbols-rounded absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-lg
+ pointer-events-none">search</span>
+> +                <input type="search" id="keys-search-input" placeholder="╨Я╨╛╨╕╤Б╨║ ╨┐╨╛ ╨╜╨░╨╖╨▓╨░╨╜╨╕╤О, email ╨╕╨
+╗╨╕ UUID" autocomplete="off"
+> +                    oninput="onKeysSearchInput()"
+  +                    class="w-full bg-black/30 border border-white/10 rounded-xl py-2.5 pl-10 pr-9 text-xs text-white
+ placeholder-gray-500 focus:border-white/20 outline-none transition-all">
+> +                <button id="keys-search-clear" onclick="clearKeysSearch()"
+  +                    class="hidden absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 tran
+sition-colors">
+  +                    <span class="material-symbols-rounded text-base">close</span>
+  +                </button>
+  +                    <span class="material-symbols-rounded text-[12px] align-middle mr-0.5">card_giftcard</span>╨Я╨╛╨
+┤╨░╤А╨╛╤З╨╜╤Л╨╡
+  +                </button>
+  +            </div>
+> +            <div id="keys-search-results-wrap" class="hidden flex flex-col gap-3">
+  +                <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">╨а╨╡╨╖╤Г╨╗╤М╤В╨░╤В╤Л
+ ╨┐╨╛╨╕╤Б╨║╨░</div>
+> +                <div id="keys-search-results"></div>
+  +            </div>
+  +            <div id="keys-tab-personal" class="flex flex-col gap-3">
+                   <div id="profile-keys-list-container">
+                   titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">receipt_long</
+span> ╨Ш╤Б╤В╨╛╤А╨╕╤П ╤В╤А╨░╨╜╨╖╨░╨║╤Ж╨╕╨╣';
+                   contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded a
+nimate-spin text-xl text-primary">progress_activity</span></div>';
+                   loadTransactions(1);
+> -            } else if (type === 'search_keys') {
+  -                const modal = document.getElementById('action-modal');
+  -                const backdrop = document.getElementById('action-backdrop');
+  -                const card = document.getElementById('action-card');
+  -                    card.classList.remove('translate-y-full');
+  -                });
+  -
+> -                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">search</span> 
+╨Я╨╛╨╕╤Б╨║ ╨║╨╗╤О╤З╨╡╨╣';
+  -                contentEl.innerHTML = `
+  -                    <div class="flex flex-col gap-3 flex-1 min-h-0">
+  -                        <div class="flex gap-2 shrink-0">
+> -                            <input type="text" id="key-search-input" minlength="2" maxlength="60"
+  -                                class="flex-1 bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white f
+ocus:border-white/20 transition-all outline-none"
+  -                                placeholder="Email, UUID ╨╕╨╗╨╕ ╨╜╨░╨╖╨▓╨░╨╜╨╕╨╡">
+> -                            <button onclick="searchKeys()" id="key-search-btn"
+  -                                class="w-12 bg-primary/20 text-primary border border-primary/30 rounded-xl flex item
+s-center justify-center hover:bg-primary/30 active:scale-[0.98] transition-all shrink-0">
+> -                                <span class="material-symbols-rounded text-sm">search</span>
+  -                            </button>
+  -                        </div>
+> -                        <div id="key-search-results" class="custom-scrollbar"></div>
+  -                    </div>
+  -                `;
+> -                const inp = document.getElementById('key-search-input');
+> -                if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchKeys(); });
+               } else {
+                   return originalOpenActionModal(type, keyId, extraData);
+               }
+               }
+           }
+   
+> -        // ===== Key Search =====
+> -        async function searchKeys() {
+> -            const input = document.getElementById('key-search-input');
+> -            const resultsEl = document.getElementById('key-search-results');
+> -            const btn = document.getElementById('key-search-btn');
+  -            if (!input || !resultsEl) return;
+  -
+  -            const q = input.value.trim();
+  +            renderProfileKeysPage();
+  +        }
+  +
+> +        // ===== Keys Page: Live inline search (replaces the old search modal) =====
+> +        let _keysSearchDebounceTimer = null;
+> +        function onKeysSearchInput() {
+> +            const input = document.getElementById('keys-search-input');
+> +            const clearBtn = document.getElementById('keys-search-clear');
+  +            const q = (input?.value || '').trim();
+  +            if (clearBtn) clearBtn.classList.toggle('hidden', !q);
+> +            clearTimeout(_keysSearchDebounceTimer);
+> +            if (!q) { exitKeysSearchMode(); return; }
+> +            _keysSearchDebounceTimer = setTimeout(() => performKeysSearch(q), 350);
+  +        }
+> +        function clearKeysSearch() {
+> +            const input = document.getElementById('keys-search-input');
+  +            if (input) input.value = '';
+> +            const clearBtn = document.getElementById('keys-search-clear');
+  +            if (clearBtn) clearBtn.classList.add('hidden');
+> +            clearTimeout(_keysSearchDebounceTimer);
+> +            exitKeysSearchMode();
+  +        }
+> +        function exitKeysSearchMode() {
+> +            const wrap = document.getElementById('keys-search-results-wrap');
+  +            const tabsEl = document.getElementById('keys-tabs');
+  +            if (wrap) wrap.classList.add('hidden');
+  +            if (tabsEl) tabsEl.classList.remove('hidden');
+  +            switchKeysTab(_activeKeysTab);
+  +        }
+> +        async function performKeysSearch(q) {
+  +            if (q.length < 2) return;
+  +
+> +            const wrap = document.getElementById('keys-search-results-wrap');
+> +            const resultsEl = document.getElementById('keys-search-results');
+  +            const tabsEl = document.getElementById('keys-tabs');
+  +            const personalPanel = document.getElementById('keys-tab-personal');
+  +            const giftsPanel = document.getElementById('keys-tab-gifts');
+               } catch (e) {
+  -                resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">╨Ю╤И╨╕╨▒╨║╨░ ╤Б╨╡╤В╨╕</div
+>';
+  -            } finally {
+> -                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">sea
+rch</span>'; }
+  +                if (resultsEl) resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">╨Ю╤И╨╕╨▒╨║╨
+░ ╤Б╨╡╤В╨╕</div>';
+               }
+           }
+           window._loadKeysPage = async function () {
+  +            initProfileKeysPagination();
+  +            // Only reset the tab view if the user isn't currently in the middle
+> +            // of a live search (search mode already hides the tab panels itself).
+> +            const searchInput = document.getElementById('keys-search-input');
+> +            if (!searchInput || !searchInput.value.trim()) {
+  +                switchKeysTab(_activeKeysTab);
+  +            }
+               const giftsContent = document.getElementById('gifts-content');
+
+
