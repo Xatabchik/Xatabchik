@@ -3,6 +3,31 @@
 {% block title %}Реферальная программа — Заявки на вывод{% endblock %}
 
 {% block content %}
+<style>
+  /* Scoped: reject modals stay readable/usable on narrow viewports */
+  #referral-requests-page .reject-modal .modal-title,
+  #referral-requests-page .reject-modal .modal-body {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  #referral-requests-page .reject-modal .form-control {
+    max-width: 100%;
+  }
+  /* Fullscreen-sm-down already fills the viewport; stack footer actions so buttons stay tappable */
+  @media (max-width: 575.98px) {
+    #referral-requests-page .reject-modal .modal-footer {
+      flex-direction: column-reverse;
+      align-items: stretch;
+      gap: 0.5rem;
+    }
+    #referral-requests-page .reject-modal .modal-footer > * {
+      margin: 0 !important;
+      width: 100%;
+    }
+  }
+</style>
+
+<div id="referral-requests-page">
 <div class="page-header d-print-none mb-3">
   <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Реферальная программа</h1></div></div>
 </div>
@@ -41,50 +66,30 @@
         {% for r in requests_list %}
         <tr>
           <td>#{{ r.id }}</td>
-          <td>{% if r.username %}@{{ r.username }}{% else %}—{% endif %} <span class="text-muted">({{ r.user_id }})</span></td>
-          <td class="text-end fw-bold">{{ "%.2f"|format(r.amount or 0) }} ₽</td>
-          <td>{{ referral_method_labels.get(r.method_type, r.method_type) }}</td>
-          <td>
+          <td class="text-break">{% if r.username %}@{{ r.username }}{% else %}—{% endif %} <span class="text-muted">({{ r.user_id }})</span></td>
+          <td class="text-end fw-bold text-nowrap">{{ "%.2f"|format(r.amount or 0) }} ₽</td>
+          <td class="text-break">{{ referral_method_labels.get(r.method_type, r.method_type) }}</td>
+          <td class="text-break">
             {% if r.method_type == 'sbp' %}{{ r.bank_name or '' }}, {{ r.requisite_value }}
             {% else %}{{ r.requisite_value }}{% endif %}
           </td>
           <td class="text-nowrap">{{ r.created_at }}</td>
-          <td>
+          <td class="text-break">
             {% if r.status == 'new' %}<span class="badge bg-azure-lt">Новая</span>
             {% elif r.status == 'processing' %}<span class="badge bg-yellow-lt">В обработке</span>
             {% elif r.status == 'paid' %}<span class="badge bg-green-lt">Выплачено</span>
-            {% elif r.status == 'rejected' %}<span class="badge bg-red-lt">Отклонена{% if r.reject_reason %} ({{ r.reject_reason }}){% endif %}</span>
+            {% elif r.status == 'rejected' %}<span class="badge bg-red-lt text-wrap">Отклонена{% if r.reject_reason %} ({{ r.reject_reason }}){% endif %}</span>
             {% else %}{{ r.status }}{% endif %}
           </td>
           <td class="text-end">
             {% if r.status in ('new', 'processing') %}
-            <div class="btn-group">
+            <div class="btn-group flex-wrap justify-content-end">
               <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                 <input type="hidden" name="status" value="paid" />
                 <button type="submit" class="btn btn-sm btn-success" onclick="return confirm('Отметить заявку #{{ r.id }} как выплаченную?');">Выплачено</button>
               </form>
               <button type="button" class="btn btn-sm btn-outline-danger ms-1" data-bs-toggle="modal" data-bs-target="#rejectModal{{ r.id }}">Отклонить</button>
-            </div>
-            <div class="modal modal-blur fade" id="rejectModal{{ r.id }}" tabindex="-1">
-              <div class="modal-dialog modal-dialog-centered">
-                <div class="modal-content">
-                  <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-                    <input type="hidden" name="status" value="rejected" />
-                    <div class="modal-header"><h5 class="modal-title">Отклонить заявку #{{ r.id }}</h5></div>
-                    <div class="modal-body">
-                      <label class="form-label">Причина (необязательно, будет показана пользователю)</label>
-                      <textarea class="form-control" name="reject_reason" rows="3"></textarea>
-                      <div class="form-text mt-2">Сумма {{ "%.2f"|format(r.amount or 0) }} ₽ будет возвращена на реферальный баланс пользователя.</div>
-                    </div>
-                    <div class="modal-footer">
-                      <button type="button" class="btn btn-link" data-bs-dismiss="modal">Отмена</button>
-                      <button type="submit" class="btn btn-danger">Отклонить заявку</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
             </div>
             {% else %}
             <span class="text-muted">—</span>
@@ -97,5 +102,41 @@
       </tbody>
     </table>
   </div>
+</div>
+
+{# Modals must live outside .table-responsive — overflow:auto clips them on mobile #}
+{% for r in requests_list %}
+{% if r.status in ('new', 'processing') %}
+<div class="modal modal-blur fade reject-modal" id="rejectModal{{ r.id }}" tabindex="-1" aria-labelledby="rejectModalLabel{{ r.id }}" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-fullscreen-sm-down">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}" class="d-flex flex-column h-100">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <input type="hidden" name="status" value="rejected" />
+        <div class="modal-header">
+          <h5 class="modal-title text-break pe-2" id="rejectModalLabel{{ r.id }}">Отклонить заявку #{{ r.id }}</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3 small text-secondary">
+            <div class="text-break"><span class="text-muted">Пользователь:</span> {% if r.username %}@{{ r.username }}{% else %}—{% endif %} ({{ r.user_id }})</div>
+            <div class="text-break"><span class="text-muted">Сумма:</span> {{ "%.2f"|format(r.amount or 0) }} ₽</div>
+            <div class="text-break"><span class="text-muted">Метод:</span> {{ referral_method_labels.get(r.method_type, r.method_type) }}</div>
+            <div class="text-break"><span class="text-muted">Реквизиты:</span> {% if r.method_type == 'sbp' %}{{ r.bank_name or '' }}, {{ r.requisite_value }}{% else %}{{ r.requisite_value }}{% endif %}</div>
+          </div>
+          <label class="form-label" for="rejectReason{{ r.id }}">Причина (необязательно, будет показана пользователю)</label>
+          <textarea class="form-control w-100" id="rejectReason{{ r.id }}" name="reject_reason" rows="3"></textarea>
+          <div class="form-text mt-2 text-break">Сумма {{ "%.2f"|format(r.amount or 0) }} ₽ будет возвращена на реферальный баланс пользователя.</div>
+        </div>
+        <div class="modal-footer flex-wrap gap-2">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-danger">Отклонить заявку</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
 </div>
 {% endblock %}

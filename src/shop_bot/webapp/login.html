@@ -12,7 +12,22 @@
     <link rel="icon" type="image/x-icon" href="{{ webapp_icon }}">
     <title>Загрузка...</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,-50..200&display=swap" rel="stylesheet">
+    <style>
+        .material-symbols-rounded {
+            font-family: 'Material Symbols Rounded';
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            display: inline-block;
+            -webkit-font-feature-settings: 'liga';
+            -webkit-font-smoothing: antialiased;
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+            user-select: none;
+        }
+    </style>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -100,7 +115,7 @@
                 </svg>
             </a>
             <button id="show-email-btn" class="w-full glass-card border border-white/5 text-gray-300 font-bold py-4 rounded-2xl text-sm shadow-sm hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-3">
-                <span class="material-icons-round text-[18px]">email</span>
+                <span class="material-symbols-rounded text-[18px]">mail</span>
                 <span>Войти по Email</span>
             </button>
         </div>

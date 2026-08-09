@@ -57,7 +57,7 @@
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap"
         rel="stylesheet" />
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,-50..200&display=swap" rel="stylesheet" />
     <script>
         tailwind.config = {
             darkMode: "class",
@@ -91,6 +91,7 @@
             width: 100%;
             height: 100vh;
             height: 100dvh; /* dynamic viewport: excludes browser chrome */
+            height: var(--app-vh, 100dvh); /* JS-tracked visible viewport height; shrinks when on-screen keyboard opens */
             overscroll-behavior: none;
         }
 
@@ -195,7 +196,95 @@
         }
 
         #support-chat-view {
-            height: calc(100dvh - 64px - 64px - 20px);
+            height: calc(var(--app-vh, 100dvh) - 64px - 64px - 20px);
+        }
+
+        /* Модальные окна (payment-modal, action-modal) должны быть строго выше
+           нижнего меню навигации (#bottom-nav, z-[200]) и подстраиваться под
+           видимую область (--app-vh), чтобы не обрезаться клавиатурой/меню. */
+        #payment-modal,
+        #action-modal {
+            height: var(--app-vh, 100vh);
+        }
+
+        #action-card {
+            max-height: calc(var(--app-vh, 100vh) * 0.85);
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        #payment-card {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        #payment-step-select {
+            max-height: calc(var(--app-vh, 100vh) * 0.7) !important;
+        }
+
+        /* Когда открыта экранная клавиатура, нижнее меню всё равно скрыто под
+           клавиатурой, поэтому убираем резерв под него в поле ввода чата поддержки. */
+        body.keyboard-open #support-input-area.pb-safe {
+            padding-bottom: max(env(safe-area-inset-bottom), 8px) !important;
+        }
+
+        /* Поиск ключей: модалка над нижним меню, список результатов прокручивается внутри */
+        @media (max-width: 639px) {
+            #action-modal:has(#key-search-results) {
+                padding-bottom: calc(64px + env(safe-area-inset-bottom));
+            }
+
+            body.keyboard-open #action-modal:has(#key-search-results) {
+                padding-bottom: env(safe-area-inset-bottom);
+            }
+        }
+
+        #action-modal:has(#key-search-results) #action-card {
+            max-height: min(
+                calc(var(--app-vh, 100vh) * 0.85),
+                calc(var(--app-vh, 100vh) - 64px - env(safe-area-inset-bottom) - 24px)
+            );
+        }
+
+        body.keyboard-open #action-modal:has(#key-search-results) #action-card {
+            max-height: calc(var(--app-vh, 100vh) * 0.85);
+        }
+
+        #action-modal-content:has(#key-search-results) {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        #key-search-results {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+    </style>
+
+        /* Material Symbols Rounded — modern variable icon font */
+        .material-symbols-rounded {
+            font-family: 'Material Symbols Rounded';
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            -webkit-font-feature-settings: 'liga';
+            -webkit-font-smoothing: antialiased;
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+            user-select: none;
+        }
+
+        .nav-tab.active .material-symbols-rounded {
+            font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
         }
     </style>
 </head>
@@ -213,19 +302,19 @@
             <div class="flex-1 flex justify-end">
                 <button id="menu-dots-btn" onclick="toggleSettingsMenu(event)"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors active:scale-95 flex items-center justify-center">
-                    <span class="material-icons-round">more_horiz</span>
+                    <span class="material-symbols-rounded">more_horiz</span>
                 </button>
                 <div id="settings-menu"
                     class="hidden absolute right-0 mt-2 w-40 glass-card border border-white/10 rounded-xl shadow-2xl py-1 z-[9999999] animate-in fade-in slide-in-from-top-2 duration-200">
                     <button onclick="location.reload()"
                         class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-white/5 transition-colors group">
-                        <span class="material-icons-round text-[16px] text-gray-400 group-hover:text-primary">refresh</span>
+                        <span class="material-symbols-rounded text-[16px] text-gray-400 group-hover:text-primary">refresh</span>
                         <span class="text-[13px] font-medium">Обновить</span>
                     </button>
                     <div class="h-[1px] bg-white/5 my-0.5"></div>
                     <button id="logout-btn-menu"
                         class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-red-500/10 transition-colors group">
-                        <span class="material-icons-round text-[16px] text-red-500">logout</span>
+                        <span class="material-symbols-rounded text-[16px] text-red-500">logout</span>
                         <span class="text-[13px] font-medium text-red-500">Выйти</span>
                     </button>
                 </div>
@@ -238,12 +327,12 @@
             <button id="purchase-btn"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                <span class="material-icons-round text-lg">shopping_cart</span>
+                <span class="material-symbols-rounded text-lg">shopping_bag</span>
                 <span>Купить ключ от {{ min_price }}</span>
             </button>
             <button id="renew-btn"
                 class="w-full glass-card border border-white/10 text-white py-3.5 px-4 rounded-xl font-bold text-sm hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                <span class="material-icons-round text-lg">autorenew</span>
+                <span class="material-symbols-rounded text-lg">autorenew</span>
                 <span>Продлить ключ</span>
             </button>
         </main>
@@ -258,7 +347,7 @@
             <div class="flex-1 flex justify-end">
                 <button onclick="openActionModal('search_keys', null)"
                     class="p-2 text-gray-400 hover:text-gray-200 transition-colors active:scale-95">
-                    <span class="material-icons-round">search</span>
+                    <span class="material-symbols-rounded">search</span>
                 </button>
             </div>
         </header>
@@ -266,17 +355,17 @@
             <div class="grid grid-cols-3 gap-2">
                 <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('new'),50);"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
-                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-primary transition-colors">add_card</span>
+                    <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-primary transition-colors">add_card</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Купить</span>
                 </button>
                 <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('gift'),50);"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
-                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-amber-400 transition-colors">card_giftcard</span>
+                    <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-amber-400 transition-colors">card_giftcard</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Подарок</span>
                 </button>
                 <button onclick="window.location.hash='rebay'"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
-                    <span class="material-icons-round text-xl text-gray-400 group-hover:text-primary transition-colors">autorenew</span>
+                    <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-primary transition-colors">autorenew</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Продлить</span>
                 </button>
             </div>
@@ -296,13 +385,13 @@
             <button onclick="window.location.hash='setup'"
                 class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
                 <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
-                    <span class="material-icons-round text-primary text-sm">download</span>
+                    <span class="material-symbols-rounded text-primary text-sm">download</span>
                 </div>
                 <div class="text-left flex-1">
                     <div class="text-xs font-bold text-white">Настройка подключения</div>
                     <div class="text-[9px] text-gray-500">Инструкции для ваших устройств</div>
                 </div>
-                <span class="material-icons-round text-gray-600 text-base">chevron_right</span>
+                <span class="material-symbols-rounded text-gray-600 text-base">chevron_right</span>
             </button>
         </main>
     </div>
@@ -315,7 +404,7 @@
             <div class="flex-1 flex justify-start items-center">
                 <button id="back-btn"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex items-center justify-center">
-                    <span class="material-icons-round">arrow_back_ios_new</span>
+                    <span class="material-symbols-rounded">arrow_back</span>
                 </button>
             </div>
             <div class="flex items-center justify-center gap-2.5 whitespace-nowrap">
@@ -333,12 +422,12 @@
                 <div
                     class="bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
                     <div class="absolute -top-4 -right-4 opacity-10 rotate-12">
-                        <span class="material-icons-round text-5xl">info</span>
+                        <span class="material-symbols-rounded text-5xl">info</span>
                     </div>
                     <div class="flex items-start gap-4 relative z-10">
                         <div
                             class="w-10 h-10 bg-primary/20 rounded-2xl flex items-center justify-center shrink-0 border border-primary/20">
-                            <span class="material-icons-round text-primary text-xl">tips_and_updates</span>
+                            <span class="material-symbols-rounded text-primary text-xl">lightbulb</span>
                         </div>
                         <div class="flex flex-col gap-1">
                             <h4 class="text-xs font-black text-white uppercase tracking-widest">Информация</h4>
@@ -360,7 +449,7 @@
                     class="w-full glass-card border border-white/10 rounded-xl p-2.5 flex items-center justify-between hover:bg-white/5 active:scale-[0.98] transition-all">
                     <div class="flex items-center gap-3">
                         <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                            <span class="material-icons-round text-primary text-sm">public</span>
+                            <span class="material-symbols-rounded text-primary text-sm">public</span>
                         </div>
                         <div class="text-left">
                             <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Локация сервера
@@ -370,7 +459,7 @@
                         </div>
                     </div>
                     <span id="server-dropdown-arrow"
-                        class="material-icons-round text-gray-500 text-base transition-transform duration-300">expand_more</span>
+                        class="material-symbols-rounded text-gray-500 text-base transition-transform duration-300">expand_more</span>
                 </button>
 
                 <!-- Dropdown Menu -->
@@ -384,7 +473,7 @@
                 style="display:none;">
                 <div class="flex items-center gap-3 mb-2.5">
                     <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                        <span class="material-icons-round text-primary text-sm">devices</span>
+                        <span class="material-symbols-rounded text-primary text-sm">devices</span>
                     </div>
                     <div>
                         <div class="flex items-center gap-2">
@@ -409,18 +498,18 @@
                 </button>
                 <button id="purchase-mode-gift" onclick="setPurchaseMode('gift')"
                     class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all text-gray-400">
-                    <span class="material-icons-round text-[12px] align-middle mr-0.5">card_giftcard</span>Подарок
+                    <span class="material-symbols-rounded text-[12px] align-middle mr-0.5">card_giftcard</span>Подарок
                 </button>
             </div>
             <button id="pay-button"
                 class="w-full bg-white/5 text-gray-500 py-4 px-4 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 pointer-events-none"
                 disabled>
-                <span class="material-icons-round text-lg">bolt</span>
+                <span class="material-symbols-rounded text-lg">bolt</span>
                 <span id="pay-button-text">Выберите тариф</span>
             </button>
             <button onclick="openPromoModal()"
                 class="w-full bg-primary/5 border border-primary/15 text-primary/70 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/10 hover:text-primary transition-all flex items-center justify-center gap-2">
-                <span class="material-icons-round text-sm">redeem</span>
+                <span class="material-symbols-rounded text-sm">redeem</span>
                 <span>Активировать промокод</span>
             </button>
         </footer>
@@ -434,7 +523,7 @@
             <div class="flex-1 flex justify-start items-center">
                 <button id="back-renew-btn"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex items-center justify-center">
-                    <span class="material-icons-round">arrow_back_ios_new</span>
+                    <span class="material-symbols-rounded">arrow_back</span>
                 </button>
             </div>
             <div class="flex items-center justify-center gap-2.5 whitespace-nowrap">
@@ -452,12 +541,12 @@
                 <div
                     class="bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
                     <div class="absolute -top-4 -right-4 opacity-10 rotate-12">
-                        <span class="material-icons-round text-5xl">history</span>
+                        <span class="material-symbols-rounded text-5xl">history</span>
                     </div>
                     <div class="flex items-start gap-4 relative z-10">
                         <div
                             class="w-10 h-10 bg-primary/20 rounded-2xl flex items-center justify-center shrink-0 border border-primary/20">
-                            <span class="material-icons-round text-primary text-xl">vpn_key</span>
+                            <span class="material-symbols-rounded text-primary text-xl">key</span>
                         </div>
                         <div class="flex flex-col gap-1">
                             <h4 class="text-xs font-black text-white uppercase tracking-widest">Информация</h4>
@@ -478,7 +567,7 @@
                     class="w-full glass-card border border-white/10 rounded-xl p-2.5 flex items-center justify-between hover:bg-white/5 active:scale-[0.98] transition-all">
                     <div class="flex items-center gap-3">
                         <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                            <span class="material-icons-round text-primary text-sm">vpn_key</span>
+                            <span class="material-symbols-rounded text-primary text-sm">key</span>
                         </div>
                         <div class="text-left">
                             <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider">Выбранный ключ
@@ -488,7 +577,7 @@
                         </div>
                     </div>
                     <span id="dropdown-arrow"
-                        class="material-icons-round text-gray-500 text-base transition-transform duration-300">expand_more</span>
+                        class="material-symbols-rounded text-gray-500 text-base transition-transform duration-300">expand_more</span>
                 </button>
 
                 <div id="key-dropdown"
@@ -503,7 +592,7 @@
                 style="display:none;">
                 <div class="flex items-center gap-3 mb-2.5">
                     <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                        <span class="material-icons-round text-primary text-sm">devices</span>
+                        <span class="material-symbols-rounded text-primary text-sm">devices</span>
                     </div>
                     <div>
                         <div class="flex items-center gap-2">
@@ -525,12 +614,12 @@
             <button id="renew-pay-button"
                 class="w-full bg-white/5 text-gray-500 py-4 px-4 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 pointer-events-none"
                 disabled>
-                <span class="material-icons-round text-lg">update</span>
+                <span class="material-symbols-rounded text-lg">update</span>
                 <span id="renew-pay-button-text">Выберите тариф</span>
             </button>
             <button onclick="openPromoModal()"
                 class="w-full bg-primary/5 border border-primary/15 text-primary/70 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/10 hover:text-primary transition-all flex items-center justify-center gap-2">
-                <span class="material-icons-round text-sm">redeem</span>
+                <span class="material-symbols-rounded text-sm">redeem</span>
                 <span>Активировать промокод</span>
             </button>
         </footer>
@@ -544,7 +633,7 @@
             <div class="flex-1 flex justify-start items-center">
                 <button id="back-setup-btn"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex items-center justify-center">
-                    <span class="material-icons-round">arrow_back_ios_new</span>
+                    <span class="material-symbols-rounded">arrow_back</span>
                 </button>
             </div>
             <div class="flex items-center justify-center gap-2.5 whitespace-nowrap">
@@ -562,12 +651,12 @@
                 <div
                     class="bg-gradient-to-br from-primary/10 to-primary/5 border border-primary/20 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
                     <div class="absolute -top-4 -right-4 opacity-10 rotate-12">
-                        <span class="material-icons-round text-5xl">settings</span>
+                        <span class="material-symbols-rounded text-5xl">settings</span>
                     </div>
                     <div class="flex items-start gap-4 relative z-10">
                         <div
                             class="w-10 h-10 bg-primary/20 rounded-2xl flex items-center justify-center shrink-0 border border-primary/20">
-                            <span class="material-icons-round text-primary text-xl">file_download</span>
+                            <span class="material-symbols-rounded text-primary text-xl">download</span>
                         </div>
                         <div class="flex flex-col gap-1">
                             <h4 class="text-xs font-black text-white uppercase tracking-widest">Инструкция</h4>
@@ -607,7 +696,7 @@
         <main class="flex flex-col gap-4">
             <div class="bg-gradient-to-br from-blue-500/10 to-primary/5 border border-blue-500/20 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
                 <div class="absolute -top-4 -right-4 opacity-10 rotate-12">
-                    <span class="material-icons-round text-5xl">account_balance_wallet</span>
+                    <span class="material-symbols-rounded text-5xl">wallet</span>
                 </div>
                 <div class="relative z-10 flex flex-col gap-1">
                     <div class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Ваш баланс</div>
@@ -618,7 +707,7 @@
             <button onclick="openTopUpModal()"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                <span class="material-icons-round text-lg">add_card</span>
+                <span class="material-symbols-rounded text-lg">add_card</span>
                 <span>Пополнить баланс</span>
             </button>
 
@@ -633,7 +722,7 @@
             </div>
             <button id="logout-btn"
                 class="w-full bg-white/5 border border-white/10 text-white py-3 rounded-xl font-medium text-xs hover:bg-white/10 transition-all flex items-center justify-center gap-2 mt-2">
-                <span class="material-icons-round text-sm">logout</span>
+                <span class="material-symbols-rounded text-sm">logout</span>
                 <span>Выйти из аккаунта</span>
             </button>
         </main>
@@ -650,26 +739,26 @@
         <div class="absolute -top-20 -left-20 w-64 h-64 bg-primary/10 rounded-full blur-[100px] pointer-events-none"></div>
         <main class="flex flex-col gap-4 relative z-10">
             <div id="referral-info-loading" class="text-center text-[11px] text-gray-500 py-6">
-                <span class="material-icons-round text-primary text-2xl animate-spin block mx-auto mb-2">refresh</span>
+                <span class="material-symbols-rounded text-primary text-2xl animate-spin block mx-auto mb-2">progress_activity</span>
                 Загрузка...
             </div>
             <div id="referral-info-content" class="hidden flex flex-col gap-2"></div>
             <button onclick="requestReferralWithdraw()"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                <span class="material-icons-round text-lg">payments</span>
+                <span class="material-symbols-rounded text-lg">payments</span>
                 <span>Запросить вывод</span>
             </button>
             <button onclick="openReferralMethodsModal()"
                 class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
                 <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
-                    <span class="material-icons-round text-primary text-sm">account_balance</span>
+                    <span class="material-symbols-rounded text-primary text-sm">account_balance</span>
                 </div>
                 <div class="text-left flex-1">
                     <div class="text-xs font-bold text-white">Методы получения</div>
                     <div class="text-[9px] text-gray-500">Реквизиты для вывода средств</div>
                 </div>
-                <span class="material-icons-round text-gray-600 text-base">chevron_right</span>
+                <span class="material-symbols-rounded text-gray-600 text-base">chevron_right</span>
             </button>
             <div class="flex flex-col gap-3">
                 <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1">Заявки на вывод</div>
@@ -687,7 +776,7 @@
             <div class="flex-1 flex justify-start items-center pl-2">
                 <button id="back-support-btn"
                     class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors flex items-center justify-center z-20">
-                    <span class="material-icons-round">arrow_back_ios_new</span>
+                    <span class="material-symbols-rounded">arrow_back</span>
                 </button>
             </div>
             <div class="flex items-center justify-center gap-2 min-w-0 flex-shrink-0 whitespace-nowrap">
@@ -709,7 +798,7 @@
         <!-- Состояние загрузки -->
         <div id="support-loading"
             class="flex-grow flex flex-col items-center justify-center gap-4 relative z-10 text-center">
-            <span class="material-icons-round text-primary text-4xl animate-spin">refresh</span>
+            <span class="material-symbols-rounded text-primary text-4xl animate-spin">progress_activity</span>
             <p class="text-xs text-gray-400 font-medium">Загрузка информации...</p>
         </div>
 
@@ -720,7 +809,7 @@
                 <div class="absolute inset-0 bg-primary/20 blur-3xl rounded-full"></div>
                 <div
                     class="w-20 h-20 bg-gradient-to-br from-primary to-emerald-600 rounded-[1.5rem] flex items-center justify-center shadow-2xl relative z-10 rotate-3 border border-white/20">
-                    <span class="material-icons-round text-white text-4xl">support_agent</span>
+                    <span class="material-symbols-rounded text-white text-4xl">support_agent</span>
                 </div>
             </div>
 
@@ -738,7 +827,7 @@
 
                 <button id="support-create-btn" onclick="createSupportTicket()"
                     class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-[13px] shadow-md hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-1">
-                    <span class="material-icons-round text-sm">chat</span>
+                    <span class="material-symbols-rounded text-sm">chat</span>
                     <span>Начать чат</span>
                 </button>
 
@@ -750,14 +839,14 @@
 
                 <a href="https://t.me/{{ support_bot_username }}" target="_blank"
                     class="w-full bg-white/5 border border-white/10 text-white py-3 px-4 rounded-xl font-medium text-[13px] hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-1">
-                    <span class="material-icons-round text-sm">open_in_new</span>
+                    <span class="material-symbols-rounded text-sm">open_in_new</span>
                     <span>Написать в Telegram</span>
                 </a>
             </div>
 
             <div
                 class="flex items-center gap-2 text-[9px] text-gray-500 uppercase font-bold tracking-widest opacity-60 shrink-0">
-                <span class="material-icons-round text-xs text-primary">schedule</span>
+                <span class="material-symbols-rounded text-xs text-primary">schedule</span>
                 <span>Среднее время ответа: 50 минут</span>
             </div>
         </div>
@@ -781,7 +870,7 @@
 
                     <button id="support-send-btn" onclick="sendSupportMessage()"
                         class="w-[42px] h-[42px] shrink-0 bg-primary/20 text-primary rounded-full flex items-center justify-center hover:bg-primary/30 active:scale-95 transition-all">
-                        <span class="material-icons-round text-xl ml-0.5">send</span>
+                        <span class="material-symbols-rounded text-xl ml-0.5">send</span>
                     </button>
                 </div>
             </div>
@@ -804,27 +893,27 @@
     <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 z-[200] bg-[#0a0a0a]/95 backdrop-blur-xl border-t border-white/5 flex items-center justify-around px-1">
         <button id="nav-keys" onclick="navigateTo('keys')"
             class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
-            <span class="material-icons-round text-[22px]">vpn_key</span>
+            <span class="material-symbols-rounded text-[22px]">key</span>
             <span class="text-[9px] font-bold">Ключи</span>
         </button>
         <button id="nav-finance" onclick="navigateTo('finance')"
             class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
-            <span class="material-icons-round text-[22px]">account_balance_wallet</span>
+            <span class="material-symbols-rounded text-[22px]">wallet</span>
             <span class="text-[9px] font-bold">Финансы</span>
         </button>
         <button id="nav-home" onclick="navigateTo('home')"
             class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
-            <span class="material-icons-round text-[26px]">home</span>
+            <span class="material-symbols-rounded text-[26px]">home</span>
             <span class="text-[9px] font-bold">Главная</span>
         </button>
         <button id="nav-referral" onclick="navigateTo('referral')"
             class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
-            <span class="material-icons-round text-[22px]">group_add</span>
+            <span class="material-symbols-rounded text-[22px]">groups</span>
             <span class="text-[9px] font-bold">Рефералка</span>
         </button>
         <button id="nav-support" onclick="navigateTo('support')"
             class="nav-tab flex flex-col items-center justify-center gap-0.5 flex-1 py-2 text-gray-500 transition-colors active:scale-95">
-            <span class="material-icons-round text-[22px]">headset_mic</span>
+            <span class="material-symbols-rounded text-[22px]">support_agent</span>
             <span class="text-[9px] font-bold">Поддержка</span>
         </button>
     </nav>
@@ -850,6 +939,54 @@
                 tgApp.setBackgroundColor('#0a0a0a');
             } catch (e) { }
         }
+
+        // --- Динамическая высота видимой области (клавиатура / UI Telegram) ---
+        // Поддерживает CSS-переменную --app-vh, отражающую реальную видимую высоту
+        // (visualViewport или Telegram viewportHeight), чтобы модальные окна и
+        // полноэкранные контейнеры не обрезались клавиатурой или чужим UI.
+        function updateAppViewportMetrics() {
+            const tgApp = window.Telegram?.WebApp;
+            let visibleHeight = window.innerHeight;
+            let stableHeight = window.innerHeight;
+
+            if (tgApp && typeof tgApp.viewportHeight === 'number' && tgApp.viewportHeight > 0) {
+                visibleHeight = tgApp.viewportHeight;
+                stableHeight = (typeof tgApp.viewportStableHeight === 'number' && tgApp.viewportStableHeight > 0)
+                    ? tgApp.viewportStableHeight
+                    : visibleHeight;
+            } else if (window.visualViewport) {
+                visibleHeight = window.visualViewport.height;
+            }
+
+            document.documentElement.style.setProperty('--app-vh', visibleHeight + 'px');
+
+            const keyboardInset = Math.max(0, Math.round(stableHeight - visibleHeight));
+            document.documentElement.style.setProperty('--kb-inset', keyboardInset + 'px');
+            document.body.classList.toggle('keyboard-open', keyboardInset > 80);
+        }
+
+        updateAppViewportMetrics();
+        window.addEventListener('resize', updateAppViewportMetrics);
+        window.addEventListener('orientationchange', updateAppViewportMetrics);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', updateAppViewportMetrics);
+            window.visualViewport.addEventListener('scroll', updateAppViewportMetrics);
+        }
+        if (window.Telegram?.WebApp?.onEvent) {
+            try { window.Telegram.WebApp.onEvent('viewportChanged', updateAppViewportMetrics); } catch (e) { }
+        }
+
+        // Автоматически подводим сфокусированное поле ввода в видимую область,
+        // когда открывается экранная клавиатура (работает для всех текущих и
+        // будущих полей внутри модалок/страниц — делегирование на document).
+        document.addEventListener('focusin', (e) => {
+            const el = e.target;
+            if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return;
+            setTimeout(() => {
+                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }, 300);
+        });
+
         const homePage = document.getElementById('home-page');
         const keysPage = document.getElementById('keys-page');
         const financePage = document.getElementById('finance-page');
@@ -997,7 +1134,7 @@
                         <div class="flex items-end justify-start gap-2 w-full mb-3 animate-in fade-in slide-in-from-left-2 duration-300">
                             ${showAvatar ? `
                                 <div class="w-8 h-8 glass-card border border-white/5 rounded-full flex items-center justify-center shrink-0 mb-0.5">
-                                    <span class="material-icons-round text-[16px] text-gray-400">support_agent</span>
+                                    <span class="material-symbols-rounded text-[16px] text-gray-400">support_agent</span>
                                 </div>
                             ` : `<div class="w-8 shrink-0"></div>`}
                             <div class="max-w-[85%] w-fit bg-white/5 border border-white/10 text-gray-100 rounded-2xl rounded-bl-sm px-3 pt-2 pb-1.5 shadow-lg flex items-end gap-2">
@@ -1061,7 +1198,7 @@
 
             const btn = document.getElementById('support-create-btn');
             const ogHtml = btn.innerHTML;
-            btn.innerHTML = '<span class="material-icons-round animate-spin">refresh</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded animate-spin">progress_activity</span>';
             btn.disabled = true;
 
             try {
@@ -1260,7 +1397,7 @@
                     icon.classList.toggle('text-primary', isSelected);
                     icon.classList.toggle('text-transparent', !isSelected);
                 }
-                const firstIcon = opt.querySelector('.material-icons-round:first-child');
+                const firstIcon = opt.querySelector('.material-symbols-rounded:first-child');
                 if (firstIcon) {
                     firstIcon.classList.toggle('text-primary', isSelected);
                     firstIcon.classList.toggle('text-gray-500', !isSelected);
@@ -1363,7 +1500,7 @@
                     textDiv.classList.toggle('text-gray-300', !isSelected);
                 }
 
-                const leftIcon = opt.querySelector('.material-icons-round:first-child');
+                const leftIcon = opt.querySelector('.material-symbols-rounded:first-child');
                 if (leftIcon) {
                     leftIcon.classList.toggle('text-primary', isSelected);
                     leftIcon.classList.toggle('text-gray-500', !isSelected);
@@ -1589,7 +1726,7 @@
         }
     </style>
 
-    <div id="payment-modal" class="fixed inset-0 z-[100] hidden items-end sm:items-center justify-center">
+    <div id="payment-modal" class="fixed inset-0 z-[210] hidden items-end sm:items-center justify-center">
         <div class="fixed inset-0 bg-black/70 backdrop-blur-xl transition-opacity duration-300 opacity-0 pointer-events-none"
             id="payment-backdrop" onclick="closePaymentModal()"></div>
 
@@ -1607,13 +1744,13 @@
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
                         <div class="w-6 h-6 rounded-lg bg-primary/15 flex items-center justify-center">
-                            <span class="material-icons-round text-primary text-xs">receipt_long</span>
+                            <span class="material-symbols-rounded text-primary text-xs">receipt_long</span>
                         </div>
                         <h3 class="text-[13px] font-bold text-white tracking-tight">Подтверждение</h3>
                     </div>
                     <button onclick="closePaymentModal()"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
-                        <span class="material-icons-round text-[16px]">close</span>
+                        <span class="material-symbols-rounded text-[16px]">close</span>
                     </button>
                 </div>
 
@@ -1622,7 +1759,7 @@
                     <div class="flex items-center gap-3.5 relative z-10">
                         <div
                             class="w-11 h-11 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center border border-primary/10 shrink-0">
-                            <span class="material-icons-round text-primary text-lg">local_offer</span>
+                            <span class="material-symbols-rounded text-primary text-lg">local_offer</span>
                         </div>
                         <div class="flex flex-col gap-0.5 min-w-0">
                             <span class="text-[9px] uppercase tracking-[0.15em] text-gray-600 font-bold">Тариф</span>
@@ -1639,7 +1776,7 @@
                         <div id="method-icon-container"
                             class="w-9 h-9 bg-white/[0.04] rounded-lg flex items-center justify-center group-hover:bg-primary/15 transition-colors border border-white/[0.04]">
                             <span id="confirm-method-icon"
-                                class="material-icons-round text-lg text-gray-500 group-hover:text-primary transition-colors">add_card</span>
+                                class="material-symbols-rounded text-lg text-gray-500 group-hover:text-primary transition-colors">add_card</span>
                         </div>
                         <div class="flex flex-col items-start">
                             <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Способ
@@ -1649,14 +1786,14 @@
                         </div>
                     </div>
                     <span
-                        class="material-icons-round text-gray-600 group-hover:text-gray-400 transition-colors text-base">chevron_right</span>
+                        class="material-symbols-rounded text-gray-600 group-hover:text-gray-400 transition-colors text-base">chevron_right</span>
                 </button>
 
                 <!-- Promo Code Input -->
                 <div
                     class="w-full flex items-center gap-2 bg-[#141414] border border-white/[0.04] rounded-xl p-2 focus-within:border-primary/30 transition-all">
                     <div class="w-8 h-8 flex items-center justify-center shrink-0">
-                        <span class="material-icons-round text-gray-500 text-sm">confirmation_number</span>
+                        <span class="material-symbols-rounded text-gray-500 text-sm">confirmation_number</span>
                     </div>
                     <input type="text" id="confirm-promo-input" placeholder="Промокод..."
                         class="bg-transparent border-none text-white text-[11px] p-0 focus:ring-0 w-full placeholder-gray-600 font-bold">
@@ -1677,7 +1814,7 @@
                 <div class="flex items-center justify-between shrink-0">
                     <button onclick="changePaymentStep('confirm')"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
-                        <span class="material-icons-round text-[16px]">arrow_back</span>
+                        <span class="material-symbols-rounded text-[16px]">arrow_back</span>
                     </button>
                     <h3 class="text-[13px] font-bold text-white tracking-tight">Способ оплаты</h3>
                     <div class="w-7"></div>
@@ -1692,7 +1829,7 @@
                 <div class="absolute top-4 right-4">
                     <button onclick="closePaymentModal()"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all">
-                        <span class="material-icons-round text-[16px]">close</span>
+                        <span class="material-symbols-rounded text-[16px]">close</span>
                     </button>
                 </div>
 
@@ -1703,7 +1840,7 @@
                         <div
                             class="absolute inset-0 rounded-full border-2 border-transparent border-t-primary waiting-orbit">
                         </div>
-                        <span class="material-icons-round text-primary text-2xl">payment</span>
+                        <span class="material-symbols-rounded text-primary text-2xl">payment</span>
                     </div>
                 </div>
 
@@ -1719,7 +1856,7 @@
                     <button id="redirect-pay-btn" onclick="goToPaymentLink()"
                         class="w-full bg-white text-black py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                         <span>Перейти к оплате</span>
-                        <span class="material-icons-round text-sm">open_in_new</span>
+                        <span class="material-symbols-rounded text-sm">open_in_new</span>
                     </button>
                     <button onclick="cancelPayment()"
                         class="text-[11px] text-gray-600 hover:text-gray-300 transition-colors py-1.5 font-medium">
@@ -1738,7 +1875,7 @@
                     <div class="absolute inset-[-8px] bg-emerald-500/20 blur-xl rounded-full"></div>
                     <div
                         class="w-16 h-16 bg-gradient-to-br from-emerald-400 to-emerald-600 rounded-2xl flex items-center justify-center shadow-[0_8px_30px_rgba(16,185,129,0.3)] relative z-10 rotate-3">
-                        <span class="material-icons-round text-3xl text-white">check</span>
+                        <span class="material-symbols-rounded text-3xl text-white">check</span>
                     </div>
                 </div>
 
@@ -1760,12 +1897,12 @@
                         <div class="flex items-center gap-2.5 bg-black/30 p-2.5 rounded-xl border border-white/[0.04] cursor-pointer hover:border-primary/20 transition-all group active:scale-[0.99]"
                             onclick="copySuccessKey()">
                             <div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
-                                <span class="material-icons-round text-sm text-primary">vpn_key</span>
+                                <span class="material-symbols-rounded text-sm text-primary">key</span>
                             </div>
                             <code id="success-key"
                                 class="text-[11px] text-gray-400 font-mono truncate flex-1 group-hover:text-white transition-colors">...</code>
                             <span
-                                class="material-icons-round text-sm text-gray-600 group-hover:text-primary transition-colors">content_copy</span>
+                                class="material-symbols-rounded text-sm text-gray-600 group-hover:text-primary transition-colors">content_copy</span>
                         </div>
                     </div>
                 </div>
@@ -1774,7 +1911,7 @@
                     <button id="success-connect-btn"
                         onclick="window.open(document.getElementById('success-key').textContent, '_blank')"
                         class="w-full bg-white text-black py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                        <span class="material-icons-round text-base">play_arrow</span>
+                        <span class="material-symbols-rounded text-base">play_arrow</span>
                         Как подключиться
                     </button>
                     <button
@@ -1792,7 +1929,7 @@
         class="fixed top-4 left-0 right-0 z-[9999] flex flex-col gap-2 items-center pointer-events-none"></div>
 
     <!-- ======== Универсальное модальное окно (Устройства / Комментарии) ======== -->
-    <div id="action-modal" class="fixed inset-0 z-[110] hidden items-end sm:items-center justify-center">
+    <div id="action-modal" class="fixed inset-0 z-[220] hidden items-end sm:items-center justify-center">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-black/60 backdrop-blur-md transition-opacity duration-300 opacity-0 pointer-events-none"
             id="action-backdrop" onclick="closeActionModal()"></div>
@@ -1809,7 +1946,7 @@
                 </h3>
                 <button onclick="closeActionModal()"
                     class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors active:scale-90">
-                    <span class="material-icons-round text-lg">close</span>
+                    <span class="material-symbols-rounded text-lg">close</span>
                 </button>
             </div>
 
@@ -2342,7 +2479,7 @@
                         <div class="text-[12px] font-bold text-gray-200 group-hover:text-white transition-colors">${m.name}</div>
                         <div class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.12em]">Комиссия 0%</div>
                     </div>
-                    <span class="material-icons-round text-gray-700 group-hover:text-gray-500 transition-colors text-sm">chevron_right</span>
+                    <span class="material-symbols-rounded text-gray-700 group-hover:text-gray-500 transition-colors text-sm">chevron_right</span>
                 </button>`;
             });
             html += '</div>';
@@ -2373,7 +2510,7 @@
                 btn.disabled = false;
                 btn.className = 'w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-[0.12em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2';
                 btn.innerHTML = `
-                    <span class="material-icons-round text-base">bolt</span>
+                    <span class="material-symbols-rounded text-base">bolt</span>
                     <span>Оплатить ${(currentPaymentData?.price || 0)} ₽</span>
                 `;
             }
@@ -2385,7 +2522,7 @@
             if (!currentPaymentData || !selectedMethod) return;
             const btn = document.getElementById('final-pay-btn');
             const originalContent = btn.innerHTML;
-            btn.innerHTML = '<span class="material-icons-round animate-spin text-xl">refresh</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-xl">progress_activity</span>';
             btn.disabled = true;
 
             try {
@@ -2619,7 +2756,7 @@
         function copyKey(btn, text) {
             if (navigator.clipboard && text) {
                 navigator.clipboard.writeText(text).then(() => {
-                    const icon = btn.querySelector('.material-icons-round');
+                    const icon = btn.querySelector('.material-symbols-rounded');
                     if (icon) {
                         const original = icon.textContent;
                         icon.textContent = 'check';
@@ -2683,7 +2820,7 @@
 
                     const descEl = document.getElementById('waiting-desc');
                     if (descEl) {
-                        descEl.innerHTML = `Оплатите счет в сервисе ${data.methodName} <span class="material-icons-round text-[10px]">open_in_new</span>`;
+                        descEl.innerHTML = `Оплатите счет в сервисе ${data.methodName} <span class="material-symbols-rounded text-[10px]">open_in_new</span>`;
                         descEl.className = "text-[10px] text-gray-400 font-medium leading-relaxed max-w-[200px] cursor-pointer hover:text-white transition-colors border-b border-transparent hover:border-gray-500";
                         descEl.onclick = goToPaymentLink;
                     }
@@ -2744,6 +2881,10 @@
             const backdrop = document.getElementById('action-backdrop');
             const card = document.getElementById('action-card');
             const modal = document.getElementById('action-modal');
+            if (window._topUpPollingInterval) {
+                clearInterval(window._topUpPollingInterval);
+                window._topUpPollingInterval = null;
+            }
             if (backdrop) backdrop.classList.add('opacity-0', 'pointer-events-none');
             if (card) card.classList.add('translate-y-full');
             setTimeout(() => { if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); } }, 300);
@@ -2764,8 +2905,8 @@
             });
 
             if (type === 'devices') {
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">devices</span> Устройства';
-                contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">devices</span> Устройства';
+                contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
 
                 try {
                     const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
@@ -2797,16 +2938,16 @@
                 }
 
             } else if (type === 'comment') {
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">edit_note</span> Заметка к ключу';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">edit_note</span> Заметка к ключу';
 
                 contentEl.innerHTML = `
                     <div class="flex flex-col gap-3">
                         <div class="flex gap-2 w-full">
                             <button id="comment-delete-btn" onclick="saveComment(${keyId}, true)" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
-                                <span class="material-icons-round text-sm">delete</span>
+                                <span class="material-symbols-rounded text-sm">delete</span>
                             </button>
                             <button id="comment-save-btn" onclick="saveComment(${keyId})" class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                                <span class="material-icons-round text-sm">save</span>
+                                <span class="material-symbols-rounded text-sm">save</span>
                                 Сохранить заметку
                             </button>
                         </div>
@@ -2826,7 +2967,7 @@
 
         async function deleteDevice(keyId, deviceId, hostName, btnEl) {
             btnEl.disabled = true;
-            btnEl.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>';
+            btnEl.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
@@ -2843,12 +2984,12 @@
                 } else {
                     showNotification(data.error || 'Ошибка удаления', 'error');
                     btnEl.disabled = false;
-                    btnEl.innerHTML = '<span class="material-icons-round text-sm">delete</span>';
+                    btnEl.innerHTML = '<span class="material-symbols-rounded text-sm">delete</span>';
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
                 btnEl.disabled = false;
-                btnEl.innerHTML = '<span class="material-icons-round text-sm">delete</span>';
+                btnEl.innerHTML = '<span class="material-symbols-rounded text-sm">delete</span>';
             }
         }
 
@@ -2859,7 +3000,7 @@
             const btn = isDelete ? document.getElementById('comment-delete-btn') : document.getElementById('comment-save-btn');
 
             const originalContent = btn.innerHTML;
-            btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
             btn.disabled = true;
 
             try {
@@ -2934,7 +3075,7 @@
                     const btn = document.getElementById('final-pay-btn');
                     if (btn && selectedMethod) {
                         btn.innerHTML = `
-                            <span class="material-icons-round text-base">bolt</span>
+                            <span class="material-symbols-rounded text-base">bolt</span>
                             <span>Оплатить ${data.new_price} ₽</span>
                         `;
                     }
@@ -2975,7 +3116,7 @@
                     card.classList.remove('translate-y-full');
                 });
 
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">redeem</span> Активация кода';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">redeem</span> Активация кода';
                 contentEl.innerHTML = `
                     <div class="flex flex-col gap-3">
                         <div class="text-[10px] text-gray-500 font-medium px-1">Введите бонусный промокод на баланс или дни</div>
@@ -2984,7 +3125,7 @@
                             placeholder="Напр: BONUS2024" style="text-transform: uppercase;">
                         <button onclick="activateBonusPromo()" id="bonus-promo-activate-btn"
                             class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                            <span class="material-icons-round text-sm">bolt</span>
+                            <span class="material-symbols-rounded text-sm">bolt</span>
                             Активировать
                         </button>
                     </div>
@@ -3003,7 +3144,7 @@
                     card.classList.remove('translate-y-full');
                 });
 
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">drive_file_rename_outline</span> Название ключа';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">edit</span> Название ключа';
                 const currentName = extraData || '';
                 contentEl.innerHTML = `
                     <div class="flex flex-col gap-3">
@@ -3016,11 +3157,11 @@
                         <div id="action-rename-counter" class="text-[9px] text-gray-600 text-right px-1">${currentName.length}/30</div>
                         <div class="flex gap-2 w-full">
                             <button onclick="renameKey(${keyId}, true)" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
-                                <span class="material-icons-round text-sm">delete</span>
+                                <span class="material-symbols-rounded text-sm">delete</span>
                             </button>
                             <button onclick="renameKey(${keyId})" id="action-rename-btn"
                                 class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                                <span class="material-icons-round text-sm">save</span>
+                                <span class="material-symbols-rounded text-sm">save</span>
                                 Сохранить
                             </button>
                         </div>
@@ -3054,8 +3195,8 @@
                     card.classList.remove('translate-y-full');
                 });
 
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">receipt_long</span> История транзакций';
-                contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">receipt_long</span> История транзакций';
+                contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
                 loadTransactions(1);
             } else if (type === 'search_keys') {
                 const modal = document.getElementById('action-modal');
@@ -3071,19 +3212,19 @@
                     card.classList.remove('translate-y-full');
                 });
 
-                titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">search</span> Поиск ключей';
+                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">search</span> Поиск ключей';
                 contentEl.innerHTML = `
-                    <div class="flex flex-col gap-3">
-                        <div class="flex gap-2">
+                    <div class="flex flex-col gap-3 flex-1 min-h-0">
+                        <div class="flex gap-2 shrink-0">
                             <input type="text" id="key-search-input" minlength="2" maxlength="60"
                                 class="flex-1 bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white focus:border-white/20 transition-all outline-none"
                                 placeholder="Email, UUID или название">
                             <button onclick="searchKeys()" id="key-search-btn"
                                 class="w-12 bg-primary/20 text-primary border border-primary/30 rounded-xl flex items-center justify-center hover:bg-primary/30 active:scale-[0.98] transition-all shrink-0">
-                                <span class="material-icons-round text-sm">search</span>
+                                <span class="material-symbols-rounded text-sm">search</span>
                             </button>
                         </div>
-                        <div id="key-search-results"></div>
+                        <div id="key-search-results" class="custom-scrollbar"></div>
                     </div>
                 `;
                 const inp = document.getElementById('key-search-input');
@@ -3100,7 +3241,7 @@
 
             const btn = document.getElementById('bonus-promo-activate-btn');
             const originalContent = btn.innerHTML;
-            btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>';
+            btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
             btn.disabled = true;
 
             try {
@@ -3161,7 +3302,7 @@
                             ${createdDate ? `<div class="text-[9px] text-gray-500 font-mono truncate">${deviceId} • ${createdDate}</div>` : `<div class="text-[9px] text-gray-500 font-mono truncate">${deviceId}</div>`}
                         </div>
                         <button ${disabledAttrs} onclick="deleteDevice(${s.keyId}, '${safeDeviceId}', '${safeHost}', this)" class="w-8 h-8 rounded-lg ${disabledClass} flex items-center justify-center transition-colors shrink-0">
-                            <span class="material-icons-round text-sm">delete</span>
+                            <span class="material-symbols-rounded text-sm">delete</span>
                         </button>
                     </div>
                 `;
@@ -3171,12 +3312,12 @@
                 html += `<div class="flex items-center justify-between mt-1 px-1">
                     <button onclick="window._deviceModalState.page = Math.max(0, window._deviceModalState.page - 1); renderDeviceModalPage();" ${s.page === 0 ? 'disabled' : ''}
                         class="w-8 h-8 rounded-xl bg-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
-                        <span class="material-icons-round text-sm">chevron_left</span>
+                        <span class="material-symbols-rounded text-sm">chevron_left</span>
                     </button>
                     <span class="text-[10px] text-gray-500">${s.page + 1} / ${totalPages} (${s.devices.length} устр.)</span>
                     <button onclick="window._deviceModalState.page = Math.min(${totalPages - 1}, window._deviceModalState.page + 1); renderDeviceModalPage();" ${s.page >= totalPages - 1 ? 'disabled' : ''}
                         class="w-8 h-8 rounded-xl bg-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
-                        <span class="material-icons-round text-sm">chevron_right</span>
+                        <span class="material-symbols-rounded text-sm">chevron_right</span>
                     </button>
                 </div>`;
             }
@@ -3184,7 +3325,7 @@
             if (s.canDelete && s.devices.length > 1) {
                 html += `<button id="delete-all-devices-btn" onclick="deleteAllDevices(${s.keyId}, '${(s.hostName || '').replace(/'/g, "\\'")}')"
                     class="w-full mt-1 bg-red-500/10 text-red-400 border border-red-500/20 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-red-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5">
-                    <span class="material-icons-round text-sm">delete_sweep</span>
+                    <span class="material-symbols-rounded text-sm">delete_sweep</span>
                     Удалить все устройства
                 </button>`;
             }
@@ -3201,7 +3342,7 @@
 
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>';
+                btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
             }
 
             try {
@@ -3218,7 +3359,7 @@
                     setTimeout(() => window.location.reload(), 700);
                 } else {
                     showNotification(data.error || 'Ошибка', 'error');
-                    if (btn) { btn.disabled = false; btn.innerHTML = isDelete ? '<span class="material-icons-round text-sm">delete</span>' : '<span class="material-icons-round text-sm">save</span> Сохранить'; }
+                    if (btn) { btn.disabled = false; btn.innerHTML = isDelete ? '<span class="material-symbols-rounded text-sm">delete</span>' : '<span class="material-symbols-rounded text-sm">save</span> Сохранить'; }
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
@@ -3230,7 +3371,7 @@
         async function deleteAllDevices(keyId, hostName) {
             if (!confirm('Удалить все устройства? Действие доступно 1 раз в 72 часа.')) return;
             const btn = document.getElementById('delete-all-devices-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
                 const res = await fetch('/api/key/devices/delete-all', {
@@ -3244,7 +3385,7 @@
                     openActionModal('devices', keyId, hostName);
                 } else {
                     showNotification(data.error || 'Ошибка', 'error');
-                    if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-icons-round text-sm">delete_sweep</span> Все'; }
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">delete_sweep</span> Все'; }
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
@@ -3285,7 +3426,7 @@
                     html += `
                         <div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">
                             <div class="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
-                                <span class="material-icons-round text-primary text-sm">${icon}</span>
+                                <span class="material-symbols-rounded text-primary text-sm">${icon}</span>
                             </div>
                             <div class="flex-1 overflow-hidden">
                                 <div class="text-[10px] font-bold text-white truncate">${tx.action_label}</div>
@@ -3306,12 +3447,12 @@
                     html += `<div class="flex items-center justify-between mt-2 px-1">
                         <button onclick="loadTransactions(${_txPage - 1})" ${_txPage <= 1 ? 'disabled' : ''}
                             class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
-                            <span class="material-icons-round text-sm">chevron_left</span>
+                            <span class="material-symbols-rounded text-sm">chevron_left</span>
                         </button>
                         <span class="text-[10px] text-gray-500">${_txPage} / ${totalPages} (${data.total})</span>
                         <button onclick="loadTransactions(${_txPage + 1})" ${!data.has_more ? 'disabled' : ''}
                             class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
-                            <span class="material-icons-round text-sm">chevron_right</span>
+                            <span class="material-symbols-rounded text-sm">chevron_right</span>
                         </button>
                     </div>`;
                 }
@@ -3333,8 +3474,8 @@
             const q = input.value.trim();
             if (q.length < 2) { showNotification('Минимум 2 символа', 'error'); return; }
 
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>'; }
-            resultsEl.innerHTML = '<div class="flex justify-center py-3"><span class="material-icons-round animate-spin text-primary">refresh</span></div>';
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
+            resultsEl.innerHTML = '<div class="flex justify-center py-3"><span class="material-symbols-rounded animate-spin text-primary">progress_activity</span></div>';
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
@@ -3357,7 +3498,7 @@
                     html += `
                         <div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">
                             <div class="w-8 h-8 bg-white/5 rounded-lg flex items-center justify-center shrink-0">
-                                <span class="material-icons-round text-gray-400 text-sm">vpn_key</span>
+                                <span class="material-symbols-rounded text-gray-400 text-sm">key</span>
                             </div>
                             <div class="flex-1 overflow-hidden">
                                 <div class="text-[10px] font-bold text-white truncate">${k.name}</div>
@@ -3372,7 +3513,7 @@
             } catch (e) {
                 resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
             } finally {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-icons-round text-sm">search</span>'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">search</span>'; }
             }
         }
 
@@ -3461,7 +3602,14 @@
             }
         }
 
-        const _M_LABELS = { sbp: 'СБП', card: 'Карта', usdt_trc20: 'USDT TRC20' };
+        function _maskRequisite(value) {
+            const s = String(value || '').trim();
+            const digits = s.replace(/\D/g, '');
+            if (!digits) return s;
+            const last4 = digits.slice(-4);
+            return '*'.repeat(Math.max(0, digits.length - 4)) + last4;
+        }
+        const _M_LABELS = { sbp: 'СБП', card: 'Номер карты', usdt_trc20: 'USDT TRC20' };
         const _M_ICONS  = { sbp: 'phone_android', card: 'credit_card', usdt_trc20: 'currency_bitcoin' };
 
         async function requestReferralWithdraw() {
@@ -3475,13 +3623,14 @@
             if (!modal) return;
             modal.classList.remove('hidden'); modal.classList.add('flex');
             requestAnimationFrame(() => { backdrop.classList.remove('opacity-0', 'pointer-events-none'); card.classList.remove('translate-y-full'); });
-            titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">payments</span> Вывод средств';
-            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">payments</span> Вывод средств';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             try {
                 const resp = await fetch('/api/referral/payout-methods/list', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
                 });
                 const d = await resp.json();
+                window._referralMinWithdraw = d.ok ? (parseFloat(d.min_withdraw) || 100) : 100;
                 _renderWithdrawForm(contentEl, d.ok ? (d.methods || []) : []);
             } catch (e) {
                 contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка сети</div>';
@@ -3491,7 +3640,7 @@
         function _renderWithdrawForm(contentEl, methods) {
             if (!methods.length) {
                 contentEl.innerHTML = '<div class="flex flex-col gap-3"><div class="text-center text-gray-500 text-[11px] py-3">Нет сохранённых методов получения.<br>Добавьте метод в разделе «Методы получения».</div>' +
-                    '<button onclick="openReferralMethodsModal()" class="w-full bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">add</span>Добавить метод</button></div>';
+                    '<button onclick="openReferralMethodsModal()" class="w-full bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">add</span>Добавить метод</button></div>';
                 return;
             }
             window._withdrawSelectedId = methods[0].id;
@@ -3503,18 +3652,19 @@
                 const sel = i === 0;
                 html += `<button id="wm-${m.id}" onclick="_selectWithdrawMethod(${m.id})" class="flex items-center gap-3 p-3 border rounded-xl transition-all text-left w-full ${sel ? 'bg-primary/10 border-primary/30' : 'bg-white/5 border-white/5'}">
                     <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${sel ? 'bg-primary/20' : 'bg-white/10'}">
-                        <span class="material-icons-round text-sm ${sel ? 'text-primary' : 'text-gray-400'}">${_M_ICONS[m.method_type] || 'account_balance'}</span>
+                        <span class="material-symbols-rounded text-sm ${sel ? 'text-primary' : 'text-gray-400'}">${_M_ICONS[m.method_type] || 'account_balance'}</span>
                     </div>
                     <div class="flex-1 min-w-0">
                         <div class="text-[10px] font-bold text-white">${label}</div>
-                        <div class="text-[9px] text-gray-500 font-mono truncate">${m.requisite_value}</div>
+                        <div class="text-[9px] text-gray-500 font-mono truncate">${_maskRequisite(m.requisite_value)}</div>
                     </div>
                 </button>`;
             });
             html += '</div>';
-            html += '<div><div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Сумма (₽)</div>';
-            html += '<input type="number" id="withdraw-amount-input" min="1" step="1" placeholder="Например: 500" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors"></div>';
-            html += '<button id="withdraw-submit-btn" onclick="_submitWithdrawRequest()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">send</span>Отправить заявку</button>';
+            const minW = window._referralMinWithdraw || 100;
+            html += `<div><div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Сумма (₽) · мин. ${minW.toFixed(0)} ₽</div>`;
+            html += `<input type="number" id="withdraw-amount-input" min="${minW}" step="1" placeholder="Например: ${minW.toFixed(0)}" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors"></div>`;
+            html += '<button id="withdraw-submit-btn" onclick="_submitWithdrawRequest()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">send</span>Отправить заявку</button>';
             html += '</div>';
             contentEl.innerHTML = html;
         }
@@ -3526,7 +3676,7 @@
                 const sel = mid === id;
                 btn.className = btn.className.replace(/bg-primary\/10|border-primary\/30|bg-white\/5|border-white\/5/g, '').trim();
                 btn.classList.add(sel ? 'bg-primary/10' : 'bg-white/5', sel ? 'border-primary/30' : 'border-white/5');
-                const icon = btn.querySelector('.material-icons-round');
+                const icon = btn.querySelector('.material-symbols-rounded');
                 const wrap = btn.querySelector('.w-8');
                 if (icon) { icon.classList.toggle('text-primary', sel); icon.classList.toggle('text-gray-400', !sel); }
                 if (wrap) { wrap.classList.toggle('bg-primary/20', sel); wrap.classList.toggle('bg-white/10', !sel); }
@@ -3539,10 +3689,12 @@
             const amountInput = document.getElementById('withdraw-amount-input');
             const amount = parseFloat((amountInput?.value || '').replace(',', '.'));
             if (!amount || amount <= 0) { showNotification('Укажите сумму', 'error'); amountInput?.focus(); return; }
+            const minWithdraw = window._referralMinWithdraw || 100;
+            if (amount < minWithdraw) { showNotification(`Минимальная сумма для вывода — ${minWithdraw.toFixed(0)} ₽`, 'error'); amountInput?.focus(); return; }
             const methodId = window._withdrawSelectedId;
             if (!methodId) { showNotification('Выберите метод', 'error'); return; }
             const btn = document.getElementById('withdraw-submit-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
             try {
                 const resp = await fetch('/api/referral/request-withdrawal', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3554,7 +3706,7 @@
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
             } finally {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-icons-round text-sm">send</span>Отправить заявку'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">send</span>Отправить заявку'; }
             }
         }
 
@@ -3614,11 +3766,11 @@
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${botLink}</div>
                             <button onclick="copyToClipboard('${botLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
-                                <span class="material-icons-round text-sm">content_copy</span>
+                                <span class="material-symbols-rounded text-sm">content_copy</span>
                             </button>
                             <a href="https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent('Попробуй этот VPN!')}" target="_blank"
                                class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-2 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
-                                <span class="material-icons-round text-sm">send</span>
+                                <span class="material-symbols-rounded text-sm">send</span>
                             </a>
                         </div>
                     </div>` : ''}
@@ -3628,7 +3780,7 @@
                         <div class="flex items-center gap-2">
                             <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${webLink}</div>
                             <button onclick="copyToClipboard('${webLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
-                                <span class="material-icons-round text-sm">content_copy</span>
+                                <span class="material-symbols-rounded text-sm">content_copy</span>
                             </button>
                         </div>
                     </div>` : ''}
@@ -3642,7 +3794,7 @@
             try {
                 await navigator.clipboard.writeText(text);
                 if (btn) {
-                    const icon = btn.querySelector('.material-icons-round');
+                    const icon = btn.querySelector('.material-symbols-rounded');
                     if (icon) { icon.textContent = 'check'; setTimeout(() => { icon.textContent = 'content_copy'; }, 1500); }
                 }
                 showNotification('Скопировано!', 'success');
@@ -3676,7 +3828,7 @@
                 <div class="glass-card border border-white/10 rounded-xl p-3 flex flex-col gap-2">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
-                            <span class="material-icons-round text-amber-400 text-base">card_giftcard</span>
+                            <span class="material-symbols-rounded text-amber-400 text-base">card_giftcard</span>
                             <div>
                                 <div class="text-[10px] font-bold text-white">${g.host_name || 'Подарок'}</div>
                                 <div class="text-[9px] text-gray-500">${g.created_at ? g.created_at.slice(0,10) : ''}</div>
@@ -3688,11 +3840,11 @@
                     <div class="flex items-center gap-2">
                         <div class="flex-1 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${g.link}</div>
                         <button onclick="copyToClipboard('${g.link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
-                            <span class="material-icons-round text-sm">content_copy</span>
+                            <span class="material-symbols-rounded text-sm">content_copy</span>
                         </button>
                         <a href="https://t.me/share/url?url=${encodeURIComponent(g.link)}&text=${encodeURIComponent('🎁 Получи подарочный VPN ключ!')}" target="_blank"
                            class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-1.5 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
-                            <span class="material-icons-round text-sm">send</span>
+                            <span class="material-symbols-rounded text-sm">send</span>
                         </a>
                     </div>` : ''}
                 </div>`).join('');
@@ -3753,7 +3905,7 @@
                         const dateStr = tx.created_date ? tx.created_date.split(' ')[0] : '—';
                         const amount = tx.amount_rub != null ? Number(tx.amount_rub).toFixed(0) + ' ₽' : '—';
                         html += '<div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">' +
-                            '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-icons-round text-primary text-sm">receipt</span></div>' +
+                            '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-symbols-rounded text-primary text-sm">receipt</span></div>' +
                             '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white truncate">' + tx.action_label + '</div><div class="text-[9px] text-gray-500">' + dateStr + '</div></div>' +
                             '<div class="text-xs font-black text-primary">' + amount + '</div></div>';
                     });
@@ -3792,14 +3944,19 @@
                     el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет заявок</div>';
                     return;
                 }
+                const _W_STATUS_LABELS = { new: 'Новая', processing: 'В обработке', paid: 'Выплачено', rejected: 'Отклонено' };
+                const _W_STATUS_COLORS = { new: 'text-yellow-400', processing: 'text-yellow-400', paid: 'text-emerald-400', rejected: 'text-red-400' };
                 let html = '<div class="flex flex-col gap-2">';
                 d.withdrawals.forEach(w => {
-                    const statusColor = w.status === 'completed' ? 'text-emerald-400' : w.status === 'rejected' ? 'text-red-400' : 'text-yellow-400';
+                    const statusColor = _W_STATUS_COLORS[w.status] || 'text-yellow-400';
+                    const statusLabel = _W_STATUS_LABELS[w.status] || (w.status || '—');
+                    const methodLabel = (_M_LABELS[w.method_type] || w.method_type || '') + (w.bank_name ? ' · ' + w.bank_name : '');
+                    const rejectNote = (w.status === 'rejected' && w.reject_reason) ? (' — ' + w.reject_reason) : '';
                     html += '<div class="glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3">' +
-                        '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-icons-round text-primary text-sm">payments</span></div>' +
-                        '<div class="flex-1"><div class="text-[10px] font-bold text-white">' + (w.amount ? Number(w.amount).toFixed(0) + ' ₽' : '—') + '</div>' +
-                        '<div class="text-[9px] text-gray-500">' + (w.created_at ? w.created_at.slice(0, 10) : '') + '</div></div>' +
-                        '<span class="text-[9px] ' + statusColor + ' font-bold uppercase">' + (w.status || '—') + '</span></div>';
+                        '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-symbols-rounded text-primary text-sm">' + (_M_ICONS[w.method_type] || 'payments') + '</span></div>' +
+                        '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white">' + (w.amount ? Number(w.amount).toFixed(0) + ' ₽' : '—') + (methodLabel ? ' · ' + methodLabel : '') + '</div>' +
+                        '<div class="text-[9px] text-gray-500 truncate">' + (w.created_at ? w.created_at.slice(0, 10) : '') + rejectNote + '</div></div>' +
+                        '<span class="text-[9px] ' + statusColor + ' font-bold uppercase shrink-0">' + statusLabel + '</span></div>';
                 });
                 html += '</div>';
                 el.innerHTML = html;
@@ -3809,10 +3966,284 @@
         }
 
         function openTopUpModal() {
-            openPromoModal();
+            const modal = document.getElementById('action-modal');
+            const backdrop = document.getElementById('action-backdrop');
+            const card = document.getElementById('action-card');
+            const titleEl = document.getElementById('action-modal-title');
+            const contentEl = document.getElementById('action-modal-content');
+            if (!modal) return;
+
+            if (window._topUpPollingInterval) {
+                clearInterval(window._topUpPollingInterval);
+                window._topUpPollingInterval = null;
+            }
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            requestAnimationFrame(() => {
+                backdrop.classList.remove('opacity-0', 'pointer-events-none');
+                card.classList.remove('translate-y-full');
+            });
+
+            titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">add_card</span> Пополнение баланса';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
+            _renderTopUpAmountStep(contentEl);
+        }
+
+        function _renderTopUpAmountStep(contentEl) {
+            contentEl.innerHTML = `
+                <div class="flex flex-col gap-3">
+                    <div class="text-[11px] text-gray-400 leading-relaxed px-1">
+                        Введите сумму пополнения. Минимум 10 ₽, максимум 100 000 ₽.
+                    </div>
+                    <div>
+                        <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Сумма (₽)</div>
+                        <input type="number" id="topup-amount-input" min="10" max="100000" step="1" placeholder="Например: 300"
+                            class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
+                    </div>
+                    <div class="flex gap-2">
+                        ${[100, 300, 500, 1000].map(v =>
+                            `<button type="button" onclick="document.getElementById('topup-amount-input').value=${v}"
+                                class="flex-1 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold text-gray-300 hover:border-primary/30 hover:text-white active:scale-[0.98] transition-all">${v} ₽</button>`
+                        ).join('')}
+                    </div>
+                    <button id="topup-continue-btn" onclick="_topUpContinueToMethods()"
+                        class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        <span class="material-symbols-rounded text-base">arrow_forward</span>
+                        <span>Выбрать способ оплаты</span>
+                    </button>
+                </div>
+            `;
+            setTimeout(() => document.getElementById('topup-amount-input')?.focus(), 50);
+        }
+
+        function _parseTopUpAmount() {
+            const amountInput = document.getElementById('topup-amount-input');
+            const raw = (amountInput?.value || '').replace(',', '.').trim();
+            const amount = parseFloat(raw);
+            if (!raw || isNaN(amount) || amount <= 0) {
+                showNotification('Введите корректную сумму, например: 300', 'error');
+                amountInput?.focus();
+                return null;
+            }
+            if (amount < 10) {
+                showNotification('Минимальная сумма пополнения: 10 ₽', 'error');
+                amountInput?.focus();
+                return null;
+            }
+            if (amount > 100000) {
+                showNotification('Максимальная сумма пополнения: 100000 ₽', 'error');
+                amountInput?.focus();
+                return null;
+            }
+            return Math.round(amount * 100) / 100;
+        }
+
+        async function _topUpContinueToMethods() {
+            let amount = null;
+            if (document.getElementById('topup-amount-input')) {
+                amount = _parseTopUpAmount();
+            } else if (window._topUpAmount) {
+                amount = window._topUpAmount;
+            }
+            if (amount == null) return;
+            window._topUpAmount = amount;
+            const contentEl = document.getElementById('action-modal-content');
+            if (!contentEl) return;
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
+            try {
+                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+                const resp = await fetch('/api/payment-methods', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId })
+                });
+                const data = await resp.json();
+                const methods = (data.ok ? (data.methods || []) : []).filter(m => m.id !== 'pay_balance');
+                _renderTopUpMethodsStep(contentEl, amount, methods);
+            } catch (e) {
+                contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка загрузки способов оплаты</div>';
+            }
+        }
+
+        function _renderTopUpMethodsStep(contentEl, amount, methods) {
+            if (!methods.length) {
+                contentEl.innerHTML = `
+                    <div class="flex flex-col gap-3">
+                        <div class="text-center text-gray-500 text-[11px] py-3">Нет доступных способов оплаты</div>
+                        <button onclick="_renderTopUpAmountStep(document.getElementById('action-modal-content'))"
+                            class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Назад</button>
+                    </div>`;
+                return;
+            }
+            let html = '<div class="flex flex-col gap-3">';
+            html += `<div class="text-[11px] text-gray-400 px-1">К пополнению: <span class="text-white font-bold">${amount.toFixed(2)} ₽</span></div>`;
+            html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Способ оплаты</div>';
+            html += '<div class="flex flex-col gap-1.5">';
+            methods.forEach(m => {
+                const iconData = getMethodIconSvg(m.id);
+                const safeName = String(m.name || '').replace(/'/g, "\\'");
+                html += `
+                <button onclick="_submitTopUpPayment('${m.id}', '${safeName}')"
+                    class="w-full p-2.5 flex items-center gap-3 bg-[#141414] hover:bg-[#1A1A1A] active:scale-[0.99] transition-all rounded-xl border border-white/[0.04] hover:border-primary/20 group">
+                    <div class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors border border-white/[0.04] ${iconData.classes}">
+                        ${iconData.html}
+                    </div>
+                    <div class="text-left flex-1">
+                        <div class="text-[12px] font-bold text-gray-200 group-hover:text-white transition-colors">${m.name}</div>
+                        <div class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.12em]">Комиссия 0%</div>
+                    </div>
+                    <span class="material-symbols-rounded text-gray-700 group-hover:text-gray-500 transition-colors text-sm">chevron_right</span>
+                </button>`;
+            });
+            html += '</div>';
+            html += `<button onclick="_renderTopUpAmountStep(document.getElementById('action-modal-content'))"
+                class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1">
+                <span class="material-symbols-rounded text-sm">arrow_back</span> Изменить сумму
+            </button>`;
+            html += '</div>';
+            contentEl.innerHTML = html;
+        }
+
+        async function _submitTopUpPayment(methodId, methodName) {
+            const amount = window._topUpAmount;
+            if (!amount) { showNotification('Сначала укажите сумму', 'error'); return; }
+            const token = window.getAuthToken();
+            const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+            const contentEl = document.getElementById('action-modal-content');
+            if (contentEl) {
+                contentEl.innerHTML = '<div class="flex flex-col items-center justify-center gap-2 py-8"><span class="material-symbols-rounded animate-spin text-2xl text-primary">progress_activity</span><div class="text-[11px] text-gray-400">Создаём счёт…</div></div>';
+            }
+            try {
+                const resp = await fetch('/api/create-topup-payment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: token || undefined,
+                        user_id: userId,
+                        amount,
+                        payment_method: methodId
+                    })
+                });
+                const result = await resp.json();
+                if (!result.ok) {
+                    showNotification(result.error || 'Ошибка создания платежа', 'error');
+                    _topUpContinueToMethods();
+                    return;
+                }
+                if (result.stars || methodId === 'pay_stars') {
+                    _renderTopUpWaiting(contentEl, amount, methodName || 'Telegram Stars', result.payment_id, result.payment_url, true);
+                    if (result.payment_url) {
+                        setTimeout(() => {
+                            if (window.Telegram?.WebApp?.openTelegramLink) {
+                                window.Telegram.WebApp.openTelegramLink(result.payment_url.replace('tg://resolve?domain=', 'https://t.me/'));
+                            } else if (result.payment_url) {
+                                window.location.href = result.payment_url;
+                            }
+                        }, 300);
+                    }
+                    return;
+                }
+                if (result.payment_url) {
+                    _renderTopUpWaiting(contentEl, amount, methodName || 'оплату', result.payment_id, result.payment_url, false);
+                    setTimeout(() => {
+                        if (window.Telegram?.WebApp?.openLink) {
+                            window.Telegram.WebApp.openLink(result.payment_url);
+                        } else if (window.openLinkSafe) {
+                            window.openLinkSafe(result.payment_url);
+                        } else {
+                            window.open(result.payment_url, '_blank');
+                        }
+                    }, 300);
+                    return;
+                }
+                showNotification(result.error || 'Ссылка на оплату не получена', 'error');
+                _topUpContinueToMethods();
+            } catch (e) {
+                showNotification('Ошибка сети: ' + e.message, 'error');
+                _topUpContinueToMethods();
+            }
+        }
+
+        function _renderTopUpWaiting(contentEl, amount, methodName, paymentId, paymentUrl, isStars) {
+            window._topUpPaymentUrl = paymentUrl || null;
+            contentEl.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-4 text-center">
+                    <div class="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+                        <span class="material-symbols-rounded text-primary text-2xl animate-pulse">${isStars ? 'star' : 'hourglass_top'}</span>
+                    </div>
+                    <div>
+                        <div class="text-sm font-bold text-white mb-1">Ожидаем оплату</div>
+                        <div class="text-[11px] text-gray-400 leading-relaxed">
+                            ${isStars
+                                ? 'Счёт Stars отправлен в бот. Оплатите его в Telegram — баланс обновится автоматически.'
+                                : `Оплатите <span class="text-white font-bold">${Number(amount).toFixed(2)} ₽</span> через <span class="text-white font-bold">${methodName}</span>. После оплаты окно обновится автоматически.`}
+                        </div>
+                    </div>
+                    ${paymentUrl && !isStars ? `
+                    <button onclick="_reopenTopUpPaymentLink()"
+                        class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        <span class="material-symbols-rounded text-base">open_in_new</span>
+                        <span>Открыть оплату</span>
+                    </button>` : ''}
+                    <button onclick="closeActionModal()"
+                        class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Закрыть</button>
+                </div>
+            `;
+            if (paymentId) _startTopUpPolling(paymentId);
+        }
+
+        function _reopenTopUpPaymentLink() {
+            const url = window._topUpPaymentUrl;
+            if (!url) return;
+            if (window.Telegram?.WebApp?.openLink) window.Telegram.WebApp.openLink(url);
+            else if (window.openLinkSafe) window.openLinkSafe(url);
+            else window.open(url, '_blank');
+        }
+
+        function _startTopUpPolling(paymentId) {
+            if (!paymentId) return;
+            if (window._topUpPollingInterval) clearInterval(window._topUpPollingInterval);
+            window._topUpPollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/check-payment', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ payment_id: String(paymentId) })
+                    });
+                    const data = await response.json();
+                    if (data.ok && data.paid) {
+                        clearInterval(window._topUpPollingInterval);
+                        window._topUpPollingInterval = null;
+                        showNotification(data.message || 'Баланс пополнен!', 'success');
+                        if (window.Telegram?.WebApp?.HapticFeedback) {
+                            window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+                        }
+                        closeActionModal();
+                        if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
+                        if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
+                        try {
+                            const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
+                            const resp = await fetch('/api/user-status?user_id=' + userId);
+                            const status = await resp.json();
+                            if (status.ok && status.balance != null) {
+                                const balStr = Number(status.balance).toFixed(2) + ' ₽';
+                                const financeBal = document.getElementById('finance-balance');
+                                const homeBal = document.getElementById('home-balance');
+                                if (financeBal) financeBal.textContent = balStr;
+                                if (homeBal) homeBal.textContent = balStr;
+                            }
+                        } catch (e) { /* silent */ }
+                    }
+                } catch (e) {
+                    console.error('Top-up polling error:', e);
+                }
+            }, 3000);
         }
 
         function openReferralMethodsModal() {
+
+        function openReferralMethodsModalfunction openReferralMethodsModal() {
             const modal = document.getElementById('action-modal');
             const backdrop = document.getElementById('action-backdrop');
             const card = document.getElementById('action-card');
@@ -3825,40 +4256,44 @@
                 backdrop.classList.remove('opacity-0', 'pointer-events-none');
                 card.classList.remove('translate-y-full');
             });
-            titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">account_balance</span> Методы получения';
-            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">account_balance</span> Методы получения';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             _loadReferralPayoutMethods(contentEl);
         }
 
         async function _loadReferralPayoutMethods(contentEl) {
             const token = window.getAuthToken();
             if (!token) { contentEl.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Требуется авторизация</div>'; return; }
-            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             try {
                 const resp = await fetch('/api/referral/payout-methods/list', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
                 });
                 const d = await resp.json();
                 if (!d.ok) { contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">' + (d.error || 'Ошибка') + '</div>'; return; }
+                if (d.withdraw_enabled === false) {
+                    contentEl.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Вывод средств временно недоступен.</div>';
+                    return;
+                }
                 const methods = d.methods || [];
                 let html = '<div class="flex flex-col gap-2">';
-                if (!methods.length) html += '<div class="text-center text-gray-500 text-[11px] py-3">Нет сохранённых методов</div>';
+                if (!methods.length) html += '<div class="text-center text-gray-500 text-[11px] py-3">Пока нет сохранённых способов получения.<br>Нажмите «Добавить способ».</div>';
                 methods.forEach(m => {
                     const label = (_M_LABELS[m.method_type] || m.method_type) + (m.bank_name ? ' · ' + m.bank_name : '');
                     html += `<div class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl">
                         <div class="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
-                            <span class="material-icons-round text-primary text-sm">${_M_ICONS[m.method_type] || 'account_balance'}</span>
+                            <span class="material-symbols-rounded text-primary text-sm">${_M_ICONS[m.method_type] || 'account_balance'}</span>
                         </div>
                         <div class="flex-1 min-w-0">
                             <div class="text-[10px] font-bold text-white">${label}</div>
-                            <div class="text-[9px] text-gray-500 font-mono truncate">${m.requisite_value}</div>
+                            <div class="text-[9px] text-gray-500 font-mono truncate">${_maskRequisite(m.requisite_value)}</div>
                         </div>
                         <button onclick="_deletePayoutMethod(${m.id})" class="w-7 h-7 flex items-center justify-center rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 active:scale-90 transition-all shrink-0">
-                            <span class="material-icons-round text-sm">delete</span>
+                            <span class="material-symbols-rounded text-sm">delete</span>
                         </button>
                     </div>`;
                 });
-                html += '<button onclick="_addReferralPayoutMethod()" class="w-full mt-2 bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">add</span>Добавить метод</button>';
+                html += '<button onclick="_addReferralPayoutMethod()" class="w-full mt-2 bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">add</span>Добавить метод</button>';
                 html += '</div>';
                 contentEl.innerHTML = html;
             } catch (e) {
@@ -3870,7 +4305,7 @@
             const token = window.getAuthToken();
             if (!token) return;
             const contentEl = document.getElementById('action-modal-content');
-            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             try {
                 const resp = await fetch('/api/referral/payout-methods/delete', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3889,8 +4324,8 @@
             if (!token) return;
             const contentEl = document.getElementById('action-modal-content');
             const titleEl = document.getElementById('action-modal-title');
-            if (titleEl) titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">add_card</span> Добавить метод';
-            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-icons-round animate-spin text-xl text-primary">refresh</span></div>';
+            if (titleEl) titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">add_card</span> Добавить метод';
+            contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             try {
                 const resp = await fetch('/api/referral/available-method-types', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token })
@@ -3898,7 +4333,7 @@
                 const d = await resp.json();
                 if (!d.ok || !d.methods?.length) {
                     contentEl.innerHTML = '<div class="flex flex-col gap-3"><div class="text-center text-gray-500 py-3 text-[11px]">Администратор не настроил способы вывода</div>' +
-                        `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">arrow_back</span>Назад</button></div>`;
+                        `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button></div>`;
                     return;
                 }
                 window._payoutMethodState = { methods: d.methods, sbpBanks: d.sbp_banks || [], type: null, bank: null };
@@ -3915,12 +4350,12 @@
             methods.forEach(m => {
                 html += `<button onclick="_selectPayoutType('${m.type}')" class="flex items-center gap-3 p-3.5 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
                     <div class="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center shrink-0">
-                        <span class="material-icons-round text-primary text-sm">${m.icon}</span>
+                        <span class="material-symbols-rounded text-primary text-sm">${m.icon}</span>
                     </div>
                     <span class="text-sm font-bold text-white">${m.label}</span>
                 </button>`;
             });
-            html += `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">arrow_back</span>Назад</button>`;
+            html += `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
             html += '</div>';
             contentEl.innerHTML = html;
         }
@@ -3929,32 +4364,37 @@
             window._payoutMethodState.type = type;
             window._payoutMethodState.bank = null;
             const contentEl = document.getElementById('action-modal-content');
-            if (type === 'sbp' && window._payoutMethodState.sbpBanks.length) {
+            if (type === 'sbp') {
+                if (!window._payoutMethodState.sbpBanks.length) {
+                    showNotification('Список банков не настроен администратором.', 'error');
+                    return;
+                }
                 _renderPayoutBankStep(contentEl);
-            } else {
-                _renderPayoutRequisiteStep(contentEl);
+                return;
             }
+            _renderPayoutRequisiteStep(contentEl);
         }
 
         function _renderPayoutBankStep(contentEl) {
             const { sbpBanks } = window._payoutMethodState;
             let html = '<div class="flex flex-col gap-2">';
             html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1">Выберите банк</div>';
-            sbpBanks.forEach(bank => {
-                const safe = bank.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-                html += `<button onclick="_selectPayoutBank('${safe}')" class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
+            sbpBanks.forEach((bank, idx) => {
+                html += `<button onclick="_selectPayoutBankByIndex(${idx})" class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
                     <div class="w-8 h-8 bg-white/10 rounded-lg flex items-center justify-center shrink-0">
-                        <span class="material-icons-round text-gray-400 text-sm">account_balance</span>
+                        <span class="material-symbols-rounded text-gray-400 text-sm">account_balance</span>
                     </div>
-                    <span class="text-sm font-bold text-white">${bank}</span>
+                    <span class="text-sm font-bold text-white">${String(bank).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>
                 </button>`;
             });
-            html += `<button onclick="_renderPayoutTypeStep(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">arrow_back</span>Назад</button>`;
+            html += `<button onclick="_renderPayoutTypeStep(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
             html += '</div>';
             contentEl.innerHTML = html;
         }
 
-        function _selectPayoutBank(bank) {
+        function _selectPayoutBankByIndex(idx) {
+            const bank = window._payoutMethodState.sbpBanks[idx];
+            if (!bank) return;
             window._payoutMethodState.bank = bank;
             _renderPayoutRequisiteStep(document.getElementById('action-modal-content'));
         }
@@ -3967,14 +4407,14 @@
             const backFn = (type === 'sbp' && window._payoutMethodState.sbpBanks.length) ? '_renderPayoutBankStep' : '_renderPayoutTypeStep';
             let html = '<div class="flex flex-col gap-3">';
             html += `<div class="flex items-center gap-2 p-2.5 bg-primary/5 border border-primary/15 rounded-xl">
-                <span class="material-icons-round text-primary text-sm">${_M_ICONS[type] || 'payment'}</span>
+                <span class="material-symbols-rounded text-primary text-sm">${_M_ICONS[type] || 'payment'}</span>
                 <span class="text-[10px] font-bold text-primary">${labelText}</span>
             </div>`;
             html += `<div><div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">${hints[type] || 'Реквизиты'}</div>
                 <input id="payout-requisite-input" type="text" placeholder="${placeholders[type] || ''}" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
             </div>`;
-            html += `<button id="payout-save-btn" onclick="_submitPayoutMethod()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">save</span>Сохранить</button>`;
-            html += `<button onclick="${backFn}(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-icons-round text-sm">arrow_back</span>Назад</button>`;
+            html += `<button id="payout-save-btn" onclick="_submitPayoutMethod()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">save</span>Сохранить</button>`;
+            html += `<button onclick="${backFn}(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
             html += '</div>';
             contentEl.innerHTML = html;
             document.getElementById('payout-requisite-input')?.focus();
@@ -3988,7 +4428,7 @@
             const token = window.getAuthToken();
             if (!token) return;
             const btn = document.getElementById('payout-save-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-icons-round animate-spin text-sm">refresh</span>'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>'; }
             try {
                 const resp = await fetch('/api/referral/payout-methods/add', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3998,13 +4438,13 @@
                 showNotification(d.ok ? 'Метод добавлен' : (d.message || d.error || 'Ошибка'), d.ok ? 'success' : 'error');
                 if (d.ok) {
                     const titleEl = document.getElementById('action-modal-title');
-                    if (titleEl) titleEl.innerHTML = '<span class="material-icons-round text-primary text-sm mr-1">account_balance</span> Методы получения';
+                    if (titleEl) titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">account_balance</span> Методы получения';
                     _loadReferralPayoutMethods(document.getElementById('action-modal-content'));
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
             } finally {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-icons-round text-sm">save</span>Сохранить'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">save</span>Сохранить'; }
             }
         }
 
@@ -4032,7 +4472,7 @@
                 const d = await resp.json();
                 if (d.ok) {
                     btnEl.setAttribute('onclick', `toggleKeyAutoRenew(${keyId}, ${newState}, this)`);
-                    const icon = btnEl.querySelector('.material-icons-round');
+                    const icon = btnEl.querySelector('.material-symbols-rounded');
                     const label = btnEl.querySelector('.auto-renew-label');
                     if (newState) {
                         btnEl.className = btnEl.className.replace(/border-white\/5\s*text-white\s*bg-white\/5(\s*hover:bg-white\/10)?/, '').trim() + ' border-primary/30 text-primary bg-primary/10';
