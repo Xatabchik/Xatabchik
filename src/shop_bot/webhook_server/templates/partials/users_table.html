@@ -5,6 +5,10 @@
   <td>
     {% if user.is_banned %}
       <span class="badge bg-red">Забанен</span>
+    {% elif user.is_unreachable %}
+      <span class="badge bg-orange" title="Автоматически исключён из рассылок; вернётся в список, как только снова напишет боту">
+        {% if user.unreachable_reason == 'deactivated' %}Аккаунт деактивирован{% else %}Заблокировал бота{% endif %}
+      </span>
     {% else %}
       <span class="badge bg-green">Активен</span>
     {% endif %}

@@ -74,6 +74,18 @@
       <div class="stats-row"><span>Ожидает:</span><span class="stats-val">{{ metrics.gifts_pending }}</span></div>
     </div>
   </div>
+
+  <div class="stats-card" title="Пользователи, помеченные недоступными автоматически при попытке рассылки/уведомления, исключаются из будущих рассылок до тех пор, пока снова не напишут боту.">
+    <div class="stats-card-title">
+      <i class="ti ti-send me-2"></i>
+      ДОСТУПНОСТЬ ДЛЯ РАССЫЛОК
+    </div>
+    <div class="stats-card-body">
+      <div class="stats-row"><span>Реальных подписчиков:</span><span class="stats-val">{{ metrics.reachable_users }}</span></div>
+      <div class="stats-row"><span>Заблокировали бота:</span><span class="stats-val">{{ metrics.blocked_bot_users }}</span></div>
+      <div class="stats-row"><span>Деактивировали аккаунт:</span><span class="stats-val">{{ metrics.deactivated_users }}</span></div>
+    </div>
+  </div>
 </div>
 
 <div class="charts-grid">

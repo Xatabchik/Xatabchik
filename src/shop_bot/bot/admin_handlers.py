@@ -16,6 +16,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from shop_bot.bot import keyboards
 from shop_bot.bot.callback_safety import fast_callback_answer, catch_callback_errors
+from shop_bot.modules import telegram_reachability
 from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import remnawave_repository as rw_repo
@@ -7843,11 +7844,15 @@ def get_admin_router() -> Router:
         sent_count = 0
         failed_count = 0
         banned_count = 0
+        unreachable_count = 0
 
         for user in users:
             user_id = user['telegram_id']
             if user.get('is_banned'):
                 banned_count += 1
+                continue
+            if user.get('is_unreachable'):
+                unreachable_count += 1
                 continue
             try:
                 await _send_broadcast_to(bot, user_id, original_message, final_keyboard, parse_mode=parse_mode)
@@ -7855,13 +7860,17 @@ def get_admin_router() -> Router:
                 await asyncio.sleep(0.1)
             except Exception as e:
                 failed_count += 1
-                logger.warning(f"Не удалось отправить сообщение рассылки пользователю {user_id}: {e}")
+                if telegram_reachability.handle_send_exception(user_id, e):
+                    unreachable_count += 1
+                else:
+                    logger.warning(f"Не удалось отправить сообщение рассылки пользователю {user_id}: {e}")
 
         await callback.message.answer(
             f"✅ Рассылка завершена!\n\n"
             f"👍 Отправлено: {sent_count}\n"
             f"👎 Не удалось отправить: {failed_count}\n"
-            f"🚫 Пропущено (забанены): {banned_count}"
+            f"🚫 Пропущено (забанены): {banned_count}\n"
+            f"📵 Недоступны (блок/деактивация): {unreachable_count}"
         )
         await show_admin_menu(callback.message)
 

@@ -419,6 +419,11 @@ _LEGACY_FORWARDERS = (
     "mark_broadcast_run",
     "get_broadcast_stats",
 
+    # Telegram reachability (blocked bot / deactivated account)
+    "mark_user_unreachable",
+    "mark_user_reachable",
+    "get_reachability_stats",
+
     # Key management
     "update_key_name",
     "get_transactions_paginated",

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 from shop_bot.modules import remnawave_api
+from shop_bot.modules import telegram_reachability
 from shop_bot.bot import handlers
 from shop_bot.bot import keyboards
 from aiogram import Bot
@@ -191,7 +192,8 @@ def _dispatch_bot_notification(user_id: int, text: str) -> None:
         try:
             await bot_instance.send_message(int(user_id), text)
         except Exception as e:
-            logger.warning(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+            if not telegram_reachability.handle_send_exception(int(user_id), e):
+                logger.warning(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
 
     if live_bot and loop and getattr(loop, "is_running", lambda: False)():
         asyncio.run_coroutine_threadsafe(_send(live_bot), loop)
@@ -880,6 +882,12 @@ def create_webhook_app(bot_controller_instance):
         except Exception:
             pass
 
+        # Reachability (real subscribers vs. those who blocked the bot / deleted their account)
+        try:
+            reachability = rw_repo.get_reachability_stats() or {}
+        except Exception:
+            reachability = {}
+
         metrics = {
             'clients_total': clients_total,
             'clients_active': clients_active,
@@ -897,6 +905,9 @@ def create_webhook_app(bot_controller_instance):
             'gifts_total': gifts_total,
             'gifts_used': gifts_used,
             'gifts_pending': gifts_pending,
+            'reachable_users': reachability.get('reachable', 0),
+            'blocked_bot_users': reachability.get('blocked_bot', 0),
+            'deactivated_users': reachability.get('deactivated', 0),
         }
 
         # Charts
@@ -2205,6 +2216,8 @@ def create_webhook_app(bot_controller_instance):
                 "telegram_id": user.get('telegram_id'),
                 "username": user.get('username'),
                 "is_banned": bool(user.get('is_banned')),
+                "is_unreachable": bool(user.get('is_unreachable')),
+                "unreachable_reason": user.get('unreachable_reason'),
                 "balance": float(user.get('balance') or 0.0),
                 "referral_balance": float(user.get('referral_balance') or 0.0),
                 "total_spent": float(user.get('total_spent') or 0.0),
