@@ -67,6 +67,7 @@ def no_smtp(monkeypatch):
         return True
 
     monkeypatch.setattr(email_sender, "send_activation_code", _fake_send)
+    monkeypatch.setattr(email_sender, "is_smtp_configured", lambda: True)
     return sent_codes
 
 

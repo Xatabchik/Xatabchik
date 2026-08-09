@@ -20,7 +20,8 @@ dependencies = [
     "psutil==5.9.8",
     "fastapi==0.115.6",
     "uvicorn[standard]==0.32.1",
-    "python-multipart==0.0.20"
+    "python-multipart==0.0.20",
+    "bcrypt==4.2.1"
 ]
 
 [project.optional-dependencies]
