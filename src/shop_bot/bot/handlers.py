@@ -530,6 +530,18 @@ async def grant_referrer_day_bonus_for_trial(*, referred_user_id: int, bot: Bot)
         pass
 
 
+def _build_gift_links(gift_code: str) -> tuple[str | None, str | None]:
+    """Построить обе ссылки активации подарка: в мини-приложении (webapp) и в Telegram.
+
+    Возвращает (webapp_link, telegram_link) — то же самое, что показывает
+    веб-приложение на своей странице подарков.
+    """
+    webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+    webapp_link = f"{webapp_domain}/gift/{gift_code}" if webapp_domain else None
+    telegram_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code}" if TELEGRAM_BOT_USERNAME else None
+    return webapp_link, telegram_link
+
+
 async def _activate_gift_directly(
     message: types.Message, bot: Bot, user_id: int, gift_code: str,
     *, is_new_user: bool = False
@@ -1885,14 +1897,10 @@ def get_user_router() -> Router:
             devices_list = await _get_devices_list(key_data, user_payload)
             plan_group, plan_name, device_limit = _get_tariff_info_for_key(key_data, user_payload)
             
-            # Формируем ссылку активации подарка
-            gift_link = None
+            # Формируем ссылки активации подарка — и в webapp, и в Telegram, как в мини-приложении
+            gift_link, gift_telegram_link = None, None
             if gift_code and not is_activated:
-                domain = (get_setting("domain") or "").strip()
-                if domain:
-                    gift_link = f"{domain.rstrip('/')}/start?start=gift_{gift_code}"
-                elif TELEGRAM_BOT_USERNAME:
-                    gift_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code}"
+                gift_link, gift_telegram_link = _build_gift_links(gift_code)
             
             # Выводим ключ как обычно
             gift_text = get_key_info_text(
@@ -1905,11 +1913,14 @@ def get_user_router() -> Router:
                 gift_code=gift_code,
                 is_gift_activated=is_activated,
                 gift_link=gift_link,
+                gift_telegram_link=gift_telegram_link,
             )
             
             await callback.message.edit_text(
                 gift_text,
-                reply_markup=keyboards.create_gift_info_keyboard(gift_id, key_id, is_activated, connection_string, devices_list, gift_link),
+                reply_markup=keyboards.create_gift_info_keyboard(
+                    gift_id, key_id, is_activated, connection_string, devices_list, gift_link
+                ),
                 disable_web_page_preview=True
             )
         
@@ -1948,37 +1959,77 @@ def get_user_router() -> Router:
                 await callback.answer("❌ Не удалось сформировать ссылку подарка", show_alert=True)
                 return
             
-            # Формируем ссылку подарка (с fallback на Telegram бота)
-            gift_link = None
-            domain = (get_setting("domain") or "").strip()
-            if domain:
-                gift_link = f"{domain.rstrip('/')}/start?start=gift_{gift_code}"
-            elif TELEGRAM_BOT_USERNAME:
-                gift_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code}"
+            # Формируем обе ссылки подарка — в мини-приложении и в Telegram
+            gift_link, gift_telegram_link = _build_gift_links(gift_code)
             
-            if not gift_link:
+            if not gift_link and not gift_telegram_link:
                 await callback.answer("❌ Не удалось сформировать ссылку подарка", show_alert=True)
                 return
             
-            # Формируем URL с текстом для поделиться
             share_text = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
-            share_url = f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}"
             
-            # Создаём клавиатуру с кнопкой поделиться
+            text_parts = ["🎁 <b>Ссылки активации подарка</b> (нажмите, чтобы скопировать):\n"]
             builder = InlineKeyboardBuilder()
-            builder.button(text="📤 Поделиться подарком", url=share_url)
+            if gift_link:
+                text_parts.append(f"<i>В приложении:</i>\n<code>{html_escape(gift_link)}</code>\n")
+                builder.button(
+                    text="📤 Поделиться (в приложении)",
+                    url=f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}",
+                )
+            if gift_telegram_link:
+                text_parts.append(f"<i>В Telegram:</i>\n<code>{html_escape(gift_telegram_link)}</code>\n")
+                builder.button(
+                    text="📤 Поделиться (в Telegram)",
+                    url=f"https://t.me/share/url?url={quote(gift_telegram_link)}&text={quote(share_text)}",
+                )
             builder.button(text="⬅️ Назад", callback_data=f"show_gift_{gift_id}")
+            builder.adjust(1)
             
             await callback.message.edit_text(
-                f"🎁 <b>Ссылка активации подарка:</b>\n\n"
-                f"<code>{html_escape(gift_link)}</code>\n\n"
-                f"<i>Нажмите кнопку ниже, чтобы поделиться подарком</i>",
+                "".join(text_parts),
                 reply_markup=builder.as_markup()
             )
             
         except Exception as e:
             logger.error(f"Error sending gift link {gift_id}: {e}", exc_info=True)
             await callback.answer("❌ Произошла ошибка при отправке ссылки", show_alert=True)
+
+    @user_router.callback_query(F.data.startswith("activate_own_gift_"))
+    @registration_required
+    async def activate_own_gift_handler(callback: types.CallbackQuery):
+        """Активировать собственный неактивированный подарок себе (аналог webapp-кнопки 'Активировать себе')."""
+        await callback.answer()
+        user_id = callback.from_user.id
+
+        try:
+            gift_id = int(callback.data.split("_")[-1])
+        except (IndexError, ValueError):
+            await callback.answer("❌ Ошибка в данных подарка", show_alert=True)
+            return
+
+        try:
+            gift = rw_repo.get_user_gift(gift_id)
+            if not gift:
+                await callback.answer("❌ Подарок не найден", show_alert=True)
+                return
+
+            if gift.get('from_user_id') != user_id:
+                await callback.answer("❌ Это не ваш подарок", show_alert=True)
+                return
+
+            if gift.get('is_activated'):
+                await callback.answer("⚠️ Этот подарок уже был активирован", show_alert=True)
+                return
+
+            gift_code = gift.get('gift_code')
+            if not gift_code:
+                await callback.answer("❌ Не удалось активировать подарок", show_alert=True)
+                return
+
+            await _activate_gift_directly(callback.message, callback.bot, user_id, gift_code, is_new_user=False)
+        except Exception as e:
+            logger.error(f"Error activating own gift {gift_id} for user {user_id}: {e}", exc_info=True)
+            await callback.answer("❌ Произошла ошибка при активации подарка", show_alert=True)
 
     def _resolve_plan_for_traffic_topup(key_id: int, user_id: int) -> tuple[dict, dict] | tuple[None, None]:
         key_data = rw_repo.get_key_by_id(key_id)

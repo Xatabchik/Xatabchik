@@ -1781,7 +1781,13 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
                 button_text = f"❌ Удалить {platform or 'устройство'}"
             
             builder.button(text=button_text, callback_data=f"delete_device_{key_id}_{hwid}")
-    
+
+    # "Активировать себе" — специально отделена пустой строкой-разделителем от кнопок выше,
+    # чтобы её было сложнее нажать случайно вместо соседних кнопок.
+    if not is_activated:
+        builder.button(text="➖➖➖➖➖➖➖➖➖➖", callback_data="noop")
+        builder.button(text="🎁 Активировать себе", callback_data=f"activate_own_gift_{gift_id}")
+
     # Кнопка удаления подарка (если не активирован)
     if not is_activated:
         builder.button(text="🗑️ Удалить подарок", callback_data=f"delete_gift_{gift_id}")
