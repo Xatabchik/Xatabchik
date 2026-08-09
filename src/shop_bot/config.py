@@ -32,6 +32,7 @@ def get_key_info_text(
     domain: str | None = None,
     is_gift_activated: bool = False,
     gift_link: str | None = None,
+    gift_telegram_link: str | None = None,
     traffic_info_text: str | None = None,
 ):
     # Получаем все данные из объекта ключа через .get()
@@ -82,12 +83,18 @@ def get_key_info_text(
         f"<b>⏳ Действителен до:</b> {expiry_formatted}</blockquote>\n\n",
     ])
     
-    # Добавляем ссылку активации подарка отдельным блоком
-    if gift_link and not is_gift_activated:
-        text_parts.append(
-            f"🎁 <b>Ссылка активации подарка:</b>\n"
-            f"<code>{html_escape(gift_link)}</code>\n\n"
-        )
+    # Добавляем ссылки активации подарка отдельным блоком (в приложении и в Telegram)
+    if not is_gift_activated and (gift_link or gift_telegram_link):
+        text_parts.append("🎁 <b>Ссылки активации подарка</b> (нажмите, чтобы скопировать):\n")
+        if gift_link:
+            text_parts.append(
+                f"<i>В приложении:</i>\n<code>{html_escape(gift_link)}</code>\n"
+            )
+        if gift_telegram_link:
+            text_parts.append(
+                f"<i>В Telegram:</i>\n<code>{html_escape(gift_telegram_link)}</code>\n"
+            )
+        text_parts.append("\n")
     
     text_parts.extend([
         f"<code>{html_escape(connection_string)}</code>\n\n",
