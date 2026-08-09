@@ -7022,6 +7022,13 @@ def delete_user_completely(user_id: int) -> bool:
                 (user_id,),
             )
 
+            # Удалить мониторинг использования ключей (иначе останутся "осиротевшие"
+            # записи, ссылающиеся на уже удалённые key_id ниже)
+            cursor.execute(
+                "DELETE FROM key_usage_monitor WHERE key_id IN (SELECT key_id FROM vpn_keys WHERE user_id = ?)",
+                (user_id,),
+            )
+
             # Удалить VPN-ключи пользователя
             cursor.execute(
                 "DELETE FROM vpn_keys WHERE user_id = ?",
@@ -7045,6 +7052,34 @@ def delete_user_completely(user_id: int) -> bool:
             )
             cursor.execute(
                 "DELETE FROM promo_code_usages WHERE user_id = ?",
+                (user_id,),
+            )
+
+            # Удалить реферальные методы получения и заявки на вывод
+            cursor.execute(
+                "DELETE FROM referral_payout_methods WHERE user_id = ?",
+                (user_id,),
+            )
+            cursor.execute(
+                "DELETE FROM referral_withdrawal_requests WHERE user_id = ?",
+                (user_id,),
+            )
+
+            # Удалить просроченные/неиспользованные заявки на вход через webapp
+            cursor.execute(
+                "DELETE FROM webapp_auth_requests WHERE user_id = ?",
+                (user_id,),
+            )
+
+            # Удалить статус и историю прохождения капчи — иначе при повторной
+            # регистрации того же telegram_id (после "удаления") has_passed_captcha()
+            # найдёт старую запись и капча будет молча пропущена.
+            cursor.execute(
+                "DELETE FROM user_captcha_status WHERE user_id = ?",
+                (user_id,),
+            )
+            cursor.execute(
+                "DELETE FROM captcha_challenges WHERE user_id = ?",
                 (user_id,),
             )
 

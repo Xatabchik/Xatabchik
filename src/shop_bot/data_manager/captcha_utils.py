@@ -3,21 +3,19 @@
 import random
 import sqlite3
 from datetime import datetime, timedelta
-from pathlib import Path
 import logging
+
+from shop_bot.data_manager import database
 
 logger = logging.getLogger(__name__)
 
-# Определяем путь к БД (копируем из database.py)
-import os
-if os.path.exists("/app/project/users.db"):
-    DB_FILE = Path("/app/project/users.db")
-elif os.path.exists("users-20251005-173430.db"):
-    DB_FILE = Path("users-20251005-173430.db")
-elif os.path.exists("users.db"):
-    DB_FILE = Path("users.db")
-else:
-    DB_FILE = Path("users.db")
+# Путь к БД берём напрямую из database.DB_FILE (а не вычисляем повторно
+# здесь же — раньше был отдельный, идентичный по логике блок определения пути,
+# который вычислялся один раз при импорте модуля и мог разойтись с БД, которую
+# реально использует остальное приложение, например в тестах, подставляющих
+# свой путь через monkeypatch.setattr(database, "DB_FILE", ...)). Обращаемся
+# через `database.DB_FILE` (а не через `from ... import DB_FILE`), чтобы всегда
+# видеть актуальное значение, а не значение на момент импорта этого модуля.
 
 
 def _now_str() -> str:
@@ -93,7 +91,7 @@ def create_captcha_challenge(user_id: int, challenge_type: str = "math", timeout
             logger.warning(f"Unknown captcha type: {challenge_type}")
             question, answer = generate_math_captcha()
         
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(database.DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -123,7 +121,7 @@ def check_captcha_answer(challenge_id: int, user_answer: str, max_attempts: int 
     Возвращает: (успешно_ли, сообщение)
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(database.DB_FILE) as conn:
             cursor = conn.cursor()
             
             # Проверяем, не истекла ли капча
@@ -152,14 +150,15 @@ def check_captcha_answer(challenge_id: int, user_answer: str, max_attempts: int 
             # Проверяем ответ
             attempts += 1
             if str(user_answer).strip().lower() == str(correct_answer).strip().lower():
-                # Успех!
+                # Успех! Само отмечание "капча пройдена" в user_captcha_status делает
+                # вызывающий код через mark_user_passed_captcha(real_user_id, challenge_id) —
+                # здесь эта таблица больше не трогается (раньше сюда вставлялась строка
+                # с user_id=None, что для INTEGER PRIMARY KEY означало автоназначенный
+                # ROWID, никак не привязанный к реальному telegram_id — мёртвый код,
+                # только оставлявший в таблице лишние "осиротевшие" записи).
                 cursor.execute(
                     "UPDATE captcha_challenges SET passed = 1, attempts = ? WHERE id = ?",
                     (attempts, challenge_id)
-                )
-                cursor.execute(
-                    "INSERT OR REPLACE INTO user_captcha_status (user_id, passed_at, challenge_id) VALUES (?, ?, ?)",
-                    (None, _now_str(), challenge_id)  # user_id будет установлен в обработчике
                 )
                 conn.commit()
                 return True, "✅ Капча пройдена успешно!"
@@ -188,7 +187,7 @@ def get_active_captcha_challenge(user_id: int) -> dict | None:
     Возвращает: словарь с данными капчи или None
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(database.DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -237,7 +236,7 @@ def has_passed_captcha(user_id: int) -> bool:
     Возвращает: True если капча пройдена, False иначе
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(database.DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT user_id FROM user_captcha_status WHERE user_id = ?",
@@ -255,7 +254,7 @@ def mark_user_passed_captcha(user_id: int, challenge_id: int) -> bool:
     Возвращает: True если успешно, False при ошибке
     """
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with sqlite3.connect(database.DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO user_captcha_status (user_id, passed_at, challenge_id) VALUES (?, ?, ?)",
