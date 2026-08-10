@@ -8448,6 +8448,77 @@ def link_referrer_if_eligible(user_id: int, referrer_id: int) -> str:
         return REFERRAL_LINK_NOT_ELIGIBLE
 
 
+REFERRAL_UNLINK_UNLINKED = "unlinked"
+REFERRAL_UNLINK_NOT_LINKED = "not_linked"
+REFERRAL_UNLINK_NOT_FOUND = "not_found"
+REFERRAL_UNLINK_INVALID = "invalid"
+
+
+def unlink_referral(invitee_id: int, referrer_id: int) -> str:
+    """Снять привязку реферала: обнулить users.referred_by у invitee, если он
+    действительно привязан к referrer_id.
+
+    Возвращает: unlinked, not_linked, not_found, invalid.
+    """
+    try:
+        uid = int(invitee_id)
+        rid = int(referrer_id)
+    except (TypeError, ValueError):
+        return REFERRAL_UNLINK_INVALID
+
+    if uid <= 0 or rid <= 0 or uid == rid:
+        return REFERRAL_UNLINK_INVALID
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT referred_by FROM users WHERE telegram_id = ?", (uid,))
+            row = cursor.fetchone()
+            if not row:
+                return REFERRAL_UNLINK_NOT_FOUND
+            if row[0] is None or int(row[0]) != rid:
+                return REFERRAL_UNLINK_NOT_LINKED
+
+            cursor.execute(
+                "UPDATE users SET referred_by = NULL WHERE telegram_id = ? AND referred_by = ?",
+                (uid, rid),
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return REFERRAL_UNLINK_UNLINKED
+            return REFERRAL_UNLINK_NOT_LINKED
+    except Exception as e:
+        logging.error("unlink_referral failed for invitee %s / referrer %s: %s", invitee_id, referrer_id, e)
+        return REFERRAL_UNLINK_INVALID
+
+
+def unlink_all_referrals(referrer_id: int) -> tuple[bool, int]:
+    """Снять привязку у всех рефералов указанного реферера.
+
+    Возвращает (ok, removed_count).
+    """
+    try:
+        rid = int(referrer_id)
+    except (TypeError, ValueError):
+        return False, 0
+    if rid <= 0:
+        return False, 0
+
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE users SET referred_by = NULL WHERE referred_by = ?",
+                (rid,),
+            )
+            removed = int(cursor.rowcount or 0)
+            conn.commit()
+            return True, removed
+    except Exception as e:
+        logging.error("unlink_all_referrals failed for referrer %s: %s", referrer_id, e)
+        return False, 0
+
+
 def delete_user_gift(gift_id: int) -> bool:
     """Удалить подарок."""
     try:

@@ -207,7 +207,10 @@
           </div>
 
           <div class="ud-tab-pane d-none" data-ud-pane="referrals">
-            <div class="d-flex justify-content-end mb-2">
+            <div class="d-flex justify-content-end gap-2 mb-2">
+              <button type="button" class="btn btn-sm btn-outline-danger d-none" id="ud-remove-all-referrals-btn">
+                <i class="ti ti-trash me-1"></i> Удалить всех
+              </button>
               <button type="button" class="btn btn-sm btn-outline-primary" id="ud-assign-referral-btn">
                 <i class="ti ti-user-plus me-1"></i> Назначить реферала
               </button>
@@ -1354,10 +1357,21 @@
         const refs = data.referrals || [];
         const refList = document.getElementById('ud-reflist');
         const refEmpty = document.getElementById('ud-referrals-empty');
+        const removeAllBtn = document.getElementById('ud-remove-all-referrals-btn');
         document.getElementById('ud-refcount').textContent = String(refs.length);
+        if (removeAllBtn) removeAllBtn.classList.toggle('d-none', !refs.length);
         if (refs.length) {
           refEmpty.classList.add('d-none');
-          refList.innerHTML = refs.map(r => `<li>#${r.telegram_id} — @${(r.username||'N/A')} · ${r.registration_date||''}</li>`).join('');
+          refList.innerHTML = refs.map(r => {
+            const uname = (r.username || 'N/A').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            const reg = (r.registration_date || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            return `<li class="d-flex align-items-center justify-content-between gap-2 py-1 border-bottom border-secondary-subtle">
+              <span>#${r.telegram_id} — @${uname} · ${reg}</span>
+              <button type="button" class="btn btn-sm btn-outline-danger ud-remove-referral-btn" data-invitee-id="${r.telegram_id}" title="Удалить реферала">
+                <i class="ti ti-x"></i>
+              </button>
+            </li>`;
+          }).join('');
         } else {
           refEmpty.classList.remove('d-none');
           refList.innerHTML = '';
@@ -1480,6 +1494,50 @@
       if (!currentUserId) return;
       askConfirm('ВНИМАНИЕ! Это действие удалит ВСЕ ключи пользователя с серверов. Вы уверены?', async () => {
         await postAction(`{{ url_for('revoke_keys_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(currentUserId)}`), 'Ключи пользователя отозваны');
+      });
+    });
+
+    async function postReferralRemove(url, successFallback){
+      try {
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        const resp = await fetch(url, {
+          method: 'POST', body: fd,
+          headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+        });
+        const data = await resp.json().catch(() => null);
+        if (resp.ok && data && data.ok) {
+          try { window.showToast('success', data.message || successFallback); } catch(_){ }
+          await openUserDetails(currentUserId);
+          try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+        } else {
+          const msg = (data && (data.message || data.error)) || 'Не удалось удалить реферала';
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      }
+    }
+
+    document.getElementById('ud-remove-all-referrals-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm('Удалить всех рефералов у этого пользователя? Связь referred_by будет снята, сами аккаунты останутся.', async () => {
+        const url = `{{ url_for('remove_all_referrals_route', referrer_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+        await postReferralRemove(url, 'Все рефералы удалены');
+      });
+    });
+
+    document.getElementById('ud-reflist')?.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.ud-remove-referral-btn');
+      if (!btn || !currentUserId) return;
+      const inviteeId = btn.getAttribute('data-invitee-id');
+      if (!inviteeId) return;
+      askConfirm(`Удалить реферала #${inviteeId} из списка? Аккаунт пользователя останется.`, async () => {
+        const url = `{{ url_for('remove_referral_route', referrer_id=0, invitee_id=0) }}`
+          .replace('/0/', `/${encodeURIComponent(currentUserId)}/`)
+          .replace('/0/', `/${encodeURIComponent(inviteeId)}/`);
+        await postReferralRemove(url, 'Реферал удалён');
       });
     });
 
