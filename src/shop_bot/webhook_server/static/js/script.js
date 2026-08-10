@@ -26,6 +26,77 @@ document.addEventListener('DOMContentLoaded', function () {
         }catch(_){ }
     }
 
+    // Bootstrap can leave orphaned .modal-backdrop nodes (and body.modal-open)
+    // when nested modals are used or when `new bootstrap.Modal(el).show()` is
+    // called on an already-open modal. Prefer getOrCreateInstance via helpers.
+    window.cleanupModalBackdrops = function(){
+        try {
+            const openModals = document.querySelectorAll('.modal.show');
+            const backdrops = document.querySelectorAll('.modal-backdrop');
+            if (openModals.length === 0) {
+                backdrops.forEach(el => el.remove());
+                document.body.classList.remove('modal-open');
+                document.body.style.removeProperty('overflow');
+                document.body.style.removeProperty('padding-right');
+                return;
+            }
+            const excess = backdrops.length - openModals.length;
+            if (excess > 0) {
+                Array.from(backdrops).slice(0, excess).forEach(el => el.remove());
+            }
+        } catch(_){ }
+    };
+
+    window.getModal = function(el, options){
+        if (!el || !window.bootstrap || !bootstrap.Modal) return null;
+        try {
+            if (typeof bootstrap.Modal.getOrCreateInstance === 'function') {
+                return bootstrap.Modal.getOrCreateInstance(el, options || {});
+            }
+            return bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el, options || {});
+        } catch(_){
+            try { return new bootstrap.Modal(el, options || {}); } catch(__){ return null; }
+        }
+    };
+
+    window.showModal = function(el, options){
+        const modal = window.getModal(el, options);
+        if (!modal) return null;
+        try {
+            if (!el.classList.contains('show')) modal.show();
+        } catch(_){ }
+        return modal;
+    };
+
+    window.hideModal = function(el){
+        try {
+            const modal = (el && window.bootstrap && bootstrap.Modal)
+                ? (bootstrap.Modal.getInstance(el) || null)
+                : null;
+            if (modal) modal.hide();
+            else window.cleanupModalBackdrops();
+        } catch(_){
+            try { window.cleanupModalBackdrops(); } catch(__){}
+        }
+    };
+
+    document.addEventListener('hidden.bs.modal', function(){
+        // Let Bootstrap finish its own teardown, then remove leftovers.
+        setTimeout(function(){ try { window.cleanupModalBackdrops(); } catch(_){ } }, 0);
+    });
+
+    // Safety net: clear stuck backdrops if no modal is visible.
+    document.addEventListener('click', function(e){
+        try {
+            if (!document.body.classList.contains('modal-open')) return;
+            if (document.querySelector('.modal.show')) return;
+            // Clicking through a leftover backdrop should clear it.
+            if (e.target && e.target.classList && e.target.classList.contains('modal-backdrop')) {
+                window.cleanupModalBackdrops();
+            }
+        } catch(_){ }
+    }, true);
+
     function isFullDocument(html){
         if (!html) return false;
         const s = String(html).trim().slice(0, 512).toLowerCase();

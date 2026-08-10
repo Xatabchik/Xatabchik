@@ -367,7 +367,7 @@
                 if (!titleEl || !editBtn || !modalEl) return;
                 editBtn.addEventListener('click', () => {
                     try { inputEl.value = titleEl.textContent.trim(); } catch(_){ }
-                    const m = new bootstrap.Modal(modalEl); m.show();
+                    try { window.showModal(modalEl); } catch(_){ }
                 });
                 async function save(){
                     const val = String(inputEl.value||'').trim();
@@ -382,7 +382,7 @@
                             const mobileTitleEl = document.getElementById('mobile-brand-title');
                             if (mobileTitleEl) mobileTitleEl.textContent = val;
                             try { window.showToast('success', 'Название сохранено'); } catch(_){ }
-                            bootstrap.Modal.getInstance(modalEl)?.hide();
+                            try { window.hideModal(modalEl); } catch(_){ bootstrap.Modal.getInstance(modalEl)?.hide(); }
                         } else {
                             try { window.showToast('danger', 'Не удалось сохранить название'); } catch(_){ }
                         }
