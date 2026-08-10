@@ -8,8 +8,26 @@ from shop_bot.data_manager import database
 
 logger = logging.getLogger(__name__)
 
-DB_FILE = database.DB_FILE
 normalize_host_name = database.normalize_host_name
+
+
+def __getattr__(name: str):
+    """Модуль-level fallback (PEP 562) для `DB_FILE`.
+
+    Раньше здесь было `DB_FILE = database.DB_FILE` — обычное присваивание,
+    которое выполняется РОВНО ОДИН РАЗ, в момент первого импорта этого модуля,
+    и после этого никогда не обновляется. В проде это не проблема (путь к БД
+    не меняется за время жизни процесса), но в тестах, где `database.DB_FILE`
+    подменяется через monkeypatch отдельно для каждого теста, `rw_repo.DB_FILE`
+    оставался равным пути САМОГО ПЕРВОГО теста, из-за чего разные тесты — если
+    они (сами или через любую функцию из этого модуля) трогали БД — писали и
+    читали одну и ту же "чужую" временную базу, что приводило к падениям вида
+    UNIQUE constraint failed / отсутствующим строкам в зависимости от порядка
+    запуска тестов. Теперь `rw_repo.DB_FILE` всегда возвращает актуальное
+    значение `database.DB_FILE` на момент обращения."""
+    if name == "DB_FILE":
+        return database.DB_FILE
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # =============================
 # Franchise context (current bot)
@@ -59,7 +77,7 @@ def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) 
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(database.DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 

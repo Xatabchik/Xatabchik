@@ -508,11 +508,6 @@
                 <span class="material-symbols-rounded text-lg">bolt</span>
                 <span id="pay-button-text">Выберите тариф</span>
             </button>
-            <button onclick="openPromoModal()"
-                class="w-full bg-primary/5 border border-primary/15 text-primary/70 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/10 hover:text-primary transition-all flex items-center justify-center gap-2">
-                <span class="material-symbols-rounded text-sm">redeem</span>
-                <span>Активировать промокод</span>
-            </button>
         </footer>
     </div>
     <!-- ======== Конец Страница покупки ======== -->
@@ -617,11 +612,6 @@
                 disabled>
                 <span class="material-symbols-rounded text-lg">update</span>
                 <span id="renew-pay-button-text">Выберите тариф</span>
-            </button>
-            <button onclick="openPromoModal()"
-                class="w-full bg-primary/5 border border-primary/15 text-primary/70 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/10 hover:text-primary transition-all flex items-center justify-center gap-2">
-                <span class="material-symbols-rounded text-sm">redeem</span>
-                <span>Активировать промокод</span>
             </button>
         </footer>
     </div>
@@ -3119,41 +3109,15 @@
             }
         }
 
-        async function openPromoModal() {
-            openActionModal('promo_activation', null);
-        }
-
+        // Раньше здесь была общая модалка "Активировать промокод" (bonus-промокод на
+        // баланс или дни), доступная отдельно от покупки/продления. Промокод в этом
+        // проекте — это ИСКЛЮЧИТЕЛЬНО скидка на покупку/продление ключа (см.
+        // /api/apply-promo): активировать его напрямую на баланс не должно быть
+        // возможности, поэтому этот отдельный вход убран. Действующее поле промокода
+        // находится в модалке оплаты (см. confirm-promo-input / applyDiscountPromo).
         const originalOpenActionModal = openActionModal;
         openActionModal = async function (type, keyId, extraData = '') {
-            if (type === 'promo_activation') {
-                const modal = document.getElementById('action-modal');
-                const backdrop = document.getElementById('action-backdrop');
-                const card = document.getElementById('action-card');
-                const titleEl = document.getElementById('action-modal-title');
-                const contentEl = document.getElementById('action-modal-content');
-
-                modal.classList.remove('hidden');
-                modal.classList.add('flex');
-                requestAnimationFrame(() => {
-                    backdrop.classList.remove('opacity-0', 'pointer-events-none');
-                    card.classList.remove('translate-y-full');
-                });
-
-                titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">redeem</span> Активация кода';
-                contentEl.innerHTML = `
-                    <div class="flex flex-col gap-3">
-                        <div class="text-[10px] text-gray-500 font-medium px-1">Введите бонусный промокод на баланс или дни</div>
-                        <input type="text" id="bonus-promo-input" 
-                            class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white focus:border-white/20 transition-all outline-none" 
-                            placeholder="Напр: BONUS2024" style="text-transform: uppercase;">
-                        <button onclick="activateBonusPromo()" id="bonus-promo-activate-btn"
-                            class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                            <span class="material-symbols-rounded text-sm">bolt</span>
-                            Активировать
-                        </button>
-                    </div>
-                `;
-            } else if (type === 'rename') {
+            if (type === 'rename') {
                 const modal = document.getElementById('action-modal');
                 const backdrop = document.getElementById('action-backdrop');
                 const card = document.getElementById('action-card');
@@ -3225,43 +3189,6 @@
                 return originalOpenActionModal(type, keyId, extraData);
             }
         };
-
-        async function activateBonusPromo() {
-            const input = document.getElementById('bonus-promo-input');
-            const code = input.value.trim().toUpperCase();
-            if (!code) return;
-
-            const btn = document.getElementById('bonus-promo-activate-btn');
-            const originalContent = btn.innerHTML;
-            btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
-            btn.disabled = true;
-
-            try {
-                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const response = await fetch('/api/apply-promo', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_id: userId,
-                        promo_code: code
-                    })
-                });
-                const data = await response.json();
-                if (data.ok) {
-                    showNotification(data.message || 'Промокод активирован!', 'success');
-                    closeActionModal();
-                    setTimeout(() => window.location.reload(), 1500);
-                } else {
-                    showNotification(data.error || 'Ошибка активации', 'error');
-                    btn.innerHTML = originalContent;
-                    btn.disabled = false;
-                }
-            } catch (e) {
-                showNotification('Ошибка сети', 'error');
-                btn.innerHTML = originalContent;
-                btn.disabled = false;
-            }
-        }
 
         // ===== Device Modal Pagination Helper =====
         function renderDeviceModalPage() {

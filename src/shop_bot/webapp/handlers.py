@@ -2370,17 +2370,32 @@ async def api_create_payment(req: CreatePaymentRequest):
         if tier_price_per_month > 0:
             final_price += tier_price_per_month * billing_months
             
+        action_name = req.action
+
         # --- APPLY PROMO DISCOUNT ---
-        if req.promo_code:
+        # Промокод — это ИСКЛЮЧИТЕЛЬНО скидка на покупку/продление/подарочную
+        # покупку ключа (см. /api/apply-promo), поэтому здесь он намеренно
+        # применяется только для этого набора action. Пополнение баланса
+        # создаётся через отдельный эндпоинт /api/create-topup-payment, у
+        # которого нет и не должно быть поля promo_code — этот if — защита на
+        # случай, если сюда когда-нибудь передадут промокод вместе с другим action.
+        # (Раньше здесь было мёртвое условие `promo.get('promo_type') ==
+        # 'discount'` — в БД такой колонки нет и не было, поэтому скидка
+        # никогда фактически не применялась к реальной сумме платежа, даже
+        # если пользователь успешно "применил" промокод в интерфейсе.)
+        applied_promo_code = None
+        promo_discount_amount = 0.0
+        if req.promo_code and action_name in ("new", "extend", "gift"):
             promo, error = rw_repo.check_promo_code_available(req.promo_code, user_id)
-            if promo and promo.get('promo_type') == 'discount':
+            if promo and (promo.get('discount_percent') or promo.get('discount_amount')):
+                price_before_promo = final_price
                 if promo.get('discount_percent'):
                     final_price -= final_price * (float(promo['discount_percent']) / 100)
                 elif promo.get('discount_amount'):
                     final_price -= float(promo['discount_amount'])
                 final_price = max(0, round(final_price, 2))
-        
-        action_name = req.action
+                promo_discount_amount = round(price_before_promo - final_price, 2)
+                applied_promo_code = promo.get('code') or req.promo_code.strip().upper()
         
         # --- YooKassa ---
         if method_id == "pay_yookassa":
@@ -2393,7 +2408,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "YooKassa", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             create_payload_pending(pid, user_id, float(final_price), meta)
             comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
@@ -2423,7 +2439,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "Platega", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             create_payload_pending(pid, user_id, float(final_price), meta)
             desc = f"Order {pid}"
@@ -2447,7 +2464,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "Platega Crypto", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             create_payload_pending(pid, user_id, float(final_price), meta)
             desc = f"Order {pid}"
@@ -2469,7 +2487,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "CryptoBot", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
              create_payload_pending(pid, user_id, float(final_price), meta)
              # payload_str format MUST match what bot expects. Using a generic format for now or just ID
@@ -2495,7 +2514,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "Heleket", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             create_payload_pending(pid, user_id, float(final_price), meta)
             
@@ -2537,7 +2557,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "YooMoney", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
              create_payload_pending(pid, user_id, float(final_price), meta)
              desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
@@ -2564,7 +2585,8 @@ async def api_create_payment(req: CreatePaymentRequest):
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "Telegram Stars", "payment_id": pid,
-                "tier_device_count": tier_device_count
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
              create_payload_pending(pid, user_id, float(final_price), meta)
              title = f"{'Подписка' if action_name == 'new' else 'Продление'} на {months} мес."
@@ -2581,8 +2603,9 @@ async def api_create_payment(req: CreatePaymentRequest):
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
-                "plan_id": plan_id, "payment_method": "Balance", "payment_id": pid, "promo_code": "", "promo_discount": 0,
-                "tier_device_count": tier_device_count
+                "plan_id": plan_id, "payment_method": "Balance", "payment_id": pid,
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             token = get_setting("telegram_bot_token")
             if not token: return {"ok": False, "error": "Бот не настроен (нет токена)"}
@@ -2899,14 +2922,26 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
 
 @app.post("/api/apply-promo")
 async def api_apply_promo(req: ApplyPromoRequest):
+    """Проверить промокод и посчитать цену со скидкой.
+
+    Промокоды в этом проекте — это ИСКЛЮЧИТЕЛЬНО скидка на покупку/продление
+    ключа (см. таблицу `promo_codes`: только discount_percent/discount_amount,
+    без какого-либо понятия "начислить на баланс"). Раньше здесь была мёртвая
+    ветка на несуществующее поле `promo_type` ("balance"/"universal"), которая
+    физически не могла сработать (в БД такой колонки никогда не было — из-за
+    этого скидочная ветка тоже была недостижима: promo.get('promo_type')
+    всегда возвращал None). Заодно эта мёртвая ветка теоретически позволяла бы
+    напрямую зачислять баланс по промокоду, что недопустимо: активация
+    промокода должна быть возможна только при покупке/продлении ключа, а не
+    при пополнении баланса.
+    """
     try:
         user = get_user(req.user_id)
         if not user or user.get('is_banned'):
             return {"ok": False, "error": "Access denied"}
-        user_id = req.user_id
         code = req.promo_code.strip().upper()
-        
-        promo, error = rw_repo.check_promo_code_available(code, user_id)
+
+        promo, error = rw_repo.check_promo_code_available(code, req.user_id)
         if not promo:
             errors = {
                 "not_found": "Промокод не найден",
@@ -2919,59 +2954,22 @@ async def api_apply_promo(req: ApplyPromoRequest):
             }
             return {"ok": False, "error": errors.get(error, "Ошибка проверки промокода")}
 
-        promo_type = promo.get('promo_type')
-        
-        # 1. DISCOUNT (For Payment Modal)
-        if promo_type == 'discount':
-            if req.price is None:
-                return {"ok": False, "error": "Промокод действителен только при покупке"}
-            
-            new_price = float(req.price)
-            if promo.get('discount_percent'):
-                new_price -= new_price * (float(promo['discount_percent']) / 100)
-            elif promo.get('discount_amount'):
-                new_price -= float(promo['discount_amount'])
-            
-            return {
-                "ok": True, 
-                "promo_type": "discount", 
-                "new_price": max(0, round(new_price, 2))
-            }
+        if req.price is None:
+            return {"ok": False, "error": "Промокод действителен только при покупке или продлении ключа"}
 
-        # 2. BALANCE or UNIVERSAL (For Profile)
-        elif promo_type == 'balance':
-            reward = float(promo.get('reward_value', 0))
-            if rw_repo.adjust_user_balance(user_id, reward):
-                rw_repo.redeem_universal_promo(code, user_id)
-                return {"ok": True, "promo_type": "balance", "message": f"Зачислено {reward} ₽"}
-            return {"ok": False, "error": "Ошибка начисления баланса"}
+        new_price = float(req.price)
+        if promo.get('discount_percent'):
+            new_price -= new_price * (float(promo['discount_percent']) / 100)
+        elif promo.get('discount_amount'):
+            new_price -= float(promo['discount_amount'])
+        else:
+            return {"ok": False, "error": "Промокод не даёт скидку"}
 
-        elif promo_type == 'universal':
-            days_to_add = int(promo.get('reward_value') or 0)
-            keys = rw_repo.get_user_keys(user_id)
-            if not keys:
-                 return {"ok": False, "error": "У вас нет активных подписок для продления"}
-             
-            keys.sort(key=lambda x: x.get('expiry_date', ''))
-            key = keys[0]
-            key_id = key['key_id']
-            
-            host = key.get('host_name')
-            c_email = key.get('key_email')
-             
-            res = await remnawave_api.create_or_update_key_on_host(
-                host_name=host,
-                email=c_email,
-                days_to_add=days_to_add,
-                telegram_id=user_id
-            )
-            if res:
-                rw_repo.update_key(key_id, remnawave_user_uuid=res['client_uuid'], expire_at_ms=res['expiry_timestamp_ms'])
-                rw_repo.redeem_universal_promo(code, user_id)
-                return {"ok": True, "promo_type": "universal", "message": f"Добавлено {days_to_add} дн."}
-            else:
-                return {"ok": False, "error": "Ошибка активации на стороне сервера"}
-
+        return {
+            "ok": True,
+            "promo_type": "discount",
+            "new_price": max(0, round(new_price, 2))
+        }
     except Exception as e:
         logger.error(f"API apply-promo error: {e}")
         return {"ok": False, "error": str(e)}
