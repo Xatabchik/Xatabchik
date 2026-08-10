@@ -460,6 +460,8 @@ _LEGACY_FORWARDERS = (
     "delete_user_gift",
     "set_referred_by_from_gift",
     "link_referrer_if_eligible",
+    "unlink_referral",
+    "unlink_all_referrals",
     "link_key_to_gift",
 
     # Unified pending action (gift / referral link opened before login)
