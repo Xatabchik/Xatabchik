@@ -1311,12 +1311,25 @@
       }
     }
 
+    window.openKeyDetails = openKeyDetails;
+
     document.addEventListener('click', (e) => {
       const row = e.target.closest('tr.key-row');
       if (!row) return;
       const keyId = row.getAttribute('data-key-id');
       if (keyId) openKeyDetails(keyId);
     });
+
+    // Deep-link из топбар-поиска: /admin/keys?open=<key_id>
+    try {
+      const openKid = new URLSearchParams(location.search).get('open');
+      if (openKid) {
+        const cleanUrl = new URL(location.href);
+        cleanUrl.searchParams.delete('open');
+        history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+        openKeyDetails(openKid);
+      }
+    } catch(_){}
 
     document.getElementById('kd-sub-copy')?.addEventListener('click', async () => {
       const input = document.getElementById('kd-sub-link');

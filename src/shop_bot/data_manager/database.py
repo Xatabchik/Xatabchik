@@ -3596,8 +3596,11 @@ def get_keys_paginated(page: int = 1, per_page: int = 25, search: str | None = N
         params.append(int(user_id))
     if search_q:
         like = f"%{search_q}%"
-        conditions.append("(CAST(user_id AS TEXT) LIKE ? OR key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ?)")
-        params.extend([like, like, like, like])
+        conditions.append(
+            "(CAST(key_id AS TEXT) LIKE ? OR CAST(user_id AS TEXT) LIKE ?"
+            " OR key_email LIKE ? OR email LIKE ? OR user_key_name LIKE ?)"
+        )
+        params.extend([like, like, like, like, like])
     where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     sort_columns = {
