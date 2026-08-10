@@ -3758,7 +3758,7 @@ body{
 	align-items: center;
 	gap: 8px;
 	padding: 2px 4px 0;
-	margin-bottom: 18px;
+	margin-bottom: 8px;
 	flex: 0 0 auto;
 }
 
@@ -4500,7 +4500,7 @@ body{
 	justify-content: flex-start !important;
 	gap: 8px !important;
 	padding: 2px 4px 0 !important;
-	margin: 0 0 18px !important;
+	margin: 0 0 8px !important;
 	min-height: 0 !important;
 }
 
