@@ -653,6 +653,7 @@ def initialize_db():
                 "btn_topup_text": None,
                 "btn_referral_text": None,
                 "referral_share_text": "🌐Обход глушилок и блокировок на любом устройстве! 😊",
+                "gift_share_text": "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать",
                 "btn_support_text": None,
                 "btn_about_text": None,
                 "btn_speed_text": None,

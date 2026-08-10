@@ -589,12 +589,19 @@ def _build_referral_links(user_id: int, bot_username: str | None = None) -> tupl
 
 
 DEFAULT_REFERRAL_SHARE_TEXT = "🌐Обход глушилок и блокировок на любом устройстве! 😊"
+DEFAULT_GIFT_SHARE_TEXT = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
 
 
 def _referral_share_text() -> str:
     """Текст для t.me/share из настроек (Контент → referral_share_text)."""
     raw = (get_setting("referral_share_text") or "").strip()
     return raw or DEFAULT_REFERRAL_SHARE_TEXT
+
+
+def _gift_share_text() -> str:
+    """Текст для t.me/share при шаринге подарка (Контент → gift_share_text)."""
+    raw = (get_setting("gift_share_text") or "").strip()
+    return raw or DEFAULT_GIFT_SHARE_TEXT
 
 
 def _telegram_share_url(url: str, text: str) -> str:
@@ -2078,7 +2085,7 @@ def get_user_router() -> Router:
                 await callback.answer("❌ Не удалось сформировать ссылку подарка", show_alert=True)
                 return
             
-            share_text = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+            share_text = _gift_share_text()
             
             text_parts = ["🎁 <b>Ссылки активации подарка</b> (нажмите, чтобы скопировать):\n"]
             builder = InlineKeyboardBuilder()
@@ -2086,13 +2093,13 @@ def get_user_router() -> Router:
                 text_parts.append(f"<i>В приложении:</i>\n<code>{html_escape(gift_link)}</code>\n")
                 builder.button(
                     text="📤 Поделиться (в приложении)",
-                    url=f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}",
+                    url=_telegram_share_url(gift_link, share_text),
                 )
             if gift_telegram_link:
                 text_parts.append(f"<i>В Telegram:</i>\n<code>{html_escape(gift_telegram_link)}</code>\n")
                 builder.button(
                     text="📤 Поделиться (в Telegram)",
-                    url=f"https://t.me/share/url?url={quote(gift_telegram_link)}&text={quote(share_text)}",
+                    url=_telegram_share_url(gift_telegram_link, share_text),
                 )
             builder.button(text="⬅️ Назад", callback_data=f"show_gift_{gift_id}")
             builder.adjust(1)
@@ -9455,8 +9462,8 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                             # Формируем клавиатуру с кнопкой поделиться
                             share_keyboard_builder = InlineKeyboardBuilder()
                             if gift_link:
-                                share_text = "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
-                                share_url = f"https://t.me/share/url?url={quote(gift_link)}&text={quote(share_text)}"
+                                share_text = _gift_share_text()
+                                share_url = _telegram_share_url(gift_link, share_text)
                                 share_keyboard_builder.button(text="📤 Поделиться подарком", url=share_url)
                             share_keyboard_builder.button(text="⬅️ Назад в меню", callback_data="back_to_main_menu")
                             share_keyboard_builder.adjust(1)

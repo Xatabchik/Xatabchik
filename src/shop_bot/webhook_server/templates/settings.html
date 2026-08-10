@@ -2069,6 +2069,11 @@
 							<div class="form-text text-secondary">Подставляется в сообщение при нажатии «Поделиться» вместе с реферальной ссылкой (бот и Mini App). Оставьте пустым для текста по умолчанию.</div>
 						</div>
 						<div class="mb-3">
+							<label class="form-label" for="gift_share_text">Текст «Поделиться» для подарочного ключа</label>
+							<textarea class="form-control" id="gift_share_text" name="gift_share_text" rows="2" placeholder="🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать">{{ settings.gift_share_text or '' }}</textarea>
+							<div class="form-text text-secondary">Подставляется в сообщение при нажатии «Поделиться» вместе со ссылкой на подарок (бот и Mini App). Оставьте пустым для текста по умолчанию.</div>
+						</div>
+						<div class="mb-3">
 							<label class="form-label" for="btn_support_text">Кнопка: «Поддержка»</label>
 							<input class="form-control" type="text" id="btn_support_text" name="btn_support_text" value="{{ settings.btn_support_text or '' }}" placeholder="🆘 Поддержка" />
 						</div>

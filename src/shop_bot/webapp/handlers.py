@@ -3137,7 +3137,9 @@ def _get_gift_action_block_html(gift_code: str, webapp_link: str, telegram_link:
     (webapp + Telegram), каждая со своими кнопками копировать/поделиться,
     и отдельно, с явным отступом, кнопка "Активировать себе" — специально
     подальше от остальных кнопок, чтобы не нажать её случайно."""
-    share_text = "🎁 Получи подарочный VPN ключ!"
+    share_text = (get_setting("gift_share_text") or "").strip() or (
+        "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+    )
     links_html = "".join(
         _gift_link_row_html(label, link, share_text)
         for label, link in (("Ссылка активации (в приложении)", webapp_link), ("Ссылка активации (в Telegram)", telegram_link))
@@ -3204,6 +3206,9 @@ async def api_user_gifts(request: Request):
 
     bot_username = get_setting("telegram_bot_username") or ""
     webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
+    gift_share_text = (get_setting("gift_share_text") or "").strip() or (
+        "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+    )
 
     # Бейдж "Подарок" на карточке ключа не нужен — карточки уже находятся на
     # отдельной вкладке "Подарочные", подпись была избыточной.
@@ -3239,7 +3244,7 @@ async def api_user_gifts(request: Request):
             "card_html": card_html,
         })
 
-    return {"ok": True, "gifts": result}
+    return {"ok": True, "gifts": result, "share_text": gift_share_text}
 
 # ── Gift activation (shared business logic) ────────────────────────────────
 #
