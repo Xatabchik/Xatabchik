@@ -292,9 +292,9 @@ docker-compose up -d
 
 **Обновить до последней версии:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/Xatabchik/Xatabchik/main/install.sh | bash
-
-docker-compose down && docker-compose up -d --build
+cd ~/xatabchik
+git pull origin main
+docker compose up -d --build
 ```
 
 ---
