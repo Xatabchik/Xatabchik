@@ -1498,6 +1498,11 @@ h4 {
     display: block;
 }
 
+.toggle-password .ti {
+    font-size: 1rem;
+    line-height: 1;
+}
+
 .button {
 	display: inline-block;
 	padding: 12px 25px;

@@ -137,10 +137,10 @@ document.addEventListener('DOMContentLoaded', function () {
             const setIcon = () => {
                 if (!input) return;
                 const isHidden = input.type === 'password';
-
-                if (!button.querySelector('svg')) {
-                    button.textContent = isHidden ? '👁️' : '🙈';
-                }
+                // Tabler icons вместо emoji (👁️ / 🙈)
+                button.innerHTML = isHidden
+                    ? '<i class="ti ti-eye" aria-hidden="true"></i>'
+                    : '<i class="ti ti-eye-off" aria-hidden="true"></i>';
                 button.setAttribute('aria-label', isHidden ? 'Показать пароль' : 'Скрыть пароль');
                 button.setAttribute('title', isHidden ? 'Показать' : 'Скрыть');
             };
