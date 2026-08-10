@@ -2463,6 +2463,11 @@ def get_admin_stats() -> dict:
 # чтобы цифры не расходились между разделами админки.
 _SUCCESS_TX_SQL = "status IN ('paid','success','succeeded')"
 _NON_BALANCE_SQL = "LOWER(COALESCE(payment_method, '')) <> 'balance'"
+# Чёрный список внутренних методов: всё остальное считаем «реальными деньгами».
+# Точные значения в коде: 'Balance', 'ReferralBalance' (handlers / webapp).
+_REAL_MONEY_SQL = (
+    "LOWER(COALESCE(payment_method, '')) NOT IN ('balance', 'referralbalance')"
+)
 
 
 def get_sales_overview() -> dict:
@@ -2696,6 +2701,122 @@ def get_payment_methods_analytics() -> list[dict]:
                 })
     except sqlite3.Error as e:
         logging.error(f"Failed to get payment methods analytics: {e}")
+    return result
+
+
+def get_users_without_real_payment_with_keys() -> dict:
+    """Пользователи с хотя бы одним VPN-ключом, у которых нет ни одной успешной
+    транзакции, оплаченной реальными деньгами.
+
+    Реальными деньгами НЕ считаются payment_method из чёрного списка
+    Balance / ReferralBalance (регистр не важен). Проверка идёт по всем успешным
+    транзакциям пользователя (включая пополнения баланса), а не только по покупке ключа.
+    """
+    result = {"users_with_key_no_real_payment": 0}
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT k.user_id)
+                FROM vpn_keys k
+                WHERE k.user_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM transactions t
+                      WHERE t.user_id = k.user_id
+                        AND {_SUCCESS_TX_SQL}
+                        AND {_REAL_MONEY_SQL}
+                  )
+                """
+            )
+            result["users_with_key_no_real_payment"] = int((cursor.fetchone() or [0])[0] or 0)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get users without real payment with keys: {e}")
+    return result
+
+
+def get_trial_key_stats() -> dict:
+    """Метрики по триальным ключам и их продлениям.
+
+    - active_trial_users: пользователи с ключом tag='trial' и expire_at в будущем
+    - total_trial_used: users.trial_used = 1
+    - extended_trial_*: DISTINCT user_id с успешной транзакцией action='extend',
+      где metadata.key_id указывает на первый ключ пользователя (trial выдаётся
+      первым), и users.trial_used = 1.
+
+    Важно: при продлении key_id НЕ меняется (UPDATE vpn_keys), но tag
+    перезаписывается на 'paid' (см. process_successful_payment в bot/handlers.py),
+    поэтому нельзя фильтровать текущий tag='trial' для продлений — используем
+    связку «первый ключ пользователя» + trial_used.
+    """
+    result = {
+        "active_trial_users": 0,
+        "total_trial_used": 0,
+        "extended_trial_real_money": 0,
+        "extended_trial_via_referral_balance": 0,
+    }
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT user_id)
+                FROM vpn_keys
+                WHERE LOWER(COALESCE(tag, '')) = 'trial'
+                  AND expire_at IS NOT NULL
+                  AND datetime(expire_at) > CURRENT_TIMESTAMP
+                """
+            )
+            result["active_trial_users"] = int((cursor.fetchone() or [0])[0] or 0)
+
+            cursor.execute("SELECT COUNT(*) FROM users WHERE trial_used = 1")
+            result["total_trial_used"] = int((cursor.fetchone() or [0])[0] or 0)
+
+            # Первый ключ пользователя (по created_at, затем key_id).
+            # Продление триала: action=extend + metadata.key_id == этот первый ключ.
+            first_key_match_sql = """
+                CAST(json_extract(t.metadata, '$.key_id') AS INTEGER) = (
+                    SELECT k2.key_id
+                    FROM vpn_keys k2
+                    WHERE k2.user_id = t.user_id
+                    ORDER BY datetime(COALESCE(k2.created_at, '1970-01-01')) ASC, k2.key_id ASC
+                    LIMIT 1
+                )
+            """
+
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT t.user_id)
+                FROM transactions t
+                JOIN users u ON u.telegram_id = t.user_id
+                WHERE u.trial_used = 1
+                  AND {_SUCCESS_TX_SQL}
+                  AND {_REAL_MONEY_SQL}
+                  AND json_extract(t.metadata, '$.action') = 'extend'
+                  AND json_extract(t.metadata, '$.key_id') IS NOT NULL
+                  AND {first_key_match_sql}
+                """
+            )
+            result["extended_trial_real_money"] = int((cursor.fetchone() or [0])[0] or 0)
+
+            cursor.execute(
+                f"""
+                SELECT COUNT(DISTINCT t.user_id)
+                FROM transactions t
+                JOIN users u ON u.telegram_id = t.user_id
+                WHERE u.trial_used = 1
+                  AND {_SUCCESS_TX_SQL}
+                  AND LOWER(COALESCE(t.payment_method, '')) = 'referralbalance'
+                  AND json_extract(t.metadata, '$.action') = 'extend'
+                  AND json_extract(t.metadata, '$.key_id') IS NOT NULL
+                  AND {first_key_match_sql}
+                """
+            )
+            result["extended_trial_via_referral_balance"] = int((cursor.fetchone() or [0])[0] or 0)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get trial key stats: {e}")
     return result
 
 

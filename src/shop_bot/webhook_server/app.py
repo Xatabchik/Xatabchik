@@ -91,6 +91,7 @@ from shop_bot.data_manager.database import (
     create_server_cost_entry, update_server_cost_entry, delete_server_cost_entry,
     get_economics_summary, get_revenue_forecast, get_utm_links, create_utm_link,
     get_utm_analytics, delete_utm_link,
+    get_users_without_real_payment_with_keys, get_trial_key_stats,
 )
 from shop_bot.data_manager.database import (
     create_broadcast_campaign, get_broadcast_campaigns, get_broadcast_campaign,
@@ -1010,12 +1011,16 @@ def create_webhook_app(bot_controller_instance):
     def analytics_overview_page():
         overview = get_sales_overview()
         forecast = get_revenue_forecast()
+        users_no_real_pay = get_users_without_real_payment_with_keys()
+        trial_stats = get_trial_key_stats()
         common_data = get_common_template_data()
         return render_template(
             'analytics/overview.html',
             active_tab='overview',
             overview=overview,
             forecast=forecast,
+            users_no_real_pay=users_no_real_pay,
+            trial_stats=trial_stats,
             **common_data,
         )
 

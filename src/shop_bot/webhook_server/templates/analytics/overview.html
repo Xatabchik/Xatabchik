@@ -91,6 +91,66 @@
   </div>
 </div>
 
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-4">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Есть ключ, но без реальных денег</div>
+        <div class="h1 mb-0">{{ users_no_real_pay.users_with_key_no_real_payment or 0 }}</div>
+        <div class="text-secondary small">Ключ есть, реальных оплат (не Balance/ReferralBalance) нет</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-4">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Активных триалов сейчас</div>
+        <div class="h1 mb-0">{{ trial_stats.active_trial_users or 0 }}</div>
+        <div class="text-secondary small">Ключи с tag=trial и expire_at в будущем</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-4">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Всего брали триал</div>
+        <div class="h1 mb-0">{{ trial_stats.total_trial_used or 0 }}</div>
+        <div class="text-secondary small">users.trial_used = 1</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row row-deck row-cards mb-3">
+  <div class="col-sm-6 col-lg-4">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Продлили триал (реальные деньги)</div>
+        <div class="h1 mb-0">{{ trial_stats.extended_trial_real_money or 0 }}</div>
+        <div class="text-secondary small">
+          {% set total_trial = trial_stats.total_trial_used or 0 %}
+          {% set extended_real = trial_stats.extended_trial_real_money or 0 %}
+          Конверсия триал→оплата:
+          {% if total_trial > 0 %}
+            {{ "%.1f"|format(extended_real / total_trial * 100) }}%
+          {% else %}
+            0%
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-4">
+    <div class="card card-sm">
+      <div class="card-body">
+        <div class="subheader">Продлили триал (реф. баланс)</div>
+        <div class="h1 mb-0">{{ trial_stats.extended_trial_via_referral_balance or 0 }}</div>
+        <div class="text-secondary small">Оплата ReferralBalance за extend первого ключа</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card mb-3">
   <div class="card-header">
     <h3 class="card-title">Динамика выручки и транзакций (30 дней)</h3>
