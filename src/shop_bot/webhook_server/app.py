@@ -92,6 +92,7 @@ from shop_bot.data_manager.database import (
     get_economics_summary, get_revenue_forecast, get_utm_links, create_utm_link,
     get_utm_analytics, delete_utm_link,
     get_users_without_real_payment_with_keys, get_trial_key_stats,
+    delete_user_completely,
 )
 from shop_bot.data_manager.database import (
     create_broadcast_campaign, get_broadcast_campaigns, get_broadcast_campaign,
@@ -4530,6 +4531,59 @@ def create_webhook_app(bot_controller_instance):
                     asyncio.run(bot.send_message(chat_id=user_id, text=text, reply_markup=kb.as_markup()))
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о разбане пользователю {user_id}: {e}")
+        return redirect(url_for('users_page'))
+
+    @flask_app.route('/users/delete/<int:user_id>', methods=['POST'])
+    @login_required
+    def delete_user_route(user_id):
+        """Полное удаление пользователя (как admin_delete_user в боте).
+
+        Дополнительно best-effort удаляет клиентов с хостов Remnawave, чтобы
+        не оставлять «осиротевшие» ключи на панели.
+        """
+        user = get_user(user_id)
+        if not user:
+            wants_json = (
+                'application/json' in (request.headers.get('Accept') or '')
+                or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+            )
+            message = f'Пользователь {user_id} не найден.'
+            if wants_json:
+                return jsonify({"ok": False, "message": message}), 404
+            flash(message, 'danger')
+            return redirect(url_for('users_page'))
+
+        keys_to_revoke = get_user_keys(user_id) or []
+        for key in keys_to_revoke:
+            try:
+                asyncio.run(remnawave_api.delete_client_on_host(key.get('host_name'), key.get('key_email')))
+            except Exception as e:
+                logger.warning(
+                    "delete_user_route: failed to delete key %s on host %s: %s",
+                    key.get('key_id'), key.get('host_name'), e,
+                )
+
+        try:
+            ok = bool(delete_user_completely(user_id))
+        except Exception:
+            logger.exception("Failed to delete user %s completely from admin panel", user_id)
+            ok = False
+
+        wants_json = (
+            'application/json' in (request.headers.get('Accept') or '')
+            or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        )
+        if ok:
+            message = f'Пользователь {user_id} и все связанные данные удалены.'
+            if wants_json:
+                return jsonify({"ok": True, "message": message, "deleted_user_id": user_id}), 200
+            flash(message, 'success')
+            return redirect(url_for('users_page'))
+
+        message = f'Не удалось удалить пользователя {user_id}. Подробности см. в логах.'
+        if wants_json:
+            return jsonify({"ok": False, "message": message}), 500
+        flash(message, 'danger')
         return redirect(url_for('users_page'))
 
     @flask_app.route('/users/revoke/<int:user_id>', methods=['POST'])
