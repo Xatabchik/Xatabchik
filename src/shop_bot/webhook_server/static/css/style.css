@@ -3699,9 +3699,13 @@ body.login-page {
 	--ui-radius-sm: 14px;
 	--sidebar-w: 252px;
 	--mobile-header-h: 56px;
-	/* Общая верхняя «шапка»: бренд в сайдбаре и header-controls в topbar */
-	--chrome-pad-top: 20px;
-	--chrome-brand-row-h: 40px;
+	/* Общая верхняя «шапка»:
+	   brand | search+controls  — одна высота (--chrome-control-h)
+	   nav   | page-content     — стартуют на одной линии после --chrome-header-gap */
+	--chrome-pad-top: 16px;
+	--chrome-control-h: 36px;
+	--chrome-brand-row-h: var(--chrome-control-h);
+	--chrome-header-gap: 6px;
 	--shadow-soft: 0 10px 28px rgba(0,0,0,.35);
 	--shadow-card: 0 14px 36px rgba(0,0,0,.45);
 }
@@ -3768,9 +3772,12 @@ body{
 	align-items: center;
 	gap: 8px;
 	padding: 0 4px;
-	margin-bottom: 8px;
-	min-height: var(--chrome-brand-row-h);
+	/* gap до nav = padding-bottom topbar → nav на уровне page-content */
+	margin-bottom: var(--chrome-header-gap);
+	height: var(--chrome-control-h);
+	min-height: var(--chrome-control-h);
 	flex: 0 0 auto;
+	box-sizing: border-box;
 }
 
 .sidebar .brand-link{
@@ -3817,12 +3824,13 @@ body{
 
 .sidebar .brand-sub{
 	display: block;
-	margin-top: 3px;
+	margin-top: 1px;
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-	font-size: 9.5px;
+	font-size: 9px;
 	font-weight: 500;
 	letter-spacing: .12em;
 	text-transform: uppercase;
+	line-height: 1.1;
 	color: rgba(246,247,248,.38);
 }
 
@@ -3960,8 +3968,8 @@ body{
 	justify-content: flex-end;
 	align-items: center;
 	gap: 12px;
-	min-height: var(--chrome-brand-row-h);
-	padding: 0 6px 18px;
+	min-height: var(--chrome-control-h);
+	padding: 0 6px var(--chrome-header-gap);
 	box-sizing: border-box;
 }
 
@@ -3975,11 +3983,16 @@ body{
 	flex: 1 1 auto;
 	max-width: 420px;
 	min-width: 160px;
+	height: var(--chrome-control-h);
 	z-index: 1;
 }
 
 .topbar-search.is-open{
 	z-index: 1201;
+}
+
+.topbar-search-field{
+	height: var(--chrome-control-h);
 }
 
 .topbar-search-field .form-control{
@@ -3989,7 +4002,9 @@ body{
 	border-radius: 999px !important;
 	padding-left: 2.2rem;
 	padding-right: 2.2rem;
-	min-height: 36px;
+	height: var(--chrome-control-h) !important;
+	min-height: var(--chrome-control-h) !important;
+	box-sizing: border-box;
 }
 
 .topbar-search-field .form-control::placeholder{
@@ -4084,8 +4099,9 @@ body{
 	display: flex;
 	align-items: center;
 	gap: 14px;
-	flex-wrap: wrap;
-	min-height: var(--chrome-brand-row-h);
+	flex-wrap: nowrap;
+	height: var(--chrome-control-h);
+	min-height: var(--chrome-control-h);
 	flex: 0 0 auto;
 }
 
@@ -4093,17 +4109,32 @@ body{
 	display: flex;
 	align-items: center;
 	gap: 10px;
-	flex-wrap: wrap;
-	padding: 6px 12px;
+	flex-wrap: nowrap;
+	height: var(--chrome-control-h);
+	min-height: var(--chrome-control-h);
+	padding: 0 12px;
 	border-radius: 999px;
 	border: 1px solid rgba(255,255,255,.08);
 	background: rgba(255,255,255,.03);
+	box-sizing: border-box;
 }
 
 .topbar .bot-control p{
 	margin: 0;
-	font-size: 0.95rem;
+	font-size: 0.88rem;
+	line-height: 1;
 	color: var(--text-secondary);
+	white-space: nowrap;
+}
+
+.topbar .bot-control .btn,
+.topbar .bot-control .btn-sm{
+	height: 28px;
+	padding: 0 10px;
+	font-size: 0.82rem;
+	line-height: 1;
+	display: inline-flex;
+	align-items: center;
 }
 
 .topbar .user-session-controls{
@@ -4637,8 +4668,9 @@ body{
 	justify-content: flex-start !important;
 	gap: 8px !important;
 	padding: 0 4px !important;
-	margin: 0 0 8px !important;
-	min-height: var(--chrome-brand-row-h) !important;
+	margin: 0 0 var(--chrome-header-gap) !important;
+	height: var(--chrome-control-h) !important;
+	min-height: var(--chrome-control-h) !important;
 }
 
 .sidebar .brand-link{
@@ -4672,9 +4704,11 @@ body{
 
 .sidebar .brand-sub{
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
-	font-size: 9.5px !important;
+	font-size: 9px !important;
 	font-weight: 500 !important;
 	letter-spacing: .12em !important;
+	line-height: 1.1 !important;
+	margin-top: 1px !important;
 	color: rgba(246,247,248,.38) !important;
 }
 
@@ -4717,8 +4751,12 @@ body{
 	letter-spacing: .12em !important;
 	text-transform: uppercase !important;
 	color: rgba(246,247,248,.36) !important;
-	padding: 0 12px 8px !important;
+	padding: 0 12px 6px !important;
 	margin: 0 !important;
+}
+
+.sidebar-navigation .nav-section:first-child .nav-section-title{
+	padding-top: 0 !important;
 }
 
 .sidebar-navigation .nav-link{
