@@ -3329,9 +3329,26 @@ def delete_broadcast_campaign(campaign_id: int) -> bool:
         return False
 
 
+# Псевдо-telegram_id для email-аккаунтов без привязки к Telegram
+# (см. create_user_by_email). В этот диапазон бот писать не может.
+EMAIL_ONLY_TELEGRAM_ID_MIN = 999000000000
+EMAIL_ONLY_TELEGRAM_ID_MAX = 999999999999
+
+
+def is_email_only_user(telegram_id: int | None) -> bool:
+    """True, если пользователь зарегистрирован по email и ещё не авторизовался
+    через Telegram (синтетический telegram_id с префиксом 999)."""
+    try:
+        tid = int(telegram_id)
+    except (TypeError, ValueError):
+        return False
+    return EMAIL_ONLY_TELEGRAM_ID_MIN <= tid <= EMAIL_ONLY_TELEGRAM_ID_MAX
+
+
 def get_inactive_subscribers() -> list[int]:
     """User IDs with no active keys (expire_at in the past or no keys at all),
-    not banned and not marked unreachable (blocked the bot / deactivated account)."""
+    not banned, not marked unreachable (blocked the bot / deactivated account),
+    and not email-only accounts without Telegram auth."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -3340,12 +3357,14 @@ def get_inactive_subscribers() -> list[int]:
                 SELECT u.telegram_id FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
+                  AND (u.telegram_id < ? OR u.telegram_id > ?)
                   AND NOT EXISTS (
                     SELECT 1 FROM vpn_keys k
                     WHERE k.user_id = u.telegram_id
                       AND k.expire_at > datetime('now')
                   )
-                """
+                """,
+                (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
             )
             return [row[0] for row in cursor.fetchall()]
     except sqlite3.Error as e:
@@ -8534,9 +8553,12 @@ def create_user_by_email(email: str, password: str) -> dict | None:
         password_hash = hash_password(password)
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT MAX(telegram_id) FROM users WHERE telegram_id BETWEEN 999000000000 AND 999999999999")
+            cur.execute(
+                "SELECT MAX(telegram_id) FROM users WHERE telegram_id BETWEEN ? AND ?",
+                (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
+            )
             row = cur.fetchone()
-            next_id = int(row[0]) + 1 if row and row[0] else 999000000001
+            next_id = int(row[0]) + 1 if row and row[0] else EMAIL_ONLY_TELEGRAM_ID_MIN + 1
             cur.execute(
                 """
                 INSERT INTO users (telegram_id, username, agreed_to_terms, auth_email, auth_pass, email_verified, registration_date)

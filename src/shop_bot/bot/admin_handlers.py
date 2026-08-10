@@ -7845,6 +7845,7 @@ def get_admin_router() -> Router:
         failed_count = 0
         banned_count = 0
         unreachable_count = 0
+        email_only_count = 0
 
         for user in users:
             user_id = user['telegram_id']
@@ -7853,6 +7854,10 @@ def get_admin_router() -> Router:
                 continue
             if user.get('is_unreachable'):
                 unreachable_count += 1
+                continue
+            # Email-регистрация без авторизации через Telegram — боту некуда писать.
+            if database.is_email_only_user(user_id):
+                email_only_count += 1
                 continue
             try:
                 await _send_broadcast_to(bot, user_id, original_message, final_keyboard, parse_mode=parse_mode)
@@ -7870,7 +7875,8 @@ def get_admin_router() -> Router:
             f"👍 Отправлено: {sent_count}\n"
             f"👎 Не удалось отправить: {failed_count}\n"
             f"🚫 Пропущено (забанены): {banned_count}\n"
-            f"📵 Недоступны (блок/деактивация): {unreachable_count}"
+            f"📵 Недоступны (блок/деактивация): {unreachable_count}\n"
+            f"📧 Пропущено (email без Telegram): {email_only_count}"
         )
         await show_admin_menu(callback.message)
 
