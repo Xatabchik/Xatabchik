@@ -2,7 +2,7 @@
 Редактируемый referral_share_text и корректный URL для t.me/share
 (пробелы как %20, не +).
 """
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from conftest import temp_db  # noqa: F401
 
