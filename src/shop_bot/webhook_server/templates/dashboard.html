@@ -116,13 +116,17 @@
         {% if total_pages > 1 %}
         <div class="d-flex justify-content-center mt-3">
           <ul class="pagination">
-            {# "Вперед" (next) #}
-            <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
-              <a class="page-link" href="{{ url_for('dashboard_page', page=(current_page + 1 if current_page < total_pages else total_pages)) }}" aria-label="Next">Вперед</a>
-            </li>
-
             {% set cp = current_page or 1 %}
             {% set tp = total_pages or 1 %}
+
+            {# "Назад" (prev) — слева #}
+            <li class="page-item {% if cp <= 1 %}disabled{% endif %}">
+              <a class="page-link" href="{{ url_for('dashboard_page', page=(cp - 1 if cp > 1 else 1)) }}" aria-label="Назад" tabindex="{% if cp <= 1 %}-1{% endif %}">
+                <i class="ti ti-chevron-left"></i>
+                <span class="d-none d-sm-inline ms-1">Назад</span>
+              </a>
+            </li>
+
             {% set edges = 3 %}
             {% set around = 1 %}
             {% set ns = namespace(last=0) %}
@@ -139,9 +143,12 @@
               {% endif %}
             {% endfor %}
 
-            {# "Назад" (prev) #}
-            <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
-              <a class="page-link" href="{{ url_for('dashboard_page', page=(current_page - 1 if current_page > 1 else 1)) }}" aria-label="Previous">Назад</a>
+            {# "Вперёд" (next) — справа #}
+            <li class="page-item {% if cp >= tp %}disabled{% endif %}">
+              <a class="page-link" href="{{ url_for('dashboard_page', page=(cp + 1 if cp < tp else tp)) }}" aria-label="Вперёд" tabindex="{% if cp >= tp %}-1{% endif %}">
+                <span class="d-none d-sm-inline me-1">Вперёд</span>
+                <i class="ti ti-chevron-right"></i>
+              </a>
             </li>
           </ul>
         </div>

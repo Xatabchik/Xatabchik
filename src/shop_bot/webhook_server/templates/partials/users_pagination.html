@@ -4,9 +4,12 @@
 {% set per = per_page or 25 %}
 {% set sort_val = sort or '' %}
 
-{# "Вперед" (next) #}
-<li class="page-item {% if cp >= tp %}disabled{% endif %}">
-  <a class="page-link" href="{{ url_for('users_page', page=(cp+1 if cp<tp else tp), q=query, per_page=per, sort=sort_val) }}" aria-label="Next">Вперед</a>
+{# "Назад" (prev) — слева #}
+<li class="page-item {% if cp <= 1 %}disabled{% endif %}">
+  <a class="page-link" href="{{ url_for('users_page', page=(cp-1 if cp>1 else 1), q=query, per_page=per, sort=sort_val) }}" aria-label="Назад" tabindex="{% if cp<=1 %}-1{% endif %}">
+    <i class="ti ti-chevron-left"></i>
+    <span class="d-none d-sm-inline ms-1">Назад</span>
+  </a>
 </li>
 
 {% set edges = 3 %}
@@ -25,7 +28,10 @@
   {% endif %}
 {% endfor %}
 
-{# "Назад" (prev) #}
-<li class="page-item {% if cp <= 1 %}disabled{% endif %}">
-  <a class="page-link" href="{{ url_for('users_page', page=(cp-1 if cp>1 else 1), q=query, per_page=per, sort=sort_val) }}" aria-label="Previous">Назад</a>
+{# "Вперёд" (next) — справа #}
+<li class="page-item {% if cp >= tp %}disabled{% endif %}">
+  <a class="page-link" href="{{ url_for('users_page', page=(cp+1 if cp<tp else tp), q=query, per_page=per, sort=sort_val) }}" aria-label="Вперёд" tabindex="{% if cp>=tp %}-1{% endif %}">
+    <span class="d-none d-sm-inline me-1">Вперёд</span>
+    <i class="ti ti-chevron-right"></i>
+  </a>
 </li>
