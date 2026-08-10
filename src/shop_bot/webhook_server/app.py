@@ -4402,6 +4402,40 @@ def create_webhook_app(bot_controller_instance):
         flash(' | '.join(statuses), category)
         return redirect(request.referrer or url_for('dashboard_page'))
 
+    def _soft_stop_controller(controller):
+        """Остановить контроллер; если уже остановлен — считать успехом (для перезапуска)."""
+        status = controller.get_status() or {}
+        if not status.get('is_running'):
+            return {"status": "success", "message": "уже остановлен"}
+        return controller.stop()
+
+    @flask_app.route('/restart-both-bots', methods=['POST'])
+    @login_required
+    def restart_both_bots_route():
+        """Остановить оба бота, дождаться остановки и сразу запустить снова — без ручного stop→start."""
+        _soft_stop_controller(_bot_controller)
+        _soft_stop_controller(_support_bot_controller)
+        _wait_for_stop(_bot_controller, timeout=8.0)
+        _wait_for_stop(_support_bot_controller, timeout=8.0)
+        # Небольшая пауза, чтобы polling/сокеты успели освободиться перед новым start.
+        time.sleep(0.5)
+
+        main_result = _bot_controller.start()
+        support_result = _support_bot_controller.start()
+
+        statuses = []
+        categories = []
+        for name, res in [('Основной бот', main_result), ('Support-бот', support_result)]:
+            if res.get('status') == 'success':
+                statuses.append(f"{name}: перезапущен")
+                categories.append('success')
+            else:
+                statuses.append(f"{name}: ошибка — {res.get('message')}")
+                categories.append('danger')
+        category = 'danger' if 'danger' in categories else 'success'
+        flash(' | '.join(statuses), category)
+        return redirect(request.referrer or url_for('dashboard_page'))
+
     @flask_app.route('/start-both-bots', methods=['POST'])
     @login_required
     def start_both_bots_route():

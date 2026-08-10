@@ -141,28 +141,22 @@
 						<div class="mobile-bot-control">
 						{% set main_running = bot_status and bot_status.is_running %}
 						{% set support_running = support_bot_status and support_bot_status.is_running %}
-						{% if main_running and support_running %}
-							
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
+						{% if main_running or support_running %}
+							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-1">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
 							</form>
-						{% elif main_running %}
-							
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
-								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
-							</form>
-						{% elif support_running %}
-							
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
-								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
-							</form>
-						{% else %}
-							
 							{% if all_settings_ok and support_settings_ok %}
-								<form action="{{ url_for('start_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
+							<form action="{{ url_for('restart_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-1">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+								<button type="submit" class="btn btn-warning btn-sm">Перезапустить</button>
+							</form>
+							{% else %}
+							<button class="btn btn-secondary btn-sm" disabled>Перезапустить</button>
+							{% endif %}
+						{% else %}
+							{% if all_settings_ok and support_settings_ok %}
+								<form action="{{ url_for('start_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-1">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 									<button type="submit" class="btn btn-success btn-sm">Запустить</button>
 								</form>
@@ -216,26 +210,30 @@
 						{% set support_running = support_bot_status and support_bot_status.is_running %}
 						{% if main_running and support_running %}
 							<p class="status-running"><span class="status-dot status-dot-animated bg-green"></span>Статус: <strong>Запущен</strong></p>
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
-								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
-							</form>
 						{% elif main_running %}
 							<p class="status-warning"><span class="status-dot status-dot-animated bg-yellow"></span>Основной бот запущен, Support-бот остановлен</p>
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
-								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
-							</form>
 						{% elif support_running %}
 							<p class="status-warning"><span class="status-dot status-dot-animated bg-yellow"></span>Support-бот запущен, основной бот остановлен</p>
-							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
+						{% else %}
+							<p class="status-stopped"><span class="status-dot"></span>Статус: <strong>Остановлен</strong></p>
+						{% endif %}
+						<div class="d-inline-flex align-items-center gap-2 flex-wrap">
+						{% if main_running or support_running %}
+							<form action="{{ url_for('stop_both_bots_route') }}" method="post" class="d-inline">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 								<button type="submit" class="btn btn-danger btn-sm">Остановить</button>
 							</form>
-						{% else %}
-							<p class="status-stopped"><span class="status-dot"></span>Статус: <strong>Остановлен</strong></p>
 							{% if all_settings_ok and support_settings_ok %}
-								<form action="{{ url_for('start_both_bots_route') }}" method="post" class="d-inline-flex align-items-center gap-2">
+							<form action="{{ url_for('restart_both_bots_route') }}" method="post" class="d-inline">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+								<button type="submit" class="btn btn-warning btn-sm">Перезапустить</button>
+							</form>
+							{% else %}
+							<button class="btn btn-secondary btn-sm" disabled title="Заполните настройки ботов">Перезапустить</button>
+							{% endif %}
+						{% else %}
+							{% if all_settings_ok and support_settings_ok %}
+								<form action="{{ url_for('start_both_bots_route') }}" method="post" class="d-inline">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 									<button type="submit" class="btn btn-success btn-sm">Запустить</button>
 								</form>
@@ -243,6 +241,7 @@
 								<button class="btn btn-secondary btn-sm" disabled>Запустить</button>
 							{% endif %}
 						{% endif %}
+						</div>
 						</div>
 
 						<div class="user-session-controls">

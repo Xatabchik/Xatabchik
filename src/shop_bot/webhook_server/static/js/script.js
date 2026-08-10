@@ -161,28 +161,24 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function setupBotControlForms() {
-        const startForm = document.querySelector('form[action*="start-bot"]');
-        const stopForm = document.querySelector('form[action*="stop-bot"]');
-
-        if (startForm) {
-            startForm.addEventListener('submit', function () {
-                const button = startForm.querySelector('button[type="submit"]');
+        const forms = document.querySelectorAll(
+            'form[action*="start-bot"], form[action*="stop-bot"], form[action*="start-both-bots"], form[action*="stop-both-bots"], form[action*="restart-both-bots"], form[action*="start-support-bot"], form[action*="stop-support-bot"]'
+        );
+        forms.forEach(form => {
+            form.addEventListener('submit', function () {
+                const button = form.querySelector('button[type="submit"]');
                 if (button) {
                     button.disabled = true;
+                    const original = button.textContent;
+                    button.dataset.originalLabel = original;
                     button.textContent = '...';
                 }
+                // Блокируем соседние кнопки управления ботами на время запроса
+                document.querySelectorAll('.bot-control button, .mobile-bot-control button').forEach(btn => {
+                    btn.disabled = true;
+                });
             });
-        }
-
-        if (stopForm) {
-            stopForm.addEventListener('submit', function () {
-                const button = stopForm.querySelector('button[type="submit"]');
-                if (button) {
-                    button.disabled = true;
-                    button.textContent = '...';
-                }
-            });
-        }
+        });
     }
 
     function setupConfirmationForms(root) {
