@@ -964,6 +964,48 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):hover {
   border-radius: var(--radius-lg);
 }
 
+/* Content tiles / settings drawers / host cards */
+.content-tile,
+.settings-tile,
+.host-card,
+.plan-card,
+.module-card {
+  background: var(--surface-0) !important;
+  border: 1px solid var(--border-1) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-soft) !important;
+}
+
+.content-tile:hover,
+.settings-tile:hover {
+  border-color: var(--border-2) !important;
+  background: var(--surface-1) !important;
+}
+
+.btn-link {
+  color: var(--text-1) !important;
+  text-decoration: none !important;
+}
+
+.btn-link:hover {
+  color: var(--text-0) !important;
+}
+
+/* Kill leftover cyan accent glow from older theme layers */
+.btn-primary,
+.button-primary,
+.btn-outline-primary,
+.form-control:focus,
+.form-select:focus {
+  --tblr-btn-bg: var(--ink);
+}
+
+.table .badge,
+.card .badge {
+  font-family: var(--font-mono);
+  font-weight: 500 !important;
+}
+
 /* Keep pill utility groups truly pill-shaped */
 .btn-group-pill .btn,
 .btn.rounded-pill {
