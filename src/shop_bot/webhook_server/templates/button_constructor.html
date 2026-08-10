@@ -251,9 +251,9 @@
   gap: 10px;
   min-height: 400px;
   padding: 20px;
-  border: 2px dashed #dee2e6;
-  border-radius: 8px;
-  background-color: #f8f9fa;
+  border: 1px dashed rgba(255, 255, 255, 0.20);
+  border-radius: 20px;
+  background-color: #0b0d10;
 }
 
 /* Классы для различных ширин кнопок */
@@ -270,28 +270,31 @@
 }
 
 .button-item {
-  background: #fff;
-  border: 1px solid #dee2e6;
-  border-radius: 6px;
+  background: #161a20;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
   padding: 12px;
   cursor: move;
   position: relative;
-  transition: all 0.2s ease;
+  transition: background 220ms cubic-bezier(.2,.8,.2,1), border-color 220ms cubic-bezier(.2,.8,.2,1), box-shadow 220ms cubic-bezier(.2,.8,.2,1);
   min-height: 60px;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
+  color: #f6f7f8;
 }
 
 .button-item:hover {
-  border-color: #007bff;
-  box-shadow: 0 2px 8px rgba(0, 123, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.20);
+  box-shadow: none;
+  background: #1c2028;
 }
 
 .button-item.selected {
-  border-color: #007bff;
-  background-color: #e3f2fd;
+  border-color: rgba(255, 255, 255, 0.20);
+  background-color: #1c2028;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
 }
 
 .button-item .button-text {
@@ -301,15 +304,16 @@
 
 .button-item .button-id {
   font-size: 0.75rem;
-  color: #6c757d;
+  color: rgba(246, 247, 248, 0.36);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 .button-item .button-width-indicator {
   font-size: 0.7rem;
-  color: #007bff;
-  background: rgba(0, 123, 255, 0.1);
+  color: rgba(246, 247, 248, 0.60);
+  background: rgba(255, 255, 255, 0.06);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 999px;
   display: inline-block;
   margin-top: 4px;
   font-weight: 600;
@@ -333,9 +337,9 @@
 }
 
 .drag-placeholder {
-  background-color: #e3f2fd;
-  border: 2px dashed #007bff;
-  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(255, 255, 255, 0.20);
+  border-radius: 14px;
   min-height: 60px;
 }
 
@@ -349,135 +353,140 @@
 
 .preview-button {
   display: inline-block;
-  background: #007bff;
-  color: white;
+  background: #ffffff;
+  color: #0b0d10;
   padding: 8px 16px;
-  border-radius: 4px;
+  border-radius: 14px;
   text-decoration: none;
   margin: 2px;
   font-size: 0.9rem;
 }
 
 .preview-button:hover {
-  background: #0056b3;
-  color: white;
+  background: #e8e9eb;
+  color: #0b0d10;
   text-decoration: none;
 }
 
 /* Тёмный фон для всего конструктора */
 body {
-  background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
-  color: #f0f6fc;
+  background: radial-gradient(ellipse 1200px 640px at 50% -10%, #111318, #0b0d10 65%);
+  color: #f6f7f8;
 }
 
 .card {
-  background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
-  border: 1px solid #30363d;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  background: #161a20;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 28px -12px rgba(0, 0, 0, 0.45);
+  border-radius: 20px;
 }
 
 .card-header {
-  background: linear-gradient(135deg, #30363d 0%, #21262d 100%);
-  border-bottom: 1px solid #30363d;
-  color: #f0f6fc;
+  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  color: #f6f7f8;
 }
 
 .card-title {
-  color: #f0f6fc;
+  color: #f6f7f8;
   font-weight: 600;
+  font-family: 'Unbounded', sans-serif;
 }
 
 .form-label {
-  color: #f0f6fc;
+  color: rgba(246, 247, 248, 0.60);
   font-weight: 500;
 }
 
 .form-control, .form-select {
-  background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
-  border: 1px solid #30363d;
-  color: #f0f6fc;
+  background: #161a20;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: #f6f7f8;
+  border-radius: 20px;
 }
 
 .form-control:focus, .form-select:focus {
-  background: linear-gradient(135deg, #30363d 0%, #21262d 100%);
-  border-color: #58a6ff;
-  box-shadow: 0 0 0 0.2rem rgba(88, 166, 255, 0.25);
-  color: #f0f6fc;
+  background: #161a20;
+  border-color: rgba(255, 255, 255, 0.20);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.07);
+  color: #f6f7f8;
 }
 
 .form-control::placeholder {
-  color: #7d8590;
+  color: rgba(246, 247, 248, 0.36);
 }
 
 .btn {
-  border-radius: 6px;
-  font-weight: 500;
-  transition: all 0.2s ease;
+  border-radius: 20px;
+  font-weight: 600;
+  transition: background 220ms cubic-bezier(.2,.8,.2,1), color 220ms cubic-bezier(.2,.8,.2,1), border-color 220ms cubic-bezier(.2,.8,.2,1), transform 220ms cubic-bezier(.2,.8,.2,1);
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
-  border: 1px solid #238636;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  background: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #0b0d10;
+  box-shadow: none;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, #2ea043 0%, #238636 100%);
+  background: #e8e9eb;
+  color: #0b0d10;
   transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: none;
 }
 
 .btn-outline-primary {
-  color: #58a6ff;
-  border: 1px solid #58a6ff;
+  color: #f6f7f8;
+  border: 1px solid rgba(255, 255, 255, 0.20);
   background: transparent;
 }
 
 .btn-outline-primary:hover {
-  background: #58a6ff;
-  color: #0d1117;
+  background: #ffffff;
+  color: #0b0d10;
   transform: translateY(-1px);
 }
 
 .btn-outline-secondary {
-  color: #7d8590;
-  border: 1px solid #7d8590;
-  background: transparent;
+  color: rgba(246, 247, 248, 0.60);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: #161a20;
 }
 
 .btn-outline-secondary:hover {
-  background: #7d8590;
-  color: #0d1117;
+  background: #ffffff;
+  color: #0b0d10;
 }
 
 .btn-outline-danger {
-  color: #f85149;
-  border: 1px solid #f85149;
+  color: #e27c87;
+  border: 1px solid rgba(255, 255, 255, 0.10);
   background: transparent;
 }
 
 .btn-outline-danger:hover {
-  background: #f85149;
-  color: #0d1117;
+  background: #e27c87;
+  color: #1a0b0d;
 }
 
 .btn-outline-info {
-  color: #79c0ff;
-  border: 1px solid #79c0ff;
+  color: rgba(246, 247, 248, 0.60);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   background: transparent;
 }
 
 .btn-outline-info:hover {
-  background: #79c0ff;
-  color: #0d1117;
+  background: #ffffff;
+  color: #0b0d10;
 }
 
 .text-muted {
-  color: #7d8590 !important;
+  color: rgba(246, 247, 248, 0.60) !important;
 }
 
 .text-secondary {
-  color: #8b949e !important;
+  color: rgba(246, 247, 248, 0.60) !important;
 }
 
 /* Сетка кнопок с тёмным фоном */
@@ -488,9 +497,9 @@ body {
   gap: 10px;
   min-height: 400px;
   padding: 20px;
-  background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
-  border: 2px dashed #30363d;
-  border-radius: 8px;
+  background: #0b0d10;
+  border: 1px dashed rgba(255, 255, 255, 0.20);
+  border-radius: 20px;
 }
 
 /* Сетка неактивных кнопок */
@@ -500,9 +509,9 @@ body {
   gap: 10px;
   min-height: 100px;
   padding: 20px;
-  background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
-  border: 2px dashed #58a6ff40;
-  border-radius: 8px;
+  background: #111318;
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
 }
 
 .inactive-buttons-grid .button-item {
@@ -513,7 +522,7 @@ body {
 
 .inactive-buttons-grid .button-item:hover {
   opacity: 1;
-  border-color: #58a6ff;
+  border-color: rgba(255, 255, 255, 0.20);
 }
 
 /* Классы для различных ширин кнопок в тёмной теме */
@@ -530,39 +539,41 @@ body {
 }
 
 .button-item {
-  background: linear-gradient(135deg, #21262d 0%, #161b22 100%);
-  border: 1px solid #30363d;
-  color: #f0f6fc;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  background: #161a20;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: #f6f7f8;
+  box-shadow: none;
 }
 
 .button-item:hover {
-  border-color: #58a6ff;
-  box-shadow: 0 4px 12px rgba(88, 166, 255, 0.2);
-  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.20);
+  box-shadow: none;
+  transform: none;
+  background: #1c2028;
 }
 
 .button-item.selected {
-  border-color: #58a6ff;
-  background: linear-gradient(135deg, #1c2128 0%, #0d1117 100%);
-  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.20);
+  background: #1c2028;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
 }
 
 .button-item .button-text {
-  color: #f0f6fc;
+  color: #f6f7f8;
   font-weight: 600;
 }
 
 .button-item .button-id {
-  color: #7d8590;
+  color: rgba(246, 247, 248, 0.36);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 .button-item .button-width-indicator {
   font-size: 0.7rem;
-  color: #58a6ff;
-  background: rgba(88, 166, 255, 0.1);
+  color: rgba(246, 247, 248, 0.60);
+  background: rgba(255, 255, 255, 0.06);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 999px;
   display: inline-block;
   margin-top: 4px;
   font-weight: 600;
