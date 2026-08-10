@@ -3699,8 +3699,18 @@ body.login-page {
 	--ui-radius-sm: 14px;
 	--sidebar-w: 252px;
 	--mobile-header-h: 56px;
+	/* Общая верхняя «шапка»: бренд в сайдбаре и header-controls в topbar */
+	--chrome-pad-top: 20px;
+	--chrome-brand-row-h: 40px;
 	--shadow-soft: 0 10px 28px rgba(0,0,0,.35);
 	--shadow-card: 0 14px 36px rgba(0,0,0,.45);
+}
+
+/* Tabler .layout-boxed даёт body padding:1rem — из‑за этого фиксированный
+   сайдбар и content-shell стартуют с разных вертикалей. Убираем inset,
+   отступы задаём сами у .sidebar / .content-shell. */
+body.layout-boxed{
+	padding: 0 !important;
 }
 
 body{
@@ -3744,7 +3754,7 @@ body{
 	z-index: 200;
 	display: flex;
 	flex-direction: column;
-	padding: 20px 16px;
+	padding: var(--chrome-pad-top) 16px;
 	padding-bottom: max(18px, env(safe-area-inset-bottom));
 	overflow: hidden;
 	overscroll-behavior: contain;
@@ -3757,8 +3767,9 @@ body{
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 2px 4px 0;
+	padding: 0 4px;
 	margin-bottom: 8px;
+	min-height: var(--chrome-brand-row-h);
 	flex: 0 0 auto;
 }
 
@@ -3938,7 +3949,8 @@ body{
 	   position/width. Reset to 0 on mobile/tablet where the sidebar is an
 	   off-canvas drawer instead of a docked column. */
 	margin-left: var(--sidebar-w);
-	padding: 18px 26px max(28px, env(safe-area-inset-bottom));
+	/* padding-top = --chrome-pad-top: бренд и header-controls на одной линии */
+	padding: var(--chrome-pad-top) 26px max(28px, env(safe-area-inset-bottom));
 }
 
 .topbar{
@@ -3946,7 +3958,9 @@ body{
 	justify-content: flex-end;
 	align-items: center;
 	gap: 12px;
-	padding: 8px 6px 18px;
+	min-height: var(--chrome-brand-row-h);
+	padding: 0 6px 18px;
+	box-sizing: border-box;
 }
 
 .topbar .header-controls{
@@ -3954,6 +3968,7 @@ body{
 	align-items: center;
 	gap: 14px;
 	flex-wrap: wrap;
+	min-height: var(--chrome-brand-row-h);
 }
 
 .topbar .bot-control{
@@ -3961,7 +3976,7 @@ body{
 	align-items: center;
 	gap: 10px;
 	flex-wrap: wrap;
-	padding: 10px 12px;
+	padding: 6px 12px;
 	border-radius: 999px;
 	border: 1px solid rgba(255,255,255,.08);
 	background: rgba(255,255,255,.03);
@@ -4490,7 +4505,7 @@ body{
 	background: #111318 !important;
 	border-right: 1px solid rgba(255,255,255,.09) !important;
 	box-shadow: none !important;
-	padding: 20px 16px !important;
+	padding: var(--chrome-pad-top) 16px !important;
 	padding-bottom: max(18px, env(safe-area-inset-bottom)) !important;
 }
 
@@ -4499,9 +4514,9 @@ body{
 	align-items: center !important;
 	justify-content: flex-start !important;
 	gap: 8px !important;
-	padding: 2px 4px 0 !important;
+	padding: 0 4px !important;
 	margin: 0 0 8px !important;
-	min-height: 0 !important;
+	min-height: var(--chrome-brand-row-h) !important;
 }
 
 .sidebar .brand-link{
