@@ -546,6 +546,23 @@ async def grant_referrer_day_bonus_for_trial(*, referred_user_id: int, bot: Bot)
         pass
 
 
+def _webapp_public_base() -> str | None:
+    """Публичный базовый URL Mini App, если webapp включён и задан домен.
+
+    В настройках домен хранится без схемы (app.example.com) — для ссылок,
+    которыми делятся из бота, добавляем https://.
+    """
+    settings = database.get_webapp_settings()
+    if not settings.get("webapp_enabled"):
+        return None
+    domain = (settings.get("webapp_domain") or "").strip().rstrip("/")
+    if not domain:
+        return None
+    if not domain.startswith(("http://", "https://")):
+        domain = f"https://{domain}"
+    return domain
+
+
 def _build_gift_links(gift_code: str) -> tuple[str | None, str | None]:
     """Построить обе ссылки активации подарка: в мини-приложении (webapp) и в Telegram.
 
@@ -555,6 +572,19 @@ def _build_gift_links(gift_code: str) -> tuple[str | None, str | None]:
     webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
     webapp_link = f"{webapp_domain}/gift/{gift_code}" if webapp_domain else None
     telegram_link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start=gift_{gift_code}" if TELEGRAM_BOT_USERNAME else None
+    return webapp_link, telegram_link
+
+
+def _build_referral_links(user_id: int, bot_username: str | None = None) -> tuple[str | None, str | None]:
+    """Построить реферальные ссылки: (webapp_link, telegram_link).
+
+    Веб-ссылка возвращается только если Mini App включён в настройках
+    и задан webapp_domain — иначе None.
+    """
+    username = (bot_username or TELEGRAM_BOT_USERNAME or get_setting("telegram_bot_username") or "").strip()
+    telegram_link = f"https://t.me/{username}?start=ref_{int(user_id)}" if username else None
+    base = _webapp_public_base()
+    webapp_link = f"{base}/ref/{int(user_id)}" if base else None
     return webapp_link, telegram_link
 
 
@@ -3968,8 +3998,8 @@ def get_user_router() -> Router:
         user_id = callback.from_user.id
         user_data = get_user(user_id)
         bot_username = (await callback.bot.get_me()).username
-        
-        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+        webapp_link, referral_link = _build_referral_links(user_id, bot_username)
         referral_count = get_referral_count(user_id)
         try:
             total_ref_earned = float(get_referral_balance_all(user_id))
@@ -4023,8 +4053,14 @@ def get_user_router() -> Router:
         text_lines = [
             "👥 <b>Реферальная программа</b>",
             "",
-            f"<b>Ваша реферальная ссылка:</b>\n<code>{referral_link}</code>",
-            "",
+        ]
+        if referral_link:
+            text_lines.append(f"<b>Ссылка в Telegram:</b>\n<code>{html_escape(referral_link)}</code>")
+            text_lines.append("")
+        if webapp_link:
+            text_lines.append(f"<b>Ссылка на сайт:</b>\n<code>{html_escape(webapp_link)}</code>")
+            text_lines.append("")
+        text_lines.extend([
             "<b>🤝 Приглашайте друзей и получайте бонусы на каждом уровне! 💰</b>",
             "",
             bonuses_line,
@@ -4034,16 +4070,23 @@ def get_user_router() -> Router:
             "",
             f"<b>💰 Заработано по рефералке (всего):</b> {total_ref_earned:.2f} ₽",
             f"<b>💼 Доступно к выводу:</b> {available_ref_balance:.2f} ₽",
-        ]
+        ])
         if withdraw_enabled:
             text_lines.append(f"<b>ℹ️ Минимальная сумма для вывода:</b> {min_withdraw:.0f} ₽")
         text = "\n".join(text_lines)
 
         share_text = "🌐Обход глушилок и блокировок на любом устройстве! 😊"
-        share_url = "https://t.me/share/url?" + urlencode({"url": referral_link, "text": share_text})
 
         builder = InlineKeyboardBuilder()
-        builder.button(text="📩 Поделиться", url=share_url)
+        if referral_link:
+            share_tg = "https://t.me/share/url?" + urlencode({"url": referral_link, "text": share_text})
+            builder.button(
+                text="📩 Поделиться (Telegram)" if webapp_link else "📩 Поделиться",
+                url=share_tg,
+            )
+        if webapp_link:
+            share_web = "https://t.me/share/url?" + urlencode({"url": webapp_link, "text": share_text})
+            builder.button(text="🌐 Поделиться (сайт)", url=share_web)
         builder.button(text="🔄 Перевести на баланс", callback_data="referral_transfer_start")
         if can_withdraw_now:
             builder.button(text="💸 Вывести", callback_data="referral_withdraw_start")
