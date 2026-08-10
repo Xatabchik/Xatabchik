@@ -2200,6 +2200,52 @@ def create_webhook_app(bot_controller_instance):
         ]
         return jsonify({"ok": True, "items": items})
 
+    @flask_app.route('/admin/search.json')
+    @login_required
+    def admin_global_search_json():
+        """Живой поиск по пользователям и ключам для топбара админки."""
+        q = (request.args.get('q') or '').strip().lstrip('@')
+        if not q:
+            return jsonify({"ok": True, "users": [], "keys": []})
+        try:
+            limit = int(request.args.get('limit', 6) or 6)
+        except (TypeError, ValueError):
+            limit = 6
+        limit = max(1, min(limit, 12))
+
+        users_out = []
+        keys_out = []
+        try:
+            users, _ = get_users_paginated(page=1, per_page=limit, q=q, sort=None)
+            users_out = [
+                {
+                    "type": "user",
+                    "telegram_id": u.get("telegram_id"),
+                    "username": u.get("username"),
+                }
+                for u in (users or [])
+            ]
+        except Exception as e:
+            logger.error("admin_global_search_json users failed: %s", e)
+
+        try:
+            keys, _ = get_keys_paginated(page=1, per_page=limit, search=q)
+            keys_out = [
+                {
+                    "type": "key",
+                    "key_id": k.get("key_id"),
+                    "user_id": k.get("user_id"),
+                    "email": k.get("key_email") or k.get("email"),
+                    "host_name": k.get("host_name"),
+                    "user_key_name": k.get("user_key_name"),
+                }
+                for k in (keys or [])
+            ]
+        except Exception as e:
+            logger.error("admin_global_search_json keys failed: %s", e)
+
+        return jsonify({"ok": True, "users": users_out, "keys": keys_out, "q": q})
+
     @flask_app.route('/users/<int:referrer_id>/referrals/assign', methods=['POST'])
     @login_required
     def assign_referral_route(referrer_id: int):

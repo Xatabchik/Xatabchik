@@ -1389,12 +1389,25 @@
       }
     }
 
+    window.openUserDetails = openUserDetails;
+
     table.addEventListener('click', (e) => {
       const row = e.target.closest('tr.user-row');
       if (!row) return;
       const uid = row.getAttribute('data-user-id');
       if (uid) openUserDetails(uid);
     });
+
+    // Deep-link из топбар-поиска: /users?open=<telegram_id>
+    try {
+      const openUid = new URLSearchParams(location.search).get('open');
+      if (openUid) {
+        const cleanUrl = new URL(location.href);
+        cleanUrl.searchParams.delete('open');
+        history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+        openUserDetails(openUid);
+      }
+    } catch(_){}
 
     // Изменение баланса
     document.getElementById('ud-balance-form')?.addEventListener('submit', async (ev) => {

@@ -221,6 +221,27 @@
 						</nav>
 					</div>
 
+					<div class="topbar-search" id="topbar-search">
+						<label class="visually-hidden" for="topbar-search-input">Поиск пользователей и ключей</label>
+						<div class="input-icon topbar-search-field">
+							<span class="input-icon-addon">
+								<i class="ti ti-search" aria-hidden="true"></i>
+							</span>
+							<input
+								type="search"
+								class="form-control form-control-sm"
+								id="topbar-search-input"
+								placeholder="Поиск пользователей и ключей…"
+								autocomplete="off"
+								spellcheck="false"
+							/>
+							<span class="input-icon-addon end topbar-search-clear d-none" id="topbar-search-clear" role="button" title="Очистить" tabindex="0">
+								<i class="ti ti-x" aria-hidden="true"></i>
+							</span>
+						</div>
+						<div class="topbar-search-dropdown d-none" id="topbar-search-dropdown" role="listbox" aria-label="Результаты поиска"></div>
+					</div>
+
 					<div class="header-controls d-none d-md-flex">
 						<div class="bot-control">
 						{% set main_running = bot_status and bot_status.is_running %}
@@ -402,6 +423,213 @@
                     } catch(_){ try { window.showToast('danger', 'Ошибка сети'); } catch(__){} }
                 }
                 saveBtn.addEventListener('click', save);
+            })();
+        </script>
+        <script>
+            (function(){
+                const root = document.getElementById('topbar-search');
+                const input = document.getElementById('topbar-search-input');
+                const dropdown = document.getElementById('topbar-search-dropdown');
+                const clearBtn = document.getElementById('topbar-search-clear');
+                if (!root || !input || !dropdown) return;
+
+                const SEARCH_URL = {{ url_for('admin_global_search_json')|tojson }};
+                const USERS_URL = {{ url_for('users_page')|tojson }};
+                const KEYS_URL = {{ url_for('admin_keys_page')|tojson }};
+                let timer = null;
+                let seq = 0;
+                let activeIndex = -1;
+                let flatItems = [];
+
+                function escapeHtml(s){
+                    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+                        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+                    }[c]));
+                }
+
+                function setClearVisible(show){
+                    if (!clearBtn) return;
+                    clearBtn.classList.toggle('d-none', !show);
+                }
+
+                function hideDropdown(){
+                    dropdown.classList.add('d-none');
+                    dropdown.innerHTML = '';
+                    activeIndex = -1;
+                    flatItems = [];
+                    root.classList.remove('is-open');
+                }
+
+                function showDropdown(){
+                    dropdown.classList.remove('d-none');
+                    root.classList.add('is-open');
+                }
+
+                function renderEmpty(msg){
+                    flatItems = [];
+                    activeIndex = -1;
+                    dropdown.innerHTML = `<div class="topbar-search-empty">${escapeHtml(msg)}</div>`;
+                    showDropdown();
+                }
+
+                function renderResults(data){
+                    const users = data.users || [];
+                    const keys = data.keys || [];
+                    flatItems = [];
+                    if (!users.length && !keys.length) {
+                        renderEmpty('Ничего не найдено');
+                        return;
+                    }
+                    let html = '';
+                    if (users.length) {
+                        html += '<div class="topbar-search-group">Пользователи</div>';
+                        users.forEach((u) => {
+                            const idx = flatItems.length;
+                            flatItems.push({ type: 'user', id: u.telegram_id });
+                            const uname = u.username ? ('@' + escapeHtml(u.username)) : 'без username';
+                            html += `<button type="button" class="topbar-search-item" role="option" data-idx="${idx}" data-type="user" data-id="${escapeHtml(u.telegram_id)}">
+                                <i class="ti ti-user" aria-hidden="true"></i>
+                                <span class="topbar-search-item-main">#${escapeHtml(u.telegram_id)} <span class="text-secondary">${uname}</span></span>
+                            </button>`;
+                        });
+                    }
+                    if (keys.length) {
+                        html += '<div class="topbar-search-group">Ключи</div>';
+                        keys.forEach((k) => {
+                            const idx = flatItems.length;
+                            flatItems.push({ type: 'key', id: k.key_id });
+                            const email = k.email ? escapeHtml(k.email) : 'без email';
+                            const host = k.host_name ? escapeHtml(k.host_name) : '—';
+                            html += `<button type="button" class="topbar-search-item" role="option" data-idx="${idx}" data-type="key" data-id="${escapeHtml(k.key_id)}">
+                                <i class="ti ti-key" aria-hidden="true"></i>
+                                <span class="topbar-search-item-main">#${escapeHtml(k.key_id)} <span class="text-secondary">${email}</span></span>
+                                <span class="topbar-search-item-meta">${host} · user ${escapeHtml(k.user_id)}</span>
+                            </button>`;
+                        });
+                    }
+                    dropdown.innerHTML = html;
+                    showDropdown();
+                    setActive(-1);
+                }
+
+                function setActive(idx){
+                    activeIndex = idx;
+                    dropdown.querySelectorAll('.topbar-search-item').forEach((el) => {
+                        el.classList.toggle('is-active', Number(el.getAttribute('data-idx')) === activeIndex);
+                    });
+                    const activeEl = dropdown.querySelector(`.topbar-search-item[data-idx="${activeIndex}"]`);
+                    if (activeEl) {
+                        try { activeEl.scrollIntoView({ block: 'nearest' }); } catch(_){}
+                    }
+                }
+
+                async function openUser(id){
+                    hideDropdown();
+                    if (typeof window.openUserDetails === 'function') {
+                        try { await window.openUserDetails(id); return; } catch(_){}
+                    }
+                    window.location.href = USERS_URL + (USERS_URL.includes('?') ? '&' : '?') + 'open=' + encodeURIComponent(id);
+                }
+
+                async function openKey(id){
+                    hideDropdown();
+                    if (typeof window.openKeyDetails === 'function') {
+                        try { await window.openKeyDetails(id); return; } catch(_){}
+                    }
+                    window.location.href = KEYS_URL + (KEYS_URL.includes('?') ? '&' : '?') + 'open=' + encodeURIComponent(id);
+                }
+
+                async function activateItem(item){
+                    if (!item) return;
+                    if (item.type === 'user') await openUser(item.id);
+                    else if (item.type === 'key') await openKey(item.id);
+                }
+
+                async function runSearch(){
+                    const q = input.value.trim().replace(/^@+/, '');
+                    setClearVisible(!!input.value);
+                    if (!q) {
+                        hideDropdown();
+                        return;
+                    }
+                    if (q.length < 1) return;
+                    const mySeq = ++seq;
+                    dropdown.innerHTML = '<div class="topbar-search-empty">Поиск…</div>';
+                    showDropdown();
+                    try {
+                        const url = new URL(SEARCH_URL, window.location.origin);
+                        url.searchParams.set('q', q);
+                        const resp = await fetch(url.toString(), {
+                            headers: { 'Accept': 'application/json' },
+                            credentials: 'same-origin',
+                        });
+                        const data = await resp.json();
+                        if (mySeq !== seq) return;
+                        if (data && data.ok) renderResults(data);
+                        else renderEmpty('Ошибка поиска');
+                    } catch(_) {
+                        if (mySeq !== seq) return;
+                        renderEmpty('Ошибка сети');
+                    }
+                }
+
+                input.addEventListener('input', () => {
+                    clearTimeout(timer);
+                    timer = setTimeout(runSearch, 250);
+                });
+
+                input.addEventListener('focus', () => {
+                    if (input.value.trim()) runSearch();
+                });
+
+                input.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Escape') {
+                        hideDropdown();
+                        input.blur();
+                        return;
+                    }
+                    if (!flatItems.length) {
+                        if (ev.key === 'Enter') {
+                            ev.preventDefault();
+                            runSearch();
+                        }
+                        return;
+                    }
+                    if (ev.key === 'ArrowDown') {
+                        ev.preventDefault();
+                        setActive(activeIndex < flatItems.length - 1 ? activeIndex + 1 : 0);
+                    } else if (ev.key === 'ArrowUp') {
+                        ev.preventDefault();
+                        setActive(activeIndex > 0 ? activeIndex - 1 : flatItems.length - 1);
+                    } else if (ev.key === 'Enter') {
+                        ev.preventDefault();
+                        const item = activeIndex >= 0 ? flatItems[activeIndex] : flatItems[0];
+                        activateItem(item);
+                    }
+                });
+
+                dropdown.addEventListener('mousedown', (ev) => {
+                    // Prevent input blur before click handler runs
+                    ev.preventDefault();
+                });
+
+                dropdown.addEventListener('click', (ev) => {
+                    const btn = ev.target.closest('.topbar-search-item');
+                    if (!btn) return;
+                    const idx = Number(btn.getAttribute('data-idx'));
+                    activateItem(flatItems[idx]);
+                });
+
+                clearBtn?.addEventListener('click', () => {
+                    input.value = '';
+                    setClearVisible(false);
+                    hideDropdown();
+                    input.focus();
+                });
+
+                document.addEventListener('click', (ev) => {
+                    if (!root.contains(ev.target)) hideDropdown();
+                });
             })();
         </script>
     </body>
