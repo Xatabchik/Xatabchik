@@ -2033,9 +2033,7 @@ def create_webhook_app(bot_controller_instance):
 
         if count and count > 0:
             html = (
-                '<span class="badge bg-green-lt" title="Открытые тикеты">'
-                '<span class="status-dot status-dot-animated bg-green"></span>'
-                f" {count}</span>"
+                f'<span class="nav-badge nav-badge-success" title="Открытые тикеты">{count}</span>'
             )
         else:
             html = ''
