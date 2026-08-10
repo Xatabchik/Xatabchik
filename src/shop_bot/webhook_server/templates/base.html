@@ -8,10 +8,12 @@
 		<link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='img/favicon-16x16.png') }}" />
 		<link rel="shortcut icon" href="{{ url_for('static', filename='img/favicon-32x32.png') }}" />
 		<link rel="icon" href="{{ url_for('static', filename='img/safari-pinned-tab.svg') }}" type="image/svg+xml" />
-		<link rel="mask-icon" href="{{ url_for('static', filename='img/safari-pinned-tab.svg') }}" color="#ae3ec9" />
+		<link rel="mask-icon" href="{{ url_for('static', filename='img/safari-pinned-tab.svg') }}" color="#0b0d10" />
 		<link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}" />
-		<meta name="theme-color" content="#ae3ec9" />
+		<meta name="theme-color" content="#0b0d10" />
 		<meta name="csrf-token" content="{{ csrf_token() }}" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		
 		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler.min.css') }}" />
 		<link rel="stylesheet" href="{{ url_for('static', filename='vendor/tabler/css/tabler-flags.min.css') }}" />
@@ -21,6 +23,7 @@
 
 		
 		<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+		<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-theme.css') }}" />
 
 		
         <script src="{{ url_for('static', filename='vendor/chartjs/chart.min.js') }}"></script>

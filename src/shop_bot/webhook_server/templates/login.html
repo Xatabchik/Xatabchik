@@ -5,9 +5,16 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Вход в Панель управления</title>
 		<meta name="csrf-token" content="{{ csrf_token() }}" />
+		<meta name="theme-color" content="#0b0d10" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link
 			rel="stylesheet"
 			href="{{ url_for('static', filename='css/style.css') }}"
+		/>
+		<link
+			rel="stylesheet"
+			href="{{ url_for('static', filename='css/admin-theme.css') }}"
 		/>
 		<style>
 			/* Compact design for login form */
@@ -20,8 +27,8 @@
 			#login-form input[type="text"],
 			#login-form input[type="password"] {
 				font-size: 0.85rem !important;
-				padding: 0.4rem 0.75rem !important;
-				border-radius: 0.5rem !important;
+				padding: 0.55rem 0.85rem !important;
+				border-radius: 20px !important;
 			}
 
 			#login-form input[type="checkbox"] {
@@ -31,14 +38,15 @@
 
 			#login-form .button-primary {
 				font-size: 0.85rem !important;
-				padding: 0.4rem 0.75rem !important;
-				border-radius: 0.5rem !important;
+				padding: 0.55rem 0.9rem !important;
+				border-radius: 20px !important;
 			}
 
 			#login-form .toggle-password {
 				width: 1.5rem !important;
 				height: 1.5rem !important;
 				padding: 0.25rem !important;
+				color: rgba(246, 247, 248, 0.6);
 			}
 
 			#login-form .form-group {

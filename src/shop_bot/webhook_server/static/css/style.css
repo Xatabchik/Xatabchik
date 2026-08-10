@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* === 1. Базовая тема: плоский Material, минимум скруглений === */
 
@@ -5609,10 +5609,10 @@ textarea.form-control-sm {
    ========================================================================= */
 
 :root {
-  --app-radius-sm: 6px;
-  --app-radius: 8px;
-  --app-radius-md: 10px;
-  --app-radius-lg: 14px;
+  --app-radius-sm: 10px;
+  --app-radius: 14px;
+  --app-radius-md: 14px;
+  --app-radius-lg: 20px;
 }
 
 /* Карточки — единое скругление вместо квадратных углов */
