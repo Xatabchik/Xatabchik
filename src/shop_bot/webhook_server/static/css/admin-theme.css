@@ -61,11 +61,13 @@
   --shadow-card: var(--shadow-soft);
   --sidebar-ease: var(--ease);
 
-  /* Tabler / Bootstrap bridges */
+  /* Tabler / Bootstrap bridges
+     Primary surfaces are light/white, so foreground on them must be dark. */
   --tblr-body-bg: var(--bg-0);
   --tblr-body-color: var(--text-0);
-  --tblr-primary: #f6f7f8;
-  --tblr-primary-rgb: 246, 247, 248;
+  --tblr-primary: #ffffff;
+  --tblr-primary-rgb: 255, 255, 255;
+  --tblr-primary-fg: #0b0d10;
   --tblr-secondary: rgba(246, 247, 248, 0.6);
   --tblr-success: var(--success);
   --tblr-warning: var(--warning);
@@ -77,11 +79,18 @@
   --bs-body-bg: var(--bg-0);
   --bs-body-color: var(--text-0);
   --bs-border-color: var(--border-1);
-  --bs-primary: #f6f7f8;
-  --bs-primary-rgb: 246, 247, 248;
+  --bs-primary: #ffffff;
+  --bs-primary-rgb: 255, 255, 255;
   --bs-success: #74c9a0;
   --bs-warning: #e3aa5b;
   --bs-danger: #e27c87;
+}
+
+html[data-bs-theme='dark'],
+[data-bs-theme='dark'] {
+  --tblr-primary: #ffffff;
+  --tblr-primary-rgb: 255, 255, 255;
+  --tblr-primary-fg: #0b0d10;
 }
 
 html,
@@ -1029,4 +1038,123 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):hover {
 .form-control:focus-visible,
 .form-select:focus-visible {
   outline: none;
+}
+
+/* =========================================================================
+   Contrast fix: light/white active controls need dark content
+   Tabler keeps --tblr-primary-fg light in dark theme, which made icons/text
+   white-on-white on primary / checked / active buttons.
+   ========================================================================= */
+
+.btn-primary,
+.button-primary,
+.btn-glass.btn-primary,
+.btn-primary:hover,
+.button-primary:hover,
+.btn-primary:focus,
+.btn-primary:active,
+.btn-primary.active,
+.btn-primary.show,
+.btn-check:checked + .btn-primary,
+.btn-check:active + .btn-primary,
+.btn-outline-primary:hover,
+.btn-outline-primary:active,
+.btn-outline-primary.active,
+.btn-outline-primary.show,
+.btn-check:checked + .btn-outline-primary,
+.btn-check:active + .btn-outline-primary,
+.btn-secondary:hover,
+.btn-outline-secondary:hover,
+.btn-ghost:hover,
+.btn-glass:hover,
+.nav-pills .nav-link.active,
+.pagination .page-item.active .page-link,
+.support-filter-btn.active,
+.support-filter-chip.active,
+.filter-chip.active {
+  --tblr-btn-color: var(--ink-contrast) !important;
+  --tblr-btn-hover-color: var(--ink-contrast) !important;
+  --tblr-btn-active-color: var(--ink-contrast) !important;
+  color: var(--ink-contrast) !important;
+}
+
+.btn-primary i,
+.btn-primary svg,
+.btn-primary .ti,
+.button-primary i,
+.button-primary svg,
+.btn-glass.btn-primary i,
+.btn-check:checked + .btn i,
+.btn-check:checked + .btn svg,
+.btn-check:checked + .btn .ti,
+.btn-check:active + .btn i,
+.btn-check:active + .btn svg,
+.btn-outline-primary:hover i,
+.btn-outline-primary:hover svg,
+.btn-outline-primary:hover .ti,
+.btn-outline-primary.active i,
+.btn-outline-primary.active svg,
+.btn-outline-primary.active .ti,
+.btn-outline-primary:active i,
+.btn-primary:hover i,
+.btn-primary:hover svg,
+.btn-primary:hover .ti,
+.btn-primary.active i,
+.btn-primary.active svg,
+.btn-primary.active .ti,
+.btn-secondary:hover i,
+.btn-outline-secondary:hover i,
+.btn-ghost:hover i,
+.nav-pills .nav-link.active i,
+.nav-pills .nav-link.active svg,
+.pagination .page-item.active .page-link i,
+.support-filter-btn.active i,
+.support-filter-btn.active svg,
+.support-filter-chip.active i,
+.filter-chip.active i {
+  color: inherit !important;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+/* Keep decorative text-primary icons readable on dark surfaces,
+   but force contrast when they sit on light active controls. */
+.btn-primary .text-primary,
+.btn-primary .text-white,
+.btn-check:checked + .btn .text-primary,
+.btn-check:checked + .btn .text-white,
+.btn-outline-primary.active .text-primary,
+.btn-outline-primary.active .text-white,
+.btn-outline-primary:hover .text-primary,
+.support-filter-btn.active .text-primary,
+.support-filter-btn.active .text-white {
+  color: var(--ink-contrast) !important;
+}
+
+.support-filter-btn.active {
+  background: var(--ink) !important;
+  border-color: var(--ink) !important;
+  color: var(--ink-contrast) !important;
+}
+
+/* Active segmented / tab-like buttons that use .btn.active */
+.btn.active:not(.btn-danger):not(.btn-outline-danger):not(.btn-warning):not(.btn-success):not(.btn-outline-success),
+.btn.show:not(.btn-danger):not(.btn-outline-danger) {
+  color: var(--ink-contrast) !important;
+}
+
+.btn.active:not(.btn-danger):not(.btn-outline-danger):not(.btn-warning):not(.btn-success) i,
+.btn.active:not(.btn-danger):not(.btn-outline-danger):not(.btn-warning):not(.btn-success) svg,
+.btn.active:not(.btn-danger):not(.btn-outline-danger):not(.btn-warning):not(.btn-success) .ti {
+  color: inherit !important;
+}
+
+/* Bottom nav: primary is white — keep light content on dark bar */
+.bottom-nav-item.active {
+  color: var(--text-0) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.bottom-nav-item.active .bottom-nav-icon {
+  color: var(--text-0) !important;
 }
