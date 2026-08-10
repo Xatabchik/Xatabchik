@@ -24,7 +24,8 @@ from shop_bot.bot.keyboards import (
 from shop_bot.data_manager.remnawave_repository import (
     create_payload_pending, get_plan_by_id,
     deduct_from_balance, check_transaction_exists, add_to_balance, log_transaction,
-    add_to_referral_balance_all, get_balance, get_all_users, is_admin, update_user_stats,
+    add_to_referral_balance_all, add_to_referral_balance, deduct_from_referral_balance,
+    get_referral_balance, get_balance, get_all_users, is_admin, update_user_stats,
     redeem_promo_code, update_promo_code_status, record_key_from_payload, get_key_by_id,
     update_key, get_key_by_email,
     list_referral_payout_methods, add_referral_payout_method, delete_referral_payout_method,
@@ -2313,7 +2314,16 @@ async def api_get_payment_methods(req: PaymentMethodsRequest):
     balance = float(user.get('balance', 0)) if user else 0
     methods.append({"id": "pay_balance", "name": f"Баланс ({balance:.0f} RUB)", "icon": "account_balance", "balance": balance})
 
-    return {"ok": True, "methods": methods, "balance": balance}
+    # 8. Referral balance (как в боте: кнопка есть в списке, UI скрывает при недостатке средств)
+    ref_balance = float(get_referral_balance(user_id) or 0) if user else 0.0
+    methods.append({
+        "id": "pay_referral_balance",
+        "name": f"Реферальный баланс ({ref_balance:.0f} RUB)",
+        "icon": "diamond",
+        "balance": ref_balance,
+    })
+
+    return {"ok": True, "methods": methods, "balance": balance, "referral_balance": ref_balance}
 
 
 @app.post("/api/create-payment")
@@ -2623,6 +2633,34 @@ async def api_create_payment(req: CreatePaymentRequest):
                 await bot.session.close()
             return {"ok": True, "message": "Оплачено с баланса!", "paid": True}
 
+        # --- Referral balance (зеркало pay_referral_balance в боте) ---
+        elif method_id == "pay_referral_balance":
+            if not deduct_from_referral_balance(user_id, float(final_price)):
+                return {"ok": False, "error": "Недостаточно средств на реферальном балансе"}
+            pid = f"referral_balance:{user_id}:{uuid.uuid4()}"
+            meta = {
+                "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
+                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "plan_id": plan_id, "payment_method": "ReferralBalance", "payment_id": pid,
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
+            }
+            token = get_setting("telegram_bot_token")
+            if not token:
+                add_to_referral_balance(user_id, float(final_price))
+                return {"ok": False, "error": "Бот не настроен (нет токена)"}
+
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                await process_successful_payment(bot, meta)
+            except Exception as e:
+                add_to_referral_balance(user_id, float(final_price))
+                logger.error(f"Referral balance payment processing error: {e}")
+                return {"ok": False, "error": f"Ошибка обработки: {e}"}
+            finally:
+                await bot.session.close()
+            return {"ok": True, "message": "Оплачено с реферального баланса!", "paid": True}
+
         return {"ok": False, "error": "Метод не поддерживается"}
     except Exception as e:
         logger.error(f"API Create Payment Error: {e}")
@@ -2659,8 +2697,8 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
 
         user_id = int(user["telegram_id"])
         method_id = (req.payment_method or "").strip()
-        if method_id == "pay_balance":
-            return {"ok": False, "error": "Нельзя пополнить баланс с баланса"}
+        if method_id in ("pay_balance", "pay_referral_balance"):
+            return {"ok": False, "error": "Нельзя пополнить баланс с внутреннего баланса"}
 
         try:
             amount = Decimal(str(req.amount)).quantize(Decimal("0.01"))

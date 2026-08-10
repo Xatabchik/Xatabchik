@@ -2475,7 +2475,7 @@
             }
             let html = '<div class="flex flex-col gap-1.5">';
             methods.forEach(m => {
-                if (m.id === 'pay_balance' && currentPaymentData) {
+                if ((m.id === 'pay_balance' || m.id === 'pay_referral_balance') && currentPaymentData) {
                     const price = parseFloat(currentPaymentData.price || 0);
                     const bal = parseFloat(m.balance || 0);
                     if (bal < price) return;
@@ -3335,7 +3335,7 @@
                     return;
                 }
 
-                const methodIcons = { 'Balance': 'account_balance', 'Stars': 'star', 'Cryptobot': 'currency_bitcoin', 'Platega': 'credit_card', 'YooMoney': 'account_balance_wallet' };
+                const methodIcons = { 'Balance': 'account_balance', 'ReferralBalance': 'diamond', 'Stars': 'star', 'Cryptobot': 'currency_bitcoin', 'Platega': 'credit_card', 'YooMoney': 'account_balance_wallet' };
                 let html = '<div class="flex flex-col gap-2">';
                 txs.forEach(tx => {
                     const icon = methodIcons[tx.payment_method] || 'receipt';
@@ -4213,7 +4213,7 @@
                     body: JSON.stringify({ user_id: userId })
                 });
                 const data = await resp.json();
-                const methods = (data.ok ? (data.methods || []) : []).filter(m => m.id !== 'pay_balance');
+                const methods = (data.ok ? (data.methods || []) : []).filter(m => m.id !== 'pay_balance' && m.id !== 'pay_referral_balance');
                 _renderTopUpMethodsStep(contentEl, amount, methods);
             } catch (e) {
                 contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка загрузки способов оплаты</div>';
