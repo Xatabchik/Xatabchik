@@ -4,6 +4,9 @@
 Настройки SMTP берутся из общей таблицы bot_settings (см. панель администратора,
 раздел «Настройки» → «Email / SMTP»): smtp_host, smtp_port, smtp_user, smtp_password,
 smtp_from_email, smtp_use_tls.
+
+Имя отправителя и тема письма берутся из названия сервиса (webapp_title /
+panel_brand_title), а не из хардкода репозитория.
 """
 
 from __future__ import annotations
@@ -28,6 +31,15 @@ _APP_PASSWORD_HINTS = {
     "gmail.com": "Gmail требует «пароль приложения» (App Password) — обычный пароль аккаунта Google не подходит, "
                  "также нужно включить двухфакторную аутентификацию.",
 }
+
+
+def _get_service_name() -> str:
+    """Название сервиса для From/Subject писем (не хардкод репозитория)."""
+    for key in ("webapp_title", "panel_brand_title"):
+        value = (get_setting(key) or "").strip()
+        if value:
+            return value
+    return "Сервис"
 
 
 def _get_smtp_settings() -> dict:
@@ -106,15 +118,16 @@ def send_activation_code(to_email: str, code: str, max_attempts: int = 2, retry_
         )
         return False
 
-    subject = "Код подтверждения email"
+    service_name = _get_service_name()
+    subject = f"{service_name}: код подтверждения email"
     body = (
-        f"Ваш код подтверждения: {code}\n\n"
+        f"Ваш код подтверждения для {service_name}: {code}\n\n"
         f"Код действителен 10 минут. Если вы не запрашивали регистрацию — просто игнорируйте это письмо."
     )
 
     message = MIMEText(body, "plain", "utf-8")
     message["Subject"] = subject
-    message["From"] = formataddr(("Xatabchik", settings["from_email"] or settings["user"]))
+    message["From"] = formataddr((service_name, settings["from_email"] or settings["user"]))
     message["To"] = to_email
 
     host = settings["host"]
