@@ -467,10 +467,90 @@
 
   /* Payments: drawer-элементы тоже на всю ширину */
   #payments details.rw-drawer { width: 100%; }
-  #content details.rw-drawer { width: 100%; margin-bottom: 0.5rem; }
-  #content .form-label { margin-bottom: 0.2rem; font-size: 0.85rem; }
-  #content .form-text { font-size: 0.75rem; margin-top: 0.15rem; }
-  #content .mb-compact { margin-bottom: 0.65rem !important; }
+
+  /* Content tab: плиточная компактная раскладка */
+  #content .content-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+    align-items: start;
+  }
+  #content .content-tile {
+    margin: 0;
+    height: fit-content;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 12px;
+    background: rgba(255,255,255,.025);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  #content .content-tile-wide {
+    grid-column: 1 / -1;
+  }
+  #content .content-tile-title {
+    margin: 0 0 2px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: rgba(255,255,255,.48);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #content .content-tile-title .ti { font-size: 0.95rem; opacity: .85; }
+  #content .content-tile .form-label {
+    margin-bottom: 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: rgba(255,255,255,.55);
+  }
+  #content .content-tile .form-control,
+  #content .content-tile .form-control-sm {
+    font-size: 0.82rem;
+    padding: 0.3rem 0.5rem;
+    min-height: 1.9rem;
+  }
+  #content .content-tile textarea.form-control {
+    resize: vertical;
+    min-height: 2.4rem;
+    max-height: 7.5rem;
+    line-height: 1.35;
+  }
+  #content .content-tile .form-text {
+    font-size: 0.7rem;
+    margin-top: 0;
+    line-height: 1.25;
+  }
+  #content .content-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  #content .content-btn-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 8px;
+  }
+  #content .content-howto-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+  }
+  #content .content-links-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+  }
+  #content .content-tile .form-check {
+    margin: 2px 0 0;
+    padding-top: 4px;
+  }
+  #content .content-tile .form-check-label { font-size: 0.82rem; }
 
   .settings-actions { margin-top: 20px; text-align: center; width: 100%; }
   .settings-actions .btn { display: inline-block; width: auto; }
@@ -2003,160 +2083,156 @@
 						</h2>
 					</div>
 					<div class="card-body">
-						<details class="rw-drawer" open>
-							<summary class="rw-drawer-summary"><span>Тексты разделов</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
-							<div class="rw-drawer-body">
-								<div class="row g-2">
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="about_text">Текст «О проекте»</label>
-										<textarea class="form-control form-control-sm" id="about_text" name="about_text" rows="3">{{ settings.about_text or "" }}</textarea>
-									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="support_text">Текст в разделе «Поддержка»</label>
-										<textarea class="form-control form-control-sm" id="support_text" name="support_text" rows="3">{{ settings.support_text or "" }}</textarea>
-									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="main_menu_text">Текст главного меню</label>
-										<textarea class="form-control form-control-sm" id="main_menu_text" name="main_menu_text" rows="3" placeholder="🏠 &lt;b&gt;Главное меню&lt;/b&gt;&#10;&#10;Выберите действие:">{{ settings.main_menu_text or "" }}</textarea>
-										<div class="form-text text-secondary">HTML Telegram. Пусто = текст по умолчанию.</div>
-									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="howto_intro_text">Инструкции: вступительный текст</label>
-										<textarea class="form-control form-control-sm" id="howto_intro_text" name="howto_intro_text" rows="3" placeholder="Выберите вашу платформу для инструкции по подключению VLESS:">{{ settings.howto_intro_text or "" }}</textarea>
-									</div>
+						<div class="content-tiles">
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-info-circle"></i> О проекте</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="about_text" name="about_text" rows="2">{{ settings.about_text or "" }}</textarea>
 								</div>
 							</div>
-						</details>
 
-						<details class="rw-drawer">
-							<summary class="rw-drawer-summary"><span>Инструкции по платформам</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
-							<div class="rw-drawer-body">
-								<div class="row g-2">
-									<div class="col-12 col-md-6 mb-compact">
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-headset"></i> Поддержка</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="support_text" name="support_text" rows="2">{{ settings.support_text or "" }}</textarea>
+								</div>
+							</div>
+
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-home"></i> Главное меню</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="main_menu_text" name="main_menu_text" rows="2" placeholder="🏠 Главное меню">{{ settings.main_menu_text or "" }}</textarea>
+									<div class="form-text text-secondary">HTML Telegram · пусто = дефолт</div>
+								</div>
+							</div>
+
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-list"></i> Вступление инструкций</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="howto_intro_text" name="howto_intro_text" rows="2" placeholder="Выберите платформу…">{{ settings.howto_intro_text or "" }}</textarea>
+								</div>
+							</div>
+
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-share"></i> Поделиться · рефералка</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="referral_share_text" name="referral_share_text" rows="2" placeholder="🌐Обход глушилок…">{{ settings.referral_share_text or '' }}</textarea>
+									<div class="form-text text-secondary">Пусто = дефолт</div>
+								</div>
+							</div>
+
+							<div class="content-tile">
+								<div class="content-tile-title"><i class="ti ti-gift"></i> Поделиться · подарок</div>
+								<div class="content-field">
+									<textarea class="form-control form-control-sm" id="gift_share_text" name="gift_share_text" rows="2" placeholder="🎁 Получи подарочный VPN ключ!">{{ settings.gift_share_text or '' }}</textarea>
+									<div class="form-text text-secondary">Пусто = дефолт</div>
+								</div>
+							</div>
+
+							<div class="content-tile content-tile-wide">
+								<div class="content-tile-title"><i class="ti ti-device-mobile"></i> Инструкции по платформам</div>
+								<div class="content-howto-grid">
+									<div class="content-field">
 										<label class="form-label" for="howto_android_text">Android</label>
-										<textarea class="form-control form-control-sm" id="howto_android_text" name="howto_android_text" rows="5">{{ settings.howto_android_text or "" }}</textarea>
+										<textarea class="form-control form-control-sm" id="howto_android_text" name="howto_android_text" rows="3">{{ settings.howto_android_text or "" }}</textarea>
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
+									<div class="content-field">
 										<label class="form-label" for="howto_ios_text">iOS</label>
-										<textarea class="form-control form-control-sm" id="howto_ios_text" name="howto_ios_text" rows="5">{{ settings.howto_ios_text or "" }}</textarea>
+										<textarea class="form-control form-control-sm" id="howto_ios_text" name="howto_ios_text" rows="3">{{ settings.howto_ios_text or "" }}</textarea>
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
+									<div class="content-field">
 										<label class="form-label" for="howto_windows_text">Windows</label>
-										<textarea class="form-control form-control-sm" id="howto_windows_text" name="howto_windows_text" rows="5">{{ settings.howto_windows_text or "" }}</textarea>
+										<textarea class="form-control form-control-sm" id="howto_windows_text" name="howto_windows_text" rows="3">{{ settings.howto_windows_text or "" }}</textarea>
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
+									<div class="content-field">
 										<label class="form-label" for="howto_linux_text">Linux</label>
-										<textarea class="form-control form-control-sm" id="howto_linux_text" name="howto_linux_text" rows="5">{{ settings.howto_linux_text or "" }}</textarea>
+										<textarea class="form-control form-control-sm" id="howto_linux_text" name="howto_linux_text" rows="3">{{ settings.howto_linux_text or "" }}</textarea>
 									</div>
 								</div>
 							</div>
-						</details>
 
-						<details class="rw-drawer" open>
-							<summary class="rw-drawer-summary"><span>Тексты кнопок главного меню</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
-							<div class="rw-drawer-body">
-								<div class="row g-2">
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_trial_text">«Попробовать бесплатно»</label>
+							<div class="content-tile content-tile-wide">
+								<div class="content-tile-title"><i class="ti ti-click"></i> Кнопки главного меню</div>
+								<div class="content-btn-grid">
+									<div class="content-field">
+										<label class="form-label" for="btn_trial_text">Пробный период</label>
 										<input class="form-control form-control-sm" type="text" id="btn_trial_text" name="btn_trial_text" value="{{ settings.btn_trial_text or '' }}" placeholder="🎁 Попробовать бесплатно" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_profile_text">«Мой профиль»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_profile_text">Профиль</label>
 										<input class="form-control form-control-sm" type="text" id="btn_profile_text" name="btn_profile_text" value="{{ settings.btn_profile_text or '' }}" placeholder="👤 Мой профиль" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_my_keys_text">«Мои ключи» (без счётчика)</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_my_keys_text">Мои ключи</label>
 										<input class="form-control form-control-sm" type="text" id="btn_my_keys_text" name="btn_my_keys_text" value="{{ settings.btn_my_keys_text or '' }}" placeholder="🔑 Мои ключи" />
-										<div class="form-text text-secondary">Счётчик вида «(3)» добавляется автоматически.</div>
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_buy_key_text">«Купить ключ»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_buy_key_text">Купить ключ</label>
 										<input class="form-control form-control-sm" type="text" id="btn_buy_key_text" name="btn_buy_key_text" value="{{ settings.btn_buy_key_text or '' }}" placeholder="🛒 Купить ключ" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_topup_text">«Пополнить баланс»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_topup_text">Пополнить</label>
 										<input class="form-control form-control-sm" type="text" id="btn_topup_text" name="btn_topup_text" value="{{ settings.btn_topup_text or '' }}" placeholder="💳 Пополнить баланс" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_referral_text">«Реферальная программа»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_referral_text">Рефералка</label>
 										<input class="form-control form-control-sm" type="text" id="btn_referral_text" name="btn_referral_text" value="{{ settings.btn_referral_text or '' }}" placeholder="🤝 Реферальная программа" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_support_text">«Поддержка»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_support_text">Поддержка</label>
 										<input class="form-control form-control-sm" type="text" id="btn_support_text" name="btn_support_text" value="{{ settings.btn_support_text or '' }}" placeholder="🆘 Поддержка" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_about_text">«О проекте»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_about_text">О проекте</label>
 										<input class="form-control form-control-sm" type="text" id="btn_about_text" name="btn_about_text" value="{{ settings.btn_about_text or '' }}" placeholder="ℹ️ О проекте" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_speed_text">«Скорость»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_speed_text">Скорость</label>
 										<input class="form-control form-control-sm" type="text" id="btn_speed_text" name="btn_speed_text" value="{{ settings.btn_speed_text or '' }}" placeholder="⚡ Скорость" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_howto_text">«Как использовать»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_howto_text">Как использовать</label>
 										<input class="form-control form-control-sm" type="text" id="btn_howto_text" name="btn_howto_text" value="{{ settings.btn_howto_text or '' }}" placeholder="❓ Как использовать" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_admin_text">«Админка»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_admin_text">Админка</label>
 										<input class="form-control form-control-sm" type="text" id="btn_admin_text" name="btn_admin_text" value="{{ settings.btn_admin_text or '' }}" placeholder="⚙️ Админка" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="btn_back_to_menu_text">«Назад в меню»</label>
+									<div class="content-field">
+										<label class="form-label" for="btn_back_to_menu_text">Назад в меню</label>
 										<input class="form-control form-control-sm" type="text" id="btn_back_to_menu_text" name="btn_back_to_menu_text" value="{{ settings.btn_back_to_menu_text or '' }}" placeholder="⬅️ Назад в меню" />
 									</div>
 								</div>
+								<div class="form-text text-secondary mt-1">У «Мои ключи» счётчик «(N)» добавляется автоматически.</div>
 							</div>
-						</details>
 
-						<details class="rw-drawer" open>
-							<summary class="rw-drawer-summary"><span>Тексты «Поделиться»</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
-							<div class="rw-drawer-body">
-								<div class="row g-2">
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="referral_share_text">Реферальная программа</label>
-										<textarea class="form-control form-control-sm" id="referral_share_text" name="referral_share_text" rows="2" placeholder="🌐Обход глушилок и блокировок на любом устройстве! 😊">{{ settings.referral_share_text or '' }}</textarea>
-										<div class="form-text text-secondary">Вместе с реферальной ссылкой (бот и Mini App). Пусто = дефолт.</div>
-									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="gift_share_text">Подарочный ключ</label>
-										<textarea class="form-control form-control-sm" id="gift_share_text" name="gift_share_text" rows="2" placeholder="🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать">{{ settings.gift_share_text or '' }}</textarea>
-										<div class="form-text text-secondary">Вместе со ссылкой на подарок (бот и Mini App). Пусто = дефолт.</div>
-									</div>
-								</div>
-							</div>
-						</details>
-
-						<details class="rw-drawer" open>
-							<summary class="rw-drawer-summary"><span>Ссылки и подписка</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
-							<div class="rw-drawer-body">
-								<div class="row g-2">
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="terms_url">URL «Условия использования»</label>
+							<div class="content-tile content-tile-wide">
+								<div class="content-tile-title"><i class="ti ti-link"></i> Ссылки и подписка</div>
+								<div class="content-links-grid">
+									<div class="content-field">
+										<label class="form-label" for="terms_url">Условия использования</label>
 										<input class="form-control form-control-sm" type="url" id="terms_url" name="terms_url" value="{{ settings.terms_url or '' }}" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="privacy_url">URL «Политика конфиденциальности»</label>
+									<div class="content-field">
+										<label class="form-label" for="privacy_url">Политика конфиденциальности</label>
 										<input class="form-control form-control-sm" type="url" id="privacy_url" name="privacy_url" value="{{ settings.privacy_url or '' }}" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="support_user">URL поддержки</label>
-										<input class="form-control form-control-sm" type="text" id="support_user" name="support_user" value="{{ settings.support_user or '' }}" placeholder="https://t.me/ВашSupport" />
+									<div class="content-field">
+										<label class="form-label" for="support_user">Поддержка</label>
+										<input class="form-control form-control-sm" type="text" id="support_user" name="support_user" value="{{ settings.support_user or '' }}" placeholder="https://t.me/…" />
 									</div>
-									<div class="col-12 col-md-6 mb-compact">
-										<label class="form-label" for="channel_url">URL Telegram-канала</label>
-										<input class="form-control form-control-sm" type="url" id="channel_url" name="channel_url" value="{{ settings.channel_url or '' }}" placeholder="https://t.me/ВашКанал" />
-									</div>
-									<div class="col-12 mb-compact">
-										<input type="hidden" name="force_subscription" value="false" />
-										<div class="form-check">
-											<input class="form-check-input" type="checkbox" id="force_subscription" name="force_subscription" value="true" {% if settings.force_subscription == 'true' %}checked{% endif %}>
-											<label class="form-check-label" for="force_subscription">Требовать обязательную подписку на канал</label>
-										</div>
+									<div class="content-field">
+										<label class="form-label" for="channel_url">Telegram-канал</label>
+										<input class="form-control form-control-sm" type="url" id="channel_url" name="channel_url" value="{{ settings.channel_url or '' }}" placeholder="https://t.me/…" />
 									</div>
 								</div>
+								<input type="hidden" name="force_subscription" value="false" />
+								<div class="form-check">
+									<input class="form-check-input" type="checkbox" id="force_subscription" name="force_subscription" value="true" {% if settings.force_subscription == 'true' %}checked{% endif %}>
+									<label class="form-check-label" for="force_subscription">Обязательная подписка на канал</label>
+								</div>
 							</div>
-						</details>
+						</div>
 					</div>
 				</div>
 			</section>
