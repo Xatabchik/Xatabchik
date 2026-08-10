@@ -3954,6 +3954,8 @@ body{
 }
 
 .topbar{
+	position: relative;
+	z-index: 50;
 	display: flex;
 	justify-content: flex-end;
 	align-items: center;
@@ -3963,12 +3965,21 @@ body{
 	box-sizing: border-box;
 }
 
+/* Выпадающий список поиска должен быть выше карточек/soft-select на странице */
+.topbar:has(.topbar-search.is-open){
+	z-index: 1200;
+}
+
 .topbar-search{
 	position: relative;
 	flex: 1 1 auto;
 	max-width: 420px;
 	min-width: 160px;
-	z-index: 40;
+	z-index: 1;
+}
+
+.topbar-search.is-open{
+	z-index: 1201;
 }
 
 .topbar-search-field .form-control{
@@ -4004,6 +4015,7 @@ body{
 	top: calc(100% + 6px);
 	left: 0;
 	right: 0;
+	z-index: 1202;
 	max-height: min(70vh, 420px);
 	overflow-y: auto;
 	background: var(--surface-0, #161a20);
