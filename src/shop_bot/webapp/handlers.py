@@ -107,18 +107,34 @@ def _ref_method_type_enabled(method_type: str) -> bool:
 
 
 # ===== Utility Functions =====
-def get_transaction_comment(user_data: dict, action_type: str, value: any, host_name: str = None) -> str:
-    from shop_bot.bot.handlers import get_transaction_comment as bot_get_comment
-    from aiogram.types import User
-    
-    # Adapt dictionary to types.User if needed by bot function
-    tg_user = User(
-        id=user_data.get('id', 0),
-        is_bot=False,
-        first_name=user_data.get('first_name', 'User'),
-        username=user_data.get('username')
-    )
-    return bot_get_comment(tg_user, action_type, value, host_name)
+def get_transaction_comment(user_data: dict, action_type: str, value: any, host_name: str | None = None) -> str:
+    """Короткое человекочитаемое описание платежа — для поля description в
+    ЮKassa/ЮMoney и подписи Stars-инвойса.
+
+    Раньше здесь была попытка импортировать одноимённую функцию из
+    `shop_bot.bot.handlers`, которой там никогда не было — это ломало ЛЮБУЮ
+    оплату из webapp (ЮKassa/ЮMoney/Stars) с `ImportError`, тихо проглоченным
+    общим `except Exception` в /api/create-payment. Теперь строка собирается
+    здесь же, без зависимости от модуля бота.
+    """
+    try:
+        months = int(value or 0)
+    except (TypeError, ValueError):
+        months = 0
+
+    action_label = "Продление подписки" if action_type == "extend" else "Оплата подписки"
+    duration = f"на {months} мес." if months else ""
+
+    user_id = (user_data or {}).get("id")
+    username = (user_data or {}).get("username")
+    who = f"@{username}" if username else (f"#{user_id}" if user_id else "")
+
+    parts = [action_label, duration]
+    if host_name:
+        parts.append(f"({host_name})")
+    if who:
+        parts.append(f"— {who}")
+    return " ".join(p for p in parts if p)
 
 def calculate_webapp_price(price: float, user_id: int) -> float:
     try:

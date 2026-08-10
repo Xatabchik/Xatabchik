@@ -317,6 +317,22 @@ async def _handle_key_creation_failure(
         action_label=action_label,
     )
 
+async def _safe_edit_or_answer(message: types.Message, text: str, **kwargs) -> None:
+    """Заменить `message.edit_text(...)` там, где предыдущее сообщение может
+    оказаться нетекстовым (счёт на оплату Stars/ЮKassa, фото рассылки и т.п.) —
+    у таких сообщений нет текста для редактирования, и Telegram отвечает
+    `Bad Request: there is no text in the message to edit`. В этом случае
+    вместо падения хендлера отправляем новое сообщение с тем же контентом.
+    """
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest:
+        try:
+            await message.answer(text, **kwargs)
+        except TelegramBadRequest:
+            pass
+
+
 def _format_duration_label(months: int | None, duration_days: int | None) -> str:
     try:
         dd = int(duration_days or 0)
@@ -1216,10 +1232,7 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
         )
 
     if edit_message:
-        try:
-            await message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
-        except TelegramBadRequest:
-            pass
+        await _safe_edit_or_answer(message, text, reply_markup=keyboard, disable_web_page_preview=True)
     else:
         await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
@@ -1803,7 +1816,8 @@ def get_user_router() -> Router:
         show_auto_renew_toggle = bool(non_gift_keys)
         auto_renew_any_enabled = any(bool(int(k.get("auto_renew") or 0)) for k in non_gift_keys)
 
-        await callback.message.edit_text(
+        await _safe_edit_or_answer(
+            callback.message,
             final_text,
             reply_markup=keyboards.create_profile_keyboard(
                 show_notification_toggle=show_notification_toggle,

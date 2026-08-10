@@ -185,8 +185,11 @@ from shop_bot.data_manager.remnawave_repository import (..., get_webapp_settings
 - `shop_bot.bot.keyboards`: `create_payment_keyboard`, `create_yoomoney_payment_keyboard`,
   `create_cryptobot_payment_keyboard`.
 - `shop_bot.bot.handlers`: `create_cryptobot_api_invoice`, `process_successful_payment`,
-  `notify_admin_of_purchase`, `get_transaction_comment` (через прямой вызов адаптированной
-  функции с преобразованием dict → `aiogram.types.User`).
+  `notify_admin_of_purchase`.
+- `get_transaction_comment` — короткое описание платежа (для ЮKassa/ЮMoney/Stars) реализовано
+  локально в `webapp/handlers.py`, без зависимости от модуля бота (там такой функции никогда
+  не было — старая попытка импортировать её из `shop_bot.bot.handlers` ломала любую оплату
+  из webapp `ImportError`'ом).
 - `shop_bot.modules.platega_api.PlategaAPI`, `shop_bot.modules.heleket_api.create_heleket_payment_request`.
 - `yookassa` SDK напрямую (`Configuration`, `Payment`).
 - Собственная генерация ссылки ЮMoney (`_build_yoomoney_link`).
