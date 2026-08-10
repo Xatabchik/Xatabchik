@@ -3697,7 +3697,7 @@ body.login-page {
 	--info-color: #38bdf8;
 	--ui-radius: 18px;
 	--ui-radius-sm: 14px;
-	--sidebar-w: 272px;
+	--sidebar-w: 252px;
 	--mobile-header-h: 56px;
 	--shadow-soft: 0 10px 28px rgba(0,0,0,.35);
 	--shadow-card: 0 14px 36px rgba(0,0,0,.45);
@@ -3741,64 +3741,127 @@ body{
 	position: fixed;
 	top: 0;
 	left: 0;
+	z-index: 200;
 	display: flex;
 	flex-direction: column;
-	padding: 26px 18px 22px;
-	padding-bottom: max(22px, env(safe-area-inset-bottom));
-	overflow-y: auto;
+	padding: 20px 16px;
+	padding-bottom: max(18px, env(safe-area-inset-bottom));
+	overflow: hidden;
 	overscroll-behavior: contain;
-	background:
-		linear-gradient(180deg, rgba(255,255,255,.04) 0%, rgba(255,255,255,.02) 25%, rgba(255,255,255,.01) 100%),
-		linear-gradient(180deg, #0c141f 0%, #0a1018 100%);
-	border-right: 1px solid rgba(255,255,255,.06);
-	box-shadow: 0 0 50px rgba(0,0,0,.35);
+	background: #111318;
+	border-right: 1px solid rgba(255,255,255,.09);
+	box-shadow: none;
 }
 
 .sidebar .brand{
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 8px 10px 18px;
+	gap: 8px;
+	padding: 2px 4px 0;
+	margin-bottom: 18px;
+	flex: 0 0 auto;
 }
 
 .sidebar .brand-link{
 	display: flex;
 	align-items: center;
 	gap: 10px;
+	min-width: 0;
+	flex: 1 1 auto;
 	text-decoration: none;
-	color: var(--text-primary);
+	color: #f6f7f8;
 }
 
+.sidebar .brand-mark,
+.sidebar .brand-link img.brand-mark,
 .sidebar .brand-link img{
-	width: 34px;
-	height: 34px;
+	width: 30px;
+	height: 30px;
+	flex: 0 0 30px;
 	object-fit: contain;
-	filter: drop-shadow(0 6px 16px rgba(0,0,0,.5));
+	border-radius: 8px;
+	filter: none;
 }
 
-.sidebar #brand-title{
-	font-size: 22px;
-	font-weight: 700;
-	letter-spacing: .2px;
+.sidebar .brand-word{
+	display: flex;
+	flex-direction: column;
+	line-height: 1.15;
+	min-width: 0;
 }
 
+.sidebar #brand-title,
+.sidebar .brand-word b#brand-title{
+	display: block;
+	font-size: 14.5px;
+	font-weight: 600;
+	letter-spacing: .02em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	margin: 0;
+	padding: 0;
+	line-height: 1.2;
+}
+
+.sidebar .brand-sub{
+	display: block;
+	margin-top: 3px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	font-size: 9.5px;
+	font-weight: 500;
+	letter-spacing: .12em;
+	text-transform: uppercase;
+	color: rgba(246,247,248,.38);
+}
+
+.sidebar .btn-brand-edit,
 .sidebar #brand-edit{
-	border-radius: 999px !important;
-	padding: 6px 10px;
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	margin: 0;
+	border: 1px solid rgba(255,255,255,.10);
+	border-radius: 10px !important;
+	background: transparent;
+	color: rgba(246,247,248,.45);
 	line-height: 1;
+	cursor: pointer;
+	transition: background 200ms cubic-bezier(.2,.8,.2,1), color 200ms cubic-bezier(.2,.8,.2,1), border-color 200ms cubic-bezier(.2,.8,.2,1);
+}
+
+.sidebar .btn-brand-edit:hover,
+.sidebar #brand-edit:hover{
+	background: rgba(255,255,255,.05);
+	color: rgba(246,247,248,.85);
+	border-color: rgba(255,255,255,.16);
+}
+
+.sidebar .btn-brand-edit i,
+.sidebar #brand-edit i{
+	font-size: 14px;
 }
 
 /* hide scrollbar visually but keep scroll functionality */
 .sidebar::-webkit-scrollbar { display: none; }
 
-.sidebar-navigation{
+.sidebar-navigation,
+.sidebar .nav-scroll{
 	display: flex;
 	flex-direction: column;
-	gap: 10px;
-	padding: 6px 10px;
+	flex: 1 1 auto;
+	gap: 0;
+	padding: 0 2px;
+	margin: 0 -2px;
 	align-items: stretch;
-	width: 100%;
+	width: auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 .sidebar-navigation .nav-link{
@@ -3806,57 +3869,63 @@ body{
 	align-items: center;
 	justify-content: flex-start;
 	text-align: left;
-	padding: 12px 14px;
+	padding: 8px 12px;
 	width: 100%;
-	min-height: 44px;
+	min-height: 38px;
 	white-space: nowrap;
 	gap: 10px;
+	margin: 0 0 3px;
 	border-radius: 12px !important;
-	border: 1px solid rgba(255,255,255,.08);
-	background: rgba(255,255,255,.03);
-	color: var(--text-secondary) !important;
+	border: 1px solid transparent;
+	background: transparent;
+	color: rgba(246,247,248,.58) !important;
+	font-size: 13.25px;
+	font-weight: 500;
 	text-decoration: none;
-	transition: transform .15s ease, background .15s ease, border-color .15s ease;
+	box-shadow: none;
+	transition: background 200ms cubic-bezier(.2,.8,.2,1), color 200ms cubic-bezier(.2,.8,.2,1), border-color 200ms cubic-bezier(.2,.8,.2,1), box-shadow 200ms cubic-bezier(.2,.8,.2,1);
 	position: relative;
 }
 
 .sidebar-navigation .nav-link i {
-	font-size: 1.1rem;
-	width: 20px;
+	font-size: 16.5px;
+	width: 17px;
+	height: 17px;
+	line-height: 1;
 	text-align: center;
-	flex-shrink: 0;
+	flex: 0 0 17px;
+	opacity: .85;
 }
 
-.sidebar-navigation .nav-link span {
-	flex: 1;
+.sidebar-navigation .nav-link > span:not(.nav-badge):not(.open-tickets-badge) {
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
 .sidebar-navigation .nav-link:hover{
 	background: rgba(255,255,255,.05);
-	border-color: rgba(255,255,255,.12);
-	transform: translateY(-1px);
+	border-color: transparent;
+	color: #f6f7f8 !important;
+	transform: none;
 }
 
 .sidebar-navigation .nav-link.active{
-	background: rgba(0,217,255,.20) !important;
-	border-color: rgba(0,217,255,.55) !important;
-	color: var(--text-primary) !important;
-	box-shadow: 0 10px 26px rgba(0,217,255,.10);
+	background: rgba(255,255,255,.08) !important;
+	border-color: transparent !important;
+	color: #f6f7f8 !important;
+	box-shadow: inset 0 0 0 1px rgba(255,255,255,.10);
 }
 
 .sidebar-navigation .nav-link.active i {
-	color: var(--accent);
+	color: inherit;
+	opacity: 1;
 }
 
 .sidebar-footer{
 	margin-top: auto;
-	padding: 14px 10px 0;
-}
-
-.sidebar-footer .btn{
-	border-radius: 999px !important;
-	padding: 12px 16px;
-	font-weight: 700;
+	flex: 0 0 auto;
+	padding: 14px 2px 0;
+	border-top: 1px solid rgba(255,255,255,.10);
 }
 
 .content-shell{
@@ -4297,10 +4366,11 @@ select option:checked{
 		top: 0;
 		padding-bottom: max(24px, env(safe-area-inset-bottom));
 		transform: translateX(-110%);
-		transition: transform .22s ease;
+		transition: transform 220ms cubic-bezier(.2,.8,.2,1);
 		z-index: 2000;
-		overflow-y: auto;
+		overflow: hidden;
 		overscroll-behavior: contain;
+		box-shadow: none;
 	}
 
 	body.sidebar-open .sidebar{ transform: translateX(0); }
@@ -4313,7 +4383,7 @@ select option:checked{
 		background: rgba(0,0,0,.55);
 		opacity: 0;
 		pointer-events: none;
-		transition: opacity .22s ease;
+		transition: opacity 220ms cubic-bezier(.2,.8,.2,1);
 		z-index: 1900;
 	}
 	body.sidebar-open .sidebar-overlay{ opacity: 1; pointer-events: auto; }
@@ -4375,14 +4445,11 @@ select option:checked{
 	--bg-page: #0c1422;
 	--bg-surface: #101a28;
 	--bg-card: #162132;
+	--sidebar-ease: 200ms cubic-bezier(.2,.8,.2,1);
 }
 
 body{
 	background: var(--bg-page) !important;
-}
-
-.sidebar{
-	background: #0b111a !important;
 }
 
 /* Убираем любые декоративные градиенты, если они добавлялись раньше */
@@ -4390,118 +4457,295 @@ body{
 	background-image: none !important;
 }
 
-/* Заголовки секций в сайдбаре */
-.sidebar-navigation .nav-section{
-	display: flex;
-	flex-direction: column;
-	gap: 10px;
-}
-
-.sidebar-navigation .nav-section-title{
-	margin: 8px 10px 0;
-	font-weight: 700;
-	letter-spacing: .08em;
-	text-transform: uppercase;
-	font-size: .78rem;
-	color: rgba(255,255,255,.60);
-}
-
 /* =====================================================================
-   Sidebar navigation — modern refresh
-   Более современный вид вертикального меню: аккуратные отступы,
-   плавные переходы на hover/active, единый акцент-индикатор слева
-   (используется --primary-color, а не отдельный "неоновый" цвет),
-   без bloom/glow-эффектов. Явно переопределяет более старые правила
-   выше по файлу (там же выставлены !important), поэтому важные
-   свойства здесь также помечены !important — иначе унаследованная
-   специфичность старых блоков «пробивала» бы новый стиль.
+   Sidebar — PrismaVPN Control Center refresh
+   Компактный тёмный сайдбар: тонкая граница, outline-иконки,
+   спокойные hover/active без неона и тяжёлых теней.
+   !important нужен, чтобы перебить более старые блоки выше по файлу.
    ===================================================================== */
 
-.sidebar-navigation .nav-section {
-	margin-bottom: 22px !important;
+.sidebar{
+	background: #111318 !important;
+	border-right: 1px solid rgba(255,255,255,.09) !important;
+	box-shadow: none !important;
+	padding: 20px 16px !important;
+	padding-bottom: max(18px, env(safe-area-inset-bottom)) !important;
 }
 
-.sidebar-navigation .nav-section:last-child {
+.sidebar .brand{
+	display: flex !important;
+	align-items: center !important;
+	justify-content: flex-start !important;
+	gap: 8px !important;
+	padding: 2px 4px 0 !important;
+	margin: 0 0 18px !important;
+	min-height: 0 !important;
+}
+
+.sidebar .brand-link{
+	gap: 10px !important;
+}
+
+.sidebar .brand-mark,
+.sidebar .brand-link img{
+	width: 30px !important;
+	height: 30px !important;
+	max-width: 30px !important;
+	flex: 0 0 30px !important;
+	border-radius: 8px !important;
+	filter: none !important;
+}
+
+.sidebar .brand-word{
+	display: flex !important;
+	flex-direction: column !important;
+	min-width: 0 !important;
+	line-height: 1.15 !important;
+}
+
+.sidebar #brand-title{
+	font-size: 14.5px !important;
+	font-weight: 600 !important;
+	letter-spacing: .02em !important;
+	line-height: 1.2 !important;
+	color: #f6f7f8 !important;
+}
+
+.sidebar .brand-sub{
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+	font-size: 9.5px !important;
+	font-weight: 500 !important;
+	letter-spacing: .12em !important;
+	color: rgba(246,247,248,.38) !important;
+}
+
+.sidebar .btn-brand-edit,
+.sidebar #brand-edit{
+	width: 28px !important;
+	height: 28px !important;
+	padding: 0 !important;
+	border-radius: 10px !important;
+	border: 1px solid rgba(255,255,255,.10) !important;
+	background: transparent !important;
+	color: rgba(246,247,248,.45) !important;
+	box-shadow: none !important;
+}
+
+.sidebar-navigation,
+.sidebar .nav-scroll{
+	flex: 1 1 auto !important;
+	min-height: 0 !important;
+	overflow-y: auto !important;
+	padding: 0 2px !important;
+	gap: 0 !important;
+}
+
+.sidebar-navigation .nav-section{
+	display: flex !important;
+	flex-direction: column !important;
+	gap: 0 !important;
+	margin: 0 0 16px !important;
+}
+
+.sidebar-navigation .nav-section:last-child{
 	margin-bottom: 0 !important;
 }
 
-.sidebar-navigation .nav-section-title {
-	font-family: var(--font-body, inherit) !important;
-	font-size: .72rem !important;
-	font-weight: 600 !important;
-	letter-spacing: .09em !important;
+.sidebar-navigation .nav-section-title{
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+	font-size: 10px !important;
+	font-weight: 500 !important;
+	letter-spacing: .12em !important;
 	text-transform: uppercase !important;
-	color: var(--text-muted) !important;
+	color: rgba(246,247,248,.36) !important;
 	padding: 0 12px 8px !important;
-	margin: 0 0 2px !important;
+	margin: 0 !important;
 }
 
-.sidebar-navigation .nav-link {
-	position: relative;
+.sidebar-navigation .nav-link{
+	position: relative !important;
 	display: flex !important;
 	align-items: center !important;
 	gap: 10px !important;
-	padding: 10px 14px !important;
-	margin: 0 0 2px !important;
-	border: none !important;
-	border-radius: 10px !important;
+	padding: 8px 12px !important;
+	margin: 0 0 3px !important;
+	min-height: 38px !important;
+	border: 1px solid transparent !important;
+	border-radius: 12px !important;
 	background: transparent !important;
-	color: var(--text-muted) !important;
-	font-size: .875rem !important;
+	color: rgba(246,247,248,.58) !important;
+	font-size: 13.25px !important;
 	font-weight: 500 !important;
+	line-height: 1.25 !important;
 	text-decoration: none !important;
 	box-shadow: none !important;
-	transition: background-color .15s ease, color .15s ease !important;
+	transform: none !important;
+	transition: background var(--sidebar-ease), color var(--sidebar-ease), border-color var(--sidebar-ease), box-shadow var(--sidebar-ease) !important;
 }
 
-.sidebar-navigation .nav-link i[class*="ti"] {
-	font-size: 1.1rem;
-	width: 20px;
-	flex: 0 0 20px;
-	text-align: center;
-	opacity: .8;
-	transition: color .15s ease, opacity .15s ease;
+.sidebar-navigation .nav-link::before{
+	content: none !important;
+	display: none !important;
 }
 
-.sidebar-navigation .nav-link:hover {
-	background: var(--border-color) !important;
-	color: var(--text-primary) !important;
+.sidebar-navigation .nav-link i,
+.sidebar-navigation .nav-link i[class*="ti"]{
+	font-size: 16.5px !important;
+	width: 17px !important;
+	height: 17px !important;
+	flex: 0 0 17px !important;
+	margin: 0 !important;
+	opacity: .85;
+	color: inherit !important;
+	transition: opacity var(--sidebar-ease), color var(--sidebar-ease);
 }
 
-.sidebar-navigation .nav-link:hover i[class*="ti"] {
+.sidebar-navigation .nav-link:hover{
+	background: rgba(255,255,255,.05) !important;
+	color: #f6f7f8 !important;
+	border-color: transparent !important;
+	box-shadow: none !important;
+	transform: none !important;
+}
+
+.sidebar-navigation .nav-link:hover i,
+.sidebar-navigation .nav-link:hover i[class*="ti"]{
 	opacity: 1;
+	color: inherit !important;
 }
 
-.sidebar-navigation .nav-link:focus-visible {
-	outline: 2px solid var(--primary-color);
+.sidebar-navigation .nav-link:focus-visible{
+	outline: 1px solid rgba(255,255,255,.22);
 	outline-offset: 2px;
 }
 
-.sidebar-navigation .nav-link.active {
-	background: color-mix(in oklab, var(--primary-color) 15%, transparent) !important;
+.sidebar-navigation .nav-link.active{
+	background: rgba(255,255,255,.085) !important;
 	border-color: transparent !important;
-	box-shadow: none !important;
-	color: var(--primary-color) !important;
-	font-weight: 600 !important;
+	color: #f6f7f8 !important;
+	font-weight: 500 !important;
+	box-shadow: inset 0 0 0 1px rgba(255,255,255,.10) !important;
 }
 
-.sidebar-navigation .nav-link.active i[class*="ti"] {
-	color: var(--primary-color);
+.sidebar-navigation .nav-link.active i,
+.sidebar-navigation .nav-link.active i[class*="ti"]{
+	color: inherit !important;
 	opacity: 1;
 }
 
-/* Акцент-индикатор активного пункта — тонкая полоса слева вместо ring/glow */
-.sidebar-navigation .nav-link.active::before {
-	content: "";
-	position: absolute;
-	left: 3px;
-	top: 50%;
-	width: 3px;
-	height: 58%;
-	transform: translateY(-50%);
-	border-radius: 4px;
-	background: var(--primary-color);
-	transition: opacity .15s ease;
+.sidebar-navigation .nav-badge,
+.sidebar-navigation .open-tickets-badge .badge,
+.sidebar-navigation .open-tickets-badge .nav-badge{
+	margin-left: auto !important;
+	display: inline-flex !important;
+	align-items: center !important;
+	justify-content: center !important;
+	gap: 4px !important;
+	min-width: 20px;
+	padding: 2px 7px !important;
+	border-radius: 999px !important;
+	border: 0 !important;
+	background: rgba(116,201,160,.13) !important;
+	color: #74c9a0 !important;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+	font-size: 10.5px !important;
+	font-weight: 500 !important;
+	line-height: 1.2 !important;
+	box-shadow: none !important;
+}
+
+.sidebar-navigation .open-tickets-badge{
+	margin-left: auto !important;
+	display: inline-flex !important;
+	align-items: center !important;
+}
+
+.sidebar-navigation .open-tickets-badge .status-dot{
+	display: none !important;
+}
+
+.sidebar-footer{
+	margin-top: auto !important;
+	padding: 14px 2px 0 !important;
+	border-top: 1px solid rgba(255,255,255,.10) !important;
+	background: transparent !important;
+}
+
+.sidebar-footer .profile-row{
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 4px 6px 10px;
+}
+
+.sidebar-footer .avatar{
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	flex: 0 0 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(255,255,255,.06);
+	border: 1px solid rgba(255,255,255,.10);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .04em;
+	color: #f6f7f8;
+}
+
+.sidebar-footer .profile-meta{
+	min-width: 0;
+	line-height: 1.25;
+}
+
+.sidebar-footer .profile-meta b{
+	display: block;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: #f6f7f8;
+}
+
+.sidebar-footer .profile-meta span{
+	display: block;
+	font-size: 10.5px;
+	font-weight: 400;
+	color: rgba(246,247,248,.45);
+}
+
+.sidebar-footer .sidebar-logout-form{
+	display: block;
+	margin: 0;
+	width: 100%;
+}
+
+.sidebar-footer .btn-sidebar-logout{
+	width: 100%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	min-height: 36px;
+	padding: 8px 12px;
+	border-radius: 12px;
+	border: 1px solid rgba(255,255,255,.10);
+	background: transparent;
+	color: rgba(246,247,248,.62);
+	font-size: 12.5px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background var(--sidebar-ease), color var(--sidebar-ease), border-color var(--sidebar-ease);
+}
+
+.sidebar-footer .btn-sidebar-logout:hover{
+	background: rgba(255,255,255,.05);
+	color: #f6f7f8;
+	border-color: rgba(255,255,255,.16);
+}
+
+.sidebar-footer .btn-sidebar-logout i{
+	font-size: 15px;
+	line-height: 1;
 }
 
 /* === Страница статистики (карточки + графики) === */

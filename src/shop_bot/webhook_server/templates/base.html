@@ -28,23 +28,25 @@
 	</head>
 	<body data-page="{{ request.endpoint }}" class="layout-boxed">
 		<div class="layout-shell">
-			<aside class="sidebar">
+			<aside class="sidebar" id="sidebar">
 				<div class="brand">
 					<a href="{{ url_for('dashboard_page') }}" class="brand-link">
-						<img src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
-						<span id="brand-title" class="ms-2">{{ brand_title or 'Xatabchik' }}</span>
+						<img class="brand-mark" src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
+						<span class="brand-word">
+							<b id="brand-title">{{ brand_title or 'Xatabchik' }}</b>
+							<span class="brand-sub">ADMIN · v2.0</span>
+						</span>
 					</a>
-					<button type="button" id="brand-edit" class="btn btn-outline-secondary btn-sm btn-glass" title="Сменить название">✏️</button>
-				</div>
-				<div class="brand-version">
-					<small>v2.0</small>
+					<button type="button" id="brand-edit" class="btn-brand-edit" title="Сменить название" aria-label="Сменить название">
+						<i class="ti ti-pencil" aria-hidden="true"></i>
+					</button>
 				</div>
 
-				<nav class="navigation sidebar-navigation">
+				<nav class="navigation sidebar-navigation nav-scroll">
 					<div class="nav-section">
 						<div class="nav-section-title">Обзор</div>
 						<a href="{{ url_for('statistics_page') }}" class="nav-link {% if request.endpoint == 'statistics_page' %}active{% endif %}">
-							<i class="ti ti-chart-line me-2"></i>
+							<i class="ti ti-chart-line"></i>
 							<span>Статистика</span>
 						</a>
 					</div>
@@ -52,59 +54,58 @@
 					<div class="nav-section">
 						<div class="nav-section-title">Управление</div>
 						<a href="{{ url_for('dashboard_page') }}" class="nav-link {% if request.endpoint == 'dashboard_page' %}active{% endif %}">
-							<i class="ti ti-home me-2"></i>
+							<i class="ti ti-home"></i>
 							<span>Главная</span>
 						</a>
 						<a href="{{ url_for('analytics_overview_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('analytics_') %}active{% endif %}">
-							<i class="ti ti-report-analytics me-2"></i>
+							<i class="ti ti-report-analytics"></i>
 							<span>Продажи и аналитика</span>
 						</a>
 						<a href="{{ url_for('users_page') }}" class="nav-link {% if request.endpoint == 'users_page' %}active{% endif %}">
-							<i class="ti ti-users me-2"></i>
+							<i class="ti ti-users"></i>
 							<span>Пользователи</span>
 						</a>
 						<a href="{{ url_for('referral_program_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('referral_program_') %}active{% endif %}">
-							<i class="ti ti-affiliate me-2"></i>
+							<i class="ti ti-affiliate"></i>
 							<span>Реферальная программа</span>
 							{% if referral_requests_stats and referral_requests_stats.new %}
-							<span class="badge bg-red-lt ms-auto">{{ referral_requests_stats.new }}</span>
+							<span class="nav-badge">{{ referral_requests_stats.new }}</span>
 							{% endif %}
 						</a>
 						<a href="{{ url_for('admin_keys_page') }}" class="nav-link {% if request.endpoint == 'admin_keys_page' %}active{% endif %}">
-							<i class="ti ti-key me-2"></i>
+							<i class="ti ti-key"></i>
 							<span>Ключи</span>
 						</a>
 						<a href="{{ url_for('support_list_page') }}" class="nav-link {% if request.endpoint in ['support_list_page', 'support_ticket_page'] %}active{% endif %}">
-							<i class="ti ti-message-circle me-2"></i>
+							<i class="ti ti-message-circle"></i>
 							<span>Поддержка</span>
 							<span class="open-tickets-badge ms-auto" data-fetch-url="{{ url_for('support_open_count_partial') }}" data-fetch-interval="10000">
 								{% if open_tickets_count and open_tickets_count > 0 %}
-								<span class="badge bg-green-lt" title="Открытые тикеты">
-									<span class="status-dot status-dot-animated bg-green"></span>{{ open_tickets_count }}
-								</span>
+								<span class="nav-badge nav-badge-success" title="Открытые тикеты">{{ open_tickets_count }}</span>
 								{% endif %}
 							</span>
 						</a>
 						<a href="{{ url_for('settings_page') }}" class="nav-link {% if request.endpoint == 'settings_page' %}active{% endif %}">
-							<i class="ti ti-settings me-2"></i>
+							<i class="ti ti-settings"></i>
 							<span>Настройки</span>
 						</a>
 						<a href="{{ url_for('modules_page') }}" class="nav-link {% if request.endpoint in ['modules_page', 'module_settings_page'] %}active{% endif %}">
-							<i class="ti ti-puzzle me-2"></i>
+							<i class="ti ti-puzzle"></i>
 							<span>Модули</span>
 						</a>
 						<a href="{{ url_for('button_constructor_page') }}" class="nav-link {% if request.endpoint == 'button_constructor_page' %}active{% endif %}">
-							<i class="ti ti-tools me-2"></i>
+							<i class="ti ti-tools"></i>
 							<span>Конструктор кнопок</span>
 						</a>
 						<a href="{{ url_for('monitor_page') }}" class="nav-link {% if request.endpoint == 'monitor_page' %}active{% endif %}">
-							<i class="ti ti-device-desktop me-2"></i>
+							<i class="ti ti-device-desktop"></i>
 							<span>Мониторинг</span>
 						</a>
 						{% if franchise_enabled %}
-						<a href="/franchise" class="nav-link ">
-							<i class="ti ti-briefcase  me-2"></i>
-							<span>Франшиза</span></a>
+						<a href="/franchise" class="nav-link">
+							<i class="ti ti-briefcase"></i>
+							<span>Франшиза</span>
+						</a>
 						{% endif %}
 					</div>
 
@@ -113,7 +114,7 @@
 						<div class="nav-section-title">Модули</div>
 						{% for item in module_menu_items %}
 						<a href="{{ item.url }}" class="nav-link">
-							<i class="ti ti-{{ item.icon or 'plug' }} me-2"></i>
+							<i class="ti ti-{{ item.icon or 'plug' }}"></i>
 							<span>{{ item.label }}</span>
 						</a>
 						{% endfor %}
@@ -122,8 +123,19 @@
 				</nav>
 
 				<div class="sidebar-footer">
-					<form action="{{ url_for('logout_page') }}" method="post" style="display: inline">
-						<button type="submit" class="btn btn-danger w-100">Выйти</button>
+					<div class="profile-row">
+						<div class="avatar" aria-hidden="true">AD</div>
+						<div class="profile-meta">
+							<b>Admin</b>
+							<span>Панель управления</span>
+						</div>
+					</div>
+					<form action="{{ url_for('logout_page') }}" method="post" class="sidebar-logout-form">
+						<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+						<button type="submit" class="btn-sidebar-logout">
+							<i class="ti ti-logout" aria-hidden="true"></i>
+							<span>Выйти</span>
+						</button>
 					</form>
 				</div>
 			</aside>
