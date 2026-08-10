@@ -537,7 +537,7 @@
 							<div class="col-12 col-md-6 password-wrapper">
 								<label class="form-label small" for="remnawave_api_token">API Token:</label>
 								<input class="form-control pill" type="password" id="remnawave_api_token" name="remnawave_api_token" required />
-								<button type="button" class="toggle-password">👁️</button>
+								<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 							<div class="col-12 col-md-6">
 								<label class="form-label small" for="squad_uuid">Squad UUID (базовый сквад):</label>
@@ -614,7 +614,7 @@
 									<input id="rmw_token_{{ loop.index }}" class="form-control pill" type="password" name="remnawave_api_token"
 										placeholder="{{ '●●●● токен задан' if host.remnawave_api_token else 'Токен не задан' }}"
 										data-edit-target readonly />
-									<button type="button" class="toggle-password">👁️</button>
+									<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 								</div>
 								<div class="edit-actions">
 									<button type="button" class="btn btn-outline-secondary btn-sm pill" title="Изменить" data-action="edit"><i class="ti ti-pencil"></i></button>
@@ -919,7 +919,7 @@
 							<div class="col-12 col-md-6 password-wrapper">
 								<label class="form-label small" for="ssh_target_password">Пароль (или оставьте пустым при ключе)</label>
 								<input class="form-control pill" type="password" id="ssh_target_password" name="ssh_password" />
-								<button type="button" class="toggle-password">👁️</button>
+								<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 							<div class="col-12 col-md-6">
 								<label class="form-label small" for="ssh_target_key">Путь к приватному ключу (на сервере панели)</label>
@@ -1031,7 +1031,7 @@
 						<div class="form-group password-wrapper">
 							<label for="panel_password">Новый пароль (оставьте пустым, чтобы не менять):</label>
 							<input type="password" id="panel_password" name="panel_password" />
-							<button type="button" class="toggle-password">👁️</button>
+							<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 						</div>
 						<div class="mb-3">
                             <label class="form-label" for="backup_interval_days">Автобэкап базы (каждые N дней)</label>
@@ -1147,7 +1147,7 @@
                                 <label class="form-label" for="smtp_password">Пароль</label>
                                 <input class="form-control pill-md" type="password" id="smtp_password" name="smtp_password"
                                        placeholder="Оставьте пустым, чтобы не менять" autocomplete="new-password" />
-                                <button type="button" class="toggle-password">👁️</button>
+                                <button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
                             </div>
                             <div class="col-12 col-md-6">
                                 <label class="form-label" for="smtp_from_email">Email отправителя (From)</label>
@@ -1258,7 +1258,7 @@
 								value="{{ settings.telegram_bot_token or '' }}"
 								required
 							/>
-							<button type="button" class="toggle-password">👁️</button>
+							<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 						</div>
 						<div class="form-group">
 							<label for="telegram_bot_username">Username бота (без @):</label>
@@ -1378,7 +1378,7 @@
                         <div class="form-group password-wrapper">
                             <label for="support_bot_token">Токен support-бота:</label>
                             <input type="password" id="support_bot_token" name="support_bot_token" value="{{ settings.support_bot_token or '' }}" required />
-                            <button type="button" class="toggle-password">👁️</button>
+                            <button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
                         </div>
                         <div class="form-group">
                             <label for="support_bot_username">Username support-бота (без @):</label>
@@ -1594,7 +1594,7 @@
 							<label class="form-label" for="yookassa_secret_key">YooKassa Secret Key</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="yookassa_secret_key" name="yookassa_secret_key" value="{{ settings.yookassa_secret_key or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 						<div class="mb-3">
@@ -1619,7 +1619,7 @@
 							<label class="form-label" for="cryptobot_token">CryptoBot Token</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="cryptobot_token" name="cryptobot_token" value="{{ settings.cryptobot_token or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 
@@ -1641,7 +1641,7 @@
 							<label class="form-label" for="heleket_api_key">Heleket API Key</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="heleket_api_key" name="heleket_api_key" value="{{ settings.heleket_api_key or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 
@@ -1674,7 +1674,7 @@
 							<label class="form-label" for="platega_secret">Platega Secret</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="platega_secret" name="platega_secret" value="{{ settings.platega_secret or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 						<div class="mb-3">
@@ -1702,7 +1702,7 @@
 							<label class="form-label" for="tonapi_key">TonAPI Key</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="tonapi_key" name="tonapi_key" value="{{ settings.tonapi_key or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 
@@ -1755,7 +1755,7 @@
 							<label class="form-label" for="yoomoney_secret">Секрет HTTP-уведомлений</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="yoomoney_secret" name="yoomoney_secret" value="{{ settings.yoomoney_secret or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 							<div class="form-text">Укажите этот секрет при настройке HTTP-уведомлений в кабинете YooMoney. URL уведомлений: <code>{{ request.url_root.rstrip('/') }}/yoomoney-webhook</code></div>
 						</div>
@@ -1764,7 +1764,7 @@
 							<label class="form-label" for="yoomoney_api_token">YooMoney API Token (OAuth access_token)</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="yoomoney_api_token" name="yoomoney_api_token" value="{{ settings.yoomoney_api_token or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 							<div class="form-text text-secondary">Используется для проверки `account-info` / `operation-history`. Можно получить через OAuth ниже.</div>
 						</div>
@@ -1777,7 +1777,7 @@
 							<label class="form-label" for="yoomoney_client_secret">YooMoney client_secret (если требуется)</label>
 							<div class="d-flex gap-2">
 								<input class="form-control" type="password" id="yoomoney_client_secret" name="yoomoney_client_secret" value="{{ settings.yoomoney_client_secret or '' }}" />
-								<button type="button" class="btn btn-outline-secondary toggle-password">👁️</button>
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
 						<div class="mb-3">
