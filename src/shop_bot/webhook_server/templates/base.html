@@ -125,11 +125,13 @@
 					{% endif %}
 				</nav>
 
+				{% set sidebar_login = panel_login or 'Admin' %}
+				{% set sidebar_login_initials = (sidebar_login[:2] if sidebar_login else 'AD')|upper %}
 				<div class="sidebar-footer">
 					<div class="profile-row">
-						<div class="avatar" aria-hidden="true">AD</div>
+						<div class="avatar" aria-hidden="true">{{ sidebar_login_initials }}</div>
 						<div class="profile-meta">
-							<b>Admin</b>
+							<b title="{{ sidebar_login }}">{{ sidebar_login }}</b>
 							<span>Панель управления</span>
 						</div>
 					</div>

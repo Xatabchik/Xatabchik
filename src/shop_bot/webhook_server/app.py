@@ -549,6 +549,7 @@ def create_webhook_app(bot_controller_instance):
             "closed_tickets_count": closed_tickets_count,
             "all_tickets_count": all_tickets_count,
             "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
+            "panel_login": (settings.get('panel_login') or '').strip(),
             "franchise_enabled": franchise_settings(),
             "module_menu_items": module_loader.get_menu_items(),
         }
@@ -657,6 +658,7 @@ def create_webhook_app(bot_controller_instance):
             "closed_tickets_count": closed_tickets_count,
             "all_tickets_count": all_tickets_count,
             "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
+            "panel_login": (settings.get('panel_login') or '').strip(),
             "franchise_enabled": franchise_settings(),
             "module_menu_items": module_loader.get_menu_items(),
         }
