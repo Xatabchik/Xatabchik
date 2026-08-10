@@ -160,6 +160,9 @@
               <button type="button" class="btn btn-danger btn-sm d-none" id="ud-revoke-btn">
                 <i class="ti ti-trash-x me-1"></i> Отозвать все ключи
               </button>
+              <button type="button" class="btn btn-outline-danger btn-sm" id="ud-delete-user-btn">
+                <i class="ti ti-user-minus me-1"></i> Удалить пользователя
+              </button>
             </div>
 
             <div class="d-none border rounded-3 p-3 mt-3" id="ud-issue-key-card">
@@ -1495,6 +1498,40 @@
       askConfirm('ВНИМАНИЕ! Это действие удалит ВСЕ ключи пользователя с серверов. Вы уверены?', async () => {
         await postAction(`{{ url_for('revoke_keys_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(currentUserId)}`), 'Ключи пользователя отозваны');
       });
+    });
+
+    document.getElementById('ud-delete-user-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm(
+        'ВНИМАНИЕ! Пользователь будет удалён полностью вместе со всеми связанными данными (ключи, транзакции, тикеты и т.д.). Это действие необратимо. Продолжить?',
+        async () => {
+          const uid = currentUserId;
+          try {
+            const fd = new FormData();
+            fd.append('csrf_token', getCsrf());
+            const url = `{{ url_for('delete_user_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(uid)}`);
+            const resp = await fetch(url, {
+              method: 'POST',
+              body: fd,
+              credentials: 'same-origin',
+              headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            const data = await resp.json().catch(() => null);
+            if (resp.ok && data && data.ok) {
+              try { window.showToast('success', data.message || 'Пользователь удалён'); } catch(_){ }
+              try { bsModal?.hide(); } catch(_){ }
+              currentUserId = null;
+              try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+              try { await window.refreshContainerById('users-pagination'); } catch(_){ }
+            } else {
+              const msg = (data && (data.message || data.error)) || 'Не удалось удалить пользователя';
+              try { window.showToast('danger', msg); } catch(_){ }
+            }
+          } catch(_) {
+            try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+          }
+        }
+      );
     });
 
     async function postReferralRemove(url, successFallback){
