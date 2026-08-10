@@ -1244,7 +1244,9 @@
         loadingEl.classList.remove('d-none');
         contentEl.classList.add('d-none');
         document.getElementById('kd-qr-wrap').classList.add('d-none');
-        try { bsModal = new bootstrap.Modal(modalEl); bsModal.show(); } catch(_){ }
+        try { bsModal = window.showModal(modalEl); } catch(_){ }
+      } else {
+        try { bsModal = window.getModal(modalEl); } catch(_){ }
       }
 
       try {
@@ -1399,7 +1401,7 @@
     document.getElementById('kd-delete-btn')?.addEventListener('click', () => {
       if (!currentKeyId) return;
       document.getElementById('kd-delete-confirm-key-id').textContent = '#' + currentKeyId;
-      try { deleteConfirmBsModal = new bootstrap.Modal(deleteConfirmModalEl); deleteConfirmBsModal.show(); } catch(_){ }
+      try { deleteConfirmBsModal = window.showModal(deleteConfirmModalEl); } catch(_){ }
     });
 
     document.getElementById('kd-delete-confirm-btn')?.addEventListener('click', async () => {
@@ -1415,6 +1417,7 @@
           try { window.showToast('success', 'Ключ удалён'); } catch(_){ }
           try { deleteConfirmBsModal?.hide(); } catch(_){ }
           try { bsModal?.hide(); } catch(_){ }
+          try { setTimeout(() => window.cleanupModalBackdrops?.(), 50); } catch(_){ }
           try { await refreshContainerById('keys-tbody'); } catch(_){ }
           try { await refreshKeysPagination(); } catch(_){ }
         } else {

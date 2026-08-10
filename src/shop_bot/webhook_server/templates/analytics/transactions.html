@@ -332,7 +332,7 @@ document.addEventListener('click', (e) => {
     document.getElementById('kd-key-id').textContent = '#' + keyId;
     loadingEl.classList.remove('d-none'); contentEl.classList.add('d-none');
     document.getElementById('kd-qr-wrap').classList.add('d-none');
-    try { bsModal = new bootstrap.Modal(modalEl); bsModal.show(); } catch(_){}
+    try { bsModal = window.showModal(modalEl); } catch(_){}
     try {
       const url = `{{ url_for('admin_key_details_json', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(keyId)}/`);
       const resp = await fetch(url, { credentials: 'same-origin' });
@@ -470,7 +470,7 @@ document.addEventListener('click', (e) => {
   document.getElementById('kd-delete-btn')?.addEventListener('click', () => {
     if (!currentKeyId) return;
     document.getElementById('kd-delete-confirm-key-id').textContent='#'+currentKeyId;
-    try { deleteConfirmBsModal=new bootstrap.Modal(deleteConfirmModalEl); deleteConfirmBsModal.show(); } catch(_){}
+    try { deleteConfirmBsModal=window.showModal(deleteConfirmModalEl); } catch(_){}
   });
   document.getElementById('kd-delete-confirm-btn')?.addEventListener('click', async () => {
     if (!currentKeyId) return;
@@ -479,7 +479,7 @@ document.addEventListener('click', (e) => {
       const url=`{{ url_for('delete_key_route', key_id=0) }}`.replace('/0',`/${encodeURIComponent(currentKeyId)}`);
       const fd=new FormData(); fd.append('csrf_token',getCsrf());
       const resp=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'});
-      if (resp.ok){ try { window.showToast('success','Ключ удалён'); } catch(_){} try { deleteConfirmBsModal?.hide(); } catch(_){} try { bsModal?.hide(); } catch(_){} }
+      if (resp.ok){ try { window.showToast('success','Ключ удалён'); } catch(_){} try { deleteConfirmBsModal?.hide(); } catch(_){} try { bsModal?.hide(); } catch(_){} try { setTimeout(() => window.cleanupModalBackdrops?.(), 50); } catch(_){} }
       else { try { window.showToast('danger','Не удалось удалить'); } catch(_){} }
     } catch(_){ try { window.showToast('danger','Ошибка сети'); } catch(_){} } finally { btn.disabled=false; }
   });

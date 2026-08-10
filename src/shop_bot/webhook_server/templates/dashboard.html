@@ -348,7 +348,7 @@
     if (targetSelect) targetSelect.addEventListener('change', loadAndDrawTop);
     await loadAndDrawTop();
     function showRunning(){
-      try { new bootstrap.Modal(document.getElementById('speedtestRunningModal'), {backdrop:'static', keyboard:false}).show(); } catch(_){}
+      try { window.showModal(document.getElementById('speedtestRunningModal'), {backdrop:'static', keyboard:false}); } catch(_){}
     }
     function hideRunning(){
       try { bootstrap.Modal.getInstance(document.getElementById('speedtestRunningModal'))?.hide(); } catch(_){}
@@ -387,7 +387,7 @@
     }
 
     const modalEl = document.getElementById('speedtestModal');
-    const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+    const modal = modalEl ? (window.getModal ? window.getModal(modalEl) : new bootstrap.Modal(modalEl)) : null;
     const titleHost = document.getElementById('st-modal-host');
     const metricEl = document.getElementById('st-metric');
     const rangeEl = document.getElementById('st-range');

@@ -604,7 +604,9 @@
         loadingEl.classList.remove('d-none');
         contentEl.classList.add('d-none');
         document.getElementById('kd-qr-wrap').classList.add('d-none');
-        try { bsModal = new bootstrap.Modal(modalEl); bsModal.show(); } catch(_){ }
+        try { bsModal = window.showModal(modalEl); } catch(_){ }
+      } else {
+        try { bsModal = window.getModal(modalEl); } catch(_){ }
       }
 
       try {
@@ -752,7 +754,7 @@
     document.getElementById('kd-delete-btn')?.addEventListener('click', () => {
       if (!currentKeyId) return;
       document.getElementById('kd-delete-confirm-key-id').textContent = '#' + currentKeyId;
-      try { deleteConfirmBsModal = new bootstrap.Modal(deleteConfirmModalEl); deleteConfirmBsModal.show(); } catch(_){ }
+      try { deleteConfirmBsModal = window.showModal(deleteConfirmModalEl); } catch(_){ }
     });
 
     document.getElementById('kd-delete-confirm-btn')?.addEventListener('click', async () => {
@@ -768,6 +770,7 @@
           try { window.showToast('success', 'Ключ удалён'); } catch(_){ }
           try { deleteConfirmBsModal?.hide(); } catch(_){ }
           try { bsModal?.hide(); } catch(_){ }
+          try { setTimeout(() => window.cleanupModalBackdrops?.(), 50); } catch(_){ }
           if (typeof window.reloadCurrentUserKeys === 'function') window.reloadCurrentUserKeys();
         } else {
           let msg = 'Не удалось удалить ключ';
@@ -1306,7 +1309,13 @@
       contentEl.classList.add('d-none');
       const ukTbody = document.getElementById('uk-tbody'); if (ukTbody) ukTbody.innerHTML = '';
       const utxTbody = document.getElementById('utx-tbody'); if (utxTbody) utxTbody.innerHTML = '';
-      try { bsModal = new bootstrap.Modal(modalEl); bsModal.show(); } catch(_){ }
+      // Re-opening while already shown must not create a second Modal instance/backdrop
+      const alreadyShown = modalEl.classList.contains('show');
+      if (!alreadyShown) {
+        try { bsModal = window.showModal(modalEl); } catch(_){ }
+      } else {
+        try { bsModal = window.getModal(modalEl); } catch(_){ }
+      }
 
       try {
         const url = `{{ url_for('user_details_json', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(uid)}/`);
@@ -1446,7 +1455,7 @@
     function askConfirm(text, action){
       document.getElementById('udConfirmText').textContent = text;
       confirmAction = action;
-      try { confirmBsModal = new bootstrap.Modal(confirmModalEl); confirmBsModal.show(); } catch(_){ }
+      try { confirmBsModal = window.showModal(confirmModalEl); } catch(_){ }
     }
 
     document.getElementById('udConfirmBtn')?.addEventListener('click', async () => {
@@ -1511,7 +1520,7 @@
         resultsEl.innerHTML = '';
         hintEl.classList.remove('d-none');
         hintEl.textContent = 'Начните вводить ID или username пользователя';
-        try { armBsModal = new bootstrap.Modal(modalEl); armBsModal.show(); } catch(_){ }
+        try { armBsModal = window.showModal(modalEl); } catch(_){ }
         setTimeout(() => input.focus(), 200);
       });
 
