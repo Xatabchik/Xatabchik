@@ -193,9 +193,20 @@ pre,
 }
 
 .topbar {
+  position: relative;
+  z-index: 50;
   background: linear-gradient(to bottom, rgba(11, 13, 16, 0.88) 55%, transparent) !important;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+}
+
+.topbar:has(.topbar-search.is-open) {
+  z-index: 1200;
+}
+
+.topbar-search.is-open,
+.topbar-search-dropdown {
+  z-index: 1202;
 }
 
 .topbar .bot-control,
