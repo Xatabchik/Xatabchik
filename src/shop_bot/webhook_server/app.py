@@ -55,7 +55,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment, get_keys_paginated,
     get_balance, adjust_user_balance, get_referrals_for_user,
     get_referral_balance, adjust_user_referral_balance,
-    link_referrer_if_eligible,
+    link_referrer_if_eligible, unlink_referral, unlink_all_referrals,
 
     get_users_paginated, get_keys_counts_for_users,
 
@@ -2231,6 +2231,42 @@ def create_webhook_app(bot_controller_instance):
 
         if wants_json:
             return jsonify({"ok": ok, "status": status, "message": message})
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('users_page'))
+
+    @flask_app.route('/users/<int:referrer_id>/referrals/<int:invitee_id>/remove', methods=['POST'])
+    @login_required
+    def remove_referral_route(referrer_id: int, invitee_id: int):
+        """Снять одного реферала с карточки реферера (обнулить users.referred_by)."""
+        wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        status = unlink_referral(invitee_id, referrer_id)
+        status_messages = {
+            "unlinked": (True, f"Реферал #{invitee_id} удалён из списка."),
+            "not_linked": (False, "Этот пользователь не является рефералом текущего пользователя."),
+            "not_found": (False, "Пользователь не найден."),
+            "invalid": (False, "Некорректные параметры."),
+        }
+        ok, message = status_messages.get(status, (False, "Не удалось удалить реферала."))
+        if wants_json:
+            return jsonify({"ok": ok, "status": status, "message": message})
+        flash(message, 'success' if ok else 'danger')
+        return redirect(url_for('users_page'))
+
+    @flask_app.route('/users/<int:referrer_id>/referrals/remove-all', methods=['POST'])
+    @login_required
+    def remove_all_referrals_route(referrer_id: int):
+        """Снять всех рефералов у указанного реферера."""
+        wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        ok, removed = unlink_all_referrals(referrer_id)
+        if ok:
+            if removed:
+                message = f"Удалено рефералов: {removed}."
+            else:
+                message = "У пользователя нет рефералов."
+        else:
+            message = "Не удалось удалить рефералов."
+        if wants_json:
+            return jsonify({"ok": ok, "removed": removed, "message": message})
         flash(message, 'success' if ok else 'danger')
         return redirect(url_for('users_page'))
 
