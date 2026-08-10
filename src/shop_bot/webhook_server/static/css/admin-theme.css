@@ -219,6 +219,27 @@ pre,
   box-shadow: none !important;
 }
 
+.topbar-search,
+.topbar-search-field,
+.topbar-search-field .form-control,
+.topbar .header-controls,
+.topbar .bot-control {
+  height: var(--chrome-control-h) !important;
+  min-height: var(--chrome-control-h) !important;
+  box-sizing: border-box !important;
+}
+
+.topbar {
+  min-height: var(--chrome-control-h) !important;
+  padding-bottom: var(--chrome-header-gap) !important;
+}
+
+.sidebar .brand {
+  height: var(--chrome-control-h) !important;
+  min-height: var(--chrome-control-h) !important;
+  margin-bottom: var(--chrome-header-gap) !important;
+}
+
 .mobile-header {
   background: rgba(17, 19, 24, 0.92) !important;
   border-bottom: 1px solid var(--border-1) !important;

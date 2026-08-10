@@ -4751,8 +4751,12 @@ body{
 	letter-spacing: .12em !important;
 	text-transform: uppercase !important;
 	color: rgba(246,247,248,.36) !important;
-	padding: 0 12px 8px !important;
+	padding: 0 12px 6px !important;
 	margin: 0 !important;
+}
+
+.sidebar-navigation .nav-section:first-child .nav-section-title{
+	padding-top: 0 !important;
 }
 
 .sidebar-navigation .nav-link{
