@@ -588,6 +588,27 @@ def _build_referral_links(user_id: int, bot_username: str | None = None) -> tupl
     return webapp_link, telegram_link
 
 
+DEFAULT_REFERRAL_SHARE_TEXT = "🌐Обход глушилок и блокировок на любом устройстве! 😊"
+
+
+def _referral_share_text() -> str:
+    """Текст для t.me/share из настроек (Контент → referral_share_text)."""
+    raw = (get_setting("referral_share_text") or "").strip()
+    return raw or DEFAULT_REFERRAL_SHARE_TEXT
+
+
+def _telegram_share_url(url: str, text: str) -> str:
+    """Собрать https://t.me/share/url?... с пробелами как %20 (не +).
+
+    Telegram подставляет text в поле ввода как есть; quote_plus даёт «+»
+    вместо пробелов, и они остаются плюсами в черновике сообщения.
+    """
+    return "https://t.me/share/url?" + urlencode(
+        {"url": url, "text": text},
+        quote_via=quote,
+    )
+
+
 async def _activate_gift_directly(
     message: types.Message, bot: Bot, user_id: int, gift_code: str,
     *, is_new_user: bool = False
@@ -4075,17 +4096,17 @@ def get_user_router() -> Router:
             text_lines.append(f"<b>ℹ️ Минимальная сумма для вывода:</b> {min_withdraw:.0f} ₽")
         text = "\n".join(text_lines)
 
-        share_text = "🌐Обход глушилок и блокировок на любом устройстве! 😊"
+        share_text = _referral_share_text()
 
         builder = InlineKeyboardBuilder()
         if referral_link:
-            share_tg = "https://t.me/share/url?" + urlencode({"url": referral_link, "text": share_text})
+            share_tg = _telegram_share_url(referral_link, share_text)
             builder.button(
                 text="📩 Поделиться (Telegram)" if webapp_link else "📩 Поделиться",
                 url=share_tg,
             )
         if webapp_link:
-            share_web = "https://t.me/share/url?" + urlencode({"url": webapp_link, "text": share_text})
+            share_web = _telegram_share_url(webapp_link, share_text)
             builder.button(text="🌐 Поделиться (сайт)", url=share_web)
         builder.button(text="🔄 Перевести на баланс", callback_data="referral_transfer_start")
         if can_withdraw_now:

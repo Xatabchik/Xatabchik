@@ -3093,6 +3093,9 @@ async def api_user_referral_info(request: Request):
     webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
     bot_link = f"https://t.me/{bot_username}?start=ref_{uid}" if bot_username else ""
     webapp_link = f"{webapp_domain}/ref/{uid}" if webapp_domain else ""
+    share_text = (get_setting("referral_share_text") or "").strip() or (
+        "🌐Обход глушилок и блокировок на любом устройстве! 😊"
+    )
 
     from shop_bot.data_manager.remnawave_repository import get_referral_count
     count = get_referral_count(uid)
@@ -3103,6 +3106,7 @@ async def api_user_referral_info(request: Request):
         "ok": True,
         "bot_link": bot_link,
         "webapp_link": webapp_link,
+        "share_text": share_text,
         "count": count,
         "earned": earned,
         "available": available,

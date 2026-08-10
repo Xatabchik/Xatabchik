@@ -3788,6 +3788,7 @@
 
                 const botLink = d.bot_link || '';
                 const webLink = d.webapp_link || '';
+                const shareText = d.share_text || '🌐Обход глушилок и блокировок на любом устройстве! 😊';
                 content.innerHTML = `
                 <div class="glass-card border border-white/10 rounded-2xl p-4 flex flex-col gap-3">
                     <div class="grid grid-cols-3 gap-2 mb-1">
@@ -3812,7 +3813,7 @@
                             <button onclick="copyToClipboard('${botLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
                                 <span class="material-symbols-rounded text-sm">content_copy</span>
                             </button>
-                            <a href="https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent('Попробуй этот VPN!')}" target="_blank"
+                            <a href="https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent(shareText)}" target="_blank"
                                class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-2 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
                                 <span class="material-symbols-rounded text-sm">send</span>
                             </a>
@@ -3826,6 +3827,10 @@
                             <button onclick="copyToClipboard('${webLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
                                 <span class="material-symbols-rounded text-sm">content_copy</span>
                             </button>
+                            <a href="https://t.me/share/url?url=${encodeURIComponent(webLink)}&text=${encodeURIComponent(shareText)}" target="_blank"
+                               class="shrink-0 bg-[#0088cc]/20 text-[#00aaff] rounded-lg p-2 hover:bg-[#0088cc]/30 active:scale-95 transition-all">
+                                <span class="material-symbols-rounded text-sm">send</span>
+                            </a>
                         </div>
                     </div>` : ''}
                 </div>`;

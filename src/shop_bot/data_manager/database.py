@@ -652,6 +652,7 @@ def initialize_db():
                 "btn_buy_key_text": None,
                 "btn_topup_text": None,
                 "btn_referral_text": None,
+                "referral_share_text": "🌐Обход глушилок и блокировок на любом устройстве! 😊",
                 "btn_support_text": None,
                 "btn_about_text": None,
                 "btn_speed_text": None,

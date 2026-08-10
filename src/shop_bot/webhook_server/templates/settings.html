@@ -2064,6 +2064,11 @@
 							<input class="form-control" type="text" id="btn_referral_text" name="btn_referral_text" value="{{ settings.btn_referral_text or '' }}" placeholder="🤝 Реферальная программа" />
 						</div>
 						<div class="mb-3">
+							<label class="form-label" for="referral_share_text">Текст «Поделиться» в реферальной программе</label>
+							<textarea class="form-control" id="referral_share_text" name="referral_share_text" rows="2" placeholder="🌐Обход глушилок и блокировок на любом устройстве! 😊">{{ settings.referral_share_text or '' }}</textarea>
+							<div class="form-text text-secondary">Подставляется в сообщение при нажатии «Поделиться» вместе с реферальной ссылкой (бот и Mini App). Оставьте пустым для текста по умолчанию.</div>
+						</div>
+						<div class="mb-3">
 							<label class="form-label" for="btn_support_text">Кнопка: «Поддержка»</label>
 							<input class="form-control" type="text" id="btn_support_text" name="btn_support_text" value="{{ settings.btn_support_text or '' }}" placeholder="🆘 Поддержка" />
 						</div>

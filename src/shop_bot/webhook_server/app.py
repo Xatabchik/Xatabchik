@@ -284,6 +284,7 @@ ALL_SETTINGS_KEYS = [
     "btn_buy_key_text",
     "btn_topup_text",
     "btn_referral_text",
+    "referral_share_text",
     "btn_support_text",
     "btn_about_text",
     "btn_speed_text",
