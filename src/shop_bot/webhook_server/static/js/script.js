@@ -807,6 +807,25 @@ document.addEventListener('DOMContentLoaded', function () {
     initializeThemeToggle();
     initializeCsrfForForms();
 
+    // Hide lingering tooltips when a modal opens (they render on body at high z-index)
+    document.addEventListener('show.bs.modal', () => {
+        try {
+            document.querySelectorAll('.tooltip').forEach((node) => {
+                try {
+                    const tip = bootstrap.Tooltip.getInstance(node);
+                    if (tip) tip.hide();
+                } catch (_) {}
+                node.classList.remove('show');
+                node.setAttribute('aria-hidden', 'true');
+            });
+            if (window.bootstrap?.Tooltip) {
+                document.querySelectorAll('[data-bs-toggle="tooltip"], .btn[title], a.btn[title]').forEach((el) => {
+                    try { bootstrap.Tooltip.getInstance(el)?.hide(); } catch (_) {}
+                });
+            }
+        } catch (_) {}
+    });
+
 
     (function initializeBackupRestoreUI(){
         const select = document.getElementById('existing_backup');

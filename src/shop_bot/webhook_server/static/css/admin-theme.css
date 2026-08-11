@@ -829,6 +829,128 @@ select option:checked {
   opacity: 0.65;
 }
 
+/*
+  Tabler defaults: tooltip z-index 1080 > modal 1055 / backdrop 1050.
+  Raise the modal stack so .tooltip / .tooltip-inner stay under dialogs.
+*/
+.modal-backdrop {
+  --tblr-backdrop-zindex: 1090;
+  z-index: 1090 !important;
+}
+
+.modal {
+  --tblr-modal-zindex: 1100;
+  z-index: 1100 !important;
+}
+
+.tooltip {
+  --tblr-tooltip-zindex: 1080;
+  z-index: 1080 !important;
+}
+
+.popover {
+  --tblr-popover-zindex: 1080;
+  z-index: 1080 !important;
+}
+
+/* Keys list header: ordered, wrapping toolbar */
+.keys-card-header {
+  display: block !important;
+}
+
+.keys-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 1fr) auto;
+  gap: 0.75rem 1rem;
+  align-items: center;
+  width: 100%;
+}
+
+.keys-toolbar-title {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.keys-toolbar-search {
+  width: 100%;
+  max-width: 20rem;
+  min-width: 0;
+  justify-self: end;
+}
+
+.keys-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.keys-toolbar-form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.keys-toolbar-actions .btn {
+  white-space: nowrap;
+}
+
+@media (max-width: 992px) {
+  .keys-toolbar {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "title title"
+      "search actions";
+  }
+
+  .keys-toolbar-title { grid-area: title; }
+  .keys-toolbar-search {
+    grid-area: search;
+    max-width: none;
+    justify-self: stretch;
+  }
+  .keys-toolbar-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 768px) {
+  .keys-toolbar {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "title"
+      "search"
+      "actions";
+  }
+
+  .keys-toolbar-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .keys-toolbar-actions .btn,
+  .keys-toolbar-form {
+    flex: 1 1 calc(50% - 0.25rem);
+  }
+
+  .keys-toolbar-form .btn {
+    width: 100%;
+  }
+
+  .keys-toolbar-actions #bulk-extend-all-btn {
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .keys-toolbar-actions .btn,
+  .keys-toolbar-form {
+    flex: 1 1 100%;
+  }
+}
+
 /* Adaptive modal sizing — fit viewport on tablets/phones */
 .modal .modal-dialog {
   width: min(100%, var(--tblr-modal-width, 540px));

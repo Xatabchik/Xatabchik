@@ -10,13 +10,13 @@
 </div>
 
 <div class="card">
-  <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
-    <h3 class="card-title mb-0">
-      <i class="ti ti-list me-2"></i>
-      Список ключей
-    </h3>
-    <div class="d-flex align-items-center gap-2 flex-wrap flex-grow-1 justify-content-end">
-      <div class="input-icon" style="max-width: 280px; min-width: 200px;">
+  <div class="card-header keys-card-header">
+    <div class="keys-toolbar">
+      <h3 class="card-title keys-toolbar-title mb-0">
+        <i class="ti ti-list me-2"></i>
+        Список ключей
+      </h3>
+      <div class="keys-toolbar-search input-icon">
         <span class="input-icon-addon">
           <i class="ti ti-search"></i>
         </span>
@@ -25,19 +25,18 @@
           <i class="ti ti-x"></i>
         </span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm" id="toggle-create-key-btn">
-        <i class="ti ti-key-plus me-1"></i>
-        Создать ключ
-      </button>
-      <form action="{{ url_for('sweep_expired_keys_route') }}" method="post" data-confirm="Удалить все истёкшие ключи? Это действие необратимо." class="d-inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-        <button type="submit" class="btn btn-outline-danger btn-sm" title="Удалить истёкшие">
-          <i class="ti ti-broom me-1"></i>
-          Удалить истёкшие
+      <div class="keys-toolbar-actions">
+        <button type="button" class="btn btn-primary btn-sm" id="toggle-create-key-btn">
+          <i class="ti ti-key-plus me-1"></i>
+          <span>Создать ключ</span>
         </button>
-      </form>
-      <div class="vr d-none d-md-block mx-1 opacity-25"></div>
-      <div class="d-flex flex-column align-items-stretch align-items-md-end gap-1">
+        <form action="{{ url_for('sweep_expired_keys_route') }}" method="post" data-confirm="Удалить все истёкшие ключи? Это действие необратимо." class="keys-toolbar-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-outline-danger btn-sm" title="Удалить истёкшие">
+            <i class="ti ti-broom me-1"></i>
+            <span>Удалить истёкшие</span>
+          </button>
+        </form>
         <button
           type="button"
           class="btn btn-outline-warning btn-sm"
@@ -45,14 +44,11 @@
           data-bs-toggle="modal"
           data-bs-target="#bulkExtendModal"
           data-bulk-mode="all"
-          title="Изменить срок у всех ключей в базе"
+          title="Ко всем ключам в базе, не только к отображаемым на странице"
         >
           <i class="ti ti-calendar-stats me-1"></i>
-          Изменить срок ВСЕМ ключам
+          <span>Изменить срок ВСЕМ</span>
         </button>
-        <small class="text-secondary text-md-end" style="max-width: 16rem; line-height: 1.25;">
-          Ко всем ключам в базе, не только к отображаемым на странице
-        </small>
       </div>
     </div>
   </div>
