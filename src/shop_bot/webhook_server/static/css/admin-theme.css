@@ -1718,3 +1718,42 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):hover {
 .bottom-nav-item.active .bottom-nav-icon {
   color: var(--text-0) !important;
 }
+
+/* Key details: note block (webapp-like sticky note) */
+.kd-note-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md, 0.75rem);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--text-0);
+}
+
+.kd-note-block.d-none {
+  display: none !important;
+}
+
+.kd-note-icon {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: rgba(251, 191, 36, 0.85);
+  font-size: 1.05rem;
+}
+
+.kd-note-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  margin-bottom: 0.15rem;
+}
+
+.kd-note-text {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(253, 230, 138, 0.92);
+}
