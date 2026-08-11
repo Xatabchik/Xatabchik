@@ -1,0 +1,414 @@
+<script>
+  (function(){
+    function getCsrf(){
+      const m = document.querySelector('meta[name="csrf-token"]');
+      return m ? m.getAttribute('content') : '';
+    }
+    const modalEl = document.getElementById('keyDetailsModal');
+    const loadingEl = document.getElementById('kd-loading');
+    const contentEl = document.getElementById('kd-content');
+    let currentKeyId = null;
+    let bsModal = null;
+    let kdDevicesCache = [];
+    let kdDevicesPage = 1;
+
+    function fmtBytes(n){
+      const v = Number(n || 0);
+      if (!v || v <= 0) return 'Безлимит';
+      const gb = v / (1024*1024*1024);
+      return `${gb.toFixed(gb >= 100 ? 0 : 1)} ГБ`;
+    }
+
+    function switchKdTab(tab){
+      document.querySelectorAll('[data-kd-tab]').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-kd-tab') === tab);
+      });
+      document.querySelectorAll('[data-kd-pane]').forEach(pane => {
+        pane.classList.toggle('d-none', pane.getAttribute('data-kd-pane') !== tab);
+      });
+    }
+    document.querySelectorAll('[data-kd-tab]').forEach(btn => {
+      btn.addEventListener('click', () => switchKdTab(btn.getAttribute('data-kd-tab')));
+    });
+
+    function renderDevices(devices){
+      const list = document.getElementById('kd-devices-list');
+      const empty = document.getElementById('kd-devices-empty');
+      const countEl = document.getElementById('kd-devices-count');
+      const summaryEl = document.getElementById('kd-devices-summary');
+      const pagEl = document.getElementById('kd-devices-pagination');
+      const pageInfoEl = document.getElementById('kd-devices-page-info');
+      const deleteAllBtn = document.getElementById('kd-devices-delete-all');
+
+      list.innerHTML = '';
+      const total = (devices || []).length;
+      countEl.textContent = String(total);
+      if (summaryEl) summaryEl.textContent = total > 0 ? `Всего устройств: ${total}` : '';
+      if (deleteAllBtn) deleteAllBtn.classList.toggle('d-none', total === 0);
+
+      if (!devices || devices.length === 0) {
+        empty.classList.remove('d-none');
+        if (pagEl) pagEl.classList.add('d-none');
+        return;
+      }
+      empty.classList.add('d-none');
+
+      const perPage = 5;
+      const totalPages = Math.max(1, Math.ceil(total / perPage));
+      if (kdDevicesPage > totalPages) kdDevicesPage = totalPages;
+      if (kdDevicesPage < 1) kdDevicesPage = 1;
+      const startIdx = (kdDevicesPage - 1) * perPage;
+      const pageItems = devices.slice(startIdx, startIdx + perPage);
+
+      pageItems.forEach(d => {
+        const platform = d.platform || d.deviceOS || d.os || '—';
+        const model = d.deviceModel || d.model || '';
+        const hwid = d.hwid || d.hwId || d.id || '';
+        const item = document.createElement('div');
+        item.className = 'list-group-item';
+        item.innerHTML = `
+          <div class="d-flex align-items-center justify-content-between flex-wrap gap-1">
+            <div>
+              <div class="fw-semibold"><i class="ti ti-device-mobile me-1"></i>${platform}${model ? ' — ' + model : ''}</div>
+              <div class="text-secondary small text-truncate" style="max-width:360px">${hwid}</div>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-danger kd-device-delete-btn" data-hwid="${hwid}" title="Удалить устройство">
+              <i class="ti ti-trash"></i>
+            </button>
+          </div>
+        `;
+        list.appendChild(item);
+      });
+
+      if (pagEl) {
+        pagEl.classList.toggle('d-none', totalPages <= 1);
+        if (pageInfoEl) pageInfoEl.textContent = `${kdDevicesPage} / ${totalPages}`;
+        const prevBtn = document.getElementById('kd-devices-prev');
+        const nextBtn = document.getElementById('kd-devices-next');
+        if (prevBtn) prevBtn.disabled = kdDevicesPage <= 1;
+        if (nextBtn) nextBtn.disabled = kdDevicesPage >= totalPages;
+      }
+    }
+
+    async function openKeyDetails(keyId){
+      currentKeyId = keyId;
+      document.getElementById('kd-key-id').textContent = '#' + keyId;
+      const alreadyShown = modalEl.classList.contains('show');
+      if (!alreadyShown) {
+        loadingEl.classList.remove('d-none');
+        contentEl.classList.add('d-none');
+        document.getElementById('kd-qr-wrap').classList.add('d-none');
+        try { bsModal = window.showModal(modalEl); } catch(_){ }
+      } else {
+        try { bsModal = window.getModal(modalEl); } catch(_){ }
+      }
+
+      try {
+        const url = `{{ url_for('admin_key_details_json', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(keyId)}/`);
+        const resp = await fetch(url, { credentials: 'same-origin' });
+        const data = await resp.json();
+        if (!data || !data.ok) { throw new Error('bad response'); }
+
+        const k = data.key || {};
+        const owner = data.owner || {};
+        const plan = data.plan;
+
+        document.getElementById('kd-owner').textContent = owner.username ? `@${owner.username} (${owner.telegram_id})` : String(owner.telegram_id || k.user_id || '—');
+        document.getElementById('kd-host').textContent = k.host_name || '—';
+        document.getElementById('kd-email').textContent = k.key_email || '—';
+        document.getElementById('kd-expiry').textContent = k.expire_at || '—';
+        document.getElementById('kd-created').textContent = k.created_at || '';
+        document.getElementById('kd-plan').textContent = plan ? `${plan.plan_name} (${plan.months} мес., ${Number(plan.price||0).toFixed(0)} RUB)` : 'Не определён';
+        const trafficParts = [`База: ${fmtBytes(k.traffic_limit_bytes)}`];
+        if (Number(k.traffic_boost_bytes || 0) > 0) trafficParts.push(`+ буст: ${fmtBytes(k.traffic_boost_bytes)}`);
+        document.getElementById('kd-traffic').textContent = trafficParts.join(' ');
+
+        const subLink = document.getElementById('kd-sub-link');
+        subLink.value = k.subscription_url || '';
+
+        const commentInput = document.getElementById('kd-comment-input');
+        if (commentInput) commentInput.value = k.comment || '';
+        const expiryDeltaInput = document.getElementById('kd-expiry-delta');
+        if (expiryDeltaInput) expiryDeltaInput.value = '';
+        try { bootstrap.Collapse.getInstance(document.getElementById('kd-comment-collapse'))?.hide(); } catch(_){ }
+        try { bootstrap.Collapse.getInstance(document.getElementById('kd-expiry-collapse'))?.hide(); } catch(_){ }
+
+        const qrImg = document.getElementById('kd-qr-img');
+        qrImg.src = data.qr_data_url || '';
+        document.getElementById('kd-sub-qr').disabled = !data.qr_data_url;
+
+        const planSelect = document.getElementById('kd-plan-select');
+        const plans = data.plans_for_host || [];
+        planSelect.innerHTML = plans.map(p => `<option value="${p.plan_id}" ${plan && plan.plan_id === p.plan_id ? 'selected' : ''}>${p.plan_name} (${p.months} мес., ${Number(p.price||0).toFixed(0)} RUB)</option>`).join('') || '<option value="">Нет тарифов</option>';
+
+        // Блок докупки ГБ показываем только если у тарифа задан лимит трафика (иначе ключ безлимитный)
+        const gbWrap = document.getElementById('kd-gb-wrap');
+        if (gbWrap) gbWrap.classList.toggle('d-none', !(plan && Number(plan.traffic_limit_bytes || 0) > 0));
+
+        const lteWrap = document.getElementById('kd-lte-wrap');
+        lteWrap.classList.toggle('d-none', !(plan && Number(plan.lte_limit_bytes || 0) > 0));
+
+        kdDevicesCache = data.devices || [];
+        kdDevicesPage = 1;
+        renderDevices(kdDevicesCache);
+        switchKdTab('info');
+
+        loadingEl.classList.add('d-none');
+        contentEl.classList.remove('d-none');
+      } catch (e) {
+        try { window.showToast('danger', 'Не удалось загрузить данные ключа'); } catch(_){ }
+        try { bsModal?.hide(); } catch(_){ }
+      }
+    }
+    window.openKeyDetails = openKeyDetails;
+
+    document.addEventListener('click', (e) => {
+      const row = e.target.closest('tr.key-row');
+      if (!row) return;
+      const keyId = row.getAttribute('data-key-id');
+      if (keyId) openKeyDetails(keyId);
+    });
+
+    document.getElementById('kd-sub-copy')?.addEventListener('click', async () => {
+      const input = document.getElementById('kd-sub-link');
+      try {
+        await navigator.clipboard.writeText(input.value || '');
+        try { window.showToast('success', 'Ссылка скопирована'); } catch(_){ }
+      } catch(_) {
+        input.select();
+        try { document.execCommand('copy'); } catch(__){}
+      }
+    });
+
+    document.getElementById('kd-sub-qr')?.addEventListener('click', () => {
+      document.getElementById('kd-qr-wrap').classList.toggle('d-none');
+    });
+
+    document.getElementById('kd-comment-save-btn')?.addEventListener('click', async () => {
+      if (!currentKeyId) return;
+      const input = document.getElementById('kd-comment-input');
+      const btn = document.getElementById('kd-comment-save-btn');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('update_key_comment_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('comment', input.value || '');
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        if (resp.ok) {
+          try { window.showToast('success', 'Комментарий сохранён'); } catch(_){ }
+          try { bootstrap.Collapse.getInstance(document.getElementById('kd-comment-collapse'))?.hide(); } catch(_){ }
+          if (typeof window.reloadCurrentUserKeys === 'function') window.reloadCurrentUserKeys();
+        } else {
+          let msg = 'Не удалось сохранить комментарий';
+          try { const data = await resp.json(); if (data && data.error) msg += `: ${data.error}`; } catch(_){}
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('kd-expiry-save-btn')?.addEventListener('click', async () => {
+      if (!currentKeyId) return;
+      const input = document.getElementById('kd-expiry-delta');
+      const val = String(input.value || '').trim();
+      if (!val) { try { window.showToast('warning', 'Введите количество дней'); } catch(_){ } return; }
+      const delta = Number(val);
+      if (!Number.isFinite(delta) || Math.abs(delta) > 3650) { try { window.showToast('warning', 'Некорректное значение'); } catch(_){ } return; }
+      const btn = document.getElementById('kd-expiry-save-btn');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('adjust_key_expiry_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('delta_days', String(delta));
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        if (resp.ok) {
+          try { window.showToast('success', 'Срок обновлён'); } catch(_){ }
+          try { bootstrap.Collapse.getInstance(document.getElementById('kd-expiry-collapse'))?.hide(); } catch(_){ }
+          await openKeyDetails(currentKeyId);
+          if (typeof window.reloadCurrentUserKeys === 'function') window.reloadCurrentUserKeys();
+        } else {
+          let msg = 'Не удалось обновить срок';
+          try { const data = await resp.json(); if (data && data.error) msg += `: ${data.error}`; } catch(_){}
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    const deleteConfirmModalEl = document.getElementById('kdDeleteConfirmModal');
+    let deleteConfirmBsModal = null;
+    document.getElementById('kd-delete-btn')?.addEventListener('click', () => {
+      if (!currentKeyId) return;
+      document.getElementById('kd-delete-confirm-key-id').textContent = '#' + currentKeyId;
+      try { deleteConfirmBsModal = window.showModal(deleteConfirmModalEl); } catch(_){ }
+    });
+
+    document.getElementById('kd-delete-confirm-btn')?.addEventListener('click', async () => {
+      if (!currentKeyId) return;
+      const btn = document.getElementById('kd-delete-confirm-btn');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('delete_key_route', key_id=0) }}`.replace('/0', `/${encodeURIComponent(currentKeyId)}`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        if (resp.ok) {
+          try { window.showToast('success', 'Ключ удалён'); } catch(_){ }
+          try { deleteConfirmBsModal?.hide(); } catch(_){ }
+          try { bsModal?.hide(); } catch(_){ }
+          try { setTimeout(() => window.cleanupModalBackdrops?.(), 50); } catch(_){ }
+          if (typeof window.reloadCurrentUserKeys === 'function') window.reloadCurrentUserKeys();
+        } else {
+          let msg = 'Не удалось удалить ключ';
+          try { const data = await resp.json(); if (data && data.error) msg += `: ${data.error}`; } catch(_){}
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('kd-plan-apply')?.addEventListener('click', async () => {
+      if (!currentKeyId) return;
+      const planId = document.getElementById('kd-plan-select').value;
+      if (!planId) { try { window.showToast('warning', 'Выберите тариф'); } catch(_){ } return; }
+      const btn = document.getElementById('kd-plan-apply');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('admin_key_change_plan_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('plan_id', planId);
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await resp.json().catch(() => ({ ok: false }));
+        if (data && data.ok) {
+          try { window.showToast('success', 'Тариф изменён'); } catch(_){ }
+          await openKeyDetails(currentKeyId);
+          if (typeof window.reloadCurrentUserKeys === 'function') window.reloadCurrentUserKeys();
+        } else {
+          try { window.showToast('danger', 'Не удалось сменить тариф'); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    async function addTraffic(routeName, inputId, btnId){
+      if (!currentKeyId) return;
+      const input = document.getElementById(inputId);
+      const gb = Number(input.value || 0);
+      if (!gb || gb <= 0) { try { window.showToast('warning', 'Введите количество ГБ'); } catch(_){ } return; }
+      const btn = document.getElementById(btnId);
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('admin_key_add_traffic_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`).replace('add-traffic', routeName);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('gb', String(gb));
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await resp.json().catch(() => ({ ok: false }));
+        if (data && data.ok) {
+          try { window.showToast('success', 'Трафик добавлен'); } catch(_){ }
+          input.value = '';
+          await openKeyDetails(currentKeyId);
+        } else {
+          const errMsg = data && data.error === 'unlimited_plan' ? 'У тарифа этого ключа нет ограничения трафика — докупка не требуется'
+            : data && data.error === 'no_lte_plan' ? 'У тарифа этого ключа не предусмотрен LTE-пул'
+            : 'Не удалось добавить трафик';
+          try { window.showToast('danger', errMsg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    document.getElementById('kd-add-gb-btn')?.addEventListener('click', () => addTraffic('add-traffic', 'kd-add-gb', 'kd-add-gb-btn'));
+    document.getElementById('kd-add-lte-gb-btn')?.addEventListener('click', () => addTraffic('add-lte-traffic', 'kd-add-lte-gb', 'kd-add-lte-gb-btn'));
+
+    document.getElementById('kd-devices-prev')?.addEventListener('click', () => {
+      if (kdDevicesPage > 1) { kdDevicesPage -= 1; renderDevices(kdDevicesCache); }
+    });
+    document.getElementById('kd-devices-next')?.addEventListener('click', () => {
+      kdDevicesPage += 1; renderDevices(kdDevicesCache);
+    });
+
+    document.getElementById('kd-devices-list')?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.kd-device-delete-btn');
+      if (!btn || !currentKeyId) return;
+      const hwid = btn.getAttribute('data-hwid');
+      if (!hwid) return;
+      if (!window.confirm('Удалить это устройство?')) return;
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('admin_key_delete_device_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('hwid', hwid);
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await resp.json().catch(() => ({ ok: false }));
+        if (data && data.ok) {
+          try { window.showToast('success', 'Устройство удалено'); } catch(_){ }
+          kdDevicesCache = kdDevicesCache.filter(d => (d.hwid || d.hwId || d.id) !== hwid);
+          renderDevices(kdDevicesCache);
+        } else {
+          try { window.showToast('danger', 'Не удалось удалить устройство'); } catch(_){ }
+          btn.disabled = false;
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('kd-devices-delete-all')?.addEventListener('click', async () => {
+      if (!currentKeyId) return;
+      if (!window.confirm('Удалить ВСЕ устройства этого ключа из Remnawave? Это действие необратимо.')) return;
+      const btn = document.getElementById('kd-devices-delete-all');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('admin_key_delete_all_devices_route', key_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentKeyId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        const data = await resp.json().catch(() => ({ ok: false }));
+        if (data && data.ok) {
+          try { window.showToast('success', `Удалено устройств: ${data.deleted || 0}`); } catch(_){ }
+          kdDevicesPage = 1;
+          kdDevicesCache = [];
+          renderDevices(kdDevicesCache);
+        } else {
+          try { window.showToast('warning', `Удалено: ${data?.deleted || 0}, ошибок: ${data?.failed || 0}`); } catch(_){ }
+          await openKeyDetails(currentKeyId);
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    // Deep-link: /admin/keys?open=<key_id>
+    try {
+      const openKid = new URLSearchParams(location.search).get('open');
+      if (openKid && location.pathname.indexOf('/keys') !== -1 && typeof window.openKeyDetails === 'function') {
+        const cleanUrl = new URL(location.href);
+        cleanUrl.searchParams.delete('open');
+        history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+        openKeyDetails(openKid);
+      }
+    } catch(_){}
+
+  })();
+</script>
