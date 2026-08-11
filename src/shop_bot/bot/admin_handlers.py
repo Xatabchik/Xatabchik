@@ -2946,7 +2946,11 @@ def get_admin_router() -> Router:
         default_host = (get_setting("trial_default_host") or "").strip()
 
         status = "🟢 включён" if enabled else "🔴 выключен"
-        host_line = f"Хост: <b>{default_host}</b>" if default_host else "Хост: <b>авто (все доступные)</b>"
+        host_line = (
+            f"Группа тарифов: <b>{default_host}</b>"
+            if default_host
+            else "Группа тарифов: <b>авто (все доступные)</b>"
+        )
         text_out = (
             "🎁 <b>Пробный период (Trial)</b>\n\n"
             f"Статус: {status}\n"
@@ -3050,9 +3054,9 @@ def get_admin_router() -> Router:
         await state.set_state(AdminTrial.menu)
         hosts = get_all_hosts()
         await callback.message.edit_text(
-            "🖥 <b>Хост по умолчанию для триала</b>\n\n"
-            "Выберите хост, на котором будут создаваться пробные ключи.\n"
-            "<b>Авто</b> — пользователь выбирает сам (или берётся единственный доступный).",
+            "🖥 <b>Группа тарифов по умолчанию для триала</b>\n\n"
+            "Выберите группу тарифов, в которой будут создаваться пробные ключи.\n"
+            "<b>Авто</b> — пользователь выбирает сам (или берётся единственная доступная).",
             reply_markup=keyboards.create_admin_trial_host_keyboard(hosts),
             parse_mode="HTML",
         )
@@ -3064,8 +3068,8 @@ def get_admin_router() -> Router:
             return
         host_name = callback.data[len("admin_trial_select_host_"):]
         rw_repo.update_setting("trial_default_host", host_name)
-        label = f"хост «{host_name}»" if host_name else "авто"
-        await callback.answer(f"✅ Хост триала: {label}", show_alert=True)
+        label = f"«{host_name}»" if host_name else "авто"
+        await callback.answer(f"✅ Группа тарифов триала: {label}", show_alert=True)
         await state.set_state(AdminTrial.menu)
         await show_admin_trial_menu(callback.message, edit_message=True)
 

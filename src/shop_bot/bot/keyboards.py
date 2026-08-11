@@ -515,9 +515,9 @@ def create_admin_trial_settings_keyboard(
     traffic_label = f"📶 Трафик: {traffic_text}" if traffic_text else "📶 Лимит трафика (ГБ)"
     devices_label = f"📱 Устройства: {devices_text}" if devices_text else "📱 Лимит устройств"
     host_short = (default_host or "").strip()
-    if len(host_short) > 20:
-        host_short = host_short[:17] + "…"
-    host_label = f"🖥 Хост: {host_short}" if host_short else "🖥 Хост: авто"
+    if len(host_short) > 16:
+        host_short = host_short[:13] + "…"
+    host_label = f"🖥 Группа тарифов: {host_short}" if host_short else "🖥 Группа тарифов: авто"
 
     builder.button(text=days_label, callback_data="admin_trial_set_days")
     builder.button(text=traffic_label, callback_data="admin_trial_set_traffic")
@@ -530,7 +530,7 @@ def create_admin_trial_settings_keyboard(
 
 def create_admin_trial_host_keyboard(hosts: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔄 Авто (все хосты)", callback_data="admin_trial_select_host_")
+    builder.button(text="🔄 Авто (все группы тарифов)", callback_data="admin_trial_select_host_")
     for h in hosts:
         name = h.get('host_name') or ''
         short = name if len(name) <= 32 else name[:29] + "…"
