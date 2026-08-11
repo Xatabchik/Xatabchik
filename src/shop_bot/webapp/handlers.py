@@ -399,6 +399,9 @@ async def api_referral_request_withdraw(request: Request):
     if not user:
         return {"ok": False, "error": "Unauthorized"}
 
+    if not _ref_setting_is_true("referral_withdraw_enabled"):
+        return {"ok": False, "error": "Вывод средств временно недоступен.", "message": "Вывод средств временно недоступен."}
+
     try:
         amount = float(data.get("amount") or 0)
     except Exception:

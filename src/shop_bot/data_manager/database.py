@@ -5946,6 +5946,9 @@ def cleanup_old_webapp_auth_requests(max_age_minutes: int = 30) -> None:
 
 def create_referral_withdrawal_request(user_id: int, amount: float, method_id: int) -> tuple[bool, str, int | None]:
     """Атомарно списывает сумму с referral_balance пользователя и создаёт заявку на вывод."""
+    raw_enabled = str(get_setting("referral_withdraw_enabled") or "false").strip().lower()
+    if raw_enabled not in {"1", "true", "yes", "on", "y"}:
+        return False, "Вывод средств временно недоступен.", None
     try:
         amount = float(amount or 0)
     except Exception:
