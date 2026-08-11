@@ -73,6 +73,13 @@ from shop_bot.data_manager.database import (
     get_host_squads,
     set_host_squad_active,
     delete_host_squad,
+    get_remnawave_squads,
+    add_remnawave_squad,
+    delete_remnawave_squad,
+    seed_global_remnawave_from_hosts,
+    apply_global_remnawave_to_hosts,
+    set_host_squads_from_catalog,
+    get_host_selected_squad_catalog_ids,
 )
 from shop_bot.data_manager.database import (
     create_traffic_package, get_traffic_packages_for_plan, get_traffic_package_by_id,
@@ -346,6 +353,9 @@ ALL_SETTINGS_KEYS = [
     "smtp_password",
     "smtp_from_email",
     "smtp_use_tls",
+    "remnawave_base_url",
+    "remnawave_api_token",
+    "remnawave_subscription_url",
 ]
 
 
@@ -4007,6 +4017,8 @@ def create_webhook_app(bot_controller_instance):
                 if key == 'smtp_password' and not (request.form.get(key) or '').strip():
                     # Пустое поле пароля SMTP при сохранении не должно затирать уже сохранённый пароль.
                     continue
+                if key == 'remnawave_api_token' and not (request.form.get(key) or '').strip():
+                    continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
 
@@ -4016,7 +4028,16 @@ def create_webhook_app(bot_controller_instance):
             return redirect(url_for('settings_page', tab=next_tab))
 
         current_settings = get_all_settings()
+        try:
+            seed_global_remnawave_from_hosts()
+            current_settings = get_all_settings()
+        except Exception:
+            pass
         hosts = get_all_hosts()
+        try:
+            remnawave_squads = get_remnawave_squads()
+        except Exception:
+            remnawave_squads = []
         for host in hosts:
             host['plans'] = get_plans_for_host(host['host_name'])
             for plan in host['plans']:
@@ -4034,6 +4055,10 @@ def create_webhook_app(bot_controller_instance):
                 host['squads'] = get_host_squads(host['host_name'])
             except Exception:
                 host['squads'] = []
+            try:
+                host['selected_squad_ids'] = set(get_host_selected_squad_catalog_ids(host['host_name']))
+            except Exception:
+                host['selected_squad_ids'] = set()
 
         try:
             ssh_targets = get_all_ssh_targets()
@@ -4060,7 +4085,14 @@ def create_webhook_app(bot_controller_instance):
 
         common_data = get_common_template_data()
         common_data['hosts'] = hosts
-        return render_template('settings.html', settings=current_settings, ssh_targets=ssh_targets, backups=backups, **common_data)
+        return render_template(
+            'settings.html',
+            settings=current_settings,
+            ssh_targets=ssh_targets,
+            backups=backups,
+            remnawave_squads=remnawave_squads,
+            **common_data,
+        )
 
 
     def _as_bool(value: str | None) -> bool:
@@ -4468,6 +4500,67 @@ def create_webhook_app(bot_controller_instance):
             flash('Ошибка при восстановлении БД.', 'danger')
             return redirect(request.referrer or url_for('settings_page', tab='panel'))
 
+    @flask_app.route('/settings/remnawave', methods=['POST'])
+    @login_required
+    def update_remnawave_settings_route():
+        base_url = (request.form.get('remnawave_base_url') or '').strip()
+        api_token = (request.form.get('remnawave_api_token') or '').strip()
+        sub_url = (request.form.get('remnawave_subscription_url') or '').strip()
+
+        update_setting('remnawave_base_url', base_url)
+        if api_token:
+            update_setting('remnawave_api_token', api_token)
+        update_setting('remnawave_subscription_url', sub_url)
+
+        synced = 0
+        try:
+            synced = apply_global_remnawave_to_hosts()
+        except Exception as e:
+            logger.error(f"apply_global_remnawave_to_hosts failed: {e}")
+            flash('Настройки Remnawave сохранены, но синхронизация на хосты не удалась.', 'warning')
+            return redirect(url_for('settings_page', tab='hosts'))
+
+        flash(f'Настройки Remnawave сохранены и применены к хостам ({synced}).', 'success')
+        return redirect(url_for('settings_page', tab='hosts'))
+
+    @flask_app.route('/add-remnawave-squad', methods=['POST'])
+    @login_required
+    def add_remnawave_squad_route():
+        squad_uuid = (request.form.get('squad_uuid') or '').strip()
+        squad_class = (request.form.get('squad_class') or 'base').strip().lower()
+        label = (request.form.get('label') or '').strip()
+        if not squad_uuid:
+            flash('Укажите Squad UUID.', 'warning')
+            return redirect(url_for('settings_page', tab='hosts'))
+        squad_id = add_remnawave_squad(squad_uuid, squad_class, label or None)
+        flash('Сквад добавлен в каталог.' if squad_id else 'Не удалось добавить сквад (возможно, такой UUID уже есть).', 'success' if squad_id else 'danger')
+        return redirect(url_for('settings_page', tab='hosts'))
+
+    @flask_app.route('/delete-remnawave-squad/<int:squad_id>', methods=['POST'])
+    @login_required
+    def delete_remnawave_squad_route(squad_id: int):
+        ok = delete_remnawave_squad(squad_id)
+        flash('Сквад удалён из каталога.' if ok else 'Не удалось удалить сквад.', 'success' if ok else 'danger')
+        return redirect(url_for('settings_page', tab='hosts'))
+
+    @flask_app.route('/update-host-squad-selection', methods=['POST'])
+    @login_required
+    def update_host_squad_selection_route():
+        host_name = (request.form.get('host_name') or '').strip()
+        if not host_name:
+            flash('Не указан хост.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
+        raw_ids = request.form.getlist('squad_ids')
+        catalog_ids: list[int] = []
+        for value in raw_ids:
+            try:
+                catalog_ids.append(int(value))
+            except Exception:
+                continue
+        ok = set_host_squads_from_catalog(host_name, catalog_ids)
+        flash('Сквады хоста обновлены.' if ok else 'Не удалось обновить сквады хоста.', 'success' if ok else 'danger')
+        return redirect(url_for('settings_page', tab='hosts'))
+
     @flask_app.route('/update-host-subscription', methods=['POST'])
     @login_required
     def update_host_subscription_route():
@@ -4842,13 +4935,16 @@ def create_webhook_app(bot_controller_instance):
     @login_required
     def add_host_route():
         name = (request.form.get('host_name') or '').strip()
-        base_url = (request.form.get('remnawave_base_url') or '').strip()
-        api_token = (request.form.get('remnawave_api_token') or '').strip()
-        squad_uuid = (request.form.get('squad_uuid') or '').strip()
-        if not name or not base_url or not api_token:
-            flash('Укажите название хоста, базовый URL и API токен.', 'danger')
+        if not name:
+            flash('Укажите название хоста.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
 
+        base_url = (get_setting('remnawave_base_url') or '').strip()
+        api_token = (get_setting('remnawave_api_token') or '').strip()
+        sub_url = (get_setting('remnawave_subscription_url') or '').strip() or None
+        if not base_url or not api_token:
+            flash('Сначала заполните настройки Remnawave (URL и API Token) в блоке сверху.', 'warning')
+            return redirect(url_for('settings_page', tab='hosts'))
 
         try:
             create_host(
@@ -4857,25 +4953,35 @@ def create_webhook_app(bot_controller_instance):
                 user='',
                 passwd='',
                 inbound=0,
-                subscription_url=None,
+                subscription_url=sub_url,
             )
         except Exception as e:
             logger.error(f"Не удалось создать хост '{name}': {e}")
             flash(f"Не удалось создать хост '{name}'.", 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
 
-
         try:
             update_host_remnawave_settings(
                 name,
                 remnawave_base_url=base_url,
                 remnawave_api_token=api_token,
-                squad_uuid=squad_uuid or None,
+                squad_uuid=None,
             )
         except Exception as e:
             logger.error(f"Не удалось сохранить Remnawave-настройки для '{name}': {e}")
             flash('Хост создан, но Remnawave-настройки сохранить не удалось.', 'warning')
             return redirect(url_for('settings_page', tab='hosts'))
+
+        # Опционально: сразу отметить выбранные сквады каталога
+        raw_ids = request.form.getlist('squad_ids')
+        catalog_ids: list[int] = []
+        for value in raw_ids:
+            try:
+                catalog_ids.append(int(value))
+            except Exception:
+                continue
+        if catalog_ids:
+            set_host_squads_from_catalog(name, catalog_ids)
 
         flash(f"Хост '{name}' успешно добавлен.", 'success')
         return redirect(url_for('settings_page', tab='hosts'))
