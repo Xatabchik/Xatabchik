@@ -4352,8 +4352,8 @@ select option:checked{
 	right: 0;
 	background: color-mix(in oklab, var(--bg-surface) 85%, transparent);
 	border-bottom: 1px solid var(--border-color);
-	padding: 12px 16px;
-	padding-top: calc(12px + env(safe-area-inset-top));
+	padding: 8px 12px;
+	padding-top: calc(8px + env(safe-area-inset-top));
 	z-index: 1000;
 	backdrop-filter: blur(12px) saturate(130%);
 	-webkit-backdrop-filter: blur(12px) saturate(130%);
@@ -4363,57 +4363,131 @@ select option:checked{
 .mobile-header-content {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
+	justify-content: flex-start;
+	gap: 8px;
 	width: 100%;
 }
 
 .mobile-brand {
 	display: flex;
 	align-items: center;
-	flex: 1;
+	flex: 0 0 auto;
 	min-width: 0;
+	max-width: 34%;
 }
 
 .mobile-brand-link {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px;
 	text-decoration: none;
 	color: var(--text-primary);
 	min-width: 0;
-	flex: 1;
 }
 
 .mobile-brand-link img {
-	width: 32px;
-	height: 32px;
+	width: 28px;
+	height: 28px;
 	object-fit: contain;
-	filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+	filter: none;
 	flex-shrink: 0;
 }
 
 #mobile-brand-title {
-	font-size: 18px;
+	font-size: 15px;
 	font-weight: 700;
 	letter-spacing: 0.2px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	flex: 1;
 	min-width: 0;
 }
 
-.mobile-bot-control {
-	display: flex;
-	align-items: center;
-	flex-shrink: 0;
+.mobile-header-search{
+	flex: 1 1 auto;
+	min-width: 0;
+	max-width: none;
+	height: 36px;
+	z-index: 1001;
 }
 
-.mobile-bot-control .btn {
-	white-space: nowrap;
-	font-size: 0.875rem;
-	padding: 6px 12px;
+.mobile-header-search.is-open{
+	z-index: 1201;
+}
+
+.mobile-header-search .topbar-search-field,
+.mobile-header-search .topbar-search-field .form-control{
+	height: 36px !important;
+	min-height: 36px !important;
+}
+
+.mobile-header-search .topbar-search-dropdown{
+	left: 0;
+	right: 0;
+	min-width: min(92vw, 360px);
+}
+
+.mobile-bot-trigger{
+	position: relative;
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	border-radius: 12px;
+	border: 1px solid rgba(255,255,255,.12);
+	background: rgba(255,255,255,.04);
+	color: rgba(246,247,248,.85);
+	cursor: pointer;
+	transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.mobile-bot-trigger:hover{
+	background: rgba(255,255,255,.08);
+	border-color: rgba(255,255,255,.18);
+	color: #fff;
+}
+
+.mobile-bot-trigger i{
+	font-size: 20px;
+	line-height: 1;
+}
+
+.mobile-bot-status-dot{
+	position: absolute;
+	top: 5px;
+	right: 5px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	border: 1.5px solid #111318;
+	background: #e27c87;
+}
+
+.mobile-bot-trigger.is-running .mobile-bot-status-dot{
+	background: #74c9a0;
+}
+
+.mobile-bot-trigger.is-stopped .mobile-bot-status-dot{
+	background: #e27c87;
+}
+
+.mobile-bot-modal-status{
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	font-size: 0.92rem;
+	color: var(--text-1, rgba(246,247,248,.60));
+}
+
+.mobile-bot-modal-status .status-dot{
+	margin-top: 0.35em;
+}
+
+.mobile-bot-control {
+	display: none;
 }
 
 /* Нижнее меню навигации */
@@ -4590,15 +4664,14 @@ select option:checked{
 		padding: calc(var(--mobile-header-h) + env(safe-area-inset-top) + 8px) 14px calc(80px + env(safe-area-inset-bottom));
 	}
 
-	/* Topbar: show burger button, hide dropdown menu (we use sidebar drawer instead) */
+	/* Topbar: поиск перенесён в mobile-header; здесь только бургер при необходимости */
 	.topbar{ 
 		justify-content: flex-start;
 		padding-top: 4px;
 		padding-bottom: 6px;
 	}
-	.topbar-search{
-		max-width: none;
-		min-width: 0;
+	.topbar > .topbar-search{
+		display: none !important;
 	}
 	.bm{ display: flex !important; position: relative; margin-right: 10px; }
 	label.burger_img{ display: inline-flex !important; }
@@ -4630,6 +4703,12 @@ select option:checked{
 	}
 	.bm {
 		margin-right: 0;
+	}
+	#mobile-brand-title {
+		display: none;
+	}
+	.mobile-brand {
+		max-width: none;
 	}
 }
 

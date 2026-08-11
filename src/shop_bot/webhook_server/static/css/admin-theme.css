@@ -255,6 +255,20 @@ pre,
   -webkit-backdrop-filter: blur(10px);
 }
 
+.mobile-bot-trigger {
+  background: var(--surface-0) !important;
+  border-color: var(--border-1) !important;
+  color: var(--text-0) !important;
+}
+
+.mobile-bot-trigger.is-running .mobile-bot-status-dot {
+  background: var(--success) !important;
+}
+
+.mobile-bot-trigger.is-stopped .mobile-bot-status-dot {
+  background: var(--error) !important;
+}
+
 .bottom-nav {
   background: rgba(17, 19, 24, 0.94) !important;
   border-top: 1px solid var(--border-1) !important;
