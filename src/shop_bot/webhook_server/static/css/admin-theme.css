@@ -1233,7 +1233,9 @@ body.login-page .login-container {
 .password-field > .toggle-password:not(.btn) {
   color: var(--text-0) !important;
   -webkit-text-fill-color: var(--text-0) !important;
-  background: rgba(255, 255, 255, 0.06) !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
   opacity: 1 !important;
   visibility: visible !important;
   z-index: 5 !important;
@@ -1245,7 +1247,7 @@ body.login-page .login-container {
 .password-wrapper > .toggle-password:not(.btn):hover,
 .password-field > .toggle-password:not(.btn):hover {
   color: #fff !important;
-  background: rgba(255, 255, 255, 0.12) !important;
+  background: transparent !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn) .ti,
