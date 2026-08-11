@@ -557,7 +557,7 @@ def _process_key_data(key: dict) -> dict:
     if days_left < 0:
         days_left = 0
         
-    remaining_str = _format_remaining_details(delta) if delta.total_seconds() > 0 else "РСЃС‚РµРє"
+    remaining_str = _format_remaining_details(delta) if delta.total_seconds() > 0 else "Истёк"
 
     # 3. Progress
     total_duration = (expire_dt - created_dt).total_seconds()
@@ -1324,7 +1324,7 @@ def _render_banned_page(webapp_settings: dict):
         
         <h1 class="text-3xl font-black mb-3 tracking-tight">Доступ ограничен</h1>
         <p class="text-gray-400 font-medium leading-relaxed mb-8">
-            Р’Р°С€ Р°РєРєР°СѓРЅС‚ Р±С‹Р» Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ Р·Р° РЅР°СЂСѓС€РµРЅРёРµ РїСЂР°РІРёР» СЃРµСЂРІРёСЃР°. РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ С„СѓРЅРєС†РёР№ WebApp РІСЂРµРјРµРЅРЅРѕ РЅРµРґРѕСЃС‚СѓРїРЅРѕ.
+            Ваш аккаунт был заблокирован за нарушение правил сервиса. Использование функций WebApp временно недоступно.
         </p>
 
         <div class="glass rounded-[2rem] p-6 w-full border border-red-500/20 shadow-2xl">
@@ -1334,7 +1334,7 @@ def _render_banned_page(webapp_settings: dict):
                 </div>
                 <div>
                     <div class="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-1">Статус аккаунта</div>
-                    <div class="text-lg font-black text-red-500 leading-none">Р—РђР‘Р›РћРљРР РћР’РђРќ</div>
+                    <div class="text-lg font-black text-red-500 leading-none">ЗАБЛОКИРОВАН</div>
                 </div>
             </div>
             
