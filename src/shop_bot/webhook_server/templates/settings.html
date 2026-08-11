@@ -732,29 +732,29 @@
 				<div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
 					<h2 class="card-title mb-0">
 						<i class="ti ti-server me-2"></i>
-						Управление Хостами (Серверами)
+						Управление группами тарифов
 					</h2>
 					<button type="button" class="btn btn-primary btn-sm pill" id="toggle-add-host-btn" aria-expanded="false" aria-controls="add-host-form-wrap">
 						<i class="ti ti-plus me-1"></i>
-						Добавить новый хост
+						Добавить группу
 					</button>
 				</div>
 				<div class="card-body d-none" id="add-host-form-wrap">
 					<h4>
 						<i class="ti ti-plus me-2"></i>
-						Новый хост
+						Новая группа
 					</h4>
 					<form action="{{ url_for('add_host_route') }}" method="post">
 						<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 						<div class="row g-2">
 							<div class="col-12 col-md-6">
-								<label class="form-label small" for="host_name">Название хоста:</label>
+								<label class="form-label small" for="host_name">Название группы:</label>
 								<input class="form-control pill" type="text" id="host_name" name="host_name" required />
 							</div>
 						</div>
 						{% if remnawave_squads %}
 						<div class="mt-3">
-							<div class="form-label small mb-2">Сквады для хоста</div>
+							<div class="form-label small mb-2">Сквады для группы</div>
 							<div class="host-squad-checks">
 								{% for sq in remnawave_squads %}
 								<label class="form-check host-squad-check">
@@ -778,7 +778,7 @@
 						</div>
 						<button type="submit" class="btn btn-sm btn-primary mt-2">
 							<i class="ti ti-plus me-1"></i>
-							Добавить хост
+							Добавить группу
 						</button>
 					</form>
 				</div>
@@ -791,7 +791,7 @@
 							<summary class="host-header rw-drawer-summary">
 								<h3>{{ host.host_name }}</h3>
 								<span class="rw-drawer-caret" aria-hidden="true"></span>
-								<form action="{{ url_for('delete_host_route', host_name=host.host_name) }}" method="post" data-confirm="Вы уверены, что хотите удалить этот хост и все его тарифы?">
+								<form action="{{ url_for('delete_host_route', host_name=host.host_name) }}" method="post" data-confirm="Вы уверены, что хотите удалить эту группу тарифов и все её тарифы?">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 									<button type="submit" class="btn btn-danger btn-sm">Удалить</button>
 								</form>
@@ -801,7 +801,7 @@
 							<form action="{{ url_for('rename_host_route') }}" method="post" class="form-inline edit-row" data-edit-row>
 								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 								<input type="hidden" name="old_host_name" value="{{ host.host_name }}" />
-								<label class="form-label" for="new_host_name_{{ loop.index }}">Имя хоста:</label>
+								<label class="form-label" for="new_host_name_{{ loop.index }}">Имя группы:</label>
 								<input id="new_host_name_{{ loop.index }}" class="form-control pill" type="text" name="new_host_name" value="{{ host.host_name or '' }}" data-edit-target readonly />
 								<div class="edit-actions">
 									<button type="button" class="btn btn-outline-secondary btn-sm pill" title="Редактировать" data-action="edit"><i class="ti ti-pencil"></i></button>
@@ -1028,7 +1028,7 @@
 						</details>
 						{% endfor %}
 					{% else %}
-						<p>Хосты еще не добавлены.</p>
+						<p>Группы тарифов ещё не добавлены.</p>
 					{% endif %}
 			</div>
 
@@ -2384,7 +2384,7 @@
 </script>
 
 <script>
-  // Кнопка "Добавить новый хост" рядом с заголовком — показывает/скрывает форму
+  // Кнопка "Добавить группу" рядом с заголовком — показывает/скрывает форму
   (function(){
     const btn = document.getElementById('toggle-add-host-btn');
     const wrap = document.getElementById('add-host-form-wrap');
