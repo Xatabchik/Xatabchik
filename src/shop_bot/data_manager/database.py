@@ -620,6 +620,7 @@ def initialize_db():
                 "inactive_usage_reminder_support_url": "",
                 "remnawave_base_url": None,
                 "remnawave_api_token": None,
+                "remnawave_subscription_url": None,
                 "remnawave_cookies": "{}",
                 "remnawave_is_local_network": "false",
                 "default_extension_days": "30",
@@ -1015,6 +1016,305 @@ def delete_host_squad(squad_id: int) -> bool:
         return False
 
 
+def _ensure_remnawave_squads_catalog(cursor: sqlite3.Cursor) -> None:
+    """Глобальный каталог сквадов Remnawave (выбираются галочками на хостах)."""
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS remnawave_squads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            squad_uuid TEXT NOT NULL UNIQUE,
+            squad_class TEXT NOT NULL DEFAULT 'base',
+            label TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_remnawave_squads_class ON remnawave_squads(squad_class)")
+
+    # Миграция: собрать уникальные сквады из host_squads и legacy xui_hosts.squad_uuid
+    try:
+        cursor.execute(
+            """
+            SELECT squad_uuid, squad_class, label
+            FROM host_squads
+            WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''
+            ORDER BY id
+            """
+        )
+        for squad_uuid, squad_class, label in cursor.fetchall():
+            uuid_n = (squad_uuid or "").strip()
+            if not uuid_n:
+                continue
+            class_n = str(squad_class or "base").strip().lower()
+            if class_n not in ("base", "lte", "other"):
+                class_n = "base"
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO remnawave_squads (squad_uuid, squad_class, label, is_active)
+                VALUES (?, ?, ?, 1)
+                """,
+                (uuid_n, class_n, (label or None)),
+            )
+        cursor.execute(
+            "SELECT squad_uuid FROM xui_hosts WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''"
+        )
+        for (squad_uuid,) in cursor.fetchall():
+            uuid_n = (squad_uuid or "").strip()
+            if not uuid_n:
+                continue
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO remnawave_squads (squad_uuid, squad_class, label, is_active)
+                VALUES (?, 'base', 'Base (legacy)', 1)
+                """,
+                (uuid_n,),
+            )
+    except sqlite3.Error as e:
+        logging.warning(f"Не удалось мигрировать сквады в remnawave_squads: {e}")
+
+
+def get_remnawave_squads(*, only_active: bool = False) -> list[dict]:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            query = "SELECT * FROM remnawave_squads"
+            if only_active:
+                query += " WHERE is_active = 1"
+            query += " ORDER BY CASE squad_class WHEN 'base' THEN 0 WHEN 'lte' THEN 1 ELSE 2 END, id"
+            cursor.execute(query)
+            return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"Failed to list remnawave squads: {e}")
+        return []
+
+
+def add_remnawave_squad(squad_uuid: str, squad_class: str = "base", label: str | None = None) -> int | None:
+    squad_class_n = str(squad_class or "base").strip().lower()
+    if squad_class_n not in ("base", "lte", "other"):
+        squad_class_n = "base"
+    uuid_n = (squad_uuid or "").strip()
+    if not uuid_n:
+        return None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO remnawave_squads (squad_uuid, squad_class, label, is_active)
+                VALUES (?, ?, ?, 1)
+                """,
+                (uuid_n, squad_class_n, (label or None)),
+            )
+            conn.commit()
+            return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        logging.warning(f"add_remnawave_squad: UUID уже есть в каталоге: {uuid_n}")
+        return None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to add remnawave squad: {e}")
+        return None
+
+
+def delete_remnawave_squad(squad_id: int) -> bool:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT squad_uuid FROM remnawave_squads WHERE id = ?", (int(squad_id),))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            uuid_n = row["squad_uuid"]
+            cursor.execute("DELETE FROM remnawave_squads WHERE id = ?", (int(squad_id),))
+            cursor.execute("DELETE FROM host_squads WHERE squad_uuid = ?", (uuid_n,))
+            # Сброс legacy squad_uuid у хостов, если указывал удалённый сквад
+            cursor.execute(
+                "UPDATE xui_hosts SET squad_uuid = NULL WHERE TRIM(COALESCE(squad_uuid, '')) = TRIM(?)",
+                (uuid_n,),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"Failed to delete remnawave squad id {squad_id}: {e}")
+        return False
+
+
+def seed_global_remnawave_from_hosts() -> None:
+    """Если глобальные Remnawave-настройки пусты — взять из первого хоста."""
+    try:
+        base = (get_setting("remnawave_base_url") or "").strip()
+        token = (get_setting("remnawave_api_token") or "").strip()
+        sub = (get_setting("remnawave_subscription_url") or "").strip()
+        if base and token and sub:
+            return
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT remnawave_base_url, remnawave_api_token, subscription_url, host_url
+                FROM xui_hosts
+                ORDER BY host_name
+                LIMIT 20
+                """
+            )
+            rows = cursor.fetchall()
+        for row in rows:
+            if not base:
+                base = ((row["remnawave_base_url"] or row["host_url"] or "")).strip()
+            if not token:
+                token = ((row["remnawave_api_token"] or "")).strip()
+            if not sub:
+                sub = ((row["subscription_url"] or "")).strip()
+            if base and token and sub:
+                break
+        if base and not (get_setting("remnawave_base_url") or "").strip():
+            update_setting("remnawave_base_url", base)
+        if token and not (get_setting("remnawave_api_token") or "").strip():
+            update_setting("remnawave_api_token", token)
+        if sub and not (get_setting("remnawave_subscription_url") or "").strip():
+            update_setting("remnawave_subscription_url", sub)
+    except Exception as e:
+        logging.warning(f"seed_global_remnawave_from_hosts failed: {e}")
+
+
+def apply_global_remnawave_to_hosts() -> int:
+    """Синхронизировать глобальные Remnawave URL/token/subscription на все хосты."""
+    base = (get_setting("remnawave_base_url") or "").strip() or None
+    token = (get_setting("remnawave_api_token") or "").strip() or None
+    sub = (get_setting("remnawave_subscription_url") or "").strip() or None
+    updated = 0
+    try:
+        hosts = get_all_hosts()
+        for host in hosts:
+            name = host.get("host_name")
+            if not name:
+                continue
+            ok_rmw = update_host_remnawave_settings(
+                name,
+                remnawave_base_url=base,
+                remnawave_api_token=token,
+            )
+            ok_sub = True
+            if sub is not None:
+                ok_sub = update_host_subscription_url(name, sub)
+            # host_url тоже держим в синхроне с панелью для speedtest/UI
+            ok_url = True
+            if base:
+                ok_url = update_host_url(name, base)
+            if ok_rmw and ok_sub and ok_url:
+                updated += 1
+        return updated
+    except Exception as e:
+        logging.error(f"apply_global_remnawave_to_hosts failed: {e}")
+        return updated
+
+
+def set_host_squads_from_catalog(host_name: str, catalog_ids: list[int]) -> bool:
+    """Выставить привязку хоста к сквадам каталога (галочки). Синхронизирует host_squads и squad_uuid."""
+    host_name_n = normalize_host_name(host_name)
+    if not host_name_n:
+        return False
+    try:
+        wanted_ids = {int(x) for x in (catalog_ids or []) if str(x).strip().isdigit() or isinstance(x, int)}
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name_n,))
+            if cursor.fetchone() is None:
+                return False
+
+            selected: list[dict] = []
+            if wanted_ids:
+                placeholders = ",".join("?" for _ in wanted_ids)
+                cursor.execute(
+                    f"SELECT * FROM remnawave_squads WHERE id IN ({placeholders}) AND is_active = 1",
+                    tuple(wanted_ids),
+                )
+                selected = [dict(r) for r in cursor.fetchall()]
+
+            # Не более одного base/lte — оставляем первый по приоритету каталога
+            filtered: list[dict] = []
+            seen_class: set[str] = set()
+            for sq in sorted(
+                selected,
+                key=lambda s: {"base": 0, "lte": 1}.get(str(s.get("squad_class") or ""), 2),
+            ):
+                cls = str(sq.get("squad_class") or "other").lower()
+                if cls in ("base", "lte") and cls in seen_class:
+                    continue
+                if cls in ("base", "lte"):
+                    seen_class.add(cls)
+                filtered.append(sq)
+
+            wanted_uuids = {(sq.get("squad_uuid") or "").strip() for sq in filtered}
+            wanted_uuids.discard("")
+
+            cursor.execute("SELECT id, squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            existing = [(int(r["id"]), (r["squad_uuid"] or "").strip()) for r in cursor.fetchall()]
+            for row_id, uuid_n in existing:
+                if uuid_n not in wanted_uuids:
+                    cursor.execute("DELETE FROM host_squads WHERE id = ?", (row_id,))
+
+            cursor.execute("SELECT squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            have = {(r["squad_uuid"] or "").strip() for r in cursor.fetchall()}
+            for sq in filtered:
+                uuid_n = (sq.get("squad_uuid") or "").strip()
+                if not uuid_n or uuid_n in have:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO host_squads (host_name, squad_uuid, squad_class, label, is_active)
+                    VALUES (?, ?, ?, ?, 1)
+                    """,
+                    (
+                        host_name_n,
+                        uuid_n,
+                        str(sq.get("squad_class") or "base").lower(),
+                        sq.get("label"),
+                    ),
+                )
+
+            base_uuid = None
+            for sq in filtered:
+                if str(sq.get("squad_class") or "").lower() == "base":
+                    base_uuid = (sq.get("squad_uuid") or "").strip() or None
+                    break
+            cursor.execute(
+                "UPDATE xui_hosts SET squad_uuid = ? WHERE TRIM(host_name) = TRIM(?)",
+                (base_uuid, host_name_n),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"set_host_squads_from_catalog failed for '{host_name}': {e}")
+        return False
+
+
+def get_host_selected_squad_catalog_ids(host_name: str) -> list[int]:
+    """ID записей каталога, привязанных к хосту через host_squads.uuid."""
+    try:
+        host_name_n = normalize_host_name(host_name)
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT rs.id
+                FROM remnawave_squads rs
+                INNER JOIN host_squads hs ON hs.squad_uuid = rs.squad_uuid
+                WHERE hs.host_name = ?
+                ORDER BY rs.id
+                """,
+                (host_name_n,),
+            )
+            return [int(r[0]) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"get_host_selected_squad_catalog_ids failed for '{host_name}': {e}")
+        return []
+
+
 def _ensure_support_tickets_columns(cursor: sqlite3.Cursor) -> None:
     extras = {
         "forum_chat_id": "TEXT",
@@ -1218,6 +1518,7 @@ def run_migration():
             _ensure_traffic_packages_table(cursor)
             _ensure_subscription_lte_table(cursor)
             _ensure_host_squads_table(cursor)
+            _ensure_remnawave_squads_catalog(cursor)
             _ensure_analytics_tables(cursor)
             _ensure_auth_pending_actions_table(cursor)
             try:
