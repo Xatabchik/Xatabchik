@@ -4403,9 +4403,11 @@ select option:checked{
 	justify-content: flex-start;
 	gap: 8px;
 	width: 100%;
+	min-width: 0;
+	overflow: visible;
 }
 
-/* Brand слева — не сжимается поиском; поиск ограничен по ширине */
+/* Brand слева; поиск гибко занимает оставшееся место */
 .mobile-header .brand.mobile-header-brand{
 	display: flex;
 	align-items: center;
