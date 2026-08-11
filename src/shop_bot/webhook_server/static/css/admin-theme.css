@@ -1007,28 +1007,63 @@ body.login-page .login-container {
   flex: 0 1 auto;
 }
 
-/* Password eye — theme tokens + alignment for overlay / field wrap */
+/* Password eye — always visible, centered on the input */
 .password-field {
-  position: relative;
+  position: relative !important;
   width: 100%;
+  overflow: visible !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn),
 .password-field > .toggle-password:not(.btn) {
-  color: var(--text-1) !important;
-  z-index: 3;
+  color: var(--text-0) !important;
+  -webkit-text-fill-color: var(--text-0) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  z-index: 5 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn):hover,
 .password-field > .toggle-password:not(.btn):hover {
-  color: var(--text-0) !important;
-  background: rgba(255, 255, 255, 0.06) !important;
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.12) !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn) .ti,
-.password-field > .toggle-password:not(.btn) .ti {
-  font-size: 1.15rem !important;
+.password-field > .toggle-password:not(.btn) .ti,
+.password-wrapper > .toggle-password:not(.btn) svg,
+.password-field > .toggle-password:not(.btn) svg {
+  font-size: 1.2rem !important;
+  width: 1.2rem !important;
+  height: 1.2rem !important;
   opacity: 1 !important;
+  color: inherit !important;
+  fill: currentColor;
+  display: block !important;
+}
+
+/* Mobile search: flexible width + dropdown inside viewport */
+@media (max-width: 992px) {
+  .mobile-header-search {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  .mobile-header-search .topbar-search-dropdown {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    top: calc(var(--mobile-header-h, 52px) + env(safe-area-inset-top, 0px) + 6px) !important;
+    z-index: 1300 !important;
+  }
 }
 
 @media (max-width: 576px) {

@@ -1480,55 +1480,65 @@ h4 {
     padding-right: 44px !important;
 }
 
-/* Overlay-кнопка: без top:% от label (ломало выравнивание на мобиле) */
+/* Overlay-кнопка глаза: центр по высоте input, всегда видима */
 .password-wrapper > .toggle-password:not(.btn),
 .password-field > .toggle-password:not(.btn) {
     position: absolute;
     top: auto;
-    right: 8px;
+    right: 6px;
     bottom: 0;
     transform: none;
-    width: 36px;
-    height: 2.5rem;
-    display: inline-flex;
+    width: 2.25rem;
+    height: 2.25rem;
+    display: inline-flex !important;
     align-items: center;
     justify-content: center;
     border: none;
-    background: transparent;
+    background: rgba(255, 255, 255, 0.06);
     cursor: pointer;
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 0;
-    color: rgba(246, 247, 248, 0.72);
-    z-index: 3;
+    color: #f6f7f8 !important;
+    -webkit-text-fill-color: #f6f7f8;
+    opacity: 1 !important;
+    visibility: visible !important;
+    z-index: 5;
     transition: background-color 0.15s ease, color 0.15s ease;
+    -webkit-appearance: none;
+    appearance: none;
 }
 
-/* Обёртка только вокруг input — растягиваем кнопку на всю высоту поля */
+/* Обёртка только вокруг input — центрируем по полю */
 .password-field > .toggle-password:not(.btn) {
-    top: 0;
-    bottom: 0;
-    height: auto;
+    top: 50%;
+    bottom: auto;
+    height: 2.25rem;
+    transform: translateY(-50%);
 }
 
 .password-wrapper > .toggle-password:not(.btn):hover,
 .password-field > .toggle-password:not(.btn):hover {
-    background: rgba(255,255,255,0.08);
-    color: #f6f7f8;
+    background: rgba(255,255,255,0.12);
+    color: #ffffff !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn) svg,
 .password-field > .toggle-password:not(.btn) svg {
-    width: 18px;
-    height: 18px;
-    display: block;
+    width: 1.2rem;
+    height: 1.2rem;
+    display: block !important;
     pointer-events: none;
+    fill: currentColor;
+    opacity: 1 !important;
 }
 
 .password-wrapper > .toggle-password:not(.btn) .ti,
 .password-field > .toggle-password:not(.btn) .ti {
-    font-size: 1.1rem;
+    font-size: 1.2rem !important;
     line-height: 1;
     pointer-events: none;
+    opacity: 1 !important;
+    color: inherit !important;
 }
 
 /* Flex-паттерн (кнопка рядом с полем): не абсолютим */
@@ -2968,12 +2978,9 @@ body.login-page {
 
 	.password-wrapper > .toggle-password:not(.btn),
 	.password-field > .toggle-password:not(.btn) {
-		width: 40px;
+		width: 2.4rem;
+		height: 2.4rem;
 		right: 4px;
-	}
-
-	.password-wrapper > .toggle-password:not(.btn) {
-		height: 2.6rem;
 	}
 
 	.form-inline {
@@ -4379,6 +4386,7 @@ select option:checked{
 	top: 0;
 	left: 0;
 	right: 0;
+	overflow: visible;
 	background: color-mix(in oklab, var(--bg-surface) 85%, transparent);
 	border-bottom: 1px solid var(--border-color);
 	padding: 8px 12px;
@@ -4496,37 +4504,49 @@ select option:checked{
 
 .mobile-header-search{
 	flex: 1 1 auto;
-	min-width: 7rem;
-	max-width: 11.5rem;
-	width: 100%;
+	min-width: 0;
+	max-width: none;
+	width: auto;
 	height: 36px;
-	margin-left: auto;
+	margin-left: 8px;
 	z-index: 1001;
 	order: 1;
 }
 
 .mobile-header .mobile-bot-trigger{
 	order: 2;
+	flex: 0 0 auto;
 }
 
 .mobile-header:has(.topbar-search.is-open){
 	z-index: 1200;
+	overflow: visible;
 }
 
 .mobile-header-search.is-open{
 	z-index: 1201;
+	overflow: visible;
 }
 
 .mobile-header-search .topbar-search-field,
 .mobile-header-search .topbar-search-field .form-control{
 	height: 36px !important;
 	min-height: 36px !important;
+	width: 100%;
+	max-width: none;
 }
 
+/* Результаты поиска: фиксируем к краям экрана, чтобы не уезжали вправо */
 .mobile-header-search .topbar-search-dropdown{
-	left: 0;
-	right: 0;
-	min-width: min(92vw, 360px);
+	position: fixed !important;
+	top: calc(var(--mobile-header-h, 52px) + env(safe-area-inset-top, 0px) + 6px) !important;
+	left: 12px !important;
+	right: 12px !important;
+	width: auto !important;
+	min-width: 0 !important;
+	max-width: none !important;
+	max-height: min(60dvh, 380px);
+	z-index: 1300 !important;
 }
 
 .mobile-bot-trigger{
@@ -4811,17 +4831,24 @@ select option:checked{
 	.bm {
 		margin-right: 0;
 	}
-	/* На узких экранах: лого + название слева, поиск ещё компактнее */
+	/* На узких экранах: лого + название слева, поиск занимает оставшееся место */
 	.mobile-header .brand-sub,
 	.mobile-header .btn-brand-edit{
 		display: none;
 	}
 	.mobile-header .brand-word{
-		max-width: 7.5rem;
+		max-width: 6.5rem;
 	}
 	.mobile-header-search{
-		min-width: 5.5rem;
-		max-width: 8.5rem;
+		flex: 1 1 0;
+		min-width: 0;
+		max-width: none;
+		margin-left: 6px;
+	}
+	.mobile-header-search .topbar-search-field .form-control{
+		font-size: 14px !important;
+		padding-left: 2rem !important;
+		padding-right: 1.75rem !important;
 	}
 }
 
