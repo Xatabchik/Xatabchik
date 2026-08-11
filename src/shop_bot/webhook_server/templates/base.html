@@ -461,6 +461,24 @@
         
         <script src="{{ url_for('static', filename='vendor/tabler/js/tabler.min.js') }}"></script>
         <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+		{# Модалки пользователя/ключа для топбар-поиска на всех страницах,
+		   кроме тех, где они уже подключены локально (избегаем дублей id). #}
+		{% set _local_details_modals = [
+			'users_page',
+			'admin_keys_page',
+			'analytics_transactions_page'
+		] %}
+		{% if request.endpoint not in _local_details_modals %}
+			{% include 'partials/admin_details_modals.html' %}
+			<link rel="stylesheet" href="{{ url_for('static', filename='vendor/flatpickr/flatpickr.min.css') }}">
+			<link rel="stylesheet" href="{{ url_for('static', filename='vendor/flatpickr/dark.css') }}">
+			<script src="{{ url_for('static', filename='vendor/flatpickr/flatpickr.min.js') }}"></script>
+			<script src="{{ url_for('static', filename='vendor/flatpickr/ru.js') }}"></script>
+			{% include 'partials/admin_key_details_js.html' %}
+			{% include 'partials/admin_user_details_js.html' %}
+		{% endif %}
+
         <script>
             (function(){
                 const titleEl = document.getElementById('brand-title');

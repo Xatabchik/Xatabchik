@@ -1,0 +1,438 @@
+<div class="modal modal-blur fade" id="userDetailsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-user me-2"></i>
+          Пользователь <span id="ud-user-id">—</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div id="ud-loading" class="text-center py-4">
+          <div class="spinner-border text-primary" role="status"></div>
+        </div>
+        <div id="ud-content" class="d-none">
+          <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-ud-tab="info" type="button">Информация</button></li>
+            <li class="nav-item"><button class="nav-link" data-ud-tab="referrals" type="button">Рефералы <span class="badge bg-secondary-lt ms-1" id="ud-refcount">0</span></button></li>
+            <li class="nav-item"><button class="nav-link" data-ud-tab="keys" type="button">Ключи <span class="badge bg-secondary-lt ms-1" id="ud-keyscount">0</span></button></li>
+            <li class="nav-item"><button class="nav-link" data-ud-tab="transactions" type="button">Транзакции <span class="badge bg-secondary-lt ms-1" id="ud-txcount">0</span></button></li>
+          </ul>
+
+          <div class="ud-tab-pane" data-ud-pane="info">
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Username</div>
+                <div class="fw-semibold" id="ud-username">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Статус</div>
+                <div class="fw-semibold" id="ud-status">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Дата регистрации</div>
+                <div class="fw-semibold" id="ud-regdate">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Ключи (активные / всего)</div>
+                <div class="fw-semibold" id="ud-keys-summary">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Баланс</div>
+                <div class="fw-semibold h4 mb-0" id="ud-balance">0.00 RUB</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Реферальный баланс</div>
+                <div class="fw-semibold h4 mb-0" id="ud-ref-balance">0.00 RUB</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Всего потрачено</div>
+                <div class="fw-semibold h4 mb-0" id="ud-spent">0.00 RUB</div>
+              </div>
+            </div>
+
+            <hr />
+
+            <div class="mb-3">
+              <label class="form-label small">Изменить баланс</label>
+              <form id="ud-balance-form" class="input-group input-group-sm">
+                <input type="text" inputmode="decimal" class="form-control" id="ud-balance-delta" placeholder="Например: +100 или -50" required />
+                <button type="submit" class="btn btn-primary" id="ud-balance-save-btn">
+                  <i class="ti ti-check me-1"></i> Применить
+                </button>
+              </form>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label small">Изменить реферальный баланс</label>
+              <form id="ud-ref-balance-form" class="input-group input-group-sm">
+                <input type="text" inputmode="decimal" class="form-control" id="ud-ref-balance-delta" placeholder="Например: +100 или -50" required />
+                <button type="submit" class="btn btn-primary" id="ud-ref-balance-save-btn">
+                  <i class="ti ti-check me-1"></i> Применить
+                </button>
+              </form>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2">
+              <button type="button" class="btn btn-primary btn-sm" id="ud-issue-key-toggle">
+                <i class="ti ti-key-plus me-1"></i> Выдать ключ
+              </button>
+              <button type="button" class="btn btn-warning btn-sm d-none" id="ud-ban-btn">
+                <i class="ti ti-ban me-1"></i> Забанить
+              </button>
+              <button type="button" class="btn btn-success btn-sm d-none" id="ud-unban-btn">
+                <i class="ti ti-circle-check me-1"></i> Разбанить
+              </button>
+              <button type="button" class="btn btn-danger btn-sm d-none" id="ud-revoke-btn">
+                <i class="ti ti-trash-x me-1"></i> Отозвать все ключи
+              </button>
+              <button type="button" class="btn btn-outline-danger btn-sm" id="ud-delete-user-btn">
+                <i class="ti ti-user-minus me-1"></i> Удалить пользователя
+              </button>
+            </div>
+
+            <div class="d-none border rounded-3 p-3 mt-3" id="ud-issue-key-card">
+              <form id="ud-issue-key-form" class="row g-2" autocomplete="off">
+                <div class="col-12 col-md-6">
+                  <label class="form-label small" for="ud-host-select">Хост</label>
+                  <select class="form-select form-select-sm" id="ud-host-select" required>
+                    <option value="" selected disabled>Выберите хост...</option>
+                    {% for h in hosts|default([]) %}
+                    <option value="{{ h.host_name }}">{{ h.host_name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label small" for="ud-plan-select">Тариф</label>
+                  <div class="input-group input-group-sm">
+                    <select class="form-select form-select-sm" id="ud-plan-select" required disabled>
+                      <option value="">— Сначала выберите хост —</option>
+                    </select>
+                    <span class="input-group-text fw-semibold" id="ud-plan-price">— RUB</span>
+                  </div>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small" for="ud-expiry-date">Истекает (можно указать свою дату)</label>
+                  <div class="d-flex flex-wrap align-items-stretch gap-1">
+                    <input class="form-control form-control-sm" type="text" id="ud-expiry-date" placeholder="Выберите дату" style="flex:1; min-width: 140px;" />
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-ud-preset="30">+30</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-ud-preset="90">+90</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-ud-preset="180">+180</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-ud-preset="365">+365</button>
+                  </div>
+                  <small class="text-secondary">Если оставить пустым — срок возьмётся из тарифа</small>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small" for="ud-issue-comment">Комментарий</label>
+                  <textarea class="form-control form-control-sm" id="ud-issue-comment" rows="2" placeholder="Необязательный комментарий"></textarea>
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-primary btn-sm" id="ud-issue-key-submit">
+                    <i class="ti ti-plus me-1"></i> Создать ключ
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="ud-tab-pane d-none" data-ud-pane="referrals">
+            <div class="d-flex justify-content-end gap-2 mb-2">
+              <button type="button" class="btn btn-sm btn-outline-danger d-none" id="ud-remove-all-referrals-btn">
+                <i class="ti ti-trash me-1"></i> Удалить всех
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-primary" id="ud-assign-referral-btn">
+                <i class="ti ti-user-plus me-1"></i> Назначить реферала
+              </button>
+            </div>
+            <ul class="list-unstyled mb-0" id="ud-reflist"></ul>
+            <div id="ud-referrals-empty" class="text-secondary text-center py-3 d-none">Нет рефералов</div>
+          </div>
+
+          <div class="ud-tab-pane d-none" data-ud-pane="keys">
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="uk-search" placeholder="Поиск по email/ID..." />
+            </div>
+            <div class="table-responsive">
+              <table class="table table-vcenter table-hover card-table keys-table mb-2">
+                <thead>
+                  <tr>
+                    <th class="w-1"><i class="ti ti-hash"></i></th>
+                    <th><i class="ti ti-user me-1"></i> Пользователь</th>
+                    <th><i class="ti ti-server me-1"></i> Хост</th>
+                    <th><i class="ti ti-mail me-1"></i> Email</th>
+                    <th><i class="ti ti-calendar me-1"></i> Истекает</th>
+                    <th><i class="ti ti-clock me-1"></i> Создан</th>
+                  </tr>
+                </thead>
+                <tbody id="uk-tbody"></tbody>
+              </table>
+            </div>
+            <div id="uk-empty" class="text-secondary text-center py-3 d-none">Ключей нет</div>
+            <div class="d-flex justify-content-center align-items-center gap-2 mt-2" id="uk-pagination">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-prev"><i class="ti ti-chevron-left"></i></button>
+              <span class="text-secondary small" id="uk-page-info">1 / 1</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-next"><i class="ti ti-chevron-right"></i></button>
+            </div>
+          </div>
+
+          <div class="ud-tab-pane d-none" data-ud-pane="transactions">
+            <div class="mb-2">
+              <input type="text" class="form-control form-control-sm" id="utx-search" placeholder="Поиск по ID платежа, методу оплаты, статусу..." />
+            </div>
+            <div class="table-responsive">
+              <table class="table table-vcenter table-hover card-table keys-table mb-2" id="utx-table">
+                <thead>
+                  <tr>
+                    <th class="w-1"><i class="ti ti-hash"></i></th>
+                    <th class="sortable" data-utx-sort="date"><i class="ti ti-calendar me-1"></i> Дата <i class="ti ti-arrows-sort sort-icon"></i></th>
+                    <th><i class="ti ti-bolt me-1"></i> Действие</th>
+                    <th><i class="ti ti-receipt-2 me-1"></i> ID платежа</th>
+                    <th><i class="ti ti-building-bank me-1"></i> ID провайдера</th>
+                    <th class="sortable" data-utx-sort="amount"><i class="ti ti-cash me-1"></i> Сумма <i class="ti ti-arrows-sort sort-icon"></i></th>
+                    <th class="sortable" data-utx-sort="payment_method"><i class="ti ti-credit-card me-1"></i> Метод <i class="ti ti-arrows-sort sort-icon"></i></th>
+                    <th class="sortable" data-utx-sort="status"><i class="ti ti-status-change me-1"></i> Статус <i class="ti ti-arrows-sort sort-icon"></i></th>
+                    <th>Тариф</th>
+                    <th>Хост</th>
+                  </tr>
+                </thead>
+                <tbody id="utx-tbody"></tbody>
+              </table>
+            </div>
+            <div id="utx-empty" class="text-secondary text-center py-3 d-none">Транзакций нет</div>
+            <div class="d-flex justify-content-center align-items-center gap-2 mt-2" id="utx-pagination">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="utx-prev"><i class="ti ti-chevron-left"></i></button>
+              <span class="text-secondary small" id="utx-page-info">1 / 1</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="utx-next"><i class="ti ti-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal modal-blur fade" id="udConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-status bg-danger"></div>
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-alert-triangle me-2 text-danger"></i>
+          Подтверждение
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body" id="udConfirmText">Вы уверены?</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" class="btn btn-danger" id="udConfirmBtn">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка назначения реферала: живой поиск пользователя, который станет
+     рефералом (приглашённым) текущего пользователя карточки -->
+<div class="modal modal-blur fade" id="assignReferralModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-user-plus me-2"></i>
+          Назначить реферала
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-secondary small mb-2">Выберите пользователя, который будет считаться приглашённым текущим пользователем (<span id="arm-referrer-id">—</span>).</p>
+        <div class="input-group mb-3">
+          <span class="input-group-text"><i class="ti ti-search"></i></span>
+          <input type="text" class="form-control" id="arm-search-input" placeholder="Поиск по ID или Username..." autocomplete="off" />
+        </div>
+        <div id="arm-results" class="list-group" style="max-height: 320px; overflow-y: auto;"></div>
+        <div id="arm-hint" class="text-secondary text-center py-3 small">Начните вводить ID или username пользователя</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка деталей ключа: переиспользует ту же логику, что и admin_keys.html (открывается поверх окна пользователя) -->
+<div class="modal modal-blur fade" id="keyDetailsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-key me-2"></i>
+          Ключ <span id="kd-key-id">—</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div id="kd-loading" class="text-center py-4">
+          <div class="spinner-border text-primary" role="status"></div>
+        </div>
+        <div id="kd-content" class="d-none">
+          <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-kd-tab="info" type="button">Информация</button></li>
+            <li class="nav-item"><button class="nav-link" data-kd-tab="devices" type="button">Устройства <span class="badge bg-secondary-lt ms-1" id="kd-devices-count">0</span></button></li>
+          </ul>
+
+          <div class="kd-tab-pane" data-kd-pane="info">
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Владелец</div>
+                <div class="fw-semibold" id="kd-owner">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Хост</div>
+                <div class="fw-semibold" id="kd-host">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Email ключа</div>
+                <div class="fw-semibold" id="kd-email">—</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Истекает / создан</div>
+                <div class="fw-semibold"><span id="kd-expiry">—</span> / <span id="kd-created" class="text-secondary"></span></div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Текущий тариф</div>
+                <div class="fw-semibold" id="kd-plan">— (нет данных)</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-secondary small mb-1">Трафик</div>
+                <div class="fw-semibold" id="kd-traffic">—</div>
+              </div>
+            </div>
+
+            <hr />
+
+            <div class="mb-3">
+              <label class="form-label small">Ссылка подписки</label>
+              <div class="input-group input-group-sm">
+                <input type="text" class="form-control" id="kd-sub-link" readonly />
+                <button type="button" class="btn btn-outline-secondary" id="kd-sub-copy" title="Скопировать"><i class="ti ti-copy"></i></button>
+                <button type="button" class="btn btn-outline-secondary" id="kd-sub-qr" title="Показать QR-код"><i class="ti ti-qrcode"></i> QR</button>
+              </div>
+              <div id="kd-qr-wrap" class="d-none text-center mt-3">
+                <img id="kd-qr-img" src="" alt="QR" style="max-width:220px; width:100%;" class="rounded border p-2 bg-white" />
+              </div>
+            </div>
+
+            <hr />
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label class="form-label small">Сменить тариф</label>
+                <div class="input-group input-group-sm">
+                  <select class="form-select" id="kd-plan-select"></select>
+                  <button type="button" class="btn btn-primary" id="kd-plan-apply">Применить</button>
+                </div>
+              </div>
+              <div class="col-12 col-md-3" id="kd-gb-wrap">
+                <label class="form-label small">Добавить ГБ</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" min="1" step="1" class="form-control" id="kd-add-gb" placeholder="Напр. 10" />
+                  <button type="button" class="btn btn-outline-primary" id="kd-add-gb-btn">+ ГБ</button>
+                </div>
+              </div>
+              <div class="col-12 col-md-3 d-none" id="kd-lte-wrap">
+                <label class="form-label small">Добавить LTE ГБ</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" min="1" step="1" class="form-control" id="kd-add-lte-gb" placeholder="Напр. 5" />
+                  <button type="button" class="btn btn-outline-warning" id="kd-add-lte-gb-btn">+ LTE</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="collapse mt-3" id="kd-comment-collapse">
+              <div class="card card-body bg-body-tertiary">
+                <label class="form-label small">Комментарий к ключу</label>
+                <div class="input-group input-group-sm">
+                  <input type="text" class="form-control" id="kd-comment-input" placeholder="Введите комментарий" />
+                  <button type="button" class="btn btn-primary" id="kd-comment-save-btn">
+                    <i class="ti ti-check me-1"></i> Сохранить
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="collapse mt-3" id="kd-expiry-collapse">
+              <div class="card card-body bg-body-tertiary">
+                <label class="form-label small">Изменить срок действия (сколько дней прибавить/убавить)</label>
+                <div class="input-group input-group-sm">
+                  <input type="number" class="form-control" id="kd-expiry-delta" placeholder="Например, 7 или -7" />
+                  <button type="button" class="btn btn-primary" id="kd-expiry-save-btn">
+                    <i class="ti ti-check me-1"></i> Сохранить
+                  </button>
+                </div>
+                <small class="text-secondary mt-1">Положительное число — продление, отрицательное — уменьшение срока.</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="kd-tab-pane d-none" data-kd-pane="devices">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+              <div class="text-secondary small" id="kd-devices-summary"></div>
+              <button type="button" class="btn btn-sm btn-outline-danger" id="kd-devices-delete-all">
+                <i class="ti ti-trash me-1"></i> Удалить все устройства
+              </button>
+            </div>
+            <div id="kd-devices-list" class="list-group list-group-flush"></div>
+            <div id="kd-devices-empty" class="text-secondary text-center py-3 d-none">Нет подключённых устройств</div>
+            <div id="kd-devices-pagination" class="d-flex justify-content-center align-items-center gap-2 mt-2 d-none">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="kd-devices-prev"><i class="ti ti-chevron-left"></i></button>
+              <span class="text-secondary small" id="kd-devices-page-info">1 / 1</span>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="kd-devices-next"><i class="ti ti-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer justify-content-between flex-wrap gap-2">
+        <div class="btn-list">
+          <button type="button" class="btn btn-outline-secondary" id="kd-comment-btn" data-bs-toggle="collapse" data-bs-target="#kd-comment-collapse">
+            <i class="ti ti-message me-1"></i> Комментарий
+          </button>
+          <button type="button" class="btn btn-outline-warning" id="kd-expiry-btn" data-bs-toggle="collapse" data-bs-target="#kd-expiry-collapse">
+            <i class="ti ti-calendar-stats me-1"></i> Изменить срок
+          </button>
+          <button type="button" class="btn btn-outline-danger" id="kd-delete-btn">
+            <i class="ti ti-trash me-1"></i> Удалить ключ
+          </button>
+        </div>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Закрыть</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal modal-blur fade" id="kdDeleteConfirmModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-status bg-danger"></div>
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="ti ti-alert-triangle me-2 text-danger"></i>
+          Удаление ключа
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        Удалить ключ <strong id="kd-delete-confirm-key-id">—</strong>? Это действие необратимо: ключ будет удалён с хоста и из базы данных.
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button type="button" class="btn btn-danger" id="kd-delete-confirm-btn">
+          <i class="ti ti-trash me-1"></i> Удалить
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

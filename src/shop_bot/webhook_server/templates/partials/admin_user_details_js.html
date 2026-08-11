@@ -1,0 +1,768 @@
+<script>
+(function(){
+  function getCsrf(){
+    const m = document.querySelector('meta[name="csrf-token"]');
+    return m ? m.getAttribute('content') : '';
+  }
+  if (!document.getElementById('userDetailsModal')) return;
+
+    // --- Модальное окно с деталями пользователя ---
+    const modalEl = document.getElementById('userDetailsModal');
+    const loadingEl = document.getElementById('ud-loading');
+    const contentEl = document.getElementById('ud-content');
+    let currentUserId = null;
+    let bsModal = null;
+    let keysLoaded = false;
+    let ukPage = 1;
+    let ukTotalPages = 1;
+    let ukSearch = '';
+    let ukSearchTimer = null;
+    let txLoaded = false;
+    let txPage = 1;
+    let txTotalPages = 1;
+    let txSearch = '';
+    let txSearchTimer = null;
+    let txSort = 'date';
+    let txDir = 'desc';
+
+    function switchTab(tab){
+      document.querySelectorAll('[data-ud-tab]').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-ud-tab') === tab);
+      });
+      document.querySelectorAll('[data-ud-pane]').forEach(pane => {
+        pane.classList.toggle('d-none', pane.getAttribute('data-ud-pane') !== tab);
+      });
+      if (tab === 'keys' && currentUserId) ensureKeysLoaded(currentUserId);
+      if (tab === 'transactions' && currentUserId) ensureTransactionsLoaded(currentUserId);
+    }
+    document.querySelectorAll('[data-ud-tab]').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.getAttribute('data-ud-tab')));
+    });
+
+    async function loadUserKeys(uid, page){
+      const tbody = document.getElementById('uk-tbody');
+      const empty = document.getElementById('uk-empty');
+      const pageInfo = document.getElementById('uk-page-info');
+      const pagWrap = document.getElementById('uk-pagination');
+      const prevBtn = document.getElementById('uk-prev');
+      const nextBtn = document.getElementById('uk-next');
+      if (!tbody) return;
+      try {
+        const url = `{{ url_for('user_keys_partial', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(uid)}/`);
+        const u = new URL(url, window.location.origin);
+        u.searchParams.set('page', String(page || 1));
+        u.searchParams.set('per_page', '10');
+        if (ukSearch) u.searchParams.set('search', ukSearch);
+        const resp = await fetch(u.toString(), { credentials: 'same-origin' });
+        const data = await resp.json();
+        if (!data || !data.ok) throw new Error('bad response');
+        tbody.innerHTML = data.html || '';
+        ukPage = data.current_page || 1;
+        ukTotalPages = data.total_pages || 1;
+        empty.classList.toggle('d-none', !!(data.total && data.total > 0));
+        pagWrap.classList.toggle('d-none', ukTotalPages <= 1);
+        if (pageInfo) pageInfo.textContent = `${ukPage} / ${ukTotalPages}`;
+        if (prevBtn) prevBtn.disabled = ukPage <= 1;
+        if (nextBtn) nextBtn.disabled = ukPage >= ukTotalPages;
+      } catch(_) {
+        tbody.innerHTML = '';
+        empty.classList.remove('d-none');
+      }
+    }
+
+    async function ensureKeysLoaded(uid){
+      if (keysLoaded) return;
+      ukPage = 1; ukSearch = '';
+      const s = document.getElementById('uk-search'); if (s) s.value = '';
+      await loadUserKeys(uid, 1);
+      keysLoaded = true;
+    }
+    window.reloadCurrentUserKeys = function(){
+      if (currentUserId) loadUserKeys(currentUserId, ukPage);
+    };
+
+    // --- Транзакции пользователя: поиск, сортировка, пагинация ---
+    async function loadUserTransactions(uid, page){
+      const tbody = document.getElementById('utx-tbody');
+      const empty = document.getElementById('utx-empty');
+      const pageInfo = document.getElementById('utx-page-info');
+      const pagWrap = document.getElementById('utx-pagination');
+      const prevBtn = document.getElementById('utx-prev');
+      const nextBtn = document.getElementById('utx-next');
+      if (!tbody) return;
+      try {
+        const url = `{{ url_for('user_transactions_partial', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(uid)}/`);
+        const u = new URL(url, window.location.origin);
+        u.searchParams.set('page', String(page || 1));
+        u.searchParams.set('per_page', '10');
+        u.searchParams.set('sort', txSort);
+        u.searchParams.set('dir', txDir);
+        if (txSearch) u.searchParams.set('search', txSearch);
+        const resp = await fetch(u.toString(), { credentials: 'same-origin' });
+        const data = await resp.json();
+        if (!data || !data.ok) throw new Error('bad response');
+        tbody.innerHTML = data.html || '';
+        txPage = data.current_page || 1;
+        txTotalPages = data.total_pages || 1;
+        empty.classList.toggle('d-none', !!(data.total && data.total > 0));
+        pagWrap.classList.toggle('d-none', txTotalPages <= 1);
+        if (pageInfo) pageInfo.textContent = `${txPage} / ${txTotalPages}`;
+        if (prevBtn) prevBtn.disabled = txPage <= 1;
+        if (nextBtn) nextBtn.disabled = txPage >= txTotalPages;
+        document.getElementById('ud-txcount').textContent = String(data.total || 0);
+        updateTxSortIcons();
+      } catch(_) {
+        tbody.innerHTML = '';
+        empty.classList.remove('d-none');
+      }
+    }
+
+    function updateTxSortIcons(){
+      document.querySelectorAll('#utx-table th[data-utx-sort]').forEach(th => {
+        const col = th.getAttribute('data-utx-sort');
+        const icon = th.querySelector('.sort-icon');
+        th.classList.remove('sort-active');
+        if (icon) icon.className = 'ti ti-arrows-sort sort-icon';
+        if (col === txSort) {
+          th.classList.add('sort-active');
+          if (icon) icon.className = 'ti sort-icon ' + (txDir === 'asc' ? 'ti-sort-ascending' : 'ti-sort-descending');
+        }
+      });
+    }
+
+    async function ensureTransactionsLoaded(uid){
+      if (txLoaded) return;
+      txPage = 1; txSearch = ''; txSort = 'date'; txDir = 'desc';
+      const s = document.getElementById('utx-search'); if (s) s.value = '';
+      await loadUserTransactions(uid, 1);
+      txLoaded = true;
+    }
+    window.reloadCurrentUserTransactions = function(){
+      if (currentUserId) loadUserTransactions(currentUserId, txPage);
+    };
+
+    document.getElementById('utx-search')?.addEventListener('input', (e) => {
+      if (!currentUserId) return;
+      clearTimeout(txSearchTimer);
+      txSearchTimer = setTimeout(() => {
+        txSearch = e.target.value || '';
+        loadUserTransactions(currentUserId, 1);
+      }, 400);
+    });
+    document.getElementById('utx-prev')?.addEventListener('click', () => {
+      if (currentUserId && txPage > 1) loadUserTransactions(currentUserId, txPage - 1);
+    });
+    document.getElementById('utx-next')?.addEventListener('click', () => {
+      if (currentUserId && txPage < txTotalPages) loadUserTransactions(currentUserId, txPage + 1);
+    });
+    document.querySelectorAll('#utx-table th[data-utx-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.getAttribute('data-utx-sort');
+        if (!col) return;
+        if (txSort === col) {
+          txDir = (txDir === 'desc') ? 'asc' : 'desc';
+        } else {
+          txSort = col; txDir = 'desc';
+        }
+        if (currentUserId) loadUserTransactions(currentUserId, 1);
+      });
+    });
+
+    // Копирование ID платежа в буфер обмена по клику
+    document.getElementById('utx-tbody')?.addEventListener('click', async (e) => {
+      const el = e.target.closest('.utx-copy-payment-id');
+      if (!el) return;
+      const pid = el.getAttribute('data-payment-id') || '';
+      if (!pid) return;
+      try {
+        await navigator.clipboard.writeText(pid);
+        try { window.showToast('success', 'ID платежа скопирован'); } catch(_){ }
+      } catch(_) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = pid;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          try { window.showToast('success', 'ID платежа скопирован'); } catch(__){ }
+        } catch(__) {
+          try { window.showToast('danger', 'Не удалось скопировать'); } catch(___){ }
+        }
+      }
+    });
+
+    // Открытие карточки ключа по клику на действие транзакции (Новый ключ / Продление / Докупка трафика и т.п.)
+    document.getElementById('utx-tbody')?.addEventListener('click', (e) => {
+      const el = e.target.closest('.utx-open-key');
+      if (!el) return;
+      e.preventDefault();
+      const kid = parseInt(el.getAttribute('data-key-id') || '0', 10);
+      if (kid && typeof window.openKeyDetails === 'function') {
+        window.openKeyDetails(kid);
+      }
+    });
+    document.getElementById('utx-tbody')?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const el = e.target.closest('.utx-open-key');
+      if (!el) return;
+      e.preventDefault();
+      const kid = parseInt(el.getAttribute('data-key-id') || '0', 10);
+      if (kid && typeof window.openKeyDetails === 'function') {
+        window.openKeyDetails(kid);
+      }
+    });
+
+    document.getElementById('uk-search')?.addEventListener('input', (e) => {
+      if (!currentUserId) return;
+      clearTimeout(ukSearchTimer);
+      ukSearchTimer = setTimeout(() => {
+        ukSearch = e.target.value || '';
+        loadUserKeys(currentUserId, 1);
+      }, 400);
+    });
+    document.getElementById('uk-prev')?.addEventListener('click', () => {
+      if (currentUserId && ukPage > 1) loadUserKeys(currentUserId, ukPage - 1);
+    });
+    document.getElementById('uk-next')?.addEventListener('click', () => {
+      if (currentUserId && ukPage < ukTotalPages) loadUserKeys(currentUserId, ukPage + 1);
+    });
+
+    async function openUserDetails(uid){
+      currentUserId = uid;
+      keysLoaded = false;
+      txLoaded = false;
+      document.getElementById('ud-user-id').textContent = '#' + uid;
+      loadingEl.classList.remove('d-none');
+      contentEl.classList.add('d-none');
+      const ukTbody = document.getElementById('uk-tbody'); if (ukTbody) ukTbody.innerHTML = '';
+      const utxTbody = document.getElementById('utx-tbody'); if (utxTbody) utxTbody.innerHTML = '';
+      // Re-opening while already shown must not create a second Modal instance/backdrop
+      const alreadyShown = modalEl.classList.contains('show');
+      if (!alreadyShown) {
+        try { bsModal = window.showModal(modalEl); } catch(_){ }
+      } else {
+        try { bsModal = window.getModal(modalEl); } catch(_){ }
+      }
+
+      try {
+        const url = `{{ url_for('user_details_json', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(uid)}/`);
+        const resp = await fetch(url, { credentials: 'same-origin' });
+        const data = await resp.json();
+        if (!data || !data.ok) throw new Error('bad response');
+
+        const u = data.user || {};
+        document.getElementById('ud-username').textContent = u.username ? `@${u.username}` : 'N/A';
+        document.getElementById('ud-status').innerHTML = u.is_banned
+          ? '<span class="badge bg-red">Забанен</span>'
+          : '<span class="badge bg-green">Активен</span>';
+        document.getElementById('ud-regdate').textContent = u.registration_date || '—';
+        document.getElementById('ud-keys-summary').textContent = `${u.active_keys_count || 0} / ${u.keys_count || 0}`;
+        document.getElementById('ud-balance').textContent = `${Number(u.balance || 0).toFixed(2)} RUB`;
+        document.getElementById('ud-ref-balance').textContent = `${Number(u.referral_balance || 0).toFixed(2)} RUB`;
+        document.getElementById('ud-spent').textContent = `${Number(u.total_spent || 0).toFixed(2)} RUB`;
+        document.getElementById('ud-keyscount').textContent = String(u.keys_count || 0);
+        document.getElementById('ud-txcount').textContent = String(u.transactions_count || 0);
+
+        document.getElementById('ud-issue-key-card')?.classList.add('d-none');
+        const ihs = document.getElementById('ud-host-select'); if (ihs) ihs.value = '';
+        const ips = document.getElementById('ud-plan-select'); if (ips) { ips.innerHTML = '<option value="">— Сначала выберите хост —</option>'; ips.disabled = true; }
+        const iexp = document.getElementById('ud-expiry-date'); if (iexp) iexp.value = '';
+        const icom = document.getElementById('ud-issue-comment'); if (icom) icom.value = '';
+        const iprice = document.getElementById('ud-plan-price'); if (iprice) iprice.textContent = '— RUB';
+
+        const banBtn = document.getElementById('ud-ban-btn');
+        const unbanBtn = document.getElementById('ud-unban-btn');
+        banBtn.classList.toggle('d-none', !!u.is_banned);
+        unbanBtn.classList.toggle('d-none', !u.is_banned);
+
+        const revokeBtn = document.getElementById('ud-revoke-btn');
+        revokeBtn.classList.toggle('d-none', !(u.keys_count > 0));
+
+        const refs = data.referrals || [];
+        const refList = document.getElementById('ud-reflist');
+        const refEmpty = document.getElementById('ud-referrals-empty');
+        const removeAllBtn = document.getElementById('ud-remove-all-referrals-btn');
+        document.getElementById('ud-refcount').textContent = String(refs.length);
+        if (removeAllBtn) removeAllBtn.classList.toggle('d-none', !refs.length);
+        if (refs.length) {
+          refEmpty.classList.add('d-none');
+          refList.innerHTML = refs.map(r => {
+            const uname = (r.username || 'N/A').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            const reg = (r.registration_date || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            return `<li class="d-flex align-items-center justify-content-between gap-2 py-1 border-bottom border-secondary-subtle">
+              <span>#${r.telegram_id} — @${uname} · ${reg}</span>
+              <button type="button" class="btn btn-sm btn-outline-danger ud-remove-referral-btn" data-invitee-id="${r.telegram_id}" title="Удалить реферала">
+                <i class="ti ti-x"></i>
+              </button>
+            </li>`;
+          }).join('');
+        } else {
+          refEmpty.classList.remove('d-none');
+          refList.innerHTML = '';
+        }
+
+        switchTab('info');
+        loadingEl.classList.add('d-none');
+        contentEl.classList.remove('d-none');
+      } catch (e) {
+        try { window.showToast('danger', 'Не удалось загрузить данные пользователя'); } catch(_){ }
+        try { bsModal?.hide(); } catch(_){ }
+      }
+    }
+
+    window.openUserDetails = openUserDetails;
+
+    // Изменение баланса
+    document.getElementById('ud-balance-form')?.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      if (!currentUserId) return;
+      const input = document.getElementById('ud-balance-delta');
+      const btn = document.getElementById('ud-balance-save-btn');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('adjust_balance_route', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('delta', input.value || '0');
+        const resp = await fetch(url, {
+          method: 'POST', body: fd,
+          headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin'
+        });
+        const data = await resp.json().catch(() => null);
+        if (resp.ok && data && data.ok) {
+          try { window.showToast('success', data.message || 'Баланс изменён'); } catch(_){ }
+          input.value = '';
+          await openUserDetails(currentUserId);
+          try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+        } else {
+          const msg = (data && (data.message || data.error)) || 'Не удалось изменить баланс';
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Изменение реферального баланса
+    document.getElementById('ud-ref-balance-form')?.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      if (!currentUserId) return;
+      const input = document.getElementById('ud-ref-balance-delta');
+      const btn = document.getElementById('ud-ref-balance-save-btn');
+      btn.disabled = true;
+      try {
+        const url = `{{ url_for('adjust_referral_balance_route', user_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        fd.append('delta', input.value || '0');
+        const resp = await fetch(url, {
+          method: 'POST', body: fd,
+          headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin'
+        });
+        const data = await resp.json().catch(() => null);
+        if (resp.ok && data && data.ok) {
+          try { window.showToast('success', data.message || 'Реферальный баланс изменён'); } catch(_){ }
+          input.value = '';
+          await openUserDetails(currentUserId);
+          try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+        } else {
+          const msg = (data && (data.message || data.error)) || 'Не удалось изменить реферальный баланс';
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Подтверждение опасных действий (бан/отзыв ключей) — модалка поверх окна деталей
+    const confirmModalEl = document.getElementById('udConfirmModal');
+    let confirmBsModal = null;
+    let confirmAction = null;
+
+    function askConfirm(text, action){
+      document.getElementById('udConfirmText').textContent = text;
+      confirmAction = action;
+      try { confirmBsModal = window.showModal(confirmModalEl); } catch(_){ }
+    }
+
+    document.getElementById('udConfirmBtn')?.addEventListener('click', async () => {
+      if (typeof confirmAction === 'function') {
+        try { await confirmAction(); } finally { try { confirmBsModal?.hide(); } catch(_){ } }
+      }
+    });
+
+    document.getElementById('ud-ban-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm('Вы уверены, что хотите забанить этого пользователя? Он не сможет пользоваться ботом.', async () => {
+        await postAction(`{{ url_for('ban_user_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(currentUserId)}`), 'Пользователь забанен');
+      });
+    });
+
+    document.getElementById('ud-unban-btn')?.addEventListener('click', async () => {
+      if (!currentUserId) return;
+      await postAction(`{{ url_for('unban_user_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(currentUserId)}`), 'Пользователь разбанен');
+    });
+
+    document.getElementById('ud-revoke-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm('ВНИМАНИЕ! Это действие удалит ВСЕ ключи пользователя с серверов. Вы уверены?', async () => {
+        await postAction(`{{ url_for('revoke_keys_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(currentUserId)}`), 'Ключи пользователя отозваны');
+      });
+    });
+
+    document.getElementById('ud-delete-user-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm(
+        'ВНИМАНИЕ! Пользователь будет удалён полностью вместе со всеми связанными данными (ключи, транзакции, тикеты и т.д.). Это действие необратимо. Продолжить?',
+        async () => {
+          const uid = currentUserId;
+          try {
+            const fd = new FormData();
+            fd.append('csrf_token', getCsrf());
+            const url = `{{ url_for('delete_user_route', user_id=0) }}`.replace('/0', `/${encodeURIComponent(uid)}`);
+            const resp = await fetch(url, {
+              method: 'POST',
+              body: fd,
+              credentials: 'same-origin',
+              headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            const data = await resp.json().catch(() => null);
+            if (resp.ok && data && data.ok) {
+              try { window.showToast('success', data.message || 'Пользователь удалён'); } catch(_){ }
+              try { bsModal?.hide(); } catch(_){ }
+              currentUserId = null;
+              try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+              try { await window.refreshContainerById('users-pagination'); } catch(_){ }
+            } else {
+              const msg = (data && (data.message || data.error)) || 'Не удалось удалить пользователя';
+              try { window.showToast('danger', msg); } catch(_){ }
+            }
+          } catch(_) {
+            try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+          }
+        }
+      );
+    });
+
+    async function postReferralRemove(url, successFallback){
+      try {
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        const resp = await fetch(url, {
+          method: 'POST', body: fd,
+          headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+        });
+        const data = await resp.json().catch(() => null);
+        if (resp.ok && data && data.ok) {
+          try { window.showToast('success', data.message || successFallback); } catch(_){ }
+          await openUserDetails(currentUserId);
+          try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+        } else {
+          const msg = (data && (data.message || data.error)) || 'Не удалось удалить реферала';
+          try { window.showToast('danger', msg); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      }
+    }
+
+    document.getElementById('ud-remove-all-referrals-btn')?.addEventListener('click', () => {
+      if (!currentUserId) return;
+      askConfirm('Удалить всех рефералов у этого пользователя? Связь referred_by будет снята, сами аккаунты останутся.', async () => {
+        const url = `{{ url_for('remove_all_referrals_route', referrer_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+        await postReferralRemove(url, 'Все рефералы удалены');
+      });
+    });
+
+    document.getElementById('ud-reflist')?.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.ud-remove-referral-btn');
+      if (!btn || !currentUserId) return;
+      const inviteeId = btn.getAttribute('data-invitee-id');
+      if (!inviteeId) return;
+      askConfirm(`Удалить реферала #${inviteeId} из списка? Аккаунт пользователя останется.`, async () => {
+        const url = `{{ url_for('remove_referral_route', referrer_id=0, invitee_id=0) }}`
+          .replace('/0/', `/${encodeURIComponent(currentUserId)}/`)
+          .replace('/0/', `/${encodeURIComponent(inviteeId)}/`);
+        await postReferralRemove(url, 'Реферал удалён');
+      });
+    });
+
+    async function postAction(url, successMsg){
+      try {
+        const fd = new FormData();
+        fd.append('csrf_token', getCsrf());
+        const resp = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+        if (resp.ok) {
+          try { window.showToast('success', successMsg); } catch(_){ }
+          keysLoaded = false;
+          await openUserDetails(currentUserId);
+          try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+        } else {
+          try { window.showToast('danger', 'Не удалось выполнить действие'); } catch(_){ }
+        }
+      } catch(_) {
+        try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+      }
+    }
+
+    // --- Назначение реферала: живой поиск + добавление ---
+    (function(){
+      const modalEl = document.getElementById('assignReferralModal');
+      const input = document.getElementById('arm-search-input');
+      const resultsEl = document.getElementById('arm-results');
+      const hintEl = document.getElementById('arm-hint');
+      const referrerIdEl = document.getElementById('arm-referrer-id');
+      if (!modalEl || !input) return;
+      let armBsModal = null;
+      let searchTimer = null;
+      let searchSeq = 0;
+
+      document.getElementById('ud-assign-referral-btn')?.addEventListener('click', () => {
+        if (!currentUserId) return;
+        referrerIdEl.textContent = '#' + currentUserId;
+        input.value = '';
+        resultsEl.innerHTML = '';
+        hintEl.classList.remove('d-none');
+        hintEl.textContent = 'Начните вводить ID или username пользователя';
+        try { armBsModal = window.showModal(modalEl); } catch(_){ }
+        setTimeout(() => input.focus(), 200);
+      });
+
+      function escapeHtml(s){
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      function renderResults(items){
+        if (!items.length) {
+          resultsEl.innerHTML = '';
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Ничего не найдено';
+          return;
+        }
+        hintEl.classList.add('d-none');
+        resultsEl.innerHTML = items.map(u => {
+          const username = u.username ? ('@' + escapeHtml(u.username)) : 'без username';
+          const already = u.referred_by ? '<span class="badge bg-warning-lt ms-2">уже есть реферер</span>' : '';
+          return `
+            <div class="list-group-item d-flex align-items-center justify-content-between">
+              <div>
+                <div class="fw-bold">#${escapeHtml(u.telegram_id)} <span class="text-secondary">${username}</span>${already}</div>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary arm-pick-btn" data-uid="${escapeHtml(u.telegram_id)}">
+                <i class="ti ti-plus me-1"></i>Добавить
+              </button>
+            </div>`;
+        }).join('');
+      }
+
+      async function runSearch(){
+        const q = input.value.trim();
+        if (!q) {
+          resultsEl.innerHTML = '';
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Начните вводить ID или username пользователя';
+          return;
+        }
+        const mySeq = ++searchSeq;
+        try {
+          const url = new URL(`{{ url_for('users_search_json') }}`, window.location.origin);
+          url.searchParams.set('q', q);
+          url.searchParams.set('exclude', String(currentUserId || 0));
+          const resp = await fetch(url.toString(), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+          const data = await resp.json();
+          if (mySeq !== searchSeq) return; // устаревший ответ — пользователь уже ввёл что-то новое
+          if (data && data.ok) {
+            renderResults(data.items || []);
+          } else {
+            hintEl.classList.remove('d-none');
+            hintEl.textContent = 'Ошибка поиска';
+          }
+        } catch(_) {
+          if (mySeq !== searchSeq) return;
+          hintEl.classList.remove('d-none');
+          hintEl.textContent = 'Ошибка сети';
+        }
+      }
+
+      input.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(runSearch, 300);
+      });
+
+      resultsEl.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('.arm-pick-btn');
+        if (!btn || !currentUserId) return;
+        const uid = btn.getAttribute('data-uid');
+        btn.disabled = true;
+        try {
+          const url = `{{ url_for('assign_referral_route', referrer_id=0) }}`.replace('/0/', `/${encodeURIComponent(currentUserId)}/`);
+          const fd = new FormData();
+          fd.append('csrf_token', getCsrf());
+          fd.append('user_id', uid);
+          const resp = await fetch(url, {
+            method: 'POST', body: fd,
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+          });
+          const data = await resp.json().catch(() => null);
+          if (resp.ok && data && data.ok) {
+            try { window.showToast('success', data.message || 'Реферал назначен'); } catch(_){ }
+            try { armBsModal?.hide(); } catch(_){ }
+            await openUserDetails(currentUserId);
+            try { await window.refreshContainerById('users-tbody'); } catch(_){ }
+          } else {
+            const msg = (data && data.message) || 'Не удалось назначить реферала';
+            try { window.showToast('danger', msg); } catch(_){ }
+          }
+        } catch(_) {
+          try { window.showToast('danger', 'Ошибка сети'); } catch(_){ }
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    })();
+
+    // --- Выдача ключа прямо из карточки пользователя ---
+    (function(){
+      const toggleBtn = document.getElementById('ud-issue-key-toggle');
+      const card = document.getElementById('ud-issue-key-card');
+      const hostSel = document.getElementById('ud-host-select');
+      const planSel = document.getElementById('ud-plan-select');
+      const priceEl = document.getElementById('ud-plan-price');
+      const expiryInput = document.getElementById('ud-expiry-date');
+      const form = document.getElementById('ud-issue-key-form');
+      const submitBtn = document.getElementById('ud-issue-key-submit');
+      let fp = null;
+
+      if (toggleBtn && card) {
+        toggleBtn.addEventListener('click', () => {
+          card.classList.toggle('d-none');
+          if (!card.classList.contains('d-none') && expiryInput && window.flatpickr && !fp) {
+            fp = flatpickr(expiryInput, {
+              enableTime: true,
+              time_24hr: true,
+              dateFormat: 'Y-m-d H:i',
+              minuteIncrement: 5,
+              locale: (window.flatpickr.l10ns && window.flatpickr.l10ns.ru) || 'ru',
+            });
+          }
+        });
+      }
+
+      function setExpiryDays(days){
+        if (!expiryInput) return;
+        const d = new Date();
+        d.setDate(d.getDate() + Number(days || 0));
+        const pad = n => String(n).padStart(2,'0');
+        const val = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        expiryInput.value = val;
+        if (fp) fp.setDate(val, true, 'Y-m-d H:i');
+      }
+      document.querySelectorAll('[data-ud-preset]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const add = Number(btn.getAttribute('data-ud-preset')) || 0;
+          if (add > 0) setExpiryDays(add);
+        });
+      });
+
+      async function loadPlans(host){
+        if (!planSel) return;
+        if (!host) { planSel.innerHTML = '<option value="">— Сначала выберите хост —</option>'; planSel.disabled = true; return; }
+        planSel.disabled = true;
+        planSel.innerHTML = '<option value="">Загрузка...</option>';
+        try {
+          const url = `{{ url_for('admin_get_plans_for_host_json', host_name='__HOST__') }}`.replace('__HOST__', encodeURIComponent(host));
+          const res = await fetch(url, { credentials: 'same-origin' });
+          const d = await res.json();
+          const items = (d && d.ok && d.items) ? d.items : [];
+          planSel.innerHTML = '<option value="">— Не выбран —</option>' + items.map(p => `<option value="${p.plan_id}" data-months="${p.months}" data-price="${p.price||0}">${p.plan_name} (${p.months} мес.) — ${Number(p.price||0).toFixed(0)} RUB</option>`).join('');
+          planSel.disabled = false;
+          if (priceEl) priceEl.textContent = '— RUB';
+        } catch(_) {
+          planSel.innerHTML = '<option value="">— Не выбран —</option>';
+          planSel.disabled = false;
+          if (priceEl) priceEl.textContent = '— RUB';
+        }
+      }
+
+      if (hostSel) {
+        hostSel.addEventListener('change', () => loadPlans(hostSel.value));
+      }
+      if (planSel) {
+        planSel.addEventListener('change', () => {
+          const opt = planSel.options[planSel.selectedIndex];
+          const months = opt ? Number(opt.getAttribute('data-months')||0) : 0;
+          if (months > 0) setExpiryDays(months * 30);
+          const price = opt ? Number(opt.getAttribute('data-price')||0) : 0;
+          if (priceEl) priceEl.textContent = opt && opt.value ? `${price.toFixed(0)} RUB` : '— RUB';
+        });
+      }
+
+      if (form) {
+        form.addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          if (!currentUserId) return;
+          if (!hostSel.value) { try { window.showToast('danger', 'Выберите хост'); } catch(_){} return; }
+          if (!planSel.value) { try { window.showToast('danger', 'Выберите тариф'); } catch(_){} return; }
+          submitBtn.disabled = true;
+          const origHtml = submitBtn.innerHTML;
+          submitBtn.innerHTML = 'Создаю...';
+          try {
+            const fd = new FormData();
+            fd.append('csrf_token', getCsrf());
+            fd.append('mode', 'personal');
+            fd.append('user_id', String(currentUserId));
+            fd.append('host_name', hostSel.value);
+            fd.append('plan_id', planSel.value);
+            if (expiryInput.value) fd.append('expiry_date', expiryInput.value);
+            const comment = document.getElementById('ud-issue-comment');
+            if (comment && comment.value) fd.append('comment', comment.value);
+            const res = await fetch(`{{ url_for('create_key_ajax_route') }}`, { method: 'POST', body: fd, credentials: 'same-origin' });
+            const data = await res.json().catch(() => ({ok:false}));
+            if (data && data.ok) {
+              try { window.showToast('success', 'Ключ создан'); } catch(_){}
+              card.classList.add('d-none');
+              keysLoaded = false;
+              await openUserDetails(currentUserId);
+              try { await window.refreshContainerById('users-tbody'); } catch(_){}
+            } else {
+              try { window.showToast('danger', 'Не удалось создать ключ'); } catch(_){}
+            }
+          } catch(_) {
+            try { window.showToast('danger', 'Ошибка сети'); } catch(_){}
+          } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = origHtml;
+          }
+        });
+      }
+    })();
+
+  document.getElementById('users-table')?.addEventListener('click', (e) => {
+    const row = e.target.closest('tr.user-row');
+    if (!row) return;
+    const uid = row.getAttribute('data-user-id');
+    if (uid && typeof window.openUserDetails === 'function') window.openUserDetails(uid);
+  });
+
+  try {
+    const openUid = new URLSearchParams(location.search).get('open');
+    if (openUid && /\/users\/?$/.test(location.pathname) && typeof window.openUserDetails === 'function') {
+      const cleanUrl = new URL(location.href);
+      cleanUrl.searchParams.delete('open');
+      history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+      window.openUserDetails(openUid);
+    }
+  } catch(_){}
+})();
+</script>

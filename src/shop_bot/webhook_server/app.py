@@ -650,6 +650,11 @@ def create_webhook_app(bot_controller_instance):
             referral_requests_stats = get_referral_withdrawable_stats()
         except Exception:
             referral_requests_stats = {}
+        # Hosts for global user-details modal (issue-key host select) on any page
+        try:
+            common_hosts = get_all_hosts() or []
+        except Exception:
+            common_hosts = []
         return {
             "referral_requests_stats": referral_requests_stats,
             "bot_status": bot_status,
@@ -663,6 +668,7 @@ def create_webhook_app(bot_controller_instance):
             "panel_login": (settings.get('panel_login') or '').strip(),
             "franchise_enabled": franchise_settings(),
             "module_menu_items": module_loader.get_menu_items(),
+            "hosts": common_hosts,
         }
 
     @flask_app.route('/brand-title', methods=['POST'])
@@ -713,10 +719,10 @@ def create_webhook_app(bot_controller_instance):
         
         chart_data = get_daily_stats_for_charts(days=30)
         common_data = get_common_template_data()
+        common_data['hosts'] = hosts
         
         return render_template(
             'dashboard.html',
-            hosts=hosts,
             ssh_targets=ssh_targets,
             stats=stats,
             chart_data=chart_data,
@@ -1977,7 +1983,8 @@ def create_webhook_app(bot_controller_instance):
             hosts = []
             ssh_targets = []
         common_data = get_common_template_data()
-        return render_template('monitor.html', hosts=hosts, ssh_targets=ssh_targets, **common_data)
+        common_data['hosts'] = hosts
+        return render_template('monitor.html', ssh_targets=ssh_targets, **common_data)
 
     @flask_app.route('/monitor/local.json')
     @login_required
@@ -2088,8 +2095,8 @@ def create_webhook_app(bot_controller_instance):
         total_pages = ceil(total / per_page) if per_page else 1
 
         common_data = get_common_template_data()
-        hosts = get_all_hosts() or []
-        return render_template('users.html', users=users, current_page=page, total_pages=total_pages, q=q, per_page=per_page, sort=sort, hosts=hosts, **common_data)
+        common_data['hosts'] = get_all_hosts() or []
+        return render_template('users.html', users=users, current_page=page, total_pages=total_pages, q=q, per_page=per_page, sort=sort, **common_data)
 
 
     @flask_app.route('/users/table.partial')
@@ -2490,10 +2497,10 @@ def create_webhook_app(bot_controller_instance):
             users = []
         total_pages = ceil(total / per_page) if per_page else 1
         common_data = get_common_template_data()
+        common_data['hosts'] = hosts
         return render_template(
             'admin_keys.html',
             keys=keys,
-            hosts=hosts,
             users=users,
             current_page=page,
             total_pages=total_pages,
@@ -3936,7 +3943,8 @@ def create_webhook_app(bot_controller_instance):
             backups = []
 
         common_data = get_common_template_data()
-        return render_template('settings.html', settings=current_settings, hosts=hosts, ssh_targets=ssh_targets, backups=backups, **common_data)
+        common_data['hosts'] = hosts
+        return render_template('settings.html', settings=current_settings, ssh_targets=ssh_targets, backups=backups, **common_data)
 
 
     def _as_bool(value: str | None) -> bool:
