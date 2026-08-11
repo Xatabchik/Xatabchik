@@ -17,22 +17,24 @@
 			href="{{ url_for('static', filename='css/admin-theme.css') }}"
 		/>
 		<style>
-			/* Compact design for login form */
 			#login-form .form-group label {
 				font-size: 0.85rem !important;
 				font-weight: 500 !important;
-				margin-bottom: 0.25rem !important;
+				margin-bottom: 0.35rem !important;
 			}
 
 			#login-form input[type="text"],
 			#login-form input[type="password"] {
-				font-size: 0.85rem !important;
-				padding: 0.65rem 0.9rem !important;
-				padding-right: 2.75rem !important;
+				font-size: 0.95rem !important;
+				padding: 0.7rem 0.95rem !important;
 				border-radius: 14px !important;
-				min-height: 2.5rem;
+				min-height: 2.75rem;
 				width: 100%;
 				box-sizing: border-box;
+			}
+
+			#login-form .password-field input {
+				padding-right: 3rem !important;
 			}
 
 			#login-form input[type="checkbox"] {
@@ -41,53 +43,87 @@
 			}
 
 			#login-form .button-primary {
-				font-size: 0.9rem !important;
-				padding: 0.7rem 1rem !important;
+				font-size: 0.95rem !important;
+				padding: 0.75rem 1rem !important;
 				border-radius: 14px !important;
-				min-height: 2.65rem;
+				min-height: 2.75rem;
 			}
 
 			#login-form .password-field {
-				position: relative;
+				position: relative !important;
+				display: block !important;
+				width: 100% !important;
 			}
 
 			#login-form .toggle-password {
 				position: absolute !important;
-				top: 0 !important;
-				right: 6px !important;
-				bottom: 0 !important;
-				width: 2.5rem !important;
-				height: auto !important;
-				max-height: none !important;
+				top: 50% !important;
+				right: 8px !important;
+				bottom: auto !important;
+				left: auto !important;
+				transform: translateY(-50%) !important;
+				width: 2.25rem !important;
+				height: 2.25rem !important;
+				margin: 0 !important;
 				padding: 0 !important;
-				color: rgba(246, 247, 248, 0.82) !important;
-				z-index: 3;
+				display: inline-flex !important;
+				align-items: center !important;
+				justify-content: center !important;
+				border: 0 !important;
+				border-radius: 10px !important;
+				background: rgba(255, 255, 255, 0.06) !important;
+				color: #f6f7f8 !important;
+				-webkit-text-fill-color: #f6f7f8 !important;
+				opacity: 1 !important;
+				visibility: visible !important;
+				z-index: 5 !important;
+				cursor: pointer !important;
+				-webkit-appearance: none !important;
+				appearance: none !important;
+				box-shadow: none !important;
+				line-height: 1 !important;
+			}
+
+			#login-form .toggle-password:hover,
+			#login-form .toggle-password:focus-visible {
+				background: rgba(255, 255, 255, 0.12) !important;
+				color: #ffffff !important;
+				outline: none;
+			}
+
+			#login-form .toggle-password svg,
+			#login-form .toggle-password .eye-icon {
+				display: block !important;
+				width: 1.25rem !important;
+				height: 1.25rem !important;
+				flex: 0 0 auto !important;
+				pointer-events: none !important;
+				opacity: 1 !important;
+				visibility: visible !important;
 			}
 
 			#login-form .toggle-password svg {
-				width: 1.15rem !important;
-				height: 1.15rem !important;
-				stroke: currentColor;
-			}
-
-			#login-form .toggle-password:hover {
-				color: #f6f7f8 !important;
-				background: rgba(255, 255, 255, 0.08);
+				fill: currentColor !important;
+				stroke: none !important;
 			}
 
 			#login-form .form-group {
-				margin-bottom: 0.85rem !important;
+				margin-bottom: 0.9rem !important;
 			}
 
 			@media (max-width: 480px) {
 				#login-form input[type="text"],
 				#login-form input[type="password"] {
 					font-size: 1rem !important;
-					min-height: 2.75rem;
+					min-height: 2.85rem;
 				}
 				#login-form .button-primary {
 					font-size: 1rem !important;
-					min-height: 2.85rem;
+					min-height: 2.95rem;
+				}
+				#login-form .toggle-password {
+					width: 2.4rem !important;
+					height: 2.4rem !important;
 				}
 			}
 		</style>
@@ -105,22 +141,20 @@
 				<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 				<div class="form-group">
 					<label for="username">Логин:</label>
-					<input type="text" id="username" name="username" required />
+					<input type="text" id="username" name="username" required autocomplete="username" />
 				</div>
 				<div class="form-group password-wrapper">
 					<label for="password">Пароль:</label>
 					<div class="password-field">
 						<input type="password" id="password" name="password" required autocomplete="current-password" />
-						<button type="button" id="toggle-login-pass" class="toggle-password" aria-label="Показать пароль" title="Показать пароль">
-							<svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<path d="M3 3l18 18" />
-								<path d="M10.584 10.587a2 2 0 1 0 2.828 2.827" />
-								<path d="M6.712 6.715c-1.766 1.233-3.247 2.89-4.712 5.285c2.667 4 6.667 6 10 6c1.25 0 2.47-.214 3.638-.623" />
-								<path d="M9.88 4.598a9.956 9.956 0 0 1 2.12-.598c3.333 0 7.333 2 10 6c-1.093 1.64-2.3 3.022-3.614 4.047" />
+						<button type="button" id="toggle-login-pass" class="toggle-password" aria-label="Показать пароль" title="Показать пароль" aria-pressed="false">
+							<!-- filled eye (visible) -->
+							<svg class="eye-icon" id="icon-eye" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+								<path d="M12 5c-5.05 0-9.27 3.11-11 7 1.73 3.89 5.95 7 11 7s9.27-3.11 11-7c-1.73-3.89-5.95-7-11-7zm0 11.5A4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/>
 							</svg>
-							<svg id="icon-eye" style="display:none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<path d="M2 12c2.667-4 6.667-6 10-6s7.333 2 10 6c-2.667 4-6.667 6-10 6s-7.333-2-10-6z" />
-								<circle cx="12" cy="12" r="2" />
+							<!-- filled eye-off (hidden by default) -->
+							<svg class="eye-icon" id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" hidden>
+								<path d="M3.28 2.22 2.22 3.28l3.01 3.01C3.53 7.5 2.14 9.07 1 12c1.73 3.89 5.95 7 11 7 1.9 0 3.68-.44 5.26-1.2l3.46 3.46 1.06-1.06L3.28 2.22zM12 17c-3.87 0-7.16-2.24-8.72-5 0.78-1.39 1.95-2.6 3.36-3.45l1.64 1.64A4.48 4.48 0 0 0 7.5 12 4.5 4.5 0 0 0 12 16.5c.7 0 1.36-.16 1.95-.44l1.5 1.5C14.55 16.85 13.32 17 12 17zm8.72-5c-.55.98-1.28 1.86-2.14 2.6l-1.52-1.52c.45-.6.73-1.32.8-2.1.1-1.24-.32-2.42-1.1-3.32l1.5-1.5C20.05 7.4 21.22 8.61 22 10c-.4.72-.9 1.39-1.28 2zM12 7.5c.5 0 .97.1 1.4.27L11.1 9.07A2.5 2.5 0 0 0 9.07 11.1L7.77 9.8A4.48 4.48 0 0 1 12 7.5z"/>
 							</svg>
 						</button>
 					</div>
@@ -137,32 +171,36 @@
 			</form>
 		</div>
 	<script>
-
-		// Переключатель видимости пароля на странице логина
 		(function(){
 			const btn = document.getElementById('toggle-login-pass');
 			const input = document.getElementById('password');
 			if (!btn || !input) return;
 			const eye = document.getElementById('icon-eye');
 			const eyeOff = document.getElementById('icon-eye-off');
-			btn.addEventListener('click', () => {
-				if (input.type === 'password') {
-					input.type = 'text';
-					btn.setAttribute('aria-label', 'Скрыть пароль');
-					btn.title = 'Скрыть пароль';
-					if (eye) eye.style.display = '';
-					if (eyeOff) eyeOff.style.display = 'none';
-				} else {
-					input.type = 'password';
-					btn.setAttribute('aria-label', 'Показать пароль');
-					btn.title = 'Показать пароль';
-					if (eye) eye.style.display = 'none';
-					if (eyeOff) eyeOff.style.display = '';
+
+			function setVisible(show){
+				input.type = show ? 'text' : 'password';
+				btn.setAttribute('aria-label', show ? 'Скрыть пароль' : 'Показать пароль');
+				btn.setAttribute('title', show ? 'Скрыть пароль' : 'Показать пароль');
+				btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+				if (eye) {
+					if (show) eye.setAttribute('hidden', '');
+					else eye.removeAttribute('hidden');
+					eye.style.display = show ? 'none' : 'block';
 				}
+				if (eyeOff) {
+					if (show) eyeOff.removeAttribute('hidden');
+					else eyeOff.setAttribute('hidden', '');
+					eyeOff.style.display = show ? 'block' : 'none';
+				}
+			}
+
+			setVisible(false);
+			btn.addEventListener('click', function(){
+				setVisible(input.type === 'password');
 			});
 		})();
 
-		// Запомнить логин (username) локально
 		(function(){
 			const u = document.getElementById('username');
 			const r = document.getElementById('remember_me');
@@ -171,12 +209,11 @@
 				const saved = localStorage.getItem('login_username');
 				if (saved) { u.value = saved; r.checked = true; }
 			} catch(_){}
-			// При отправке формы — сохранить/очистить
-			u.form?.addEventListener('submit', () => {
+			u.form && u.form.addEventListener('submit', function(){
 				try {
 					if (r.checked) localStorage.setItem('login_username', u.value || '');
 					else localStorage.removeItem('login_username');
-				} catch(_){ }
+				} catch(_){}
 			});
 		})();
 	</script>
