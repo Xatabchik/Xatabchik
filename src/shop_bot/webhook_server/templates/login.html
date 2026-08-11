@@ -69,11 +69,12 @@
 				display: inline-flex !important;
 				align-items: center !important;
 				justify-content: center !important;
-				border: 0 !important;
+				border: 1px solid rgba(15, 18, 22, 0.12) !important;
 				border-radius: 10px !important;
-				background: rgba(255, 255, 255, 0.06) !important;
-				color: #f6f7f8 !important;
-				-webkit-text-fill-color: #f6f7f8 !important;
+				/* Светлая подложка + тёмный значок — не сливается с полем */
+				background: #e8eaed !important;
+				color: #2a2f36 !important;
+				-webkit-text-fill-color: #2a2f36 !important;
 				opacity: 1 !important;
 				visibility: visible !important;
 				z-index: 5 !important;
@@ -86,8 +87,9 @@
 
 			#login-form .toggle-password:hover,
 			#login-form .toggle-password:focus-visible {
-				background: rgba(255, 255, 255, 0.12) !important;
-				color: #ffffff !important;
+				background: #d7dbe0 !important;
+				color: #111318 !important;
+				-webkit-text-fill-color: #111318 !important;
 				outline: none;
 			}
 
@@ -100,6 +102,8 @@
 				pointer-events: none !important;
 				opacity: 1 !important;
 				visibility: visible !important;
+				color: inherit !important;
+				fill: currentColor !important;
 			}
 
 			#login-form .toggle-password svg {
