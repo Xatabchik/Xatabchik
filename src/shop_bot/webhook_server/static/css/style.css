@@ -2676,6 +2676,14 @@ body.login-page {
   backdrop-filter: blur(8px) saturate(140%);
   -webkit-backdrop-filter: blur(8px) saturate(140%);
 }
+/* Keep tooltips under modals (see admin-theme.css modal/backdrop z-index bump) */
+.tooltip {
+  z-index: 1080 !important;
+}
+.tooltip .tooltip-inner {
+  position: relative;
+  z-index: 1;
+}
 .popover .popover-header { background: transparent !important; color: var(--text-primary) !important; border-bottom-color: rgba(255,255,255,0.12) !important; }
 .popover .popover-body { color: var(--text-primary) !important; }
 
