@@ -1462,23 +1462,35 @@ h4 {
     position: relative;
 }
 
+.password-field {
+    position: relative;
+    display: block;
+    width: 100%;
+}
+
 .password-wrapper .d-flex {
-    position: relative; 
+    position: relative;
 }
 
-.password-wrapper input[type='password'],
-.password-wrapper input[type='text'] {
-    padding-right: 44px; 
+/* Отступ под иконку только у полей с overlay-кнопкой (не flex+btn) */
+.password-wrapper > input[type='password'],
+.password-wrapper > input[type='text'],
+.password-field > input[type='password'],
+.password-field > input[type='text'] {
+    padding-right: 44px !important;
 }
 
-.toggle-password {
+/* Overlay-кнопка: без top:% от label (ломало выравнивание на мобиле) */
+.password-wrapper > .toggle-password:not(.btn),
+.password-field > .toggle-password:not(.btn) {
     position: absolute;
-    top: 70%;
-    right: 10px;
-    transform: translateY(-50%);
-    width: 26px;
-    height: 26px;
-    display: flex;
+    top: auto;
+    right: 8px;
+    bottom: 0;
+    transform: none;
+    width: 36px;
+    height: 2.5rem;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     border: none;
@@ -1486,23 +1498,51 @@ h4 {
     cursor: pointer;
     border-radius: 8px;
     padding: 0;
-    color: var(--text-primary);
+    color: rgba(246, 247, 248, 0.72);
+    z-index: 3;
     transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.toggle-password:hover {
+/* Обёртка только вокруг input — растягиваем кнопку на всю высоту поля */
+.password-field > .toggle-password:not(.btn) {
+    top: 0;
+    bottom: 0;
+    height: auto;
+}
+
+.password-wrapper > .toggle-password:not(.btn):hover,
+.password-field > .toggle-password:not(.btn):hover {
     background: rgba(255,255,255,0.08);
+    color: #f6f7f8;
 }
 
-.toggle-password svg {
-    width: 14px;
-    height: 14px;
+.password-wrapper > .toggle-password:not(.btn) svg,
+.password-field > .toggle-password:not(.btn) svg {
+    width: 18px;
+    height: 18px;
     display: block;
+    pointer-events: none;
 }
 
-.toggle-password .ti {
-    font-size: 1rem;
+.password-wrapper > .toggle-password:not(.btn) .ti,
+.password-field > .toggle-password:not(.btn) .ti {
+    font-size: 1.1rem;
     line-height: 1;
+    pointer-events: none;
+}
+
+/* Flex-паттерн (кнопка рядом с полем): не абсолютим */
+.password-wrapper .d-flex > .toggle-password,
+.password-wrapper .d-flex .btn.toggle-password {
+    position: static !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    width: auto;
+    height: auto;
+    max-height: none;
+    z-index: auto;
 }
 
 .button {
@@ -2926,10 +2966,14 @@ body.login-page {
 		min-height: 60px;
 	}
 
-	.toggle-password {
-		top: 40%;
+	.password-wrapper > .toggle-password:not(.btn),
+	.password-field > .toggle-password:not(.btn) {
 		width: 40px;
-		font-size: 18px;
+		right: 4px;
+	}
+
+	.password-wrapper > .toggle-password:not(.btn) {
+		height: 2.6rem;
 	}
 
 	.form-inline {
@@ -2976,9 +3020,9 @@ body.login-page {
 		padding: 8px;
 	}
 
-	.toggle-password {
-		width: 35px;
-		font-size: 16px;
+	.password-wrapper > .toggle-password:not(.btn),
+	.password-field > .toggle-password:not(.btn) {
+		width: 38px;
 	}
 
 	.button {
@@ -3006,9 +3050,9 @@ body.login-page {
 		padding: 6px;
 	}
 
-	.toggle-password {
-		width: 30px;
-		font-size: 14px;
+	.password-wrapper > .toggle-password:not(.btn),
+	.password-field > .toggle-password:not(.btn) {
+		width: 36px;
 	}
 
 	.button {

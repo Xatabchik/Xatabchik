@@ -685,8 +685,84 @@ body {
   font-weight: 600;
 }
 
-/* Responsive adjustments */
+/* Responsive adjustments — grid + editor buttons */
+@media (max-width: 992px) {
+  .button-grid {
+    min-height: 320px;
+    padding: 14px;
+    gap: 8px;
+  }
+
+  .button-item {
+    min-height: 52px;
+    padding: 10px;
+  }
+
+  .inactive-buttons-grid {
+    padding: 14px;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .button-grid {
+    min-height: 260px;
+    padding: 12px;
+    gap: 8px;
+    border-radius: 14px;
+  }
+
+  .button-item {
+    min-height: 48px;
+    padding: 8px 10px;
+  }
+
+  .button-item .button-text {
+    font-size: 0.85rem;
+  }
+
+  .button-item .button-actions {
+    opacity: 1;
+  }
+
+  .inactive-buttons-grid .button-item {
+    min-width: 120px;
+  }
+
+  .card-header .btn-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .card-header .btn-group .btn {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+}
+
 @media (max-width: 480px) {
+  .button-grid {
+    min-height: 220px;
+    padding: 10px;
+    gap: 6px;
+  }
+
+  .button-item {
+    min-height: 44px;
+    padding: 8px;
+  }
+
+  .button-item .button-text {
+    font-size: 0.8rem;
+    word-break: break-word;
+  }
+
+  .inactive-buttons-grid .button-item {
+    min-width: 100%;
+  }
+
   .telegram-preview {
     max-width: 100%;
     margin: 0;

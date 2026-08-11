@@ -27,8 +27,12 @@
 			#login-form input[type="text"],
 			#login-form input[type="password"] {
 				font-size: 0.85rem !important;
-				padding: 0.55rem 0.85rem !important;
-				border-radius: 20px !important;
+				padding: 0.65rem 0.9rem !important;
+				padding-right: 2.75rem !important;
+				border-radius: 14px !important;
+				min-height: 2.5rem;
+				width: 100%;
+				box-sizing: border-box;
 			}
 
 			#login-form input[type="checkbox"] {
@@ -37,20 +41,54 @@
 			}
 
 			#login-form .button-primary {
-				font-size: 0.85rem !important;
-				padding: 0.55rem 0.9rem !important;
-				border-radius: 20px !important;
+				font-size: 0.9rem !important;
+				padding: 0.7rem 1rem !important;
+				border-radius: 14px !important;
+				min-height: 2.65rem;
+			}
+
+			#login-form .password-field {
+				position: relative;
 			}
 
 			#login-form .toggle-password {
-				width: 1.5rem !important;
-				height: 1.5rem !important;
-				padding: 0.25rem !important;
-				color: rgba(246, 247, 248, 0.6);
+				position: absolute !important;
+				top: 0 !important;
+				right: 6px !important;
+				bottom: 0 !important;
+				width: 2.5rem !important;
+				height: auto !important;
+				max-height: none !important;
+				padding: 0 !important;
+				color: rgba(246, 247, 248, 0.82) !important;
+				z-index: 3;
+			}
+
+			#login-form .toggle-password svg {
+				width: 1.15rem !important;
+				height: 1.15rem !important;
+				stroke: currentColor;
+			}
+
+			#login-form .toggle-password:hover {
+				color: #f6f7f8 !important;
+				background: rgba(255, 255, 255, 0.08);
 			}
 
 			#login-form .form-group {
-				margin-bottom: 0.75rem !important;
+				margin-bottom: 0.85rem !important;
+			}
+
+			@media (max-width: 480px) {
+				#login-form input[type="text"],
+				#login-form input[type="password"] {
+					font-size: 1rem !important;
+					min-height: 2.75rem;
+				}
+				#login-form .button-primary {
+					font-size: 1rem !important;
+					min-height: 2.85rem;
+				}
 			}
 		</style>
 	</head>
@@ -71,21 +109,21 @@
 				</div>
 				<div class="form-group password-wrapper">
 					<label for="password">Пароль:</label>
-					<input type="password" id="password" name="password" required />
-					<button type="button" id="toggle-login-pass" class="toggle-password" aria-label="Показать пароль" title="Показать пароль">
-						
-						<svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d="M3 3l18 18" />
-							<path d="M10.584 10.587a2 2 0 1 0 2.828 2.827" />
-							<path d="M6.712 6.715c-1.766 1.233-3.247 2.89-4.712 5.285c2.667 4 6.667 6 10 6c1.25 0 2.47-.214 3.638-.623" />
-							<path d="M9.88 4.598a9.956 9.956 0 0 1 2.12-.598c3.333 0 7.333 2 10 6c-1.093 1.64-2.3 3.022-3.614 4.047" />
-						</svg>
-						
-						<svg id="icon-eye" style="display:none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d="M2 12c2.667-4 6.667-6 10-6s7.333 2 10 6c-2.667 4-6.667 6-10 6s-7.333-2-10-6z" />
-							<circle cx="12" cy="12" r="2" />
-						</svg>
-					</button>
+					<div class="password-field">
+						<input type="password" id="password" name="password" required autocomplete="current-password" />
+						<button type="button" id="toggle-login-pass" class="toggle-password" aria-label="Показать пароль" title="Показать пароль">
+							<svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<path d="M3 3l18 18" />
+								<path d="M10.584 10.587a2 2 0 1 0 2.828 2.827" />
+								<path d="M6.712 6.715c-1.766 1.233-3.247 2.89-4.712 5.285c2.667 4 6.667 6 10 6c1.25 0 2.47-.214 3.638-.623" />
+								<path d="M9.88 4.598a9.956 9.956 0 0 1 2.12-.598c3.333 0 7.333 2 10 6c-1.093 1.64-2.3 3.022-3.614 4.047" />
+							</svg>
+							<svg id="icon-eye" style="display:none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<path d="M2 12c2.667-4 6.667-6 10-6s7.333 2 10 6c-2.667 4-6.667 6-10 6s-7.333-2-10-6z" />
+								<circle cx="12" cy="12" r="2" />
+							</svg>
+						</button>
+					</div>
 				</div>
 				<div class="form-group" style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin:10px 0 16px;">
 					<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
