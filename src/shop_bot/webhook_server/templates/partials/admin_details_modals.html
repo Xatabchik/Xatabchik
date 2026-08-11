@@ -312,6 +312,14 @@
               </div>
             </div>
 
+            <div id="kd-note-block" class="kd-note-block d-none mt-3">
+              <i class="ti ti-notes kd-note-icon" aria-hidden="true"></i>
+              <div class="kd-note-body">
+                <div class="kd-note-label">Заметка</div>
+                <div id="kd-note-text" class="kd-note-text"></div>
+              </div>
+            </div>
+
             <hr />
 
             <div class="mb-3">
@@ -354,9 +362,9 @@
 
             <div class="collapse mt-3" id="kd-comment-collapse">
               <div class="card card-body bg-body-tertiary">
-                <label class="form-label small">Комментарий к ключу</label>
+                <label class="form-label small">Заметка к ключу</label>
                 <div class="input-group input-group-sm">
-                  <input type="text" class="form-control" id="kd-comment-input" placeholder="Введите комментарий" />
+                  <input type="text" class="form-control" id="kd-comment-input" placeholder="Введите заметку" />
                   <button type="button" class="btn btn-primary" id="kd-comment-save-btn">
                     <i class="ti ti-check me-1"></i> Сохранить
                   </button>
@@ -398,7 +406,7 @@
       <div class="modal-footer justify-content-between flex-wrap gap-2">
         <div class="btn-list">
           <button type="button" class="btn btn-outline-secondary" id="kd-comment-btn" data-bs-toggle="collapse" data-bs-target="#kd-comment-collapse">
-            <i class="ti ti-message me-1"></i> Комментарий
+            <i class="ti ti-notes me-1"></i> Заметка
           </button>
           <button type="button" class="btn btn-outline-warning" id="kd-expiry-btn" data-bs-toggle="collapse" data-bs-target="#kd-expiry-collapse">
             <i class="ti ti-calendar-stats me-1"></i> Изменить срок
