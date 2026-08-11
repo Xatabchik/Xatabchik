@@ -664,14 +664,54 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
     function initializeSettingsTabs() {
-        const nav = document.querySelector('.nav.nav-tabs');
+        const nav = document.querySelector('#settings-tabs') || document.querySelector('.nav.nav-tabs.settings-tabs') || document.querySelector('.nav.nav-tabs');
         const container = document.querySelector('.settings-container');
         if (!nav || !container) return;
 
         const links = Array.from(nav.querySelectorAll('a.nav-link'));
+        const SCROLL_KEY = 'settings-tabs-scroll-left';
 
         const sections = Array.from(document.querySelectorAll('.settings-section'));
         const rightCol = document.querySelector('.settings-column-right');
+
+        function saveTabsScroll() {
+            try { sessionStorage.setItem(SCROLL_KEY, String(nav.scrollLeft || 0)); } catch (_) {}
+        }
+
+        function restoreTabsScroll() {
+            try {
+                const raw = sessionStorage.getItem(SCROLL_KEY);
+                if (raw == null || raw === '') return false;
+                const left = Number(raw);
+                if (!Number.isFinite(left)) return false;
+                nav.scrollLeft = left;
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function scrollActiveTabIntoView(smooth) {
+            const active = nav.querySelector('.nav-link.active');
+            if (!active) return;
+            const item = active.closest('.nav-item') || active;
+            try {
+                const navRect = nav.getBoundingClientRect();
+                const itemRect = item.getBoundingClientRect();
+                const fullyVisible = itemRect.left >= navRect.left && itemRect.right <= navRect.right;
+                if (fullyVisible && !smooth) return;
+                const delta = (itemRect.left - navRect.left) - (navRect.width - itemRect.width) / 2;
+                const next = Math.max(0, nav.scrollLeft + delta);
+                if (typeof nav.scrollTo === 'function') {
+                    nav.scrollTo({ left: next, behavior: smooth ? 'smooth' : 'auto' });
+                } else {
+                    nav.scrollLeft = next;
+                }
+            } catch (_) {
+                try { item.scrollIntoView({ inline: 'center', block: 'nearest', behavior: smooth ? 'smooth' : 'auto' }); } catch (__){}
+            }
+            saveTabsScroll();
+        }
 
         function show(targetHash) {
             const hash = (targetHash && targetHash.startsWith('#')) ? targetHash : '#panel';
@@ -772,6 +812,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 try { history.replaceState(null, '', `?tab=${encodeURIComponent(tabName)}${href}`); } catch(_) {}
 
                 window.scrollTo(0, y);
+                requestAnimationFrame(() => scrollActiveTabIntoView(true));
             });
         });
 
@@ -780,7 +821,14 @@ document.addEventListener('DOMContentLoaded', function () {
             const y = window.scrollY;
             show(location.hash);
             window.scrollTo(0, y);
+            requestAnimationFrame(() => scrollActiveTabIntoView(true));
         });
+
+        let scrollSaveTimer = null;
+        nav.addEventListener('scroll', () => {
+            if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+            scrollSaveTimer = setTimeout(saveTabsScroll, 80);
+        }, { passive: true });
 
 
         const params = new URLSearchParams(window.location.search);
@@ -792,6 +840,13 @@ document.addEventListener('DOMContentLoaded', function () {
             const tabName = initialHash.startsWith('#') ? initialHash.slice(1) : initialHash;
             history.replaceState(null, '', `?tab=${encodeURIComponent(tabName)}${initialHash}`);
         } catch(_) {}
+
+        // Restore prior scroll, then ensure the selected tab is visible
+        restoreTabsScroll();
+        requestAnimationFrame(() => {
+            scrollActiveTabIntoView(false);
+            requestAnimationFrame(() => scrollActiveTabIntoView(false));
+        });
     }
 
 
