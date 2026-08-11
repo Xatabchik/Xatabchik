@@ -283,11 +283,14 @@ pre,
 }
 
 .sidebar #brand-title,
-.sidebar .brand-word b {
+.sidebar .brand-word b,
+.mobile-header #mobile-brand-title,
+.mobile-header .brand-word b {
   font-family: var(--font-display) !important;
 }
 
 .sidebar .brand-sub,
+.mobile-header .brand-sub,
 .sidebar-navigation .nav-section-title,
 .sidebar-navigation .nav-badge,
 .sidebar-footer .avatar {

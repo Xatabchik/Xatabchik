@@ -40,7 +40,7 @@
 							<span class="brand-sub">ADMIN · v2.0</span>
 						</span>
 					</a>
-					<button type="button" id="brand-edit" class="btn-brand-edit" title="Сменить название" aria-label="Сменить название">
+					<button type="button" id="brand-edit" class="btn-brand-edit js-brand-edit" title="Сменить название" aria-label="Сменить название">
 						<i class="ti ti-pencil" aria-hidden="true"></i>
 					</button>
 				</div>
@@ -152,11 +152,17 @@
 				{% set any_bot_running = main_running or support_running %}
 				<header class="mobile-header">
 					<div class="mobile-header-content">
-						<div class="mobile-brand">
-							<a href="{{ url_for('dashboard_page') }}" class="mobile-brand-link">
-								<img src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
-								<span id="mobile-brand-title">{{ brand_title or 'Xatabchik' }}</span>
+						<div class="brand mobile-header-brand">
+							<a href="{{ url_for('dashboard_page') }}" class="brand-link">
+								<img class="brand-mark" src="{{ url_for('static', filename='img/logo.png') }}" alt="Логотип" />
+								<span class="brand-word">
+									<b id="mobile-brand-title">{{ brand_title or 'Xatabchik' }}</b>
+									<span class="brand-sub">ADMIN · v2.0</span>
+								</span>
 							</a>
+							<button type="button" class="btn-brand-edit js-brand-edit" title="Сменить название" aria-label="Сменить название">
+								<i class="ti ti-pencil" aria-hidden="true"></i>
+							</button>
 						</div>
 
 						<div class="topbar-search mobile-header-search" id="mobile-topbar-search">
@@ -458,14 +464,26 @@
         <script>
             (function(){
                 const titleEl = document.getElementById('brand-title');
-                const editBtn = document.getElementById('brand-edit');
+                const mobileTitleEl = document.getElementById('mobile-brand-title');
+                const editBtns = document.querySelectorAll('.js-brand-edit');
                 const modalEl = document.getElementById('brandModal');
                 const inputEl = document.getElementById('brand-input');
                 const saveBtn = document.getElementById('brand-save');
-                if (!titleEl || !editBtn || !modalEl) return;
-                editBtn.addEventListener('click', () => {
-                    try { inputEl.value = titleEl.textContent.trim(); } catch(_){ }
-                    try { window.showModal(modalEl); } catch(_){ }
+                if ((!titleEl && !mobileTitleEl) || !editBtns.length || !modalEl) return;
+
+                function currentTitle(){
+                    return String((titleEl || mobileTitleEl).textContent || '').trim();
+                }
+                function setTitles(val){
+                    if (titleEl) titleEl.textContent = val;
+                    if (mobileTitleEl) mobileTitleEl.textContent = val;
+                }
+
+                editBtns.forEach((btn) => {
+                    btn.addEventListener('click', () => {
+                        try { inputEl.value = currentTitle(); } catch(_){ }
+                        try { window.showModal(modalEl); } catch(_){ }
+                    });
                 });
                 async function save(){
                     const val = String(inputEl.value||'').trim();
@@ -476,9 +494,7 @@
                         fd.append('title', val);
                         const resp = await fetch('{{ url_for("update_brand_title_route") }}', { method: 'POST', body: fd, credentials: 'same-origin' });
                         if (resp.ok) {
-                            titleEl.textContent = val;
-                            const mobileTitleEl = document.getElementById('mobile-brand-title');
-                            if (mobileTitleEl) mobileTitleEl.textContent = val;
+                            setTitles(val);
                             try { window.showToast('success', 'Название сохранено'); } catch(_){ }
                             try { window.hideModal(modalEl); } catch(_){ bootstrap.Modal.getInstance(modalEl)?.hide(); }
                         } else {
