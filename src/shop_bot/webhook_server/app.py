@@ -1250,7 +1250,7 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось удалить метку.', 'danger')
         return redirect(url_for('analytics_utm_page'))
 
-    # === Раздел «Реферальная программа» ===
+    # === Раздел «Рефералка» ===
 
     REFERRAL_METHOD_LABELS = {"sbp": "СБП", "card": "Номер карты", "usdt_trc20": "USDT TRC20"}
     REFERRAL_STATUS_LABELS = {"new": "Новая", "processing": "В обработке", "paid": "Выплачено", "rejected": "Отклонена"}
