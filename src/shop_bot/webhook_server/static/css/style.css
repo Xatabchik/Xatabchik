@@ -1919,10 +1919,6 @@ body.login-page {
     font-size: 10px;
   }
 
-  #mobile-brand-title {
-    font-size: 16px;
-    max-width: calc(100vw - 50px);
-  }
 }
 
 .main-footer {
@@ -2841,21 +2837,6 @@ body.login-page {
 		min-width: 240px;
 	}
 	
-	/* Уменьшаем размер бренда на очень маленьких экранах */
-	#mobile-brand-title {
-		font-size: 15px;
-	}
-	
-	.mobile-brand-link img {
-		width: 28px;
-		height: 28px;
-	}
-	
-	.mobile-bot-control .btn {
-		font-size: 0.8rem;
-		padding: 5px 10px;
-	}
-	
 	/* Уменьшаем отступы в нижнем меню */
 	.bottom-nav-item {
 		padding: 4px 6px;
@@ -3698,7 +3679,7 @@ body.login-page {
 	--ui-radius: 18px;
 	--ui-radius-sm: 14px;
 	--sidebar-w: 252px;
-	--mobile-header-h: 56px;
+	--mobile-header-h: 52px;
 	/* Общая верхняя «шапка»:
 	   brand | search+controls  — одна высота (--chrome-control-h)
 	   nav   | page-content     — стартуют на одной линии после --chrome-header-gap */
@@ -4352,8 +4333,8 @@ select option:checked{
 	right: 0;
 	background: color-mix(in oklab, var(--bg-surface) 85%, transparent);
 	border-bottom: 1px solid var(--border-color);
-	padding: 12px 16px;
-	padding-top: calc(12px + env(safe-area-inset-top));
+	padding: 8px 12px;
+	padding-top: calc(8px + env(safe-area-inset-top));
 	z-index: 1000;
 	backdrop-filter: blur(12px) saturate(130%);
 	-webkit-backdrop-filter: blur(12px) saturate(130%);
@@ -4363,57 +4344,195 @@ select option:checked{
 .mobile-header-content {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
+	justify-content: flex-start;
+	gap: 8px;
 	width: 100%;
 }
 
-.mobile-brand {
+/* Тот же brand, что в сайдбаре — компактная адаптация под mobile-header */
+.mobile-header .brand.mobile-header-brand{
 	display: flex;
 	align-items: center;
-	flex: 1;
+	gap: 6px;
+	flex: 0 1 auto;
 	min-width: 0;
+	max-width: 42%;
+	height: var(--chrome-control-h);
+	min-height: var(--chrome-control-h);
+	margin: 0;
+	padding: 0;
 }
 
-.mobile-brand-link {
+.mobile-header .brand-link{
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px;
+	min-width: 0;
+	flex: 1 1 auto;
 	text-decoration: none;
-	color: var(--text-primary);
-	min-width: 0;
-	flex: 1;
+	color: #f6f7f8;
 }
 
-.mobile-brand-link img {
-	width: 32px;
-	height: 32px;
+.mobile-header .brand-mark,
+.mobile-header .brand-link img.brand-mark{
+	width: 28px;
+	height: 28px;
+	flex: 0 0 28px;
 	object-fit: contain;
-	filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
-	flex-shrink: 0;
+	border-radius: 8px;
+	filter: none;
 }
 
-#mobile-brand-title {
-	font-size: 18px;
-	font-weight: 700;
-	letter-spacing: 0.2px;
+.mobile-header .brand-word{
+	display: flex;
+	flex-direction: column;
+	line-height: 1.1;
+	min-width: 0;
+}
+
+.mobile-header .brand-word b,
+.mobile-header #mobile-brand-title{
+	display: block;
+	font-size: 13.5px;
+	font-weight: 600;
+	letter-spacing: .02em;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	flex: 1;
+	margin: 0;
+	padding: 0;
+	line-height: 1.15;
+	color: #f6f7f8;
+}
+
+.mobile-header .brand-sub{
+	display: block;
+	margin-top: 1px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	font-size: 8.5px;
+	font-weight: 500;
+	letter-spacing: .12em;
+	text-transform: uppercase;
+	line-height: 1.1;
+	color: rgba(246,247,248,.38);
+}
+
+.mobile-header .btn-brand-edit{
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	margin: 0;
+	border: 1px solid rgba(255,255,255,.10);
+	border-radius: 10px;
+	background: transparent;
+	color: rgba(246,247,248,.45);
+	line-height: 1;
+	cursor: pointer;
+}
+
+.mobile-header .btn-brand-edit:hover{
+	background: rgba(255,255,255,.05);
+	color: rgba(246,247,248,.85);
+	border-color: rgba(255,255,255,.16);
+}
+
+.mobile-header .btn-brand-edit i{
+	font-size: 14px;
+}
+
+.mobile-header-search{
+	flex: 1 1 auto;
 	min-width: 0;
+	max-width: none;
+	height: 36px;
+	z-index: 1001;
+}
+
+.mobile-header:has(.topbar-search.is-open){
+	z-index: 1200;
+}
+
+.mobile-header-search.is-open{
+	z-index: 1201;
+}
+
+.mobile-header-search .topbar-search-field,
+.mobile-header-search .topbar-search-field .form-control{
+	height: 36px !important;
+	min-height: 36px !important;
+}
+
+.mobile-header-search .topbar-search-dropdown{
+	left: 0;
+	right: 0;
+	min-width: min(92vw, 360px);
+}
+
+.mobile-bot-trigger{
+	position: relative;
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	border-radius: 12px;
+	border: 1px solid rgba(255,255,255,.12);
+	background: rgba(255,255,255,.04);
+	color: rgba(246,247,248,.85);
+	cursor: pointer;
+	transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.mobile-bot-trigger:hover{
+	background: rgba(255,255,255,.08);
+	border-color: rgba(255,255,255,.18);
+	color: #fff;
+}
+
+.mobile-bot-trigger i{
+	font-size: 20px;
+	line-height: 1;
+}
+
+.mobile-bot-status-dot{
+	position: absolute;
+	top: 5px;
+	right: 5px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	border: 1.5px solid #111318;
+	background: #e27c87;
+}
+
+.mobile-bot-trigger.is-running .mobile-bot-status-dot{
+	background: #74c9a0;
+}
+
+.mobile-bot-trigger.is-stopped .mobile-bot-status-dot{
+	background: #e27c87;
+}
+
+.mobile-bot-modal-status{
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	font-size: 0.92rem;
+	color: var(--text-1, rgba(246,247,248,.60));
+}
+
+.mobile-bot-modal-status .status-dot{
+	margin-top: 0.35em;
 }
 
 .mobile-bot-control {
-	display: flex;
-	align-items: center;
-	flex-shrink: 0;
-}
-
-.mobile-bot-control .btn {
-	white-space: nowrap;
-	font-size: 0.875rem;
-	padding: 6px 12px;
+	display: none;
 }
 
 /* Нижнее меню навигации */
@@ -4590,15 +4709,14 @@ select option:checked{
 		padding: calc(var(--mobile-header-h) + env(safe-area-inset-top) + 8px) 14px calc(80px + env(safe-area-inset-bottom));
 	}
 
-	/* Topbar: show burger button, hide dropdown menu (we use sidebar drawer instead) */
+	/* Topbar: поиск перенесён в mobile-header; здесь только бургер при необходимости */
 	.topbar{ 
 		justify-content: flex-start;
 		padding-top: 4px;
 		padding-bottom: 6px;
 	}
-	.topbar-search{
-		max-width: none;
-		min-width: 0;
+	.topbar > .topbar-search{
+		display: none !important;
 	}
 	.bm{ display: flex !important; position: relative; margin-right: 10px; }
 	label.burger_img{ display: inline-flex !important; }
@@ -4630,6 +4748,14 @@ select option:checked{
 	}
 	.bm {
 		margin-right: 0;
+	}
+	/* На узких экранах оставляем лого + название, прячем подпись и карандаш */
+	.mobile-header .brand-sub,
+	.mobile-header .btn-brand-edit{
+		display: none;
+	}
+	.mobile-header .brand.mobile-header-brand{
+		max-width: 38%;
 	}
 }
 
