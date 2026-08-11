@@ -36,6 +36,24 @@
           Удалить истёкшие
         </button>
       </form>
+      <div class="vr d-none d-md-block mx-1 opacity-25"></div>
+      <div class="d-flex flex-column align-items-stretch align-items-md-end gap-1">
+        <button
+          type="button"
+          class="btn btn-outline-warning btn-sm"
+          id="bulk-extend-all-btn"
+          data-bs-toggle="modal"
+          data-bs-target="#bulkExtendModal"
+          data-bulk-mode="all"
+          title="Изменить срок у всех ключей в базе"
+        >
+          <i class="ti ti-calendar-stats me-1"></i>
+          Изменить срок ВСЕМ ключам
+        </button>
+        <small class="text-secondary text-md-end" style="max-width: 16rem; line-height: 1.25;">
+          Ко всем ключам в базе, не только к отображаемым на странице
+        </small>
+      </div>
     </div>
   </div>
 
@@ -146,10 +164,31 @@
   </div>
 
   <div class="card-body">
+    <div id="keys-bulk-selected-bar" class="d-none alert alert-primary d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3 py-2">
+      <div class="small mb-0">
+        <i class="ti ti-checkbox me-1"></i>
+        Выбрано ключей на этой странице: <strong id="keys-bulk-selected-count">0</strong>
+      </div>
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        id="bulk-extend-selected-btn"
+        data-bs-toggle="modal"
+        data-bs-target="#bulkExtendModal"
+        data-bulk-mode="selected"
+        disabled
+      >
+        <i class="ti ti-calendar-plus me-1"></i>
+        Изменить срок выбранных (<span id="keys-bulk-selected-count-btn">0</span>)
+      </button>
+    </div>
     <div class="table-responsive">
       <table class="table table-vcenter table-hover card-table keys-table">
         <thead>
           <tr>
+            <th class="w-1" onclick="event.stopPropagation()">
+              <input type="checkbox" class="form-check-input" id="keys-select-all" title="Выбрать все на странице" aria-label="Выбрать все на странице" />
+            </th>
             <th class="w-1"><i class="ti ti-hash"></i></th>
             <th class="sortable" data-sort="user_id"><i class="ti ti-user me-1"></i> Пользователь <i class="ti ti-arrows-sort sort-icon"></i></th>
             <th class="sortable" data-sort="host_name"><i class="ti ti-server me-1"></i> Хост <i class="ti ti-arrows-sort sort-icon"></i></th>
@@ -161,6 +200,9 @@
         <tbody id="keys-tbody" data-fetch-url="{{ url_for('admin_keys_table_partial', page=current_page, per_page=per_page) }}" data-fetch-interval="10000">
           {% for k in keys %}
           <tr class="key-row" data-key-id="{{ k.key_id }}" style="cursor:pointer;">
+            <td class="w-1" onclick="event.stopPropagation()">
+              <input type="checkbox" class="form-check-input key-select-cb" name="key_ids" value="{{ k.key_id }}" aria-label="Выбрать ключ #{{ k.key_id }}" />
+            </td>
             <td class="text-secondary">#{{ k.key_id }}</td>
             <td>{{ k.user_id }}</td>
             <td>{{ k.host_name }}</td>
@@ -175,6 +217,70 @@
     <ul id="keys-pagination" class="pagination pagination-sm flex-wrap" data-src="{{ url_for('admin_keys_pagination_partial', page=current_page, per_page=per_page) }}">
       {% include 'partials/admin_keys_pagination.html' %}
     </ul>
+  </div>
+</div>
+
+{# Общая модалка изменения срока: selected → bulk-extend, all → bulk-extend-all #}
+<div class="modal modal-blur fade" id="bulkExtendModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="bulk-extend-form" method="post" action="{{ url_for('bulk_extend_keys_route') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <div id="bulk-extend-key-ids"></div>
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="ti ti-calendar-stats me-2"></i>
+            <span id="bulk-extend-modal-title">Изменить срок ключей</span>
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning d-none mb-3" id="bulk-extend-all-warning" role="alert">
+            Действие применяется ко <strong>всем ключам в базе</strong>, независимо от фильтров, поиска и текущей страницы. Отменить будет нельзя.
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Режим изменения</label>
+            <div class="form-selectgroup form-selectgroup-boxes d-flex flex-column">
+              <label class="form-selectgroup-item flex-fill">
+                <input type="radio" name="mode" value="days" class="form-selectgroup-input" checked />
+                <div class="form-selectgroup-label d-flex align-items-center p-3">
+                  <div class="me-3"><span class="form-selectgroup-check"></span></div>
+                  <div>
+                    <div class="font-weight-medium">Продлить / сократить на N дней</div>
+                    <div class="text-secondary small">Отрицательное число сокращает срок</div>
+                  </div>
+                </div>
+              </label>
+              <label class="form-selectgroup-item flex-fill">
+                <input type="radio" name="mode" value="date" class="form-selectgroup-input" />
+                <div class="form-selectgroup-label d-flex align-items-center p-3">
+                  <div class="me-3"><span class="form-selectgroup-check"></span></div>
+                  <div>
+                    <div class="font-weight-medium">Установить точную дату истечения</div>
+                    <div class="text-secondary small">Одна и та же дата для всех выбранных / всех ключей</div>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="mb-0" id="bulk-extend-days-wrap">
+            <label class="form-label" for="bulk-extend-days">Количество дней</label>
+            <input type="number" class="form-control" id="bulk-extend-days" name="days" step="1" placeholder="Например: 30 или -7" />
+          </div>
+          <div class="mb-0 d-none" id="bulk-extend-date-wrap">
+            <label class="form-label" for="bulk-extend-expire-at">Дата истечения</label>
+            <input type="text" class="form-control" id="bulk-extend-expire-at" name="expire_at" placeholder="YYYY-MM-DD HH:MM" autocomplete="off" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="bulk-extend-submit-btn">
+            <i class="ti ti-check me-1"></i>
+            Применить
+          </button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -654,6 +760,9 @@
               tr.style.cursor = 'pointer';
               if (data.key_id) tr.setAttribute('data-key-id', String(data.key_id));
               tr.innerHTML = `
+                <td class="w-1" onclick="event.stopPropagation()">
+                  <input type="checkbox" class="form-check-input key-select-cb" name="key_ids" value="${data.key_id||''}" aria-label="Выбрать ключ #${data.key_id||''}" />
+                </td>
                 <td class="text-secondary">#${data.key_id||''}</td>
                 <td>${uid}</td>
                 <td>${host}</td>
@@ -662,6 +771,7 @@
                 <td class="text-nowrap">${createdStr}</td>
               `;
               tbody.prepend(tr);
+              try { window.refreshKeysBulkSelection?.(); } catch(_){}
             }
           } catch(_){}
           // Также сразу подтянем серверный partial, чтобы таблица была в актуальном состоянии
@@ -1589,6 +1699,150 @@
         locale: flatpickr.l10ns.ru || 'ru',
       });
     }
+  })();
+</script>
+<script>
+  (function(){
+    const SELECTED_URL = {{ url_for('bulk_extend_keys_route')|tojson }};
+    const ALL_URL = {{ url_for('bulk_extend_all_keys_route')|tojson }};
+    const ALL_CONFIRM = 'Изменить срок действия ВСЕХ ключей в базе (независимо от фильтров и текущей страницы)? Действие затронет все ключи и не может быть отменено.';
+
+    const tbody = document.getElementById('keys-tbody');
+    const selectAll = document.getElementById('keys-select-all');
+    const bar = document.getElementById('keys-bulk-selected-bar');
+    const countEl = document.getElementById('keys-bulk-selected-count');
+    const countBtnEl = document.getElementById('keys-bulk-selected-count-btn');
+    const selectedBtn = document.getElementById('bulk-extend-selected-btn');
+    const form = document.getElementById('bulk-extend-form');
+    const idsWrap = document.getElementById('bulk-extend-key-ids');
+    const modalTitle = document.getElementById('bulk-extend-modal-title');
+    const allWarning = document.getElementById('bulk-extend-all-warning');
+    const daysWrap = document.getElementById('bulk-extend-days-wrap');
+    const dateWrap = document.getElementById('bulk-extend-date-wrap');
+    const daysInput = document.getElementById('bulk-extend-days');
+    const dateInput = document.getElementById('bulk-extend-expire-at');
+    const submitBtn = document.getElementById('bulk-extend-submit-btn');
+    let bulkMode = 'selected';
+    let expireFp = null;
+
+    function getCheckboxes(){
+      return Array.from(document.querySelectorAll('.key-select-cb'));
+    }
+    function getChecked(){
+      return getCheckboxes().filter(cb => cb.checked);
+    }
+    function refreshKeysBulkSelection(){
+      const boxes = getCheckboxes();
+      const checked = getChecked();
+      const n = checked.length;
+      if (countEl) countEl.textContent = String(n);
+      if (countBtnEl) countBtnEl.textContent = String(n);
+      if (bar) bar.classList.toggle('d-none', n === 0);
+      if (selectedBtn) selectedBtn.disabled = n === 0;
+      if (selectAll) {
+        selectAll.checked = boxes.length > 0 && checked.length === boxes.length;
+        selectAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+      }
+    }
+    window.refreshKeysBulkSelection = refreshKeysBulkSelection;
+
+    selectAll?.addEventListener('change', () => {
+      const on = !!selectAll.checked;
+      getCheckboxes().forEach(cb => { cb.checked = on; });
+      refreshKeysBulkSelection();
+    });
+    document.addEventListener('change', (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains('key-select-cb')) {
+        refreshKeysBulkSelection();
+      }
+    });
+    // После AJAX-обновления tbody сбрасываем «выбрать все»
+    if (tbody && window.MutationObserver) {
+      const mo = new MutationObserver(() => {
+        if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+        refreshKeysBulkSelection();
+      });
+      mo.observe(tbody, { childList: true });
+    }
+
+    function setModeFields(mode){
+      const isDays = mode !== 'date';
+      daysWrap?.classList.toggle('d-none', !isDays);
+      dateWrap?.classList.toggle('d-none', isDays);
+      if (daysInput) daysInput.required = isDays;
+      if (dateInput) dateInput.required = !isDays;
+    }
+    form?.querySelectorAll('input[name="mode"]').forEach(radio => {
+      radio.addEventListener('change', () => setModeFields(radio.value));
+    });
+    setModeFields('days');
+
+    document.getElementById('bulkExtendModal')?.addEventListener('show.bs.modal', (ev) => {
+      const trigger = ev.relatedTarget;
+      bulkMode = (trigger && trigger.getAttribute('data-bulk-mode')) || 'selected';
+      if (form) form.action = bulkMode === 'all' ? ALL_URL : SELECTED_URL;
+      if (modalTitle) {
+        modalTitle.textContent = bulkMode === 'all'
+          ? 'Изменить срок ВСЕМ ключам в базе'
+          : 'Изменить срок выбранных ключей';
+      }
+      allWarning?.classList.toggle('d-none', bulkMode !== 'all');
+      if (idsWrap) idsWrap.innerHTML = '';
+      if (bulkMode === 'selected') {
+        getChecked().forEach(cb => {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = 'key_ids';
+          inp.value = cb.value;
+          idsWrap.appendChild(inp);
+        });
+      }
+      if (dateInput && window.flatpickr && !expireFp) {
+        expireFp = flatpickr(dateInput, {
+          enableTime: true,
+          time_24hr: true,
+          dateFormat: 'Y-m-d H:i',
+          minuteIncrement: 5,
+          locale: (flatpickr.l10ns && flatpickr.l10ns.ru) || 'ru',
+        });
+      }
+    });
+
+    form?.addEventListener('submit', (ev) => {
+      const mode = (form.querySelector('input[name="mode"]:checked') || {}).value || 'days';
+      if (mode === 'days') {
+        const d = Number(daysInput?.value || 0);
+        if (!Number.isFinite(d) || d === 0) {
+          ev.preventDefault();
+          try { window.showToast('warning', 'Укажите ненулевое число дней'); } catch(_){}
+          return;
+        }
+      } else if (!(dateInput?.value || '').trim()) {
+        ev.preventDefault();
+        try { window.showToast('warning', 'Укажите дату истечения'); } catch(_){}
+        return;
+      }
+      if (bulkMode === 'selected') {
+        const n = idsWrap ? idsWrap.querySelectorAll('input[name="key_ids"]').length : 0;
+        if (n === 0) {
+          ev.preventDefault();
+          try { window.showToast('warning', 'Не выбрано ни одного ключа'); } catch(_){}
+          return;
+        }
+      }
+      if (bulkMode === 'all') {
+        if (!window.confirm(ALL_CONFIRM)) {
+          ev.preventDefault();
+          return;
+        }
+      }
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Применение…';
+      }
+    });
+
+    refreshKeysBulkSelection();
   })();
 </script>
 {% endblock %}

@@ -1,5 +1,8 @@
 {% for k in keys %}
 <tr class="key-row" data-key-id="{{ k.key_id }}" style="cursor:pointer;">
+  <td class="w-1" onclick="event.stopPropagation()">
+    <input type="checkbox" class="form-check-input key-select-cb" name="key_ids" value="{{ k.key_id }}" aria-label="Выбрать ключ #{{ k.key_id }}" />
+  </td>
   <td class="text-secondary">#{{ k.key_id }}</td>
   <td>{{ k.user_id }}</td>
   <td>{{ k.host_name }}</td>
