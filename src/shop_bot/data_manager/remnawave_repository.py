@@ -280,6 +280,126 @@ def update_key(
     )
 
 
+def _parse_key_expiry_dt(key: dict) -> datetime:
+    """Parse key expiry from normalized row (expiry_date / expire_at)."""
+    cur_expiry = key.get("expiry_date") or key.get("expire_at")
+    if isinstance(cur_expiry, datetime):
+        return cur_expiry.replace(tzinfo=None) if getattr(cur_expiry, "tzinfo", None) else cur_expiry
+    if isinstance(cur_expiry, str):
+        s = cur_expiry.strip()
+        if s:
+            for parser in (
+                lambda x: datetime.fromisoformat(x),
+                lambda x: datetime.fromisoformat(x.replace("Z", "+00:00")),
+                lambda x: datetime.strptime(x[:19], "%Y-%m-%d %H:%M:%S"),
+            ):
+                try:
+                    dt = parser(s)
+                    if getattr(dt, "tzinfo", None) is not None:
+                        dt = dt.replace(tzinfo=None)
+                    return dt
+                except Exception:
+                    continue
+    return datetime.utcnow()
+
+
+def _sync_key_expiry_ms(key_id: int, new_ms: int) -> tuple[bool, str | None, int | None]:
+    """Push expiry to Remnawave, then update local DB. Returns (ok, error, final_ms)."""
+    import asyncio
+    from shop_bot.modules import remnawave_api
+
+    key = get_key_by_id(key_id)
+    if not key:
+        return False, "not_found", None
+    host = (key.get("host_name") or "").strip()
+    email = (key.get("key_email") or key.get("email") or "").strip()
+    if not host or not email:
+        return False, "missing_host_or_email", None
+    try:
+        result = asyncio.run(
+            remnawave_api.create_or_update_key_on_host(
+                host_name=host,
+                email=email,
+                expiry_timestamp_ms=int(new_ms),
+            )
+        )
+    except Exception as e:
+        logger.error("extend/set key #%s Remnawave update failed: %s", key_id, e)
+        return False, f"remnawave_update_failed: {e}", None
+    if not result or not result.get("expiry_timestamp_ms"):
+        return False, "remnawave_update_failed", None
+    final_ms = int(result.get("expiry_timestamp_ms") or new_ms)
+    client_uuid = result.get("client_uuid") or key.get("remnawave_user_uuid") or ""
+    if not update_key(
+        key_id,
+        remnawave_user_uuid=client_uuid,
+        expire_at_ms=final_ms,
+        subscription_url=result.get("subscription_url") or result.get("connection_string"),
+    ):
+        return False, "db_update_failed", None
+    return True, None, final_ms
+
+
+def extend_key(key_id: int, days: int) -> tuple[bool, str | None]:
+    """Продлить/сократить срок ключа на N дней (N может быть отрицательным).
+
+    Синхронизирует expire с Remnawave, затем обновляет локальную БД.
+    Returns (ok, error_code_or_None).
+    """
+    try:
+        days_i = int(days)
+    except Exception:
+        return False, "invalid_days"
+    if days_i == 0:
+        return False, "zero_days"
+    key = get_key_by_id(key_id)
+    if not key:
+        return False, "not_found"
+    from datetime import timedelta
+
+    new_dt = _parse_key_expiry_dt(key) + timedelta(days=days_i)
+    new_ms = int(new_dt.timestamp() * 1000)
+    ok, err, _ = _sync_key_expiry_ms(key_id, new_ms)
+    return ok, err
+
+
+def set_key_expiry(key_id: int, new_expire_at: datetime | str) -> tuple[bool, str | None]:
+    """Установить точную дату истечения ключа; синхронизирует Remnawave + БД.
+
+    new_expire_at: datetime или строка 'YYYY-MM-DD HH:MM[:SS]' / ISO.
+    Returns (ok, error_code_or_None).
+    """
+    if isinstance(new_expire_at, datetime):
+        new_dt = new_expire_at.replace(tzinfo=None) if getattr(new_expire_at, "tzinfo", None) else new_expire_at
+    else:
+        s = str(new_expire_at or "").strip()
+        if not s:
+            return False, "invalid_date"
+        new_dt = None
+        for parser in (
+            lambda x: datetime.fromisoformat(x),
+            lambda x: datetime.fromisoformat(x.replace("Z", "+00:00")),
+            lambda x: datetime.strptime(x[:19], "%Y-%m-%d %H:%M:%S"),
+            lambda x: datetime.strptime(x[:16], "%Y-%m-%d %H:%M"),
+            lambda x: datetime.strptime(x[:10], "%Y-%m-%d"),
+        ):
+            try:
+                new_dt = parser(s)
+                if getattr(new_dt, "tzinfo", None) is not None:
+                    new_dt = new_dt.replace(tzinfo=None)
+                break
+            except Exception:
+                continue
+        if new_dt is None:
+            return False, "invalid_date"
+    key = get_key_by_id(key_id)
+    if not key:
+        return False, "not_found"
+    new_ms = int(new_dt.timestamp() * 1000)
+    ok, err, _ = _sync_key_expiry_ms(key_id, new_ms)
+    return ok, err
+
+
 def delete_key_by_email(email: str) -> bool:
     return database.delete_key_by_email(email)
 

@@ -3578,6 +3578,35 @@ def get_all_keys() -> list[dict]:
         return []
 
 
+def get_all_key_ids() -> list[int]:
+    """Все key_id из vpn_keys (без фильтров/пагинации) — для bulk-действий «всем»."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT key_id FROM vpn_keys ORDER BY key_id ASC")
+            return [int(row[0]) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to get all key ids: %s", e)
+        return []
+
+
+def extend_key(key_id: int, days: int) -> tuple[bool, str | None]:
+    """Продлить/сократить срок ключа на N дней (с синхронизацией Remnawave).
+
+    Реализация делегируется в remnawave_repository (lazy import — избегаем цикла).
+    """
+    from shop_bot.data_manager import remnawave_repository as _rw
+
+    return _rw.extend_key(key_id, days)
+
+
+def set_key_expiry(key_id: int, new_expire_at) -> tuple[bool, str | None]:
+    """Установить точную дату истечения ключа (с синхронизацией Remnawave)."""
+    from shop_bot.data_manager import remnawave_repository as _rw
+
+    return _rw.set_key_expiry(key_id, new_expire_at)
+
+
 def get_keys_paginated(page: int = 1, per_page: int = 25, search: str | None = None, sort_by: str | None = None, sort_dir: str | None = None, user_id: int | None = None) -> tuple[list[dict], int]:
     try:
         page_i = max(1, int(page))

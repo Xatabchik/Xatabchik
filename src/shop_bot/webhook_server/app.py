@@ -84,6 +84,7 @@ from shop_bot.data_manager.database import (
     get_lte_state, update_lte_state, request_lte_baseline_reset,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
+from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
 from shop_bot.data_manager.database import (
     get_sales_overview, get_revenue_series, get_plans_analytics,
     get_payment_methods_analytics, get_referrals_analytics, get_top_referrers,
@@ -3431,6 +3432,120 @@ def create_webhook_app(bot_controller_instance):
             except Exception:
                 failed += 1
         flash(f"Удалено истёкших ключей: {removed}. Ошибок: {failed}.", 'success' if failed == 0 else 'warning')
+        return redirect(request.referrer or url_for('admin_keys_page'))
+
+    def _parse_bulk_expiry_params():
+        """Общие параметры модалки bulk-extend: mode=days|date + days / expire_at."""
+        mode = (request.form.get('mode') or 'days').strip().lower()
+        if mode not in ('days', 'date'):
+            mode = 'days'
+        days = None
+        expire_at = None
+        if mode == 'days':
+            try:
+                days = int(request.form.get('days', '0'))
+            except Exception:
+                days = None
+            if days is None or days == 0:
+                return None, 'Укажите ненулевое число дней (можно отрицательное).'
+        else:
+            expire_at = (request.form.get('expire_at') or '').strip()
+            if not expire_at:
+                return None, 'Укажите дату истечения.'
+        return {'mode': mode, 'days': days, 'expire_at': expire_at}, None
+
+    def _apply_bulk_expiry_to_ids(key_ids: list[int], params: dict) -> tuple[int, int, list[int]]:
+        ok_n = 0
+        fail_n = 0
+        failed_ids: list[int] = []
+        for kid in key_ids:
+            try:
+                if params['mode'] == 'days':
+                    ok, err = extend_key(int(kid), int(params['days']))
+                else:
+                    ok, err = set_key_expiry(int(kid), params['expire_at'])
+                if ok:
+                    ok_n += 1
+                else:
+                    fail_n += 1
+                    failed_ids.append(int(kid))
+                    logger.warning("bulk expiry: key #%s failed: %s", kid, err)
+            except Exception as e:
+                fail_n += 1
+                failed_ids.append(int(kid))
+                logger.warning("bulk expiry: key #%s exception: %s", kid, e)
+        return ok_n, fail_n, failed_ids
+
+    def _flash_bulk_expiry_result(ok_n: int, fail_n: int, failed_ids: list[int]):
+        msg = f"Успешно: {ok_n}, Ошибок: {fail_n}."
+        if fail_n > 0 and failed_ids:
+            preview = ", ".join(f"#{i}" for i in failed_ids[:30])
+            more = f" … (+{len(failed_ids) - 30})" if len(failed_ids) > 30 else ""
+            msg += f" Ошибки по ключам: {preview}{more}."
+        flash(msg, 'success' if fail_n == 0 else 'warning')
+
+    @flask_app.route('/admin/keys/bulk-extend', methods=['POST'])
+    @login_required
+    def bulk_extend_keys_route():
+        """Режим 1: изменить срок у выбранных key_ids (чекбоксы на странице)."""
+        raw_ids = request.form.getlist('key_ids')
+        key_ids: list[int] = []
+        for v in raw_ids:
+            try:
+                key_ids.append(int(v))
+            except Exception:
+                continue
+        # unique, stable order
+        key_ids = list(dict.fromkeys(key_ids))
+        if not key_ids:
+            flash('Не выбрано ни одного ключа.', 'warning')
+            return redirect(request.referrer or url_for('admin_keys_page'))
+
+        params, err = _parse_bulk_expiry_params()
+        if err:
+            flash(err, 'danger')
+            return redirect(request.referrer or url_for('admin_keys_page'))
+
+        admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
+        logger.info(
+            "Admin bulk-extend SELECTED: admin=%s count=%s mode=%s days=%s expire_at=%s ids_sample=%s",
+            admin_who, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
+            key_ids[:20],
+        )
+        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
+        logger.info(
+            "Admin bulk-extend SELECTED done: admin=%s ok=%s fail=%s",
+            admin_who, ok_n, fail_n,
+        )
+        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
+        return redirect(request.referrer or url_for('admin_keys_page'))
+
+    @flask_app.route('/admin/keys/bulk-extend-all', methods=['POST'])
+    @login_required
+    def bulk_extend_all_keys_route():
+        """Режим 2: изменить срок у ВСЕХ ключей в vpn_keys (игнорирует фильтры/выбор)."""
+        params, err = _parse_bulk_expiry_params()
+        if err:
+            flash(err, 'danger')
+            return redirect(request.referrer or url_for('admin_keys_page'))
+
+        # Игнорируем любые переданные key_ids — только полный список из БД
+        key_ids = get_all_key_ids()
+        if not key_ids:
+            flash('В базе нет ключей.', 'warning')
+            return redirect(request.referrer or url_for('admin_keys_page'))
+
+        admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
+        logger.info(
+            "Admin bulk-extend-all ALL: admin=%s total=%s mode=%s days=%s expire_at=%s",
+            admin_who, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
+        )
+        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
+        logger.info(
+            "Admin bulk-extend-all ALL done: admin=%s ok=%s fail=%s",
+            admin_who, ok_n, fail_n,
+        )
+        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
         return redirect(request.referrer or url_for('admin_keys_page'))
 
     @flask_app.route('/admin/keys/<int:key_id>/comment', methods=['POST'])
