@@ -4349,18 +4349,19 @@ select option:checked{
 	width: 100%;
 }
 
-/* Тот же brand, что в сайдбаре — компактная адаптация под mobile-header */
+/* Brand слева — не сжимается поиском; поиск ограничен по ширине */
 .mobile-header .brand.mobile-header-brand{
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	flex: 0 1 auto;
+	flex: 0 0 auto;
 	min-width: 0;
-	max-width: 42%;
+	max-width: none;
 	height: var(--chrome-control-h);
 	min-height: var(--chrome-control-h);
 	margin: 0;
 	padding: 0;
+	order: 0;
 }
 
 .mobile-header .brand-link{
@@ -4368,7 +4369,7 @@ select option:checked{
 	align-items: center;
 	gap: 8px;
 	min-width: 0;
-	flex: 1 1 auto;
+	flex: 0 1 auto;
 	text-decoration: none;
 	color: #f6f7f8;
 }
@@ -4388,6 +4389,7 @@ select option:checked{
 	flex-direction: column;
 	line-height: 1.1;
 	min-width: 0;
+	max-width: 9.5rem;
 }
 
 .mobile-header .brand-word b,
@@ -4446,10 +4448,17 @@ select option:checked{
 
 .mobile-header-search{
 	flex: 1 1 auto;
-	min-width: 0;
-	max-width: none;
+	min-width: 7rem;
+	max-width: 11.5rem;
+	width: 100%;
 	height: 36px;
+	margin-left: auto;
 	z-index: 1001;
+	order: 1;
+}
+
+.mobile-header .mobile-bot-trigger{
+	order: 2;
 }
 
 .mobile-header:has(.topbar-search.is-open){
@@ -4749,13 +4758,17 @@ select option:checked{
 	.bm {
 		margin-right: 0;
 	}
-	/* На узких экранах оставляем лого + название, прячем подпись и карандаш */
+	/* На узких экранах: лого + название слева, поиск ещё компактнее */
 	.mobile-header .brand-sub,
 	.mobile-header .btn-brand-edit{
 		display: none;
 	}
-	.mobile-header .brand.mobile-header-brand{
-		max-width: 38%;
+	.mobile-header .brand-word{
+		max-width: 7.5rem;
+	}
+	.mobile-header-search{
+		min-width: 5.5rem;
+		max-width: 8.5rem;
 	}
 }
 
