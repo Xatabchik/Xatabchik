@@ -508,25 +508,32 @@ textarea.form-control,
   padding-right: 2.75rem !important;
 }
 
-/* Логин: глаз не белый — иначе сливается со светлым полем/autofill */
+/* Логин: тёмный глаз без подложки; только .is-active виден */
 #login-form .toggle-password {
-  background: #e8eaed !important;
-  color: #2a2f36 !important;
-  -webkit-text-fill-color: #2a2f36 !important;
-  border: 1px solid rgba(15, 18, 22, 0.12) !important;
+  background: transparent !important;
+  color: #3a4048 !important;
+  -webkit-text-fill-color: #3a4048 !important;
+  border: 0 !important;
 }
 
 #login-form .toggle-password:hover,
 #login-form .toggle-password:focus-visible {
-  background: #d7dbe0 !important;
+  background: transparent !important;
   color: #111318 !important;
   -webkit-text-fill-color: #111318 !important;
 }
 
-#login-form .toggle-password svg,
 #login-form .toggle-password .eye-icon {
   fill: currentColor !important;
   color: inherit !important;
+}
+
+#login-form .toggle-password .eye-icon.is-active {
+  display: block !important;
+}
+
+#login-form .toggle-password .eye-icon:not(.is-active) {
+  display: none !important;
 }
 
 .form-control::placeholder,
