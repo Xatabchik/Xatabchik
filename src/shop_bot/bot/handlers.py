@@ -5993,7 +5993,7 @@ def get_user_router() -> Router:
         else:
             await callback.answer()
             await callback.message.edit_text(
-                "Выберите сервер, на котором хотите получить пробный ключ:",
+                "Вариант подключения:",
                 reply_markup=keyboards.create_host_selection_keyboard(hosts, action="trial")
             )
 
@@ -6006,7 +6006,10 @@ def get_user_router() -> Router:
 
     async def process_trial_key_creation(message: types.Message, host_name: str):
         user_id = message.chat.id
-        await message.edit_text(f"Отлично! Создаю для вас бесплатный ключ на {get_setting('trial_duration_days')} дня на сервере \"{host_name}\"...")
+        await message.edit_text(
+            f"Отлично! Создаю для вас бесплатный ключ на {get_setting('trial_duration_days')} дня "
+            f"(вариант подключения «{host_name}»)..."
+        )
 
         try:
 
@@ -6875,7 +6878,7 @@ def get_user_router() -> Router:
             return
         
         await callback.message.edit_text(
-            "Выберите сервер, на котором хотите подарить ключ:",
+            "Вариант подключения:",
             reply_markup=keyboards.create_host_selection_keyboard(hosts, action="gift")
         )
 
