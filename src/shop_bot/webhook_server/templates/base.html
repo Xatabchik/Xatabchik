@@ -70,7 +70,7 @@
 						</a>
 						<a href="{{ url_for('referral_program_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('referral_program_') %}active{% endif %}">
 							<i class="ti ti-affiliate"></i>
-							<span>Реферальная программа</span>
+							<span>Рефералка</span>
 							{% if referral_requests_stats and referral_requests_stats.new %}
 							<span class="nav-badge">{{ referral_requests_stats.new }}</span>
 							{% endif %}
