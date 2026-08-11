@@ -730,6 +730,18 @@ select option:checked {
   border-color: transparent !important;
 }
 
+.badge.bg-primary {
+  background: var(--ink) !important;
+  color: var(--ink-contrast) !important;
+  border-color: transparent !important;
+}
+
+.badge.bg-secondary {
+  background: var(--surface-1) !important;
+  color: var(--text-0) !important;
+  border-color: var(--border-1) !important;
+}
+
 .badge.bg-yellow-lt,
 .badge.bg-warning-lt,
 .badge.bg-warning,
