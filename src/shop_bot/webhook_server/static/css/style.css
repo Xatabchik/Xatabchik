@@ -823,7 +823,8 @@ body {
 .sidebar-footer {
   border-top: 1px solid var(--border-1, rgba(255,255,255,.10)) !important;
   padding-top: 12px !important;
-  margin-top: 4px !important;
+  /* не перебивать margin-top: auto у flex-колонки сайдбара */
+  margin-top: auto !important;
 }
 
 
@@ -1296,11 +1297,12 @@ body::after {
     align-items: flex-start;
   }
 
-  .brand {
+  .main-header .brand {
     flex: 1 1 auto;
   }
 
-  .navigation {
+  /* order только для legacy .main-header — не трогаем .sidebar */
+  .main-header .navigation {
     order: 3;
     flex: 1 1 100%;
     justify-content: flex-start;
@@ -1308,12 +1310,12 @@ body::after {
     row-gap: 6px;
   }
 
-  .navigation .nav-link {
+  .main-header .navigation .nav-link {
     padding: 4px 10px;
     font-size: 0.9rem;
   }
 
-  .header-controls {
+  .main-header .header-controls {
     order: 2;
     margin-left: auto;
   }
@@ -1868,23 +1870,25 @@ body.login-page {
   .container { padding-left: 12px; padding-right: 12px; }
 
   
-  .bm {
+  .main-header .bm {
     position: relative; 
     display: flex;
     align-items: center;
     margin-left: 0; 
     order: 2; 
   }
-  .header-controls {
+  .main-header .header-controls {
     order: 3;
     margin-left: auto;
     flex: 1 1 100%; 
     justify-content: flex-end; 
     flex-wrap: wrap; 
   }
-  .brand { order: 1; }
+  /* Глобальный order ломал мобильный .sidebar: footer (order:0) оказывался
+     над brand (1) и navigation (4). Держим order только в .main-header. */
+  .main-header .brand { order: 1; }
   
-  .navigation { order: 4; }
+  .main-header .navigation { order: 4; }
   label.burger_img { display: inline-flex; }
 
   
@@ -4642,10 +4646,11 @@ select option:checked{
 
 	/* Скрываем бренд и версию в сайдбаре на мобильных (mobile-header заменяет их) */
 	.sidebar .brand {
-		display: none;
+		display: none !important;
+		order: 0;
 	}
 	.sidebar .brand-version {
-		display: none;
+		display: none !important;
 	}
 
 	/* Do NOT hide sidebar navigation on mobile */
@@ -4670,8 +4675,18 @@ select option:checked{
 		box-shadow: none;
 	}
 
+	/* Явный порядок: меню → профиль/выход (HTML так и есть; order сбрасываем) */
+	.sidebar .navigation.sidebar-navigation,
+	.sidebar .nav-scroll{
+		order: 1 !important;
+		flex: 1 1 auto !important;
+		min-height: 0 !important;
+		overflow-y: auto !important;
+	}
+
 	/* Профиль и выход остаются под пунктами меню в мобильном drawer */
 	.sidebar .sidebar-footer{
+		order: 2 !important;
 		display: block !important;
 		flex: 0 0 auto !important;
 		margin-top: auto !important;
@@ -4682,12 +4697,6 @@ select option:checked{
 	}
 	.sidebar .sidebar-footer .profile-row{
 		display: flex !important;
-	}
-	.sidebar .navigation.sidebar-navigation,
-	.sidebar .nav-scroll{
-		flex: 1 1 auto !important;
-		min-height: 0 !important;
-		overflow-y: auto !important;
 	}
 
 	body.sidebar-open .sidebar{ transform: translateX(0); }
