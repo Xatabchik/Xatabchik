@@ -3698,7 +3698,7 @@ body.login-page {
 	--ui-radius: 18px;
 	--ui-radius-sm: 14px;
 	--sidebar-w: 252px;
-	--mobile-header-h: 56px;
+	--mobile-header-h: 52px;
 	/* Общая верхняя «шапка»:
 	   brand | search+controls  — одна высота (--chrome-control-h)
 	   nav   | page-content     — стартуют на одной линии после --chrome-header-gap */
@@ -4409,6 +4409,10 @@ select option:checked{
 	max-width: none;
 	height: 36px;
 	z-index: 1001;
+}
+
+.mobile-header:has(.topbar-search.is-open){
+	z-index: 1200;
 }
 
 .mobile-header-search.is-open{
