@@ -1,6 +1,4 @@
 """Глобальные настройки Remnawave + каталог сквадов и галочки на хостах."""
-from datetime import datetime
-
 from conftest import temp_db  # noqa: F401
 
 
