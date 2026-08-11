@@ -1847,16 +1847,15 @@ body.login-page {
 }
 
 
-#users-search {
-    border-radius: 0 14px 14px 0 !important;
-    padding: 6px 14px;
+.users-toolbar-search #users-search {
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    min-width: 260px;
+    min-width: 0;
+    width: 100%;
 }
-#users-search::placeholder { color: var(--text-muted); opacity: .85; }
-#users-search:focus { outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 .15rem rgba(174,62,201,.25); }
+.users-toolbar-search #users-search::placeholder { color: var(--text-muted); opacity: .85; }
+.users-toolbar-search #users-search:focus { outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 .15rem rgba(174,62,201,.25); }
 .header-controls .btn-success {
     background: var(--success-color);
     border-color: var(--success-color);
@@ -5278,14 +5277,7 @@ body{
 	.chart-wrap{ height: 260px; }
 }
 
-/* Users page: on mobile put search on the next line */
-@media (max-width: 576px){
-	body[data-page="users_page"] .page-header .col-auto.ms-auto{ width: 100%; margin-top: 10px; }
-	body[data-page="users_page"] .users-toolbar{ width: 100%; }
-	.users-toolbar{ flex-wrap: wrap; }
-	.users-toolbar #users-sort{ flex: 1 1 100%; }
-	.users-toolbar #users-search{ flex: 1 1 100%; width: 100%; }
-}
+/* Users page search lives in card-header (.users-toolbar); mobile layout in admin-theme.css */
 
 
 /* === Login page: static solid background (no aurora/gradients/canvas) === */

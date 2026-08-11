@@ -6,23 +6,23 @@
       <h1 class="page-title mb-1">Пользователи</h1>
       <div class="text-secondary">Список зарегистрированных пользователей. Нажмите на строку, чтобы открыть карточку пользователя.</div>
     </div>
-    <div class="col-auto ms-auto d-print-none">
-      <div class="d-flex gap-2 users-toolbar">
-        <div class="input-group" style="min-width: 260px;">
-          <span class="input-group-text"><i class="ti ti-search"></i></span>
-          <input id="users-search" type="text" class="form-control" placeholder="Поиск по ID или Username..." value="{{ q or '' }}" />
-        </div>
-      </div>
-    </div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-header">
-    <h3 class="card-title">
-      <i class="ti ti-users me-2"></i>
-      Список пользователей
-    </h3>
+  <div class="card-header users-card-header">
+    <div class="users-toolbar">
+      <h3 class="card-title users-toolbar-title mb-0">
+        <i class="ti ti-users me-2"></i>
+        Список пользователей
+      </h3>
+      <div class="users-toolbar-search input-icon">
+        <span class="input-icon-addon">
+          <i class="ti ti-search"></i>
+        </span>
+        <input id="users-search" type="text" class="form-control form-control-sm" placeholder="Поиск по ID или Username..." value="{{ q or '' }}" autocomplete="off" />
+      </div>
+    </div>
   </div>
   <div class="card-body">
     <div class="table-responsive">

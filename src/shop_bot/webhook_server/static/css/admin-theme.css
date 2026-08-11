@@ -853,25 +853,36 @@ select option:checked {
   z-index: 1080 !important;
 }
 
-/* Keys list header: ordered, wrapping toolbar */
-.keys-card-header {
+/* List page headers: ordered, wrapping toolbar (keys / users) */
+.keys-card-header,
+.users-card-header {
   display: block !important;
 }
 
-.keys-toolbar {
+.keys-toolbar,
+.users-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(12rem, 1fr) auto;
   gap: 0.75rem 1rem;
   align-items: center;
   width: 100%;
 }
 
-.keys-toolbar-title {
+.keys-toolbar {
+  grid-template-columns: auto minmax(12rem, 1fr) auto;
+}
+
+.users-toolbar {
+  grid-template-columns: auto minmax(12rem, 1fr);
+}
+
+.keys-toolbar-title,
+.users-toolbar-title {
   min-width: 0;
   white-space: nowrap;
 }
 
-.keys-toolbar-search {
+.keys-toolbar-search,
+.users-toolbar-search {
   width: 100%;
   max-width: 20rem;
   min-width: 0;
@@ -914,6 +925,15 @@ select option:checked {
     grid-area: actions;
     justify-content: flex-end;
   }
+
+  .users-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .users-toolbar-search {
+    max-width: none;
+    justify-self: stretch;
+  }
 }
 
 @media (max-width: 768px) {
@@ -923,6 +943,15 @@ select option:checked {
       "title"
       "search"
       "actions";
+  }
+
+  .users-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .users-toolbar-search {
+    max-width: none;
+    justify-self: stretch;
   }
 
   .keys-toolbar-actions {
