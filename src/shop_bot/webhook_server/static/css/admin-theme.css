@@ -1110,6 +1110,42 @@ select option:checked {
   box-shadow: inset 0 0 0 1px var(--border-1);
 }
 
+/* Settings: single-row horizontal scroll tabs (mobile-friendly) */
+.settings-tabs {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0.35rem;
+  margin-bottom: 1rem !important;
+}
+
+.settings-tabs .nav-item {
+  flex: 0 0 auto;
+}
+
+.settings-tabs .nav-link {
+  white-space: nowrap;
+  scroll-snap-align: center;
+}
+
+.settings-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.settings-tabs::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
 .nav-pills .nav-link {
   border-radius: var(--radius-pill) !important;
   color: var(--text-1) !important;
