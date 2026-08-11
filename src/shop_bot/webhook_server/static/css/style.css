@@ -3705,7 +3705,7 @@ body.login-page {
 	--chrome-pad-top: 16px;
 	--chrome-control-h: 36px;
 	--chrome-brand-row-h: var(--chrome-control-h);
-	--chrome-header-gap: 6px;
+	--chrome-header-gap: 4px;
 	--shadow-soft: 0 10px 28px rgba(0,0,0,.35);
 	--shadow-card: 0 14px 36px rgba(0,0,0,.45);
 }
@@ -3877,6 +3877,9 @@ body{
 	padding: 0 2px;
 	margin: 0 -2px;
 	align-items: stretch;
+	/* .navigation задаёт justify-content:center — из‑за этого меню
+	   центрировалось по вертикали и под брендом оставалась огромная дыра */
+	justify-content: flex-start;
 	width: auto;
 	min-height: 0;
 	overflow-y: auto;
@@ -4731,6 +4734,8 @@ body{
 	overflow-y: auto !important;
 	padding: 0 2px !important;
 	gap: 0 !important;
+	justify-content: flex-start !important;
+	align-items: stretch !important;
 }
 
 .sidebar-navigation .nav-section{
