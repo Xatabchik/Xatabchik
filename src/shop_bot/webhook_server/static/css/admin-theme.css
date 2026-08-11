@@ -996,7 +996,10 @@ body.login-page {
   justify-content: center;
   padding: 16px !important;
   box-sizing: border-box;
-  overflow-x: hidden;
+  height: auto !important;
+  min-height: 100vh !important;
+  min-height: 100dvh !important;
+  overflow-x: hidden !important;
   overflow-y: auto !important;
 }
 
