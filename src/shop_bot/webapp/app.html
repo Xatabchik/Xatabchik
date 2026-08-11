@@ -740,7 +740,7 @@
                 <span class="material-symbols-rounded text-lg">payments</span>
                 <span id="withdraw-request-btn-label">Запросить вывод</span>
             </button>
-            <button onclick="openReferralMethodsModal()"
+            <button id="referral-methods-btn" onclick="openReferralMethodsModal()"
                 class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
                 <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
                     <span class="material-symbols-rounded text-primary text-sm">account_balance</span>
@@ -3644,6 +3644,10 @@
         async function requestReferralWithdraw() {
             const token = window.getAuthToken();
             if (!token) { showNotification('Требуется авторизация', 'error'); return; }
+            if (window._referralWithdrawEnabled === false) {
+                showNotification('Вывод средств временно недоступен.', 'error');
+                return;
+            }
             const minKnown = window._referralMinWithdraw;
             const availKnown = window._referralAvailableBalance;
             if (minKnown != null && availKnown != null && availKnown < minKnown) {
@@ -3666,7 +3670,12 @@
                 });
                 const d = await resp.json();
                 window._referralMinWithdraw = d.ok ? (parseFloat(d.min_withdraw) || 100) : 100;
+                window._referralWithdrawEnabled = d.ok ? (d.withdraw_enabled !== false) : window._referralWithdrawEnabled;
                 _refreshWithdrawButtonState();
+                if (d.ok && d.withdraw_enabled === false) {
+                    contentEl.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Вывод средств временно недоступен.</div>';
+                    return;
+                }
                 _renderWithdrawForm(contentEl, d.ok ? (d.methods || []) : []);
             } catch (e) {
                 contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка сети</div>';
@@ -3675,13 +3684,26 @@
 
         function _refreshWithdrawButtonState() {
             const btn = document.getElementById('withdraw-request-btn');
-            if (!btn) return;
-            const available = window._referralAvailableBalance;
-            const minWithdraw = window._referralMinWithdraw;
-            if (available == null || minWithdraw == null) return;
-            const insufficient = available < minWithdraw;
-            btn.disabled = insufficient;
-            btn.title = insufficient ? `Минимальная сумма для вывода — ${minWithdraw.toFixed(0)} ₽` : '';
+            const methodsBtn = document.getElementById('referral-methods-btn');
+            const withdrawEnabled = window._referralWithdrawEnabled !== false;
+            if (btn) {
+                btn.classList.toggle('hidden', !withdrawEnabled);
+                if (!withdrawEnabled) {
+                    btn.disabled = true;
+                    btn.title = 'Вывод средств временно недоступен.';
+                } else {
+                    const available = window._referralAvailableBalance;
+                    const minWithdraw = window._referralMinWithdraw;
+                    if (available != null && minWithdraw != null) {
+                        const insufficient = available < minWithdraw;
+                        btn.disabled = insufficient;
+                        btn.title = insufficient ? `Минимальная сумма для вывода — ${minWithdraw.toFixed(0)} ₽` : '';
+                    }
+                }
+            }
+            if (methodsBtn) {
+                methodsBtn.classList.toggle('hidden', !withdrawEnabled);
+            }
         }
 
         async function _fetchReferralMinWithdraw() {
@@ -3693,6 +3715,9 @@
                 });
                 const d = await resp.json();
                 window._referralMinWithdraw = d.ok ? (parseFloat(d.min_withdraw) || 100) : (window._referralMinWithdraw ?? 100);
+                if (d.ok) {
+                    window._referralWithdrawEnabled = d.withdraw_enabled !== false;
+                }
             } catch (e) {
                 // keep previously cached value (if any) on network error
             }
