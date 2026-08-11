@@ -6889,7 +6889,7 @@ def get_user_router() -> Router:
             return
         
         await callback.message.edit_text(
-            "Выберите сервер, на котором хотите приобрести ключ:",
+            "Вариант подключения:",
             reply_markup=keyboards.create_host_selection_keyboard(hosts, action="new")
         )
 
