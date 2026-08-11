@@ -1480,30 +1480,30 @@ h4 {
     padding-right: 44px !important;
 }
 
-/* Overlay-кнопка глаза: центр по высоте input, всегда видима */
+/* Overlay-кнопка глаза: центр по высоте input, без подложки */
 .password-wrapper > .toggle-password:not(.btn),
 .password-field > .toggle-password:not(.btn) {
     position: absolute;
-    top: auto;
+    top: 50%;
     right: 6px;
-    bottom: 0;
-    transform: none;
+    bottom: auto;
+    transform: translateY(-50%);
     width: 2.25rem;
     height: 2.25rem;
     display: inline-flex !important;
     align-items: center;
     justify-content: center;
     border: none;
-    background: rgba(255, 255, 255, 0.06);
+    background: transparent;
     cursor: pointer;
-    border-radius: 10px;
+    border-radius: 0;
     padding: 0;
     color: #f6f7f8 !important;
     -webkit-text-fill-color: #f6f7f8;
     opacity: 1 !important;
     visibility: visible !important;
     z-index: 5;
-    transition: background-color 0.15s ease, color 0.15s ease;
+    transition: color 0.15s ease;
     -webkit-appearance: none;
     appearance: none;
 }
@@ -1518,7 +1518,7 @@ h4 {
 
 .password-wrapper > .toggle-password:not(.btn):hover,
 .password-field > .toggle-password:not(.btn):hover {
-    background: rgba(255,255,255,0.12);
+    background: transparent;
     color: #ffffff !important;
 }
 
