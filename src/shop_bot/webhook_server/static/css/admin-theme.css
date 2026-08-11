@@ -240,6 +240,14 @@ pre,
   margin-bottom: var(--chrome-header-gap) !important;
 }
 
+/* Legacy .navigation { justify-content: center } vertically centered
+   the sidebar menu and left a huge empty gap under the brand. */
+.sidebar .navigation.sidebar-navigation,
+.sidebar-navigation.nav-scroll {
+  justify-content: flex-start !important;
+  align-items: stretch !important;
+}
+
 .mobile-header {
   background: rgba(17, 19, 24, 0.92) !important;
   border-bottom: 1px solid var(--border-1) !important;
