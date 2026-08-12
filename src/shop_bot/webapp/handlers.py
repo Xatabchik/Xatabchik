@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 import uuid
 import asyncio
+import time
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,6 +17,9 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import json
 import traceback
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from shop_bot.bot.keyboards import (
     create_payment_keyboard, 
     create_yoomoney_payment_keyboard, 
@@ -45,6 +49,13 @@ logger = logging.getLogger(__name__)
 
 # In-memory storage for temporary auth tokens: {token: user_id}
 TEMP_AUTH_TOKENS = {}
+
+# Max age for Telegram WebApp initData (seconds). Reject stale signed payloads.
+TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 24 * 60 * 60
+
+# Rate-limit auth endpoints to reduce brute-force of tokens / initData replay.
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
+AUTH_RATE_LIMIT = "30/minute"
 
 
 def _resolve_user_from_request_token(data: dict, request: Request) -> dict | None:
@@ -239,6 +250,8 @@ def _build_yoomoney_link(receiver: str, amount_rub: Decimal, label: str, descrip
     return base + "?" + urlencode(params)
 
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.middleware("http")
 async def _webapp_no_cache_middleware(request, call_next):
@@ -1620,7 +1633,8 @@ class TokenRequest(BaseModel):
     init_data: str
 
 class TelegramDirectAuthRequest(BaseModel):
-    user_id: int
+    """Must carry signed Telegram WebApp initData — never a bare user_id."""
+    init_data: str
 
 class EmailAuthRequest(BaseModel):
     email: str
@@ -1704,8 +1718,18 @@ class SearchKeysRequest(BaseModel):
 # ===== API Endpoints =====
 
 
-def validate_telegram_data(init_data: str, bot_token: str) -> dict | None:
-    from urllib.parse import parse_qsl, unquote
+def validate_telegram_data(
+    init_data: str,
+    bot_token: str,
+    *,
+    max_age_seconds: int = TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
+) -> dict | None:
+    """Verify Telegram WebApp initData HMAC and freshness (auth_date).
+
+    Protocol: secret = HMAC_SHA256(key=\"WebAppData\", msg=bot_token);
+    compare hash with HMAC_SHA256(secret, data_check_string).
+    """
+    from urllib.parse import parse_qsl
     import hmac
     import hashlib
     import json
@@ -1729,20 +1753,60 @@ def validate_telegram_data(init_data: str, bot_token: str) -> dict | None:
         secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
         
-        if calculated_hash == received_hash:
-            user_json = parsed_data.get("user")
-            if user_json:
-                return json.loads(user_json)
-            logger.warning("Telegram auth: hash valid but no user field")
-        else:
-            logger.warning(f"Telegram auth: hash mismatch. Expected={calculated_hash[:16]}... Got={received_hash[:16]}...")
+        if not hmac.compare_digest(calculated_hash, received_hash):
+            logger.warning(
+                f"Telegram auth: hash mismatch. Expected={calculated_hash[:16]}... "
+                f"Got={received_hash[:16]}..."
+            )
+            return None
+
+        auth_date_raw = parsed_data.get("auth_date")
+        if auth_date_raw is None or auth_date_raw == "":
+            logger.warning("Telegram auth: auth_date missing")
+            return None
+        try:
+            auth_date = int(auth_date_raw)
+        except (TypeError, ValueError):
+            logger.warning("Telegram auth: auth_date is not an integer")
+            return None
+        now = int(time.time())
+        if auth_date > now + 60:
+            logger.warning("Telegram auth: auth_date is in the future")
+            return None
+        if max_age_seconds is not None and (now - auth_date) > int(max_age_seconds):
+            logger.warning("Telegram auth: auth_date expired")
+            return None
+
+        user_json = parsed_data.get("user")
+        if user_json:
+            return json.loads(user_json)
+        logger.warning("Telegram auth: hash valid but no user field")
         return None
     except Exception as e:
         logger.error(f"Telegram auth validation error: {e}")
         return None
 
+
+def _issue_persistent_token_for_telegram_user(user_id: int) -> dict:
+    """Shared token issue/lookup used by /api/auth/token and /api/auth/telegram-direct."""
+    from shop_bot.data_manager import database
+
+    user = get_user(user_id)
+    if user and user.get("is_banned"):
+        return {"ok": False, "error": "Access denied", "status_code": 403}
+
+    existing_token = database.get_auth_token_by_user_id(user_id)
+    if existing_token:
+        return {"ok": True, "token": existing_token, "user_id": user_id}
+
+    token = str(uuid.uuid4())
+    database.update_user_auth_token(user_id, token)
+    return {"ok": True, "token": token, "user_id": user_id}
+
+
 @app.get("/api/auth/request-token")
-async def api_request_auth_token():
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_request_auth_token(request: Request):
     from shop_bot.data_manager import database
     token = str(uuid.uuid4())[:36]
     TEMP_AUTH_TOKENS[token] = None
@@ -1756,7 +1820,8 @@ async def api_request_auth_token():
     return {"ok": True, "token": token, "auth_url": auth_url}
 
 @app.get("/api/auth/check-token/{token}")
-async def api_check_auth_token(token: str):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_check_auth_token(token: str, request: Request):
     from shop_bot.data_manager import database
     # 1. Check in memory (waiting for bot confirmation, same-process fast path)
     if token in TEMP_AUTH_TOKENS and TEMP_AUTH_TOKENS[token] is not None:
@@ -1797,59 +1862,61 @@ async def api_check_auth_token(token: str):
     return {"ok": True, "authorized": False}
 
 @app.post("/api/auth/token")
-async def api_create_token(req: TokenRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_create_token(request: Request, req: TokenRequest):
     """Generate or retrieve a persistent login token using verified Telegram data."""
     token_str = get_setting("telegram_bot_token")
     if not token_str:
-        return {"ok": False, "error": "Server configuration error"}
+        return JSONResponse({"ok": False, "error": "Server configuration error"}, status_code=500)
 
     user_data = validate_telegram_data(req.init_data, token_str)
     
-    if not user_data:
-        return {"ok": False, "error": "Invalid auth data"}
+    if not user_data or not user_data.get("id"):
+        return JSONResponse({"ok": False, "error": "Invalid auth data"}, status_code=401)
 
-    user_id = user_data.get("id")
-    from shop_bot.data_manager import database
-    
-    # Check ban status
-    user = get_user(user_id)
-    if user and user.get('is_banned'):
-        return {"ok": False, "error": "Access denied"}
-    
-    # Check if user already has a persistent token
-    existing_token = database.get_auth_token_by_user_id(user_id)
-    if existing_token:
-         return {"ok": True, "token": existing_token}
-    
-    # Generate new persistent token
-    token = str(uuid.uuid4())
-    # Ensure it's unique (highly likely with UUID4)
-    database.update_user_auth_token(user_id, token)
-
-    return {"ok": True, "token": token}
+    result = _issue_persistent_token_for_telegram_user(int(user_data["id"]))
+    status = result.pop("status_code", 200)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=status)
+    return {"ok": True, "token": result["token"]}
 
 
 @app.post("/api/auth/telegram-direct")
-async def api_telegram_direct_auth(req: TelegramDirectAuthRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_telegram_direct_auth(request: Request, req: TelegramDirectAuthRequest):
+    """Authenticate inside Telegram WebApp using signed initData only.
+
+    Previously accepted a bare ``user_id`` from the client (CWE-306). User identity
+    is now taken exclusively from HMAC-validated Telegram WebApp initData.
+    """
     from shop_bot.data_manager import database
     try:
-        user = get_user(req.user_id)
-        if not user:
-            return {"ok": False, "error": "User not registered"}
-            
-        if user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        token_str = get_setting("telegram_bot_token")
+        if not token_str:
+            return JSONResponse({"ok": False, "error": "Server configuration error"}, status_code=500)
 
-        existing_token = database.get_auth_token_by_user_id(req.user_id)
+        user_data = validate_telegram_data(req.init_data, token_str)
+        if not user_data or not user_data.get("id"):
+            return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+        user_id = int(user_data["id"])
+        user = get_user(user_id)
+        if not user:
+            return JSONResponse({"ok": False, "error": "User not registered"}, status_code=401)
+
+        if user.get("is_banned"):
+            return JSONResponse({"ok": False, "error": "Access denied"}, status_code=403)
+
+        existing_token = database.get_auth_token_by_user_id(user_id)
         if existing_token:
-            return {"ok": True, "token": existing_token}
+            return {"ok": True, "token": existing_token, "user_id": user_id}
 
         token = str(uuid.uuid4())
-        database.update_user_auth_token(req.user_id, token)
-        return {"ok": True, "token": token}
+        database.update_user_auth_token(user_id, token)
+        return {"ok": True, "token": token, "user_id": user_id}
     except Exception as e:
         logger.error(f"Telegram direct auth error: {e}")
-        return {"ok": False, "error": "Auth error"}
+        return JSONResponse({"ok": False, "error": "Auth error"}, status_code=500)
 
 def _validate_password(password: str) -> str | None:
     if len(password) < 5:
@@ -1897,7 +1964,8 @@ async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool
 
 
 @app.post("/api/auth/email/register")
-async def api_email_register(req: EmailAuthRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_register(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
     existing = database.get_user_by_email(req.email)
     if existing:
@@ -1917,7 +1985,8 @@ async def api_email_register(req: EmailAuthRequest):
     return {"ok": True, "requires_verification": True, "email": req.email}
 
 @app.post("/api/auth/email/verify")
-async def api_email_verify(req: EmailVerifyRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_verify(request: Request, req: EmailVerifyRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
     if not user:
@@ -1940,7 +2009,8 @@ async def api_email_verify(req: EmailVerifyRequest):
     return {"ok": True, "token": token}
 
 @app.post("/api/auth/email/resend")
-async def api_email_resend(req: EmailResendRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_resend(request: Request, req: EmailResendRequest):
     import time
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
@@ -1971,7 +2041,8 @@ async def api_email_resend(req: EmailResendRequest):
     return {"ok": True}
 
 @app.post("/api/auth/email/login")
-async def api_email_login(req: EmailAuthRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_login(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
     if not user or not database.verify_password(req.password, user.get('auth_pass')):
@@ -1988,7 +2059,8 @@ async def api_email_login(req: EmailAuthRequest):
     return {"ok": True, "token": token}
 
 @app.post("/api/auth/email/reset/request")
-async def api_email_reset_request(req: PasswordResetRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_reset_request(request: Request, req: PasswordResetRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
     if not user:
@@ -2019,7 +2091,8 @@ async def api_email_reset_request(req: PasswordResetRequest):
     return {"ok": True}
 
 @app.post("/api/auth/email/reset/check")
-async def api_email_reset_check(req: PasswordResetCheckRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_reset_check(request: Request, req: PasswordResetCheckRequest):
     import time
     email_lower = req.email.lower().strip()
     if email_lower not in PASSWORD_RESET_TOKENS:
@@ -2035,7 +2108,8 @@ async def api_email_reset_check(req: PasswordResetCheckRequest):
     return {"ok": True}
 
 @app.post("/api/auth/email/reset/verify")
-async def api_email_reset_verify(req: PasswordResetVerifyRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_email_reset_verify(request: Request, req: PasswordResetVerifyRequest):
     import time
     email_lower = req.email.lower().strip()
     if email_lower not in PASSWORD_RESET_TOKENS:
@@ -2230,7 +2304,8 @@ async def api_user_profile_change_email_cancel(request: Request):
 
 
 @app.post("/api/auth/sync-tg")
-async def api_sync_tg(req: SyncTgRequest):
+@limiter.limit(AUTH_RATE_LIMIT)
+async def api_sync_tg(request: Request, req: SyncTgRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_auth_token(req.token)
     if not user:
@@ -3811,13 +3886,14 @@ async def api_user_status(user_id: int):
 @app.post("/api/key/rename")
 async def api_key_rename(req: RenameKeyRequest, request: Request):
     try:
-        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        user = _resolve_user_from_request_token({"token": req.token}, request)
         if not user or user.get('is_banned'):
             return {"ok": False, "error": "Access denied"}
 
+        user_id = user.get("telegram_id")
         from shop_bot.data_manager.remnawave_repository import get_key_by_id, update_key_name
         key = get_key_by_id(req.key_id)
-        if not key or key.get("user_id") != req.user_id:
+        if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
 
         new_name = req.new_name.strip() if req.new_name else ""
@@ -3835,15 +3911,16 @@ async def api_key_rename(req: RenameKeyRequest, request: Request):
 @app.post("/api/key/devices/delete-all")
 async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Request):
     try:
-        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        user = _resolve_user_from_request_token({"token": req.token}, request)
         if not user or user.get('is_banned'):
             return {"ok": False, "error": "Access denied"}
 
+        user_id = user.get("telegram_id")
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
         from shop_bot.modules import remnawave_api
 
         key = get_key_by_id(req.key_id)
-        if not key or key.get("user_id") != req.user_id:
+        if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
 
         uuid_val = key.get("remnawave_user_uuid")
@@ -3908,10 +3985,11 @@ async def api_user_transactions(user_id: int, page: int = 1, per_page: int = 10,
 @app.post("/api/keys/search")
 async def api_keys_search(req: SearchKeysRequest, request: Request):
     try:
-        user = _resolve_user_from_request_token({"token": req.token}, request) or get_user(req.user_id)
+        user = _resolve_user_from_request_token({"token": req.token}, request)
         if not user or user.get('is_banned'):
             return {"ok": False, "error": "Access denied"}
 
+        user_id = user.get("telegram_id")
         from shop_bot.data_manager.remnawave_repository import search_user_keys_by_email
         q = (req.query or "").strip()
         if not q:
@@ -3919,7 +3997,7 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
         if len(q) < 2:
             return {"ok": False, "error": "Минимум 2 символа для поиска"}
 
-        keys = search_user_keys_by_email(req.user_id, q)
+        keys = search_user_keys_by_email(user_id, q)
         found_keys = keys[:20]
         # Reuse the same card renderer as the main "Мои ключи" list so search
         # results get full parity: same buttons, same onclick wiring (extend,

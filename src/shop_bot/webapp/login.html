@@ -814,26 +814,6 @@
                 window.location.href = appendPendingToken("/?token=" + token);
             }
 
-            async function tryDirectAuth(userId) {
-                try {
-                    const response = await fetch('/api/auth/telegram-direct', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ user_id: userId })
-                    });
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.token) {
-                            loginWithToken(data.token);
-                            return true;
-                        }
-                    }
-                    return false;
-                } catch (e) {
-                    return false;
-                }
-            }
-
             async function tryTelegramAuth() {
                 try {
                     const tg = window.Telegram && window.Telegram.WebApp;
@@ -845,24 +825,25 @@
                     const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
                     if (!user || !user.id) return false;
 
+                    // Only accept HMAC-signed initData from Telegram WebApp.
+                    // Never authenticate with a bare user_id (CWE-306).
                     const initData = tg.initData;
-                    if (initData && initData.length > 0) {
-                        const response = await fetch('/api/auth/token', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ init_data: initData })
-                        });
+                    if (!initData || initData.length === 0) return false;
 
-                        if (response.ok) {
-                            const data = await response.json();
-                            if (data.token) {
-                                loginWithToken(data.token);
-                                return true;
-                            }
+                    const response = await fetch('/api/auth/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ init_data: initData })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.token) {
+                            loginWithToken(data.token);
+                            return true;
                         }
                     }
-
-                    return await tryDirectAuth(user.id);
+                    return false;
                 } catch (e) {
                     return false;
                 }

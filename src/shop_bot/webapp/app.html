@@ -3289,7 +3289,7 @@
                 const res = await fetch('/api/key/rename', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, key_id: keyId, new_name: newName })
+                    body: JSON.stringify({ user_id: userId, key_id: keyId, new_name: newName, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
                 if (data.ok) {
@@ -3316,7 +3316,7 @@
                 const res = await fetch('/api/key/devices/delete-all', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, key_id: keyId, host_name: hostName })
+                    body: JSON.stringify({ user_id: userId, key_id: keyId, host_name: hostName, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
                 if (data.ok) {
@@ -3521,7 +3521,7 @@
                 const res = await fetch('/api/keys/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, query: q })
+                    body: JSON.stringify({ user_id: userId, query: q, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
                 if (!resultsEl) return;
