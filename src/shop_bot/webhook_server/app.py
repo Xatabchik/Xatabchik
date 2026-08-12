@@ -422,6 +422,8 @@ def create_webhook_app(bot_controller_instance):
 
     flask_app.config['SECRET_KEY'] = os.getenv('SHOPBOT_SECRET_KEY') or secrets.token_hex(32)
     flask_app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+    # Cap request body size (module ZIP uploads and form posts).
+    flask_app.config['MAX_CONTENT_LENGTH'] = 12 * 1024 * 1024  # 12 MiB
 
     flask_app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
@@ -575,9 +577,11 @@ def create_webhook_app(bot_controller_instance):
             return f(*args, **kwargs)
         return decorated_function
 
+    # In-memory brute-force protection for panel login (CWE-307).
+    # 5 attempts / 5 minutes per client IP.
     _login_attempts = {}
 
-    def _rate_limit_login(ip: str, limit: int = 10, window_sec: int = 600) -> bool:
+    def _rate_limit_login(ip: str, limit: int = 5, window_sec: int = 300) -> bool:
         now = time.time()
         attempts = _login_attempts.get(ip, [])
         attempts = [t for t in attempts if now - t < window_sec]
@@ -589,6 +593,7 @@ def create_webhook_app(bot_controller_instance):
         return True
 
     def _verify_panel_password(stored: str, provided: str) -> bool:
+        """Verify panel password. Prefers bcrypt hashes; legacy plaintext uses compare_digest."""
         if not stored:
             return False
         try:
@@ -596,7 +601,7 @@ def create_webhook_app(bot_controller_instance):
                 return bool(bcrypt.checkpw(provided.encode("utf-8"), stored.encode("utf-8")))
         except Exception:
             pass
-        # legacy/plaintext
+        # legacy/plaintext — constant-time compare (CWE-208)
         return compare_digest(str(stored), str(provided))
 
     @flask_app.route('/login', methods=['GET', 'POST'])
@@ -615,14 +620,20 @@ def create_webhook_app(bot_controller_instance):
             password = request.form.get('password') or ''
             stored_user = settings.get('panel_login') or ''
             stored_pass = settings.get('panel_password') or ''
-            if username == stored_user and _verify_panel_password(str(stored_pass), str(password)):
-                # migrate legacy/plaintext password to bcrypt hash
+            # Constant-time username compare (avoids timing oracle on login name).
+            user_ok = compare_digest(str(username), str(stored_user)) if stored_user else False
+            pass_ok = _verify_panel_password(str(stored_pass), str(password))
+            if user_ok and pass_ok:
+                # migrate legacy/plaintext password to bcrypt hash (CWE-916)
                 if not str(stored_pass).startswith('$2'):
                     try:
                         new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                         update_setting('panel_password', new_hash)
                     except Exception as e:
                         logger.warning(f'Panel password hash migration failed: {e}')
+                # Panel admin session flag — intentionally isolated from webapp user
+                # auth_token / database.get_user_by_auth_token. A stolen user token
+                # cannot set session['logged_in']; only this password login path can.
                 session['logged_in'] = True
                 session.permanent = bool(request.form.get('remember_me'))
                 return redirect(url_for('dashboard_page'))
@@ -4283,6 +4294,7 @@ def create_webhook_app(bot_controller_instance):
         from werkzeug.utils import secure_filename
         import tempfile
         from pathlib import Path
+        from shop_bot.core.module_loader import MAX_MODULE_ZIP_BYTES
         
         # Check if file is present
         if 'module_file' not in request.files:
@@ -4298,12 +4310,21 @@ def create_webhook_app(bot_controller_instance):
         if not file.filename.lower().endswith('.zip'):
             flash('Файл должен быть ZIP архивом.', 'danger')
             return redirect(url_for('modules_page'))
+
+        # Reject oversized uploads early when Content-Length is present.
+        content_length = request.content_length
+        if content_length is not None and content_length > MAX_MODULE_ZIP_BYTES + (1024 * 1024):
+            flash('Файл слишком большой (макс. 10 МБ).', 'danger')
+            return redirect(url_for('modules_page'))
         
         # Save to temporary file
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_zip = Path(tmpdir) / secure_filename(file.filename)
                 file.save(str(tmp_zip))
+                if tmp_zip.stat().st_size > MAX_MODULE_ZIP_BYTES:
+                    flash('Файл слишком большой (макс. 10 МБ).', 'danger')
+                    return redirect(url_for('modules_page'))
                 
                 # Import module from ZIP
                 ok, message = module_loader.import_module_from_zip(tmp_zip, auto_enable=True)
