@@ -8,6 +8,7 @@ import json
 import secrets
 import time
 import re
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -9023,6 +9024,35 @@ def update_user_auth_token(user_id: int, token: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to update auth token for user {user_id}: {e}")
         return False
+
+
+def invalidate_all_user_auth_tokens() -> int:
+    """Перевыпустить все persistent auth_token пользователей (UUID4).
+
+    Используется как remediation после компрометации токенов (например, через
+    уязвимый /api/auth/telegram-direct). Старые токены в браузерах/клиентах
+    перестают работать; пользователи должны войти заново.
+    Возвращает число обновлённых строк.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT telegram_id FROM users WHERE auth_token IS NOT NULL AND TRIM(auth_token) != ''"
+            )
+            rows = cur.fetchall()
+            updated = 0
+            for (telegram_id,) in rows:
+                cur.execute(
+                    "UPDATE users SET auth_token = ? WHERE telegram_id = ?",
+                    (str(uuid.uuid4()), int(telegram_id)),
+                )
+                updated += cur.rowcount
+            conn.commit()
+            return updated
+    except Exception as e:
+        logger.error(f"Failed to invalidate all user auth tokens: {e}")
+        return 0
 
 
 def hash_password(password: str) -> str:

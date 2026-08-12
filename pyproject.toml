@@ -21,7 +21,8 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn[standard]==0.32.1",
     "python-multipart==0.0.20",
-    "bcrypt==4.2.1"
+    "bcrypt==4.2.1",
+    "slowapi==0.1.10"
 ]
 
 [project.optional-dependencies]
