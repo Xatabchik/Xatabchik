@@ -98,6 +98,16 @@ def insert_user(db_path: Path, telegram_id: int, username: str = "user", **extra
         conn.commit()
 
 
+def issue_auth_token(telegram_id: int, token: str | None = None) -> str:
+    """Выдать persistent auth_token пользователю (как после успешного login)."""
+    from shop_bot.data_manager import database
+    import uuid
+
+    token = token or f"test-token-{telegram_id}-{uuid.uuid4()}"
+    database.update_user_auth_token(telegram_id, token)
+    return token
+
+
 def insert_gift_key(db_path: Path, *, from_user_id: int, gift_code: str, host_name: str = "TestHost") -> tuple[int, int]:
     """Создать vpn_keys-запись (tag=user_gift) + user_gifts-запись, связанные
     друг с другом — как это делает реальный флоу покупки подарка в боте.

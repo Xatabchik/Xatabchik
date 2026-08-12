@@ -102,6 +102,33 @@ def _resolve_authenticated_user(data: dict, request: Request) -> dict | None:
     return None
 
 
+def _unauthorized(detail: str = "Unauthorized") -> JSONResponse:
+    return JSONResponse({"ok": False, "error": detail}, status_code=401)
+
+
+def _require_authenticated_user(
+    request: Request,
+    *,
+    data: dict | None = None,
+    token: str | None = None,
+    init_data: str | None = None,
+) -> dict | None:
+    """Resolve caller from auth_token / Bearer / signed init_data only (CWE-862/639).
+
+    Never trusts client-supplied user_id/telegram_id. Returns None if missing
+    or banned — callers should respond with ``_unauthorized()``.
+    """
+    payload = dict(data or {})
+    if token is not None:
+        payload["token"] = token
+    if init_data is not None:
+        payload["init_data"] = init_data
+    user = _resolve_authenticated_user(payload, request)
+    if not user or user.get("is_banned"):
+        return None
+    return user
+
+
 def _ref_setting_is_true(key: str, default: bool = False) -> bool:
     raw = str(get_setting(key) or ("true" if default else "false")).strip().lower()
     return raw in {"1", "true", "yes", "on", "y"}
@@ -1576,14 +1603,18 @@ async def _render_main_page(user_id: int):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, user_id: int | None = None, token: str | None = None):
     try:
-        # 1. Authorize by Token (query param)
+        # 1. Authorize by Token only (query param / cookie). Never trust bare
+        # user_id from the query string — that was an IDOR (CWE-639): anyone
+        # could open /?user_id=<victim> and get a rendered session for them.
+        resolved_user_id = None
         if token:
             from shop_bot.data_manager import database
             user = database.get_user_by_auth_token(token)
             if user:
-                user_id = user['telegram_id']
-        
-        # 2. If no user_id (and no valid token), serve login.html
+                resolved_user_id = user['telegram_id']
+        user_id = resolved_user_id
+
+        # 2. If no valid token, serve login.html
         if user_id is None:
             p = os.path.join(os.path.dirname(__file__), "login.html")
             if os.path.exists(p):
@@ -1615,19 +1646,27 @@ async def index(request: Request, user_id: int | None = None, token: str | None 
 # ===== API Models =====
 
 class SupportStatusRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
+    token: str | None = None
+    init_data: str | None = None
 
 class SupportTicketCreateRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     subject: str
+    token: str | None = None
+    init_data: str | None = None
 
 class SupportMessageSendRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     ticket_id: int
     message: str
+    token: str | None = None
+    init_data: str | None = None
 
 class PaymentMethodsRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
+    token: str | None = None
+    init_data: str | None = None
 
 class TokenRequest(BaseModel):
     init_data: str
@@ -1671,7 +1710,7 @@ class DeviceTiersRequest(BaseModel):
     host_name: str
 
 class CreatePaymentRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     payment_method: str
     plan_id: int
     host_name: str | None = None
@@ -1680,38 +1719,38 @@ class CreatePaymentRequest(BaseModel):
     promo_code: str | None = None
     tier_device_count: int | None = None
     tier_price: float = 0
+    token: str | None = None
+    init_data: str | None = None
 
 class CreateTopUpPaymentRequest(BaseModel):
     payment_method: str
     amount: float
     token: str | None = None
-    user_id: int | None = None
+    user_id: int | None = None  # ignored; identity from token only
+    init_data: str | None = None
 
 class ApplyPromoRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     promo_code: str
     plan_id: int | None = None
     price: float | None = None
-
-    user_id: int
-    promo_code: str
-    plan_id: int | None = None
-    price: float | None = None
+    token: str | None = None
+    init_data: str | None = None
 
 class RenameKeyRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     key_id: int
     new_name: str
     token: str | None = None
 
 class DeleteAllDevicesRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     key_id: int
     host_name: str | None = None
     token: str | None = None
 
 class SearchKeysRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     query: str
     token: str | None = None
 
@@ -2352,9 +2391,13 @@ async def api_device_tiers(req: DeviceTiersRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/payment-methods")
-async def api_get_payment_methods(req: PaymentMethodsRequest):
-    user_id = req.user_id
-    user = get_user(user_id)
+async def api_get_payment_methods(req: PaymentMethodsRequest, request: Request):
+    user = _require_authenticated_user(
+        request, token=req.token, init_data=req.init_data
+    )
+    if not user:
+        return _unauthorized()
+    user_id = int(user["telegram_id"])
     
     methods = []
     
@@ -2405,19 +2448,20 @@ async def api_get_payment_methods(req: PaymentMethodsRequest):
 
 
 @app.post("/api/create-payment")
-async def api_create_payment(req: CreatePaymentRequest):
+async def api_create_payment(req: CreatePaymentRequest, request: Request):
     try:
-        user_id = req.user_id
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
         plan_id = req.plan_id
         method_id = req.payment_method
         
         plan = get_plan_by_id(plan_id)
         if not plan:
             return {"ok": False, "error": "Тариф не найден"}
-
-        user = get_user(user_id)
-        if not user:
-            return {"ok": False, "error": "Пользователь не найден (ID: " + str(user_id) + ")"}
         
         final_price = calculate_webapp_price(float(plan['price']), user_id) 
         
@@ -2764,14 +2808,11 @@ def _platega_method_code_from_settings() -> int:
 async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Request):
     """Create a balance top-up payment (action=top_up), mirroring the bot TopUpProcess flow."""
     try:
-        user = _resolve_user_from_request_token(
-            {"token": req.token} if req.token else {},
-            request,
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
         )
-        if not user and req.user_id:
-            user = get_user(int(req.user_id))
-        if not user or user.get("is_banned"):
-            return {"ok": False, "error": "Unauthorized"}
+        if not user:
+            return _unauthorized()
 
         user_id = int(user["telegram_id"])
         method_id = (req.payment_method or "").strip()
@@ -3037,7 +3078,7 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
         return {"ok": False, "error": str(e), "details": traceback.format_exc()}
 
 @app.post("/api/apply-promo")
-async def api_apply_promo(req: ApplyPromoRequest):
+async def api_apply_promo(req: ApplyPromoRequest, request: Request):
     """Проверить промокод и посчитать цену со скидкой.
 
     Промокоды в этом проекте — это ИСКЛЮЧИТЕЛЬНО скидка на покупку/продление
@@ -3052,12 +3093,15 @@ async def api_apply_promo(req: ApplyPromoRequest):
     при пополнении баланса.
     """
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
         code = req.promo_code.strip().upper()
 
-        promo, error = rw_repo.check_promo_code_available(code, req.user_id)
+        promo, error = rw_repo.check_promo_code_available(code, user_id)
         if not promo:
             errors = {
                 "not_found": "Промокод не найден",
@@ -3132,24 +3176,32 @@ async def api_check_payment(req: CheckPaymentRequest):
         return {"ok": False, "error": str(e)}
 
 class KeyActionRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     key_id: int
     host_name: str | None = None
+    token: str | None = None
+    init_data: str | None = None
 
 class DeleteDeviceRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     key_id: int
     device_id: str
     host_name: str | None = None
+    token: str | None = None
+    init_data: str | None = None
 
 class CommentRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     key_id: int
     comment: str
+    token: str | None = None
+    init_data: str | None = None
 
 class GiftActivateRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None  # ignored; identity from token only
     gift_code: str
+    token: str | None = None
+    init_data: str | None = None
 
 # ── Referral info ──────────────────────────────────────────────────────────
 @app.post("/api/user/referral-info")
@@ -3158,13 +3210,9 @@ async def api_user_referral_info(request: Request):
         data = await request.json()
     except Exception:
         data = {}
-    user = _resolve_user_from_request_token(data, request)
+    user = _require_authenticated_user(request, data=data)
     if not user:
-        user_id = data.get("user_id")
-        if user_id:
-            user = get_user(int(user_id))
-    if not user or user.get("is_banned"):
-        return {"ok": False, "error": "Unauthorized"}
+        return _unauthorized()
 
     uid = user["telegram_id"]
     bot_username = get_setting("telegram_bot_username") or ""
@@ -3270,13 +3318,9 @@ async def api_user_gifts(request: Request):
         data = await request.json()
     except Exception:
         data = {}
-    user = _resolve_user_from_request_token(data, request)
+    user = _require_authenticated_user(request, data=data)
     if not user:
-        user_id = data.get("user_id")
-        if user_id:
-            user = get_user(int(user_id))
-    if not user or user.get("is_banned"):
-        return {"ok": False, "error": "Unauthorized"}
+        return _unauthorized()
 
     uid = user["telegram_id"]
     from shop_bot.data_manager import database
@@ -3404,13 +3448,16 @@ def _activate_gift_for_user(user_id: int, gift_code: str) -> dict:
 
 # ── Gift activation via webapp ─────────────────────────────────────────────
 @app.post("/api/gift/activate")
-async def api_gift_activate(req: GiftActivateRequest):
+async def api_gift_activate(req: GiftActivateRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get("is_banned"):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
 
-        result = _activate_gift_for_user(req.user_id, req.gift_code)
+        result = _activate_gift_for_user(user_id, req.gift_code)
         if not result["ok"]:
             return {"ok": False, "error": result["message"]}
         return {"ok": True, "message": result["message"]}
@@ -3627,16 +3674,19 @@ async def api_pending_action_complete(req: PendingActionCompleteRequest, request
     }
 
 @app.post("/api/key/devices")
-async def api_key_devices(req: KeyActionRequest):
+async def api_key_devices(req: KeyActionRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
         from shop_bot.modules import remnawave_api
         key = get_key_by_id(req.key_id)
-        if not key or key.get("user_id") != req.user_id:
+        if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
             
         uuid_val = key.get("remnawave_user_uuid")
@@ -3652,16 +3702,19 @@ async def api_key_devices(req: KeyActionRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/key/device/delete")
-async def api_key_device_delete(req: DeleteDeviceRequest):
+async def api_key_device_delete(req: DeleteDeviceRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
         from shop_bot.modules import remnawave_api
         key = get_key_by_id(req.key_id)
-        if not key or key.get("user_id") != req.user_id:
+        if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
             
         uuid_val = key.get("remnawave_user_uuid")
@@ -3678,16 +3731,19 @@ async def api_key_device_delete(req: DeleteDeviceRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/key/comment")
-async def api_key_comment(req: CommentRequest):
+async def api_key_comment(req: CommentRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
         from shop_bot.data_manager.database import update_key_comment
         key = get_key_by_id(req.key_id)
-        if not key or key.get("user_id") != req.user_id:
+        if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
 
         update_key_comment(req.key_id, req.comment)
@@ -3697,14 +3753,17 @@ async def api_key_comment(req: CommentRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/support/status")
-async def api_support_status(req: SupportStatusRequest):
+async def api_support_status(req: SupportStatusRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_user_tickets, get_ticket_messages
-        tickets = get_user_tickets(req.user_id) or []
+        tickets = get_user_tickets(user_id) or []
         open_tickets = [t for t in tickets if t.get('status') == 'open']
         if not open_tickets:
             return {"ok": True, "has_ticket": False}
@@ -3735,11 +3794,14 @@ async def api_support_status(req: SupportStatusRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/support/create")
-async def api_support_create(req: SupportTicketCreateRequest):
+async def api_support_create(req: SupportTicketCreateRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_or_create_open_ticket, add_support_message, get_setting
         
@@ -3747,7 +3809,7 @@ async def api_support_create(req: SupportTicketCreateRequest):
         if not subject_text:
             return {"ok": False, "error": "Тема обращения не может быть пустой"}
             
-        ticket_id, created_new = get_or_create_open_ticket(req.user_id, subject_text)
+        ticket_id, created_new = get_or_create_open_ticket(user_id, subject_text)
         
         if not ticket_id:
             return {"ok": False, "error": "Не удалось создать тикет"}
@@ -3761,14 +3823,14 @@ async def api_support_create(req: SupportTicketCreateRequest):
             bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 try:
-                    user = await bot.get_chat(req.user_id)
-                    username_display = f"@{user.username}" if getattr(user, 'username', None) else f"ID {req.user_id}"
+                    tg_user = await bot.get_chat(user_id)
+                    username_display = f"@{tg_user.username}" if getattr(tg_user, 'username', None) else f"ID {user_id}"
                 except Exception:
-                    username_display = f"ID {req.user_id}"
+                    username_display = f"ID {user_id}"
                     
                 notification_text = (
                     f"🆕 <b>Новое обращение (WebApp)!</b>\n\n"
-                    f"👤 <b>USER:</b> (<code>{req.user_id}</code> - {username_display})\n"
+                    f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
                     f"📝 <b>ID тикета:</b> <code>#{ticket_id}</code>\n"
                     f"💬 <b>Тема:</b> <i>{subject_text}</i>\n\n"
                     f"💌 Сообщения:\n"
@@ -3797,15 +3859,18 @@ async def api_support_create(req: SupportTicketCreateRequest):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/support/send")
-async def api_support_send(req: SupportMessageSendRequest):
+async def api_support_send(req: SupportMessageSendRequest, request: Request):
     try:
-        user = get_user(req.user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_ticket, add_support_message, get_setting
         ticket = get_ticket(req.ticket_id)
-        if not ticket or ticket.get('user_id') != req.user_id or ticket.get('status') != 'open':
+        if not ticket or ticket.get('user_id') != user_id or ticket.get('status') != 'open':
             return {"ok": False, "error": "Тикет не найден или закрыт"}
             
         add_support_message(req.ticket_id, sender="user", content=req.message)
@@ -3816,14 +3881,14 @@ async def api_support_send(req: SupportMessageSendRequest):
             bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
                 try:
-                    user = await bot.get_chat(req.user_id)
-                    username_display = f"@{user.username}" if getattr(user, 'username', None) else f"ID {req.user_id}"
+                    tg_user = await bot.get_chat(user_id)
+                    username_display = f"@{tg_user.username}" if getattr(tg_user, 'username', None) else f"ID {user_id}"
                 except Exception:
-                    username_display = f"ID {req.user_id}"
+                    username_display = f"ID {user_id}"
                     
                 notification_text = (
                     f"📨 <b>Новое сообщение (WebApp)!</b>\n\n"
-                    f"👤 <b>USER:</b> (<code>{req.user_id}</code> - {username_display})\n"
+                    f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
                     f"📝 <b>ID тикета:</b> <code>#{req.ticket_id}</code>\n"
                     f"💬 <b>Тема:</b> <i>{ticket.get('subject', 'Без темы')}</i>\n\n"
                     f"💌 Сообщения:\n"
@@ -3865,11 +3930,13 @@ async def api_support_send(req: SupportMessageSendRequest):
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/user-status")
-async def api_user_status(user_id: int):
+async def api_user_status(request: Request, token: str | None = None):
     try:
-        user = get_user(user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        # Prefer query token; also accept Authorization header via helper.
+        user = _require_authenticated_user(request, token=token)
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
             
         keys = get_user_keys(user_id)
         # Sort keys by key_id descending to get the latest one first
@@ -3948,11 +4015,17 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/user/transactions")
-async def api_user_transactions(user_id: int, page: int = 1, per_page: int = 10, request: Request = None):
+async def api_user_transactions(
+    request: Request,
+    page: int = 1,
+    per_page: int = 10,
+    token: str | None = None,
+):
     try:
-        user = get_user(user_id)
-        if not user or user.get('is_banned'):
-            return {"ok": False, "error": "Access denied"}
+        user = _require_authenticated_user(request, token=token)
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
 
         from shop_bot.data_manager.remnawave_repository import get_transactions_paginated
         transactions, total = get_transactions_paginated(page=page, per_page=per_page, user_id=user_id)

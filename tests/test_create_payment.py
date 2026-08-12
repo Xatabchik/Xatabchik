@@ -8,7 +8,7 @@
 {"ok": false, "error": "cannot import name 'get_transaction_comment' ..."},
 и пользователь не мог оплатить подписку через webapp вообще.
 """
-from conftest import insert_user, temp_db  # noqa: F401  (регистрирует фикстуру)
+from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
 
 
 def test_get_transaction_comment_is_self_contained_new_action():
@@ -47,6 +47,7 @@ def test_create_payment_stars_end_to_end(temp_db, monkeypatch):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=42001, username="staruser")
+    token = issue_auth_token(42001)
     database.update_setting("stars_per_rub", "2")
 
     database.create_plan("TestHost", "1 месяц", 1, 100.0)
@@ -65,6 +66,7 @@ def test_create_payment_stars_end_to_end(temp_db, monkeypatch):
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 42001,
+        "token": token,
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",
@@ -84,6 +86,7 @@ def test_create_payment_stars_disabled_returns_clean_error(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=42002, username="staruser2")
+    token = issue_auth_token(42002)
     database.update_setting("stars_per_rub", "0")
     database.create_plan("TestHost2", "1 месяц", 1, 100.0)
     plan_id = database.get_plans_for_host("TestHost2")[0]["plan_id"]
@@ -91,6 +94,7 @@ def test_create_payment_stars_disabled_returns_clean_error(temp_db):
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 42002,
+        "token": token,
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",

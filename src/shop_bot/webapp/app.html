@@ -1145,7 +1145,7 @@
                 const response = await fetch('/api/support/status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: RENDERED_USER_ID })
+                    body: JSON.stringify({ user_id: RENDERED_USER_ID, token: window.getAuthToken() || '' })
                 });
                 const data = await response.json();
 
@@ -1196,7 +1196,7 @@
                 const res = await fetch('/api/support/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: RENDERED_USER_ID, subject: subj })
+                    body: JSON.stringify({ user_id: RENDERED_USER_ID, subject: subj, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
                 if (data.ok) {
@@ -1230,7 +1230,8 @@
                     body: JSON.stringify({
                         user_id: RENDERED_USER_ID,
                         ticket_id: currentTicketId,
-                        message: text
+                        message: text,
+                        token: window.getAuthToken() || ''
                     })
                 });
                 const data = await res.json();
@@ -2474,7 +2475,7 @@
                 const response = await fetch('/api/payment-methods', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId })
+                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '' })
                 });
                 const data = await response.json();
                 if (data.ok) {
@@ -2566,6 +2567,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         user_id: userId,
+                        token: window.getAuthToken() || '',
                         payment_method: selectedMethod.id,
                         plan_id: parseInt(currentPaymentData.planId),
                         host_name: currentPaymentData.hostName,
@@ -2673,7 +2675,7 @@
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
                 const token = window.getAuthToken() || '';
-                const url = `/?user_id=${userId}&token=${token}`;
+                const url = `/?token=${encodeURIComponent(token)}`;
                 const response = await fetch(url);
                 if (!response.ok) return;
                 const htmlStr = await response.text();
@@ -2746,7 +2748,7 @@
             // Запрашиваем актуальный ключ пользователя
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?user_id=' + userId);
+                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
                 const status = await resp.json();
 
                 if (status.ok && status.keys?.length) {
@@ -2946,7 +2948,7 @@
                     const res = await fetch('/api/key/devices', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ user_id: userId, key_id: keyId, host_name: extraData })
+                        body: JSON.stringify({ user_id: userId, key_id: keyId, host_name: extraData, token: window.getAuthToken() || '' })
                     });
                     const data = await res.json();
 
@@ -3007,7 +3009,7 @@
                 const res = await fetch('/api/key/device/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, key_id: keyId, device_id: deviceId, host_name: hostName })
+                    body: JSON.stringify({ user_id: userId, key_id: keyId, device_id: deviceId, host_name: hostName, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
 
@@ -3041,7 +3043,7 @@
                 const res = await fetch('/api/key/comment', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, key_id: keyId, comment: comment })
+                    body: JSON.stringify({ user_id: userId, key_id: keyId, comment: comment, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
 
@@ -3095,6 +3097,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         user_id: userId,
+                        token: window.getAuthToken() || '',
                         promo_code: code,
                         plan_id: currentPaymentData.planId,
                         price: currentPaymentData.price
@@ -3341,7 +3344,7 @@
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const res = await fetch(`/api/user/transactions?user_id=${userId}&page=${_txPage}&per_page=10`);
+                const res = await fetch(`/api/user/transactions?token=${encodeURIComponent(window.getAuthToken() || '')}&page=${_txPage}&per_page=10`);
                 const data = await res.json();
 
                 if (!data.ok) {
@@ -4035,7 +4038,7 @@
                 const resp = await fetch('/api/gift/activate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, gift_code: giftCode })
+                    body: JSON.stringify({ user_id: userId, gift_code: giftCode, token: window.getAuthToken() || '' })
                 });
                 const d = await resp.json();
                 showNotification(d.ok ? (d.message || 'Подарок активирован!') : (d.error || 'Ошибка активации'), d.ok ? 'success' : 'error');
@@ -4056,7 +4059,7 @@
         window._loadHomeStats = async function () {
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?user_id=' + userId);
+                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
                 const data = await resp.json();
                 const balEl = document.getElementById('home-balance');
                 if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
@@ -4092,7 +4095,7 @@
         window._loadFinancePage = async function () {
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?user_id=' + userId);
+                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
                 const data = await resp.json();
                 const balEl = document.getElementById('finance-balance');
                 if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
@@ -4102,7 +4105,7 @@
             if (!prevEl) return;
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const res = await fetch('/api/user/transactions?user_id=' + userId + '&page=1&per_page=3');
+                const res = await fetch('/api/user/transactions?token=' + encodeURIComponent(window.getAuthToken() || '') + '&page=1&per_page=3');
                 const data = await res.json();
                 if (data.ok && data.transactions && data.transactions.length) {
                     let html = '<div class="flex flex-col gap-2">';
@@ -4262,7 +4265,7 @@
                 const resp = await fetch('/api/payment-methods', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId })
+                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '' })
                 });
                 const data = await resp.json();
                 const methods = (data.ok ? (data.methods || []) : []).filter(m => m.id !== 'pay_balance' && m.id !== 'pay_referral_balance');
@@ -4430,7 +4433,7 @@
                         if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
                         try {
                             const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                            const resp = await fetch('/api/user-status?user_id=' + userId);
+                            const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
                             const status = await resp.json();
                             if (status.ok && status.balance != null) {
                                 const balStr = Number(status.balance).toFixed(2) + ' ₽';
@@ -4712,7 +4715,7 @@
                     const r = await fetch('/api/gift/activate', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ user_id: userId, gift_code: giftCode })
+                        body: JSON.stringify({ user_id: userId, gift_code: giftCode, token: window.getAuthToken() || '' })
                     });
                     const d = await r.json();
                     showNotification(d.ok ? (d.message || 'Подарок активирован!') : (d.error || 'Ошибка активации'), d.ok ? 'success' : 'error');

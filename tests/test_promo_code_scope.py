@@ -16,7 +16,7 @@
    каким-то образом promo_code окажется в теле запроса с этим action).
 3. /api/create-topup-payment — модель запроса не содержит поля promo_code вовсе.
 """
-from conftest import insert_user, temp_db  # noqa: F401  (регистрирует фикстуру)
+from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
 
 
 def _make_plan(database, host_name: str, price: float = 100.0) -> int:
@@ -33,11 +33,12 @@ def test_apply_promo_requires_price(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51001, username="promouser1")
+    token = issue_auth_token(51001)
     from shop_bot.data_manager import remnawave_repository as rw_repo
     rw_repo.create_promo_code("SAVE10", discount_percent=10)
 
     client = TestClient(handlers.app)
-    resp = client.post("/api/apply-promo", json={"user_id": 51001, "promo_code": "SAVE10"})
+    resp = client.post("/api/apply-promo", json={"user_id": 51001, "token": token, "promo_code": "SAVE10"})
     data = resp.json()
     assert data.get("ok") is False
     assert "покуп" in data.get("error", "").lower() or "продлен" in data.get("error", "").lower()
@@ -50,10 +51,11 @@ def test_apply_promo_discount_math(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51002, username="promouser2")
+    token = issue_auth_token(51002)
     rw_repo.create_promo_code("HALF50", discount_percent=50)
 
     client = TestClient(handlers.app)
-    resp = client.post("/api/apply-promo", json={"user_id": 51002, "promo_code": "HALF50", "price": 200})
+    resp = client.post("/api/apply-promo", json={"user_id": 51002, "token": token, "promo_code": "HALF50", "price": 200})
     data = resp.json()
     assert data.get("ok") is True
     assert data.get("promo_type") == "discount"
@@ -71,11 +73,12 @@ def test_apply_promo_no_longer_credits_balance_directly(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51003, username="promouser3")
+    token = issue_auth_token(51003)
     rw_repo.create_promo_code("HALF50B", discount_percent=50)
     balance_before = database.get_user(51003).get("balance") or 0
 
     client = TestClient(handlers.app)
-    resp = client.post("/api/apply-promo", json={"user_id": 51003, "promo_code": "HALF50B"})
+    resp = client.post("/api/apply-promo", json={"user_id": 51003, "token": token, "promo_code": "HALF50B"})
     assert resp.json().get("ok") is False
 
     balance_after = database.get_user(51003).get("balance") or 0
@@ -91,6 +94,7 @@ def test_create_payment_stars_new_action_applies_promo_discount(temp_db, monkeyp
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51004, username="promouser4")
+    token = issue_auth_token(51004)
     database.update_setting("stars_per_rub", "2")
     rw_repo.create_promo_code("HALFSTARS", discount_percent=50)
     plan_id = _make_plan(database, "PromoHost1", price=100.0)
@@ -106,6 +110,7 @@ def test_create_payment_stars_new_action_applies_promo_discount(temp_db, monkeyp
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51004,
+        "token": token,
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",
@@ -126,6 +131,7 @@ def test_create_payment_gift_action_also_applies_promo_discount(temp_db, monkeyp
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51005, username="promouser5")
+    token = issue_auth_token(51005)
     database.update_setting("stars_per_rub", "2")
     rw_repo.create_promo_code("GIFTPROMO", discount_percent=50)
     plan_id = _make_plan(database, "PromoHost2", price=100.0)
@@ -141,6 +147,7 @@ def test_create_payment_gift_action_also_applies_promo_discount(temp_db, monkeyp
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51005,
+        "token": token,
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "gift",
@@ -163,6 +170,7 @@ def test_create_payment_top_up_action_never_applies_promo_discount(temp_db, monk
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51006, username="promouser6")
+    token = issue_auth_token(51006)
     database.update_setting("stars_per_rub", "2")
     rw_repo.create_promo_code("NOTOPUP", discount_percent=50)
     plan_id = _make_plan(database, "PromoHost3", price=100.0)
@@ -178,6 +186,7 @@ def test_create_payment_top_up_action_never_applies_promo_discount(temp_db, monk
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51006,
+        "token": token,
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "top_up",

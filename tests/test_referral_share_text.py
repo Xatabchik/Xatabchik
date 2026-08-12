@@ -48,14 +48,15 @@ def test_referral_info_api_returns_share_text(temp_db):
     from fastapi.testclient import TestClient
     from shop_bot.data_manager import database
     from shop_bot.webapp import handlers as web_handlers
-    from conftest import insert_user
+    from conftest import insert_user, issue_auth_token
 
     insert_user(database.DB_FILE, telegram_id=88001, username="shareuser")
+    token = issue_auth_token(88001)
     database.update_setting("referral_share_text", "Кастомный шаринг")
     database.update_setting("telegram_bot_username", "TestVpnBot")
 
     client = TestClient(web_handlers.app)
-    resp = client.post("/api/user/referral-info", json={"user_id": 88001})
+    resp = client.post("/api/user/referral-info", json={"user_id": 88001, "token": token})
     data = resp.json()
     assert data.get("ok") is True, data
     assert data.get("share_text") == "Кастомный шаринг"

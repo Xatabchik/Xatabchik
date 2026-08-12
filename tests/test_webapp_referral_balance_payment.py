@@ -7,7 +7,7 @@
 3. Недостаточно средств → ошибка без списания
 4. /api/create-topup-payment отклоняет pay_referral_balance
 """
-from conftest import insert_user, temp_db  # noqa: F401
+from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
 
 
 def test_payment_methods_includes_referral_balance(temp_db):
@@ -16,9 +16,10 @@ def test_payment_methods_includes_referral_balance(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51001, username="refpay", referral_balance=150.0)
+    token = issue_auth_token(51001)
 
     client = TestClient(handlers.app)
-    resp = client.post("/api/payment-methods", json={"user_id": 51001})
+    resp = client.post("/api/payment-methods", json={"user_id": 51001, "token": token})
     data = resp.json()
     assert data.get("ok") is True, data
     methods = {m["id"]: m for m in data.get("methods") or []}
@@ -34,6 +35,7 @@ def test_create_payment_with_referral_balance_success(temp_db, monkeypatch):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51002, username="refpay2", referral_balance=200.0)
+    token = issue_auth_token(51002)
     database.create_plan("RefHost", "1 месяц", 1, 100.0)
     plan_id = database.get_plans_for_host("RefHost")[0]["plan_id"]
 
@@ -47,6 +49,7 @@ def test_create_payment_with_referral_balance_success(temp_db, monkeypatch):
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51002,
+        "token": token,
         "payment_method": "pay_referral_balance",
         "plan_id": plan_id,
         "host_name": "RefHost",
@@ -70,6 +73,7 @@ def test_create_payment_referral_balance_insufficient(temp_db, monkeypatch):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51003, username="refpay3", referral_balance=10.0)
+    token = issue_auth_token(51003)
     database.create_plan("RefHost2", "1 месяц", 1, 100.0)
     plan_id = database.get_plans_for_host("RefHost2")[0]["plan_id"]
 
@@ -83,6 +87,7 @@ def test_create_payment_referral_balance_insufficient(temp_db, monkeypatch):
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51003,
+        "token": token,
         "payment_method": "pay_referral_balance",
         "plan_id": plan_id,
         "action": "new",
@@ -101,6 +106,7 @@ def test_create_payment_referral_balance_refunds_on_processing_error(temp_db, mo
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51004, username="refpay4", referral_balance=200.0)
+    token = issue_auth_token(51004)
     database.create_plan("RefHost3", "1 месяц", 1, 100.0)
     plan_id = database.get_plans_for_host("RefHost3")[0]["plan_id"]
 
@@ -112,6 +118,7 @@ def test_create_payment_referral_balance_refunds_on_processing_error(temp_db, mo
     client = TestClient(handlers.app)
     resp = client.post("/api/create-payment", json={
         "user_id": 51004,
+        "token": token,
         "payment_method": "pay_referral_balance",
         "plan_id": plan_id,
         "action": "new",
@@ -128,10 +135,12 @@ def test_topup_rejects_referral_balance_method(temp_db):
     from shop_bot.webapp import handlers
 
     insert_user(database.DB_FILE, telegram_id=51005, username="refpay5", referral_balance=500.0)
+    token = issue_auth_token(51005)
 
     client = TestClient(handlers.app)
     resp = client.post("/api/create-topup-payment", json={
         "user_id": 51005,
+        "token": token,
         "payment_method": "pay_referral_balance",
         "amount": 100,
     })
