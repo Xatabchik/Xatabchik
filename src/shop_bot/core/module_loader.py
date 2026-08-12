@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -21,6 +22,46 @@ from shop_bot.core.module_types import ModuleInfo, ModuleMeta, ModuleStatus
 from shop_bot.data_manager import database
 
 logger = logging.getLogger(__name__)
+
+# Limits for ZIP module imports (CWE-22 / zip-bomb / unexpected payloads).
+MAX_MODULE_ZIP_BYTES = 10 * 1024 * 1024  # 10 MiB compressed
+MAX_MODULE_ZIP_UNCOMPRESSED_BYTES = 40 * 1024 * 1024  # 40 MiB total uncompressed
+MAX_MODULE_ZIP_FILES = 200
+_MODULE_ID_RE = re.compile(r"^[a-z0-9_]+$")
+_ALLOWED_MODULE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".json",
+        ".md",
+        ".txt",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".cfg",
+        ".ini",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+    }
+)
+_ALLOWED_EXTENSIONLESS_NAMES = frozenset(
+    {
+        "license",
+        "readme",
+        "changelog",
+        "notice",
+        "copying",
+        "authors",
+        "contributors",
+    }
+)
 
 
 @dataclass
@@ -580,92 +621,206 @@ class ModuleLoader:
         except Exception as exc:
             logger.warning("Failed to delete module files %s: %s", module_id, exc)
 
+    @staticmethod
+    def _normalize_zip_member_name(name: str) -> str | None:
+        """Normalize a ZIP member path; return None if the name is unsafe."""
+        if not name or "\x00" in name:
+            return None
+        # ZIP uses forward slashes; reject Windows separators / drive letters.
+        if "\\" in name or (len(name) >= 2 and name[1] == ":"):
+            return None
+        if name.startswith("/") or name.startswith("//"):
+            return None
+        normalized = name.replace("\\", "/")
+        # Collapse duplicate slashes but keep trailing slash for directories.
+        parts = [p for p in normalized.split("/") if p not in ("", ".")]
+        if any(p == ".." for p in parts):
+            return None
+        if normalized.endswith("/"):
+            return "/".join(parts) + "/" if parts else None
+        return "/".join(parts) if parts else None
+
+    @classmethod
+    def _is_allowed_module_member(cls, relative_path: str) -> bool:
+        """Allow only module source/manifest/assets; reject scripts and binaries."""
+        if not relative_path or relative_path.endswith("/"):
+            return True
+        name = Path(relative_path).name
+        if not name or name in (".", ".."):
+            return False
+        # Hidden / macOS junk often appears in archives; reject for safety.
+        if name.startswith(".") and name not in (".gitignore",):
+            return False
+        suffix = Path(name).suffix.lower()
+        if not suffix:
+            return name.lower() in _ALLOWED_EXTENSIONLESS_NAMES
+        return suffix in _ALLOWED_MODULE_EXTENSIONS
+
+    def _resolve_extract_path(self, target_root: Path, relative_path: str) -> Path | None:
+        """Resolve extract destination and ensure it stays under target_root (zip-slip)."""
+        if not relative_path or relative_path.endswith("/"):
+            return None
+        # Refuse absolute / parent segments again at join time.
+        if relative_path.startswith("/") or ".." in Path(relative_path).parts:
+            return None
+        dest = (target_root / relative_path).resolve()
+        root = target_root.resolve()
+        try:
+            if not dest.is_relative_to(root):
+                return None
+        except AttributeError:
+            # Python < 3.9 fallback (not expected on 3.11, kept for safety).
+            if os.path.commonpath([str(root), str(dest)]) != str(root):
+                return None
+        return dest
+
     def import_module_from_zip(self, zip_file_path: str | Path, *, auto_enable: bool = True) -> tuple[bool, str]:
         """Import a module from a ZIP file.
-        
+
         Expects ZIP with structure:
             module_name/
                 __init__.py
                 bot_handlers.py
                 ...
+
+        Hardened against zip-slip (CWE-22), zip bombs, and unexpected payloads.
         """
         zip_path = Path(zip_file_path)
+        target_path: Path | None = None
         if not zip_path.exists():
             return False, "ZIP file not found"
-        
-        if not zip_path.suffix.lower() == '.zip':
+
+        if zip_path.suffix.lower() != ".zip":
             return False, "File is not a ZIP archive"
-        
+
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                # Find the module directory inside the ZIP
-                files = zf.namelist()
-                if not files:
+            zip_size = zip_path.stat().st_size
+        except OSError as exc:
+            return False, f"Unable to read ZIP file: {exc}"
+        if zip_size <= 0:
+            return False, "ZIP archive is empty"
+        if zip_size > MAX_MODULE_ZIP_BYTES:
+            return False, f"ZIP file too large (max {MAX_MODULE_ZIP_BYTES // (1024 * 1024)} MB)"
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                infos = zf.infolist()
+                if not infos:
                     return False, "ZIP archive is empty"
-                
-                # Get the root directory name (module name)
-                root_parts = files[0].split('/')
-                if not root_parts[0]:
-                    return False, "Invalid ZIP structure"
-                
-                module_name = root_parts[0]
-                
-                # Check for __init__.py
-                if f"{module_name}/__init__.py" not in files:
+                if len(infos) > MAX_MODULE_ZIP_FILES:
+                    return False, f"ZIP contains too many entries (max {MAX_MODULE_ZIP_FILES})"
+
+                total_uncompressed = 0
+                normalized_names: list[str] = []
+                for info in infos:
+                    if info.file_size < 0:
+                        return False, "Invalid ZIP entry size"
+                    total_uncompressed += info.file_size
+                    if total_uncompressed > MAX_MODULE_ZIP_UNCOMPRESSED_BYTES:
+                        return False, "ZIP uncompressed size exceeds limit"
+                    # Reject symlink / special entries when metadata is present.
+                    try:
+                        if info.is_symlink():  # type: ignore[attr-defined]
+                            return False, "Symlinks are not allowed in module ZIP"
+                    except AttributeError:
+                        mode = (info.external_attr >> 16) & 0o170000
+                        if mode == 0o120000:
+                            return False, "Symlinks are not allowed in module ZIP"
+                    # Large highly-compressible members are a zip-bomb signal.
+                    if (
+                        info.file_size > 1_000_000
+                        and info.compress_size > 0
+                        and info.file_size > info.compress_size * 100
+                    ):
+                        return False, "Suspicious ZIP compression ratio"
+                    normalized = self._normalize_zip_member_name(info.filename)
+                    if normalized is None:
+                        return False, f"Unsafe path in ZIP: {info.filename}"
+                    normalized_names.append(normalized)
+
+                # Determine module root from first non-empty normalized path.
+                module_name = ""
+                for name in normalized_names:
+                    module_name = name.split("/", 1)[0]
+                    if module_name:
+                        break
+                if not module_name or not _MODULE_ID_RE.match(module_name):
+                    return False, "Invalid module directory name in ZIP"
+
+                if f"{module_name}/__init__.py" not in normalized_names:
                     return False, "Module __init__.py not found"
-                
-                # Check if module already exists
+
+                # All members must live under module_name/
+                for name in normalized_names:
+                    if name != module_name and not name.startswith(f"{module_name}/"):
+                        return False, "ZIP contains files outside the module directory"
+                    rel = "" if name.rstrip("/") == module_name else name[len(module_name) + 1 :]
+                    if rel and not self._is_allowed_module_member(rel):
+                        return False, f"Disallowed file type in ZIP: {rel}"
+
                 target_path = self._modules_path / module_name
                 if target_path.exists():
                     return False, f"Module '{module_name}' already exists"
-                
-                # Extract to modules directory
+
                 self._modules_path.mkdir(parents=True, exist_ok=True)
-                
-                # Extract all files from module directory
-                for file in files:
-                    if not file.startswith(f"{module_name}/"):
+                target_path.mkdir(parents=True, exist_ok=False)
+
+                for info, name in zip(infos, normalized_names):
+                    is_dir = name.endswith("/") or getattr(info, "is_dir", lambda: False)()
+                    if name.rstrip("/") == module_name or is_dir:
+                        rel_dir = ""
+                        if name.startswith(f"{module_name}/"):
+                            rel_dir = name[len(module_name) + 1 :].rstrip("/")
+                        if rel_dir:
+                            # Validate directory stays under target via a child sentinel path.
+                            probe = self._resolve_extract_path(target_path, f"{rel_dir}/__dir__")
+                            if probe is None:
+                                raise ValueError(f"Path traversal blocked: {info.filename}")
+                            probe.parent.mkdir(parents=True, exist_ok=True)
                         continue
-                    
-                    # Extract to target_path
-                    rel_path = file[len(module_name)+1:]  # Remove "module_name/" prefix
-                    if not rel_path:  # Skip directory entry
-                        continue
-                    
-                    target_file = target_path / rel_path
-                    target_file.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    with zf.open(file) as source:
-                        with open(target_file, 'wb') as dest:
-                            dest.write(source.read())
-                
-                logger.info(f"Module extracted: {module_name} -> {target_path}")
+
+                    rel_path = name[len(module_name) + 1 :]
+                    dest = self._resolve_extract_path(target_path, rel_path)
+                    if dest is None:
+                        raise ValueError(f"Path traversal blocked: {info.filename}")
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info, "r") as source, open(dest, "wb") as out:
+                        remaining = info.file_size
+                        while remaining > 0:
+                            chunk = source.read(min(65536, remaining))
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            remaining -= len(chunk)
+                        if remaining != 0:
+                            raise ValueError(f"Truncated ZIP member: {info.filename}")
+
+                logger.info("Module extracted: %s -> %s", module_name, target_path)
         except zipfile.BadZipFile:
+            if target_path and target_path.exists():
+                shutil.rmtree(target_path, ignore_errors=True)
             return False, "Invalid ZIP file"
         except Exception as exc:
-            # Clean up if extraction failed
-            try:
-                shutil.rmtree(target_path)
-            except Exception:
-                pass
+            if target_path and target_path.exists():
+                shutil.rmtree(target_path, ignore_errors=True)
             return False, f"Extraction error: {exc}"
-        
+
         # Discover the new module
         self._discovered = False
         self.discover_modules()
-        
-        # Validate that module was discovered
+
         if module_name not in self._modules:
+            if target_path and target_path.exists():
+                shutil.rmtree(target_path, ignore_errors=True)
             return False, "Module was extracted but failed validation"
-        
-        # Auto-enable if requested
+
         if auto_enable:
             ok, msg = self.enable_module(module_name)
             if not ok:
-                logger.warning(f"Auto-enable failed for {module_name}: {msg}")
+                logger.warning("Auto-enable failed for %s: %s", module_name, msg)
                 return False, f"Module extracted but enable failed: {msg}"
             return True, f"Module '{module_name}' imported and enabled successfully"
-        
+
         return True, f"Module '{module_name}' imported successfully"
 
     def _upsert_registry(self, meta: ModuleMeta) -> None:
