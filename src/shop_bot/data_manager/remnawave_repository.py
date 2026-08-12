@@ -451,6 +451,7 @@ _LEGACY_FORWARDERS = (
     "create_payload_pending",
     "claim_processed_payment",
     "unclaim_processed_payment",
+    "refund_payment_once",
     "reset_pending_transaction",
     "create_plan",
     "create_support_ticket",

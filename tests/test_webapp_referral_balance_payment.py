@@ -43,6 +43,7 @@ def test_create_payment_with_referral_balance_success(temp_db, monkeypatch):
 
     async def fake_process(bot, meta):
         captured.append(meta)
+        return True
 
     monkeypatch.setattr(handlers, "process_successful_payment", fake_process)
 

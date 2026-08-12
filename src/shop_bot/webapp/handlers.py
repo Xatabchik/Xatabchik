@@ -209,7 +209,7 @@ async def notify_admin_of_purchase(bot: Bot, metadata: dict):
 
 async def process_successful_payment(bot: Bot, metadata: dict):
     from shop_bot.bot.handlers import process_successful_payment as bot_process
-    await bot_process(bot, metadata)
+    return await bot_process(bot, metadata)
 
 async def _send_telegram_message(user_id: int, text: str, reply_markup=None, photo=None):
     token = get_setting("telegram_bot_token")
@@ -2729,39 +2729,72 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
 
         # --- Balance ---
         elif method_id == "pay_balance":
-            if not deduct_from_balance(user_id, float(final_price)):
+            amount = float(final_price)
+            if not deduct_from_balance(user_id, amount):
                 return {"ok": False, "error": "Недостаточно средств"}
             pid = str(uuid.uuid4())
             meta = {
-                "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
+                "user_id": user_id, "months": months, "duration_days": duration_days, "price": amount,
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "Balance", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
             token = get_setting("telegram_bot_token")
-            if not token: return {"ok": False, "error": "Бот не настроен (нет токена)"}
-            
+            if not token:
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="Balance",
+                    plan_id=plan_id,
+                    reason="telegram_bot_token missing after deduct",
+                )
+                return {"ok": False, "error": "Бот не настроен (нет токена)"}
+
             bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
-                # process_successful_payment is imported at module level now
-                await process_successful_payment(bot, meta)
+                fulfilled = await process_successful_payment(bot, meta)
             except Exception as e:
-                # Refund if processing failed?
-                add_to_balance(user_id, float(final_price))
-                logger.error(f"Balance payment processing error: {e}")
-                return {"ok": False, "error": f"Ошибка обработки: {e}"}
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="Balance",
+                    plan_id=plan_id,
+                    reason=e,
+                )
+                return {
+                    "ok": False,
+                    "error": "Не удалось создать ключ, средства возвращены на баланс",
+                }
             finally:
                 await bot.session.close()
+            if not fulfilled:
+                # process_successful_payment already refunded via refund_payment_once;
+                # call again for safety — idempotent, no double credit.
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="Balance",
+                    plan_id=plan_id,
+                    reason="process_successful_payment returned False",
+                )
+                return {
+                    "ok": False,
+                    "error": "Не удалось создать ключ, средства возвращены на баланс",
+                }
             return {"ok": True, "message": "Оплачено с баланса!", "paid": True}
 
         # --- Referral balance (зеркало pay_referral_balance в боте) ---
         elif method_id == "pay_referral_balance":
-            if not deduct_from_referral_balance(user_id, float(final_price)):
+            amount = float(final_price)
+            if not deduct_from_referral_balance(user_id, amount):
                 return {"ok": False, "error": "Недостаточно средств на реферальном балансе"}
             pid = f"referral_balance:{user_id}:{uuid.uuid4()}"
             meta = {
-                "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
+                "user_id": user_id, "months": months, "duration_days": duration_days, "price": amount,
                 "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
                 "plan_id": plan_id, "payment_method": "ReferralBalance", "payment_id": pid,
                 "tier_device_count": tier_device_count,
@@ -2769,24 +2802,92 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             }
             token = get_setting("telegram_bot_token")
             if not token:
-                add_to_referral_balance(user_id, float(final_price))
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="ReferralBalance",
+                    plan_id=plan_id,
+                    reason="telegram_bot_token missing after deduct",
+                )
                 return {"ok": False, "error": "Бот не настроен (нет токена)"}
 
             bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             try:
-                await process_successful_payment(bot, meta)
+                fulfilled = await process_successful_payment(bot, meta)
             except Exception as e:
-                add_to_referral_balance(user_id, float(final_price))
-                logger.error(f"Referral balance payment processing error: {e}")
-                return {"ok": False, "error": f"Ошибка обработки: {e}"}
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="ReferralBalance",
+                    plan_id=plan_id,
+                    reason=e,
+                )
+                return {
+                    "ok": False,
+                    "error": "Не удалось создать ключ, средства возвращены на реферальный баланс",
+                }
             finally:
                 await bot.session.close()
+            if not fulfilled:
+                _rollback_internal_payment(
+                    payment_id=pid,
+                    user_id=user_id,
+                    amount=amount,
+                    payment_method="ReferralBalance",
+                    plan_id=plan_id,
+                    reason="process_successful_payment returned False",
+                )
+                return {
+                    "ok": False,
+                    "error": "Не удалось создать ключ, средства возвращены на реферальный баланс",
+                }
             return {"ok": True, "message": "Оплачено с реферального баланса!", "paid": True}
 
         return {"ok": False, "error": "Метод не поддерживается"}
     except Exception as e:
         logger.error(f"API Create Payment Error: {e}")
         return {"ok": False, "error": str(e), "details": traceback.format_exc()}
+
+
+def _rollback_internal_payment(
+    *,
+    payment_id: str,
+    user_id: int,
+    amount: float,
+    payment_method: str,
+    plan_id: int | None = None,
+    reason: object = None,
+) -> bool:
+    """Идемпотентный откат списания Balance/ReferralBalance + лог PAYMENT_ROLLBACK."""
+    try:
+        from shop_bot.data_manager.remnawave_repository import refund_payment_once
+
+        did = bool(refund_payment_once(payment_id, int(user_id), float(amount), payment_method))
+    except Exception as e:
+        logger.error(
+            "PAYMENT_ROLLBACK failed payment_id=%s user_id=%s amount=%s plan_id=%s err=%s original=%s",
+            payment_id,
+            user_id,
+            amount,
+            plan_id,
+            e,
+            reason,
+            exc_info=True,
+        )
+        return False
+    logger.error(
+        "PAYMENT_ROLLBACK payment_id=%s user_id=%s amount=%.2f method=%s plan_id=%s applied=%s reason=%s",
+        payment_id,
+        user_id,
+        float(amount),
+        payment_method,
+        plan_id,
+        did,
+        reason,
+    )
+    return did
 
 
 def _platega_method_code_from_settings() -> int:

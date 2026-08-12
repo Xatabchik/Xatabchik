@@ -45,6 +45,7 @@ from shop_bot.data_manager.remnawave_repository import (
     create_payload_pending,
     claim_processed_payment,
     unclaim_processed_payment,
+    refund_payment_once,
     reset_pending_transaction,
     get_pending_status,
     get_pending_metadata,
@@ -316,6 +317,67 @@ async def _handle_key_creation_failure(
         description=description,
         action_label=action_label,
     )
+
+
+async def _abort_key_fulfillment(
+    bot: Bot,
+    *,
+    payment_id: str,
+    user_id: int,
+    price: float,
+    payment_method: str | None,
+    action_label: str,
+    exc: Exception | None,
+    factory_bot_id: int = 0,
+    processing_message=None,
+    fail_text: str = "❌ Не удалось создать ключ.",
+) -> bool:
+    """Компенсирующая транзакция при сбое выдачи ключа после оплаты.
+
+    1) снимает idempotency-lock (webhook может ретраить),
+    2) один раз возвращает средства (Balance / ReferralBalance / внешние → баланс),
+    3) уведомляет пользователя и админов.
+
+    Возвращает True, если refund реально зачислен (первичный вызов).
+    """
+    try:
+        rw_repo.unclaim_processed_payment(payment_id)
+        rw_repo.reset_pending_transaction(payment_id)
+    except Exception:
+        pass
+
+    did_refund = False
+    if price and float(price) > 0:
+        try:
+            did_refund = bool(
+                refund_payment_once(payment_id, int(user_id), float(price), payment_method)
+            )
+        except Exception:
+            did_refund = False
+        if did_refund:
+            logger.error(
+                "PAYMENT_ROLLBACK payment_id=%s user_id=%s amount=%.2f method=%s error=%s",
+                payment_id,
+                user_id,
+                float(price),
+                payment_method,
+                exc,
+            )
+
+    await _handle_key_creation_failure(
+        bot,
+        user_id=user_id,
+        action_label=action_label,
+        exc=exc,
+        refund=did_refund,
+        factory_bot_id=factory_bot_id,
+    )
+    if processing_message is not None:
+        try:
+            await processing_message.edit_text(fail_text)
+        except Exception:
+            pass
+    return did_refund
 
 async def _safe_edit_or_answer(message: types.Message, text: str, **kwargs) -> None:
     """Заменить `message.edit_text(...)` там, где предыдущее сообщение может
@@ -8662,7 +8724,14 @@ async def notify_admin_of_purchase(bot: Bot, metadata: dict):
     except Exception as e:
         logger.warning(f"notify_admin_of_purchase failed: {e}")
 
-async def process_successful_payment(bot: Bot, metadata: dict):
+async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
+    """Обработать успешную оплату и выдать услугу.
+
+    Returns:
+        True — услуга выдана (или платёж уже был обработан ранее).
+        False — выдача не удалась; для Balance/ReferralBalance/внешних методов
+        средства возвращены через ``refund_payment_once`` (идемпотентно).
+    """
     candidate_email = None  # default for gift flow
     logger.info("💳 Обрабатываем успешный платеж")
 
@@ -8704,14 +8773,14 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         payment_id = (metadata.get("payment_id") or metadata.get("transaction_id") or "").strip()
         if not payment_id:
             logger.error(f"process_successful_payment: missing payment_id in metadata; refusing to process: {metadata}")
-            return
+            return False
         try:
             if not claim_processed_payment(payment_id):
                 logger.info(f"process_successful_payment: duplicate payment ignored: {payment_id}")
-                return
+                return True
         except Exception as e:
             logger.error(f"process_successful_payment: idempotency check failed for {payment_id}: {e}", exc_info=True)
-            return
+            return False
 
                 # Franchise: accrue partner commission for payments made through a managed clone bot.
         try:
@@ -8734,7 +8803,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         
     except (ValueError, TypeError) as e:
         logger.error(f"FATAL: Could not parse metadata. Error: {e}. Metadata: {metadata}")
-        return
+        return False
 
     if chat_id_to_delete and message_id_to_delete:
         try:
@@ -9177,6 +9246,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
         chat_id=user_id,
         text=f"✅ Оплата получена! Обрабатываю ваш запрос на сервере \"{host_name}\"..."
     )
+    key_issued = False
     try:
         email = ""
 
@@ -9200,8 +9270,19 @@ async def process_successful_payment(bot: Bot, metadata: dict):
 
             existing_key = rw_repo.get_key_by_id(key_id)
             if not existing_key or not existing_key.get('key_email'):
-                await processing_message.edit_text("❌ Не удалось найти ключ для продления.")
-                return
+                await _abort_key_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label=_format_key_action_label(action, price=price, key_id=key_id),
+                    exc=RuntimeError("key not found for extend"),
+                    factory_bot_id=factory_bot_id,
+                    processing_message=processing_message,
+                    fail_text="❌ Не удалось найти ключ для продления.",
+                )
+                return False
             candidate_email = existing_key['key_email']
 
         # plan-based duration & limits
@@ -9329,60 +9410,32 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             )
         except Exception as exc:
             action_label = _format_key_action_label(action, price=price, key_id=key_id)
-            # Release the idempotency lock so the webhook provider can retry.
-            try:
-                rw_repo.unclaim_processed_payment(payment_id)
-                rw_repo.reset_pending_transaction(payment_id)
-            except Exception:
-                pass
-            # Actual refund: credit back to user balance for external payments.
-            did_refund = False
-            if price > 0 and (payment_method or '').strip().lower() not in ('balance', 'referralbalance', ''):
-                try:
-                    did_refund = bool(add_to_balance(user_id, float(price)))
-                except Exception:
-                    pass
-            await _handle_key_creation_failure(
+            await _abort_key_fulfillment(
                 bot,
+                payment_id=payment_id,
                 user_id=user_id,
+                price=price,
+                payment_method=payment_method,
                 action_label=action_label,
                 exc=exc,
-                refund=did_refund,
                 factory_bot_id=factory_bot_id,
+                processing_message=processing_message,
             )
-            try:
-                await processing_message.edit_text("❌ Не удалось создать ключ.")
-            except Exception:
-                pass
-            return
+            return False
         if action != "gift" and not result:
             action_label = _format_key_action_label(action, price=price, key_id=key_id)
-            # Release the idempotency lock so the webhook provider can retry.
-            try:
-                rw_repo.unclaim_processed_payment(payment_id)
-                rw_repo.reset_pending_transaction(payment_id)
-            except Exception:
-                pass
-            # Actual refund: credit back to user balance for external payments.
-            did_refund = False
-            if price > 0 and (payment_method or '').strip().lower() not in ('balance', 'referralbalance', ''):
-                try:
-                    did_refund = bool(add_to_balance(user_id, float(price)))
-                except Exception:
-                    pass
-            await _handle_key_creation_failure(
+            await _abort_key_fulfillment(
                 bot,
+                payment_id=payment_id,
                 user_id=user_id,
+                price=price,
+                payment_method=payment_method,
                 action_label=action_label,
                 exc=RuntimeError("key creation returned empty response"),
-                refund=did_refund,
                 factory_bot_id=factory_bot_id,
+                processing_message=processing_message,
             )
-            try:
-                await processing_message.edit_text("❌ Не удалось создать ключ.")
-            except Exception:
-                pass
-            return
+            return False
 
         if action == "new":
             key_id = rw_repo.record_key_from_payload(
@@ -9393,8 +9446,19 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 description=origin_desc,
             )
             if not key_id:
-                await processing_message.edit_text("❌ Не удалось сохранить ключ. Попробуйте позже.")
-                return
+                await _abort_key_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label=_format_key_action_label(action, price=price, key_id=0),
+                    exc=RuntimeError("failed to persist key after Remnawave create"),
+                    factory_bot_id=factory_bot_id,
+                    processing_message=processing_message,
+                    fail_text="❌ Не удалось сохранить ключ. Попробуйте позже.",
+                )
+                return False
             try:
                 if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
                     rw_repo.update_key(
@@ -9403,6 +9467,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                     )
             except Exception:
                 logger.warning(f"Не удалось установить дату сброса трафика для нового ключа {key_id}", exc_info=True)
+            key_issued = True
         
         elif action == "gift":
             # Создаём запись о неактивированном подарке
@@ -9472,20 +9537,65 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                             share_keyboard_builder.adjust(1)
                             
                             await processing_message.edit_text(gift_message, reply_markup=share_keyboard_builder.as_markup())
+                            key_issued = True
                         else:
-                            await processing_message.edit_text("❌ Не удалось создать запись о подарке.")
-                            return
+                            await _abort_key_fulfillment(
+                                bot,
+                                payment_id=payment_id,
+                                user_id=user_id,
+                                price=price,
+                                payment_method=payment_method,
+                                action_label=_format_key_action_label(action, price=price, key_id=key_id),
+                                exc=RuntimeError("failed to create gift record"),
+                                factory_bot_id=factory_bot_id,
+                                processing_message=processing_message,
+                                fail_text="❌ Не удалось создать запись о подарке.",
+                            )
+                            return False
                     else:
-                        await processing_message.edit_text("❌ Не удалось сохранить ключ подарка.")
-                        return
+                        await _abort_key_fulfillment(
+                            bot,
+                            payment_id=payment_id,
+                            user_id=user_id,
+                            price=price,
+                            payment_method=payment_method,
+                            action_label=_format_key_action_label(action, price=price, key_id=0),
+                            exc=RuntimeError("failed to persist gift key"),
+                            factory_bot_id=factory_bot_id,
+                            processing_message=processing_message,
+                            fail_text="❌ Не удалось сохранить ключ подарка.",
+                        )
+                        return False
                         
                 except Exception as e:
                     logger.error(f"Gift creation error: {e}", exc_info=True)
-                    await processing_message.edit_text("❌ Ошибка при создании подарка.")
-                    return
+                    await _abort_key_fulfillment(
+                        bot,
+                        payment_id=payment_id,
+                        user_id=user_id,
+                        price=price,
+                        payment_method=payment_method,
+                        action_label=_format_key_action_label(action, price=price, key_id=0),
+                        exc=e,
+                        factory_bot_id=factory_bot_id,
+                        processing_message=processing_message,
+                        fail_text="❌ Ошибка при создании подарка.",
+                    )
+                    return False
             else:
-                await processing_message.edit_text("❌ Не удалось создать ключ подарка.")
-                return
+                await _abort_key_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label=_format_key_action_label(action, price=price, key_id=0),
+                    exc=RuntimeError("gift key creation returned empty response"),
+                    factory_bot_id=factory_bot_id,
+                    processing_message=processing_message,
+                    fail_text="❌ Не удалось создать ключ подарка.",
+                )
+                return False
 
         elif action == "extend":
             if not rw_repo.update_key(
@@ -9497,8 +9607,19 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 tag=origin_tag,
                 description=origin_desc,
             ):
-                await processing_message.edit_text("❌ Не удалось обновить информацию о ключе. Попробуйте позже.")
-                return
+                await _abort_key_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label=_format_key_action_label(action, price=price, key_id=key_id),
+                    exc=RuntimeError("failed to update key after Remnawave extend"),
+                    factory_bot_id=factory_bot_id,
+                    processing_message=processing_message,
+                    fail_text="❌ Не удалось обновить информацию о ключе. Попробуйте позже.",
+                )
+                return False
             try:
                 if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
                     # Продление перезапускает цикл ежемесячного сброса трафика и снимает докупленный буст.
@@ -9511,6 +9632,7 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                     rw_repo.update_key(key_id, next_traffic_reset_at=None)
             except Exception:
                 logger.warning(f"Не удалось обновить дату сброса трафика при продлении ключа {key_id}", exc_info=True)
+            key_issued = True
 
 
         try:
@@ -9746,9 +9868,34 @@ async def process_successful_payment(bot: Bot, metadata: dict):
             await notify_admin_of_purchase(bot, metadata)
         except Exception as e:
             logger.warning(f"Failed to notify admin of purchase: {e}")
+
+        return True
         
     except Exception as e:
         logger.error(f"Error processing payment for user {user_id} on host {host_name}: {e}", exc_info=True)
+        if not key_issued:
+            try:
+                await _abort_key_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label=_format_key_action_label(action, price=price, key_id=key_id),
+                    exc=e,
+                    factory_bot_id=factory_bot_id,
+                    processing_message=processing_message if 'processing_message' in locals() else None,
+                    fail_text="❌ Ошибка при выдаче ключа.",
+                )
+            except Exception:
+                try:
+                    await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
+                except Exception:
+                    try:
+                        await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
+                    except Exception:
+                        pass
+            return False
         try:
             await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
         except Exception:
@@ -9756,6 +9903,8 @@ async def process_successful_payment(bot: Bot, metadata: dict):
                 await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
             except Exception:
                 pass
+        # Ключ уже выдан — считаем оплату успешной, несмотря на ошибку нотификации/пост-обработки.
+        return True
 
 
 

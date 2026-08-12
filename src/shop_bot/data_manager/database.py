@@ -4363,6 +4363,71 @@ def unclaim_processed_payment(payment_id: str) -> bool:
         return False
 
 
+def refund_payment_once(
+    payment_id: str,
+    user_id: int,
+    amount: float,
+    payment_method: str | None = None,
+) -> bool:
+    """Вернуть средства за невыданную услугу не более одного раза на payment_id.
+
+    Идемпотентность через ``processed_payments`` с ключом ``refund:{payment_id}`` —
+    повторный вызов (retry сети / двойной except) не зачислит сумму дважды.
+    Balance → add_to_balance; ReferralBalance → add_to_referral_balance;
+    прочие методы (внешние платежи) → add_to_balance (как раньше при сбое выдачи ключа).
+    """
+    pid = (payment_id or "").strip()
+    if not pid or amount is None:
+        return False
+    try:
+        amount_f = float(amount)
+    except (TypeError, ValueError):
+        return False
+    if amount_f <= 0:
+        return False
+
+    refund_key = f"refund:{pid}"
+    if not claim_processed_payment(refund_key):
+        logging.info(
+            "refund_payment_once: skip duplicate refund for payment_id=%s user_id=%s",
+            pid,
+            user_id,
+        )
+        return False
+
+    pm = (payment_method or "").strip().lower()
+    try:
+        if pm == "referralbalance":
+            ok = bool(add_to_referral_balance(int(user_id), amount_f))
+        else:
+            ok = bool(add_to_balance(int(user_id), amount_f))
+    except Exception as e:
+        logging.error(
+            "refund_payment_once: credit failed for payment_id=%s user_id=%s: %s",
+            pid,
+            user_id,
+            e,
+            exc_info=True,
+        )
+        ok = False
+
+    if not ok:
+        # позволить повторную попытку отката
+        try:
+            unclaim_processed_payment(refund_key)
+        except Exception:
+            pass
+        return False
+    logging.info(
+        "refund_payment_once: refunded %.2f via %s for payment_id=%s user_id=%s",
+        amount_f,
+        pm or "balance",
+        pid,
+        user_id,
+    )
+    return True
+
+
 def reset_pending_transaction(payment_id: str) -> bool:
     """Reset a completed pending transaction back to 'pending' to allow webhook retry."""
     pid = (payment_id or "").strip()
