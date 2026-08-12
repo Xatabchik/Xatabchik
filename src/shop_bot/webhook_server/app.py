@@ -134,6 +134,39 @@ def _parse_decimal_amount(value, *, log_prefix: str) -> Decimal | None:
         return None
 
 
+def _setting_flag_enabled(raw) -> bool:
+    return str(raw or "").strip().lower() in ("true", "1", "on", "yes", "y")
+
+
+def _pending_method_allowed(pending_meta: dict | None, *allowed: str) -> bool:
+    """True if pending metadata.payment_method matches one of the allowed provider names."""
+    if not isinstance(pending_meta, dict):
+        return False
+    method = str(pending_meta.get("payment_method") or "").strip().lower()
+    return method in {name.strip().lower() for name in allowed}
+
+
+def _pending_expected_amount(pending_meta: dict | None) -> Decimal | None:
+    if not isinstance(pending_meta, dict):
+        return None
+    raw = pending_meta.get("price")
+    if raw is None:
+        raw = pending_meta.get("amount_rub")
+    return _parse_decimal_amount(raw, log_prefix="pending amount")
+
+
+def _extract_platega_webhook_amount(payload: dict):
+    """Platega callback: top-level `amount`, with paymentDetails.amount as fallback."""
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("amount") is not None:
+        return payload.get("amount")
+    details = payload.get("paymentDetails") or payload.get("payment_details") or {}
+    if isinstance(details, dict) and details.get("amount") is not None:
+        return details.get("amount")
+    return None
+
+
 def _dispatch_payment_processing(metadata: dict) -> None:
     """Fulfill paid orders even when the polling bot loop isn't running.
 
@@ -5485,7 +5518,15 @@ def create_webhook_app(bot_controller_instance):
             if not all(k in form for k in required):
                 logger.warning(f"❌ Отсутствуют обязательные поля. Доступно: {list(form.keys())}")
                 return 'Bad Request', 400
-            
+
+            if not _setting_flag_enabled(get_setting('yoomoney_enabled')):
+                logger.warning("YooMoney webhook: yoomoney_enabled is off")
+                return 'Forbidden', 403
+
+            secret = (get_setting('yoomoney_secret') or '').strip()
+            if not secret:
+                logger.error("YooMoney webhook отключён: пустой yoomoney_secret")
+                return 'Forbidden', 403
 
             notification_type = form.get('notification_type', '')
             logger.info(f"📝 Тип уведомления: {notification_type}")
@@ -5499,7 +5540,6 @@ def create_webhook_app(bot_controller_instance):
                 logger.info("🧪 Игнорируем тестовый платеж (codepro=true)")
                 return 'OK', 200
             
-            secret = get_setting('yoomoney_secret') or ''
             signature_str = "&".join([
                 form.get('notification_type',''),
                 form.get('operation_id',''),
@@ -5513,14 +5553,45 @@ def create_webhook_app(bot_controller_instance):
             ])
             expected = hashlib.sha1(signature_str.encode('utf-8')).hexdigest()
             provided = (form.get('sha1_hash') or '').lower()
-            if expected != provided:
+            if not compare_digest(expected, provided):
                 logger.warning("🔐 Неверная подпись")
                 return 'Forbidden', 403
             
 
-            payment_id = form.get('label')
+            payment_id = (form.get('label') or '').strip()
             if not payment_id:
                 logger.warning("🏷️  Пустой label")
+                return 'OK', 200
+
+            pending_meta = None
+            try:
+                pending_meta = rw_repo.get_pending_metadata(payment_id)
+            except Exception as e:
+                logger.error(f"YooMoney webhook: failed to read pending for {payment_id}: {e}", exc_info=True)
+
+            if not pending_meta:
+                logger.warning(f"❌ Метаданные не найдены для платежа: {payment_id}")
+                return 'OK', 200
+
+            if not _pending_method_allowed(pending_meta, "YooMoney"):
+                logger.warning(
+                    f"YooMoney webhook: payment_id={payment_id} is not a YooMoney pending "
+                    f"(payment_method={pending_meta.get('payment_method')!r})"
+                )
+                return 'OK', 200
+
+            expected_amount = _pending_expected_amount(pending_meta)
+            got_amount = _parse_decimal_amount(
+                form.get('amount'),
+                log_prefix=f"YooMoney webhook payment_id={payment_id}",
+            )
+            if expected_amount is None or got_amount is None:
+                logger.warning(f"YooMoney webhook: amount missing/unparseable for payment_id={payment_id}")
+                return 'OK', 200
+            if got_amount != expected_amount:
+                logger.warning(
+                    f"YooMoney webhook: amount mismatch for {payment_id}: got={got_amount}, expected={expected_amount}"
+                )
                 return 'OK', 200
             
             logger.info(f"💰 Обрабатываем платеж: {payment_id}")
@@ -5551,11 +5622,17 @@ def create_webhook_app(bot_controller_instance):
                     "enabled": bool((get_setting('platega_merchant_id') or '') and (get_setting('platega_secret') or ''))
                 }), 200
 
-            merchant_id = request.headers.get("X-MerchantId", "")
-            secret = request.headers.get("X-Secret", "")
-            if (
-                merchant_id != (get_setting('platega_merchant_id') or '')
-                or secret != (get_setting('platega_secret') or '')
+            expected_merchant = (get_setting('platega_merchant_id') or '').strip()
+            expected_secret = (get_setting('platega_secret') or '').strip()
+            if not expected_merchant or not expected_secret:
+                logger.error("Platega webhook отключён: не настроены credentials")
+                return 'Forbidden', 403
+
+            merchant_id = request.headers.get("X-MerchantId") or ""
+            secret = request.headers.get("X-Secret") or ""
+            if not (
+                compare_digest(str(merchant_id), expected_merchant)
+                and compare_digest(str(secret), expected_secret)
             ):
                 return 'Unauthorized', 401
 
@@ -5576,6 +5653,37 @@ def create_webhook_app(bot_controller_instance):
 
             # Обрабатываем только успешное подтверждение
             if status_raw == 'CONFIRMED':
+                pending_meta = None
+                try:
+                    pending_meta = rw_repo.get_pending_metadata(payment_id)
+                except Exception as e:
+                    logger.error(f"Platega webhook: failed to read pending for {payment_id}: {e}", exc_info=True)
+
+                if not pending_meta:
+                    logger.warning(f"Platega webhook: no pending transaction for payment_id={payment_id}")
+                    return 'OK', 200
+
+                if not _pending_method_allowed(pending_meta, "Platega", "Platega Crypto"):
+                    logger.warning(
+                        f"Platega webhook: payment_id={payment_id} is not a Platega pending "
+                        f"(payment_method={pending_meta.get('payment_method')!r})"
+                    )
+                    return 'OK', 200
+
+                expected_amount = _pending_expected_amount(pending_meta)
+                got_amount = _parse_decimal_amount(
+                    _extract_platega_webhook_amount(payload),
+                    log_prefix=f"Platega webhook payment_id={payment_id}",
+                )
+                if expected_amount is None or got_amount is None:
+                    logger.warning(f"Platega webhook: amount missing/unparseable for payment_id={payment_id}")
+                    return 'OK', 200
+                if got_amount != expected_amount:
+                    logger.warning(
+                        f"Platega webhook: amount mismatch for {payment_id}: got={got_amount}, expected={expected_amount}"
+                    )
+                    return 'OK', 200
+
                 metadata = find_and_complete_pending_transaction(payment_id)
                 if metadata:
                     metadata.setdefault('payment_method', 'Platega')
@@ -5607,7 +5715,8 @@ def create_webhook_app(bot_controller_instance):
                 logger.error('CryptoBot webhook: cryptobot_token is not configured')
                 return 'Misconfigured', 500
 
-            raw_body = request.get_data(cache=False) or b''
+            # cache=True so HMAC and JSON see the same bytes (cache=False would drain the stream).
+            raw_body = request.get_data(cache=True) or b''
             signature = (request.headers.get('crypto-pay-api-signature') or request.headers.get('Crypto-Pay-API-Signature') or '').strip()
             if not signature:
                 logger.warning('CryptoBot webhook: missing crypto-pay-api-signature header')
@@ -5620,7 +5729,10 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning('CryptoBot webhook: invalid signature')
                 return 'Forbidden', 403
 
-            request_data = request.get_json(silent=True) or {}
+            try:
+                request_data = json.loads(raw_body.decode('utf-8')) if raw_body else {}
+            except Exception:
+                request_data = {}
             if not isinstance(request_data, dict):
                 return 'Bad Request', 400
 
@@ -5642,16 +5754,16 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning('CryptoBot webhook: invoice_paid but payload is empty')
                 return 'OK', 200
 
-            # Fetch invoice details from Crypto Pay API to validate status/amount
+            # Fetch invoice details from Crypto Pay API to validate status/amount.
+            # Crypto Pay returns { ok, result: { items: [...] } } — parse via _cryptobot_get_invoice.
             invoice = None
             if invoice_id_int is not None:
-                try:
-                    url = f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id_int}"
-                    resp = _http_json(url, headers={"Crypto-Pay-API-Token": token}, timeout=20)
-                    if isinstance(resp, dict) and resp.get('ok') and isinstance(resp.get('result'), list) and resp['result']:
-                        invoice = resp['result'][0]
-                except Exception as e:
-                    logger.error(f"CryptoBot webhook: failed to fetch invoice {invoice_id_int}: {e}", exc_info=True)
+                invoice = _cryptobot_get_invoice(invoice_id_int)
+                if not isinstance(invoice, dict):
+                    logger.warning(
+                        f"CryptoBot webhook: amount verification failed "
+                        f"(invoice fetch/parse returned nothing) invoice_id={invoice_id_int}"
+                    )
 
             if isinstance(invoice, dict):
                 status = (invoice.get('status') or '').strip().lower()
@@ -5685,6 +5797,12 @@ def create_webhook_app(bot_controller_instance):
                     if got_amount != expected_amount:
                         logger.warning(f"CryptoBot webhook: amount mismatch for {internal_payment_id}: got={got_amount}, expected={expected_amount}")
                         return 'OK', 200
+                elif pending_meta and not isinstance(invoice, dict):
+                    logger.warning(
+                        f"CryptoBot webhook: amount verification could not run for payment_id={internal_payment_id}; "
+                        f"refusing to complete pending without a verified invoice"
+                    )
+                    return 'OK', 200
 
                 metadata = find_and_complete_pending_transaction(internal_payment_id)
                 if not metadata:
@@ -5754,10 +5872,53 @@ def create_webhook_app(bot_controller_instance):
                 return 'Forbidden', 403
 
             if data.get('status') in ["paid", "paid_over"]:
-                metadata_str = data.get('description')
-                if not metadata_str: return 'Error', 400
-                
-                metadata = json.loads(metadata_str)
+                order_id = str(data.get('order_id') or '').strip()
+                if not order_id:
+                    # Legacy invoices stored payment_id only inside description JSON.
+                    try:
+                        desc_meta = json.loads(data.get('description') or '{}')
+                        if isinstance(desc_meta, dict):
+                            order_id = str(desc_meta.get('payment_id') or '').strip()
+                    except Exception:
+                        order_id = ''
+                if not order_id:
+                    logger.warning("Heleket webhook: missing order_id/payment_id")
+                    return 'OK', 200
+
+                pending_meta = None
+                try:
+                    pending_meta = rw_repo.get_pending_metadata(order_id)
+                except Exception as e:
+                    logger.error(f"Heleket webhook: failed to read pending for {order_id}: {e}", exc_info=True)
+
+                if not pending_meta:
+                    logger.warning(f"Heleket webhook: no pending transaction for order_id={order_id}")
+                    return 'OK', 200
+
+                if not _pending_method_allowed(pending_meta, "Heleket"):
+                    logger.warning(
+                        f"Heleket webhook: order_id={order_id} is not a Heleket pending "
+                        f"(payment_method={pending_meta.get('payment_method')!r})"
+                    )
+                    return 'OK', 200
+
+                expected_amount = _pending_expected_amount(pending_meta)
+                got_amount = _parse_decimal_amount(
+                    data.get('amount') if data.get('amount') is not None else data.get('payment_amount'),
+                    log_prefix=f"Heleket webhook order_id={order_id}",
+                )
+                if expected_amount is None or got_amount is None:
+                    logger.warning(f"Heleket webhook: amount missing/unparseable for order_id={order_id}")
+                    return 'OK', 200
+                if got_amount != expected_amount:
+                    logger.warning(
+                        f"Heleket webhook: amount mismatch for {order_id}: got={got_amount}, expected={expected_amount}"
+                    )
+                    return 'OK', 200
+
+                metadata = find_and_complete_pending_transaction(order_id)
+                if not metadata:
+                    return 'OK', 200
 
                 try:
                     _handle_promo_after_payment(metadata)
