@@ -6,7 +6,6 @@
 только из подписанных данных.
 """
 import json
-import sqlite3
 import time
 from urllib.parse import urlencode
 
