@@ -58,6 +58,8 @@ from shop_bot.data_manager.remnawave_repository import (
     get_plans_for_host,
     get_active_plans_for_host,
     redeem_promo_code,
+    reserve_promo_code,
+    PromoUnavailableError,
     check_promo_code_available,
     update_promo_code_status,
     record_key_from_payload,
@@ -815,6 +817,9 @@ async def _create_heleket_payment_request(
 
     try:
         create_payload_pending(payment_id, user_id, float(metadata["price"]), metadata)
+    except PromoUnavailableError:
+        logger.warning("Heleket: промокод больше недоступен, слот не зарезервирован")
+        return None
     except Exception as e:
         logger.warning(f"Heleket: не удалось создать pending: {e}")
 
@@ -971,6 +976,9 @@ async def _create_cryptobot_invoice(
     }
     try:
         create_payload_pending(payment_id, int(user_id), float(metadata["price"]), metadata)
+    except PromoUnavailableError:
+        logger.warning("CryptoBot: промокод больше недоступен, слот не зарезервирован")
+        return None
     except Exception as e:
         logger.warning(f"CryptoBot: не удалось создать pending для {payment_id}: {e}")
 
@@ -3587,6 +3595,8 @@ def get_user_router() -> Router:
         duration_days = int(plan.get('duration_days') or 0)
         duration_label = _format_duration_label(months, duration_days)
         payment_id = str(uuid.uuid4())
+        promo_code = (data.get("promo_code") or "").strip() if isinstance(data, dict) else ""
+        promo_discount = float(data.get("promo_discount") or 0) if promo_code else 0.0
         metadata = {
             "user_id": user_id,
             "months": months,
@@ -3599,8 +3609,14 @@ def get_user_router() -> Router:
             "customer_email": data.get('customer_email'),
             "payment_method": "YooMoney",
             "payment_id": payment_id,
+            "promo_code": promo_code,
+            "promo_discount": promo_discount,
         }
-        create_payload_pending(payment_id, user_id, float(price_rub), metadata)
+        try:
+            create_payload_pending(payment_id, user_id, float(price_rub), metadata)
+        except PromoUnavailableError:
+            await callback.message.edit_text("❌ Промокод больше недоступен. Выберите оплату без него или другой промокод.")
+            return
         pay_url = _build_yoomoney_link(wallet, price_rub, payment_id)
         await callback.message.edit_text(
             "Нажмите на кнопку ниже для оплаты:",
@@ -7429,6 +7445,9 @@ def get_user_router() -> Router:
             }
             try:
                 create_payload_pending(payment_id, int(user_id), float(price_float_for_metadata), metadata)
+            except PromoUnavailableError:
+                await callback.message.answer("❌ Промокод больше недоступен. Выберите оплату без него или другой промокод.")
+                return
             except Exception as e:
                 logger.warning(f"YooKassa: не удалось создать pending для {payment_id}: {e}")
 
@@ -7524,7 +7543,12 @@ def get_user_router() -> Router:
         }
 
         # сохраняем pending
-        create_payload_pending(payment_id, callback.from_user.id, float(base_price), metadata)
+        try:
+            create_payload_pending(payment_id, callback.from_user.id, float(base_price), metadata)
+        except PromoUnavailableError:
+            await callback.message.edit_text("❌ Промокод больше недоступен. Выберите оплату без него или другой промокод.")
+            await state.clear()
+            return
 
         desc = f"Подписка на {months} мес." if months else "Оплата подписки"
         pay_url, txid = await _create_platega_payment_link(amount_rub=base_price, payment_id=payment_id, description=desc)
@@ -8781,6 +8805,35 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         except Exception as e:
             logger.error(f"process_successful_payment: idempotency check failed for {payment_id}: {e}", exc_info=True)
             return False
+
+        promo_code_early = ""
+        try:
+            promo_code_early = (metadata.get("promo_code") or "").strip()
+        except Exception:
+            promo_code_early = ""
+        if promo_code_early:
+            try:
+                applied_early = float(metadata.get("promo_discount") or 0)
+            except Exception:
+                applied_early = 0.0
+            promo_ok, promo_err = reserve_promo_code(
+                promo_code_early,
+                user_id,
+                payment_id,
+                applied_amount=applied_early,
+            )
+            if promo_err or not promo_ok:
+                logger.warning(
+                    "process_successful_payment: promo reserve failed code=%s payment_id=%s err=%s",
+                    promo_code_early,
+                    payment_id,
+                    promo_err,
+                )
+                try:
+                    unclaim_processed_payment(payment_id)
+                except Exception:
+                    pass
+                return False
 
                 # Franchise: accrue partner commission for payments made through a managed clone bot.
         try:

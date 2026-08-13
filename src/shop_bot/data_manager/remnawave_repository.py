@@ -1,7 +1,8 @@
 import logging
 import sqlite3
+import time
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from shop_bot.data_manager import database
@@ -61,19 +62,51 @@ def get_current_factory_bot_id() -> int:
         return 0
 
 
+class PromoUnavailableError(Exception):
+    """Промокод нельзя зарезервировать (лимит / недействителен)."""
+
+    def __init__(self, reason: str):
+        self.reason = reason or "unavailable"
+        super().__init__(self.reason)
+
+
 def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) -> bool:
     """Create/update pending payload metadata.
 
     We inject `factory_bot_id` into metadata automatically so that:
     - successful webhooks can reply from the correct clone bot
     - partner commission can be accrued correctly
+
+    If metadata contains a promo_code, a usage slot is reserved atomically
+    before the pending row is written. Raises PromoUnavailableError when the
+    slot cannot be taken (limit already exhausted).
     """
     meta = dict(metadata or {})
     if "factory_bot_id" not in meta:
         fb = get_current_factory_bot_id()
         if fb:
             meta["factory_bot_id"] = int(fb)
-    return database.create_payload_pending(payment_id, user_id, amount_rub, meta)
+    promo_code = str(meta.get("promo_code") or "").strip()
+    reserved = False
+    if promo_code:
+        applied = meta.get("promo_discount") or 0
+        promo, err = reserve_promo_code(
+            promo_code,
+            user_id,
+            payment_id,
+            applied_amount=applied,
+        )
+        if err or not promo:
+            raise PromoUnavailableError(err or "unavailable")
+        meta["promo_code"] = promo.get("code") or promo_code
+        reserved = True
+    ok = database.create_payload_pending(payment_id, user_id, amount_rub, meta)
+    if not ok and reserved:
+        try:
+            release_promo_reservation(payment_id)
+        except Exception:
+            logger.warning("Failed to release promo reservation after pending insert failure: %s", payment_id)
+    return ok
 
 
 def _connect() -> sqlite3.Connection:
@@ -902,63 +935,367 @@ def list_promo_codes(include_inactive: bool = True) -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+PROMO_RESERVATION_TTL_HOURS = 24
+
+PROMO_ERROR_MESSAGES = {
+    "empty_code": "Введите промокод",
+    "not_found": "Промокод не найден",
+    "inactive": "Промокод не активен",
+    "not_started": "Акция еще не началась",
+    "expired": "Срок действия промокода истек",
+    "total_limit_reached": "Промокод больше недоступен",
+    "user_limit_reached": "Вы уже использовали этот промокод",
+    "unavailable": "Промокод больше недоступен",
+}
+
+
+def promo_error_message(reason: str | None) -> str:
+    return PROMO_ERROR_MESSAGES.get(reason or "", "Промокод больше недоступен")
+
+
+class _PromoTxnAbort(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _connect_promo_write() -> sqlite3.Connection:
+    """Write connection with BEGIN IMMEDIATE so promo limit updates serialize."""
+    conn = sqlite3.connect(database.DB_FILE, timeout=30.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA busy_timeout=30000;")
+    except Exception:
+        pass
+    return conn
+
+
+def _with_promo_write(work, attempts: int = 8):
+    last_err = None
+    for i in range(attempts):
+        conn = _connect_promo_write()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = work(conn)
+                conn.execute("COMMIT")
+                return result
+            except _PromoTxnAbort as abort:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                return None, abort.reason
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+        except sqlite3.OperationalError as e:
+            last_err = e
+            if "locked" in str(e).lower() and i < attempts - 1:
+                time.sleep(0.02 * (2 ** i))
+                continue
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    if last_err:
+        raise last_err
+    return None, "unavailable"
+
+
+def _promo_validity_error(promo: dict, now_dt: datetime | None = None) -> str | None:
+    if not promo.get("is_active"):
+        return "inactive"
+    now_dt = now_dt or datetime.utcnow()
+    valid_from = promo.get("valid_from")
+    if valid_from:
+        try:
+            if datetime.fromisoformat(str(valid_from)) > now_dt:
+                return "not_started"
+        except Exception:
+            pass
+    valid_until = promo.get("valid_until")
+    if valid_until:
+        try:
+            if datetime.fromisoformat(str(valid_until)) < now_dt:
+                return "expired"
+        except Exception:
+            pass
+    return None
+
+
+def _per_user_occupied(cursor: sqlite3.Cursor, code: str, user_id: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(1) FROM promo_code_usages WHERE code = ? AND user_id = ?",
+        (code, user_id),
+    )
+    used = int(cursor.fetchone()[0] or 0)
+    try:
+        cursor.execute(
+            """
+            SELECT COUNT(1) FROM promo_code_reservations
+            WHERE code = ? AND user_id = ? AND status = 'reserved'
+            """,
+            (code, user_id),
+        )
+        reserved = int(cursor.fetchone()[0] or 0)
+    except sqlite3.Error:
+        reserved = 0
+    return used + reserved
+
+
+def _fetch_promo_row(cursor: sqlite3.Cursor, code: str) -> dict | None:
+    cursor.execute(
+        """
+        SELECT code, discount_percent, discount_amount,
+               usage_limit_total, usage_limit_per_user,
+               used_total, valid_from, valid_until, is_active
+        FROM promo_codes
+        WHERE code = ?
+        """,
+        (code,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _atomic_increment_used_total(cursor: sqlite3.Cursor, code: str) -> int:
+    """Increment used_total only if the total limit still has a free slot.
+
+    Returns cursor.rowcount (0 → limit already exhausted / missing row).
+    """
+    cursor.execute(
+        """
+        UPDATE promo_codes
+        SET used_total = COALESCE(used_total, 0) + 1
+        WHERE code = ?
+          AND (usage_limit_total IS NULL OR COALESCE(used_total, 0) < usage_limit_total)
+        """,
+        (code,),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def _decrement_used_total(cursor: sqlite3.Cursor, code: str) -> None:
+    cursor.execute(
+        """
+        UPDATE promo_codes
+        SET used_total = CASE
+            WHEN COALESCE(used_total, 0) > 0 THEN used_total - 1
+            ELSE 0
+        END
+        WHERE code = ?
+        """,
+        (code,),
+    )
+
+
 def check_promo_code_available(code: str, user_id: int) -> tuple[dict | None, str | None]:
-    """Проверить возможность использования промокода, не изменяя лимиты."""
+    """Проверить возможность использования промокода, не изменяя лимиты.
+
+    Учитывает уже зарезервированные (ещё не оплаченные) слоты. Финальный
+    захват слота — атомарный reserve_promo_code / redeem_promo_code.
+    """
+    try:
+        release_stale_promo_reservations()
+    except Exception:
+        pass
     code_s = (code or "").strip().upper()
     if not code_s:
         return None, "empty_code"
     user_id_i = int(user_id)
     with _connect() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT code, discount_percent, discount_amount,
-                   usage_limit_total, usage_limit_per_user,
-                   used_total, valid_from, valid_until, is_active
-            FROM promo_codes
-            WHERE code = ?
-            """,
-            (code_s,),
-        )
-        promo_row = cursor.fetchone()
-        if promo_row is None:
+        promo = _fetch_promo_row(cursor, code_s)
+        if promo is None:
             return None, "not_found"
-        promo = dict(promo_row)
-        if not promo.get("is_active"):
-            return None, "inactive"
-        now_dt = datetime.utcnow()
-        valid_from = promo.get("valid_from")
-        if valid_from:
+        validity = _promo_validity_error(promo)
+        if validity == "expired":
             try:
-                if datetime.fromisoformat(str(valid_from)) > now_dt:
-                    return None, "not_started"
+                update_promo_code_status(code_s, is_active=False)
             except Exception:
                 pass
-        valid_until = promo.get("valid_until")
-        if valid_until:
-            try:
-                if datetime.fromisoformat(str(valid_until)) < now_dt:
-                    try:
-                        update_promo_code_status(code_s, is_active=False)
-                    except Exception:
-                        pass
-                    return None, "expired"
-            except Exception:
-                pass
+            return None, "expired"
+        if validity:
+            return None, validity
         usage_limit_total = promo.get("usage_limit_total")
         used_total = promo.get("used_total") or 0
         if usage_limit_total and used_total >= usage_limit_total:
             return None, "total_limit_reached"
         usage_limit_per_user = promo.get("usage_limit_per_user")
         if usage_limit_per_user:
-            cursor.execute(
-                "SELECT COUNT(1) FROM promo_code_usages WHERE code = ? AND user_id = ?",
-                (code_s, user_id_i),
-            )
-            per_user_count = cursor.fetchone()[0]
+            per_user_count = _per_user_occupied(cursor, code_s, user_id_i)
             if per_user_count >= usage_limit_per_user:
                 return None, "user_limit_reached"
         return promo, None
+
+
+def reserve_promo_code(
+    code: str,
+    user_id: int,
+    payment_id: str,
+    *,
+    applied_amount: float = 0.0,
+) -> tuple[dict | None, str | None]:
+    """Atomically reserve one promo usage slot for a pending payment.
+
+    Uses a single BEGIN IMMEDIATE transaction: UPDATE used_total ... WHERE
+    limit not reached, then per-user occupancy check. rowcount == 0 →
+    total_limit_reached. Idempotent for the same payment_id.
+    """
+    try:
+        release_stale_promo_reservations()
+    except Exception:
+        pass
+    code_s = (code or "").strip().upper()
+    if not code_s:
+        return None, "empty_code"
+    payment_id_s = (payment_id or "").strip()
+    if not payment_id_s:
+        return None, "unavailable"
+    user_id_i = int(user_id)
+
+    def _work(conn: sqlite3.Connection):
+        cursor = conn.cursor()
+        existing = None
+        try:
+            cursor.execute(
+                "SELECT code, status FROM promo_code_reservations WHERE payment_id = ?",
+                (payment_id_s,),
+            )
+            existing = cursor.fetchone()
+        except sqlite3.Error:
+            existing = None
+        if existing is not None:
+            status = str(existing["status"] if isinstance(existing, sqlite3.Row) else existing[1] or "")
+            if status in ("reserved", "redeemed"):
+                promo = _fetch_promo_row(cursor, code_s) or _fetch_promo_row(
+                    cursor,
+                    str(existing["code"] if isinstance(existing, sqlite3.Row) else existing[0]),
+                )
+                if promo:
+                    return promo, None
+                raise _PromoTxnAbort("not_found")
+        promo = _fetch_promo_row(cursor, code_s)
+        if promo is None:
+            raise _PromoTxnAbort("not_found")
+        validity = _promo_validity_error(promo)
+        if validity:
+            raise _PromoTxnAbort(validity)
+        if _atomic_increment_used_total(cursor, code_s) == 0:
+            raise _PromoTxnAbort("total_limit_reached")
+        usage_limit_per_user = promo.get("usage_limit_per_user")
+        if usage_limit_per_user:
+            occupied = _per_user_occupied(cursor, code_s, user_id_i)
+            if occupied >= int(usage_limit_per_user):
+                _decrement_used_total(cursor, code_s)
+                raise _PromoTxnAbort("user_limit_reached")
+        try:
+            cursor.execute(
+                """
+                INSERT INTO promo_code_reservations (payment_id, code, user_id, status)
+                VALUES (?, ?, ?, 'reserved')
+                """,
+                (payment_id_s, code_s, user_id_i),
+            )
+        except sqlite3.IntegrityError:
+            # Concurrent retry with the same payment_id: keep the increment
+            # only if a live reservation already exists; otherwise roll back.
+            cursor.execute(
+                "SELECT status FROM promo_code_reservations WHERE payment_id = ?",
+                (payment_id_s,),
+            )
+            row = cursor.fetchone()
+            status = str((row["status"] if row is not None and isinstance(row, sqlite3.Row) else (row[0] if row else "")))
+            if status not in ("reserved", "redeemed"):
+                _decrement_used_total(cursor, code_s)
+                raise _PromoTxnAbort("unavailable")
+        promo["used_total"] = int(promo.get("used_total") or 0) + 1
+        promo["reserved_payment_id"] = payment_id_s
+        promo["applied_amount"] = float(applied_amount or 0)
+        return promo, None
+
+    result = _with_promo_write(_work)
+    if isinstance(result, tuple):
+        return result
+    return None, "unavailable"
+
+
+def release_promo_reservation(payment_id: str) -> bool:
+    """Free a reserved slot (pending expired/cancelled). Never lets used_total go below 0."""
+    payment_id_s = (payment_id or "").strip()
+    if not payment_id_s:
+        return False
+
+    def _work(conn: sqlite3.Connection):
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT code, status FROM promo_code_reservations WHERE payment_id = ?",
+                (payment_id_s,),
+            )
+        except sqlite3.Error:
+            return False
+        row = cursor.fetchone()
+        if row is None:
+            return False
+        status = str(row["status"] if isinstance(row, sqlite3.Row) else row[1] or "")
+        if status != "reserved":
+            return False
+        code_s = str(row["code"] if isinstance(row, sqlite3.Row) else row[0])
+        cursor.execute(
+            """
+            UPDATE promo_code_reservations
+            SET status = 'released'
+            WHERE payment_id = ? AND status = 'reserved'
+            """,
+            (payment_id_s,),
+        )
+        if int(cursor.rowcount or 0) == 0:
+            return False
+        _decrement_used_total(cursor, code_s)
+        return True
+
+    result = _with_promo_write(_work)
+    if isinstance(result, tuple):
+        return False
+    return bool(result)
+
+
+def release_stale_promo_reservations(max_age_hours: float | None = None) -> int:
+    """Release reservations older than TTL so abandoned invoices do not hold the limit forever."""
+    hours = float(max_age_hours if max_age_hours is not None else PROMO_RESERVATION_TTL_HOURS)
+    if hours <= 0:
+        return 0
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat(sep=" ", timespec="seconds")
+    try:
+        with _connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT payment_id FROM promo_code_reservations
+                WHERE status = 'reserved' AND datetime(reserved_at) <= datetime(?)
+                """,
+                (cutoff,),
+            )
+            ids = [str(r[0] if not isinstance(r, sqlite3.Row) else r["payment_id"]) for r in cursor.fetchall()]
+    except sqlite3.Error:
+        return 0
+    released = 0
+    for pid in ids:
+        try:
+            if release_promo_reservation(pid):
+                released += 1
+        except Exception:
+            logger.warning("Failed to release stale promo reservation %s", pid, exc_info=True)
+    return released
 
 
 def update_promo_code_status(code: str, *, is_active: bool | None = None) -> bool:
@@ -992,93 +1329,125 @@ def delete_promo_code(code: str) -> bool:
 
 
 def redeem_promo_code(code: str, user_id: int, *, applied_amount: float, order_id: str | None = None) -> dict | None:
+    """Confirm a reserved slot (or atomically take one) and record the usage.
+
+    If a reservation for order_id already exists, used_total is NOT incremented
+    again. Legacy payments without a reservation take the slot with the same
+    UPDATE ... WHERE limit check (rowcount == 0 → None).
+    """
     code_s = (code or "").strip().upper()
     if not code_s:
         return None
     user_id_i = int(user_id)
     applied_amount_f = float(applied_amount)
+    order_id_s = (order_id or "").strip() or None
     now_iso = datetime.utcnow().isoformat()
-    with _connect() as conn:
+
+    def _work(conn: sqlite3.Connection):
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT code, discount_percent, discount_amount,
-                   usage_limit_total, usage_limit_per_user,
-                   used_total, valid_from, valid_until, is_active
-            FROM promo_codes
-            WHERE code = ?
-            """,
-            (code_s,),
-        )
-        promo_row = cursor.fetchone()
-        if promo_row is None:
-            return None
-        promo = dict(promo_row)
-        if not promo.get("is_active"):
-            return None
-        valid_from = promo.get("valid_from")
-        valid_until = promo.get("valid_until")
-        now_dt = datetime.utcnow()
-        if valid_from:
+        reservation = None
+        if order_id_s:
             try:
-                if datetime.fromisoformat(str(valid_from)) > now_dt:
-                    return None
-            except Exception:
-                pass
-        if valid_until:
-            try:
-                if datetime.fromisoformat(str(valid_until)) < now_dt:
-                    try:
-                        update_promo_code_status(code_s, is_active=False)
-                    except Exception:
-                        pass
-                    return None
-            except Exception:
-                pass
-        usage_limit_total = promo.get("usage_limit_total")
-        used_total = promo.get("used_total") or 0
-        if usage_limit_total and used_total >= usage_limit_total:
-            return None
-        usage_limit_per_user = promo.get("usage_limit_per_user")
-        per_user_count = 0
-        if usage_limit_per_user:
+                cursor.execute(
+                    "SELECT code, status FROM promo_code_reservations WHERE payment_id = ?",
+                    (order_id_s,),
+                )
+                reservation = cursor.fetchone()
+            except sqlite3.Error:
+                reservation = None
             cursor.execute(
-                "SELECT COUNT(1) FROM promo_code_usages WHERE code = ? AND user_id = ?",
-                (code_s, user_id_i),
+                "SELECT usage_id FROM promo_code_usages WHERE order_id = ?",
+                (order_id_s,),
             )
-            per_user_count = cursor.fetchone()[0]
-            if per_user_count >= usage_limit_per_user:
-                return None
+            existing_usage = cursor.fetchone()
+            if existing_usage is not None:
+                promo = _fetch_promo_row(cursor, code_s)
+                if promo:
+                    promo["redeemed_by"] = user_id_i
+                    promo["applied_amount"] = applied_amount_f
+                    promo["order_id"] = order_id_s
+                    promo["used_at"] = now_iso
+                    promo["user_used_count"] = _per_user_occupied(cursor, code_s, user_id_i)
+                return promo
+
+        promo = _fetch_promo_row(cursor, code_s)
+        if promo is None:
+            raise _PromoTxnAbort("not_found")
+
+        reserved_status = None
+        if reservation is not None:
+            reserved_status = str(
+                reservation["status"] if isinstance(reservation, sqlite3.Row) else reservation[1] or ""
+            )
+
+        if reserved_status == "reserved":
+            # Slot already counted in used_total at reserve time.
+            pass
+        elif reserved_status == "redeemed":
+            promo["redeemed_by"] = user_id_i
+            promo["applied_amount"] = applied_amount_f
+            promo["order_id"] = order_id_s
+            promo["used_at"] = now_iso
+            promo["user_used_count"] = _per_user_occupied(cursor, code_s, user_id_i)
+            return promo
+        else:
+            validity = _promo_validity_error(promo)
+            if validity:
+                raise _PromoTxnAbort(validity)
+            if _atomic_increment_used_total(cursor, code_s) == 0:
+                raise _PromoTxnAbort("total_limit_reached")
+            usage_limit_per_user = promo.get("usage_limit_per_user")
+            if usage_limit_per_user:
+                occupied = _per_user_occupied(cursor, code_s, user_id_i)
+                if occupied >= int(usage_limit_per_user):
+                    _decrement_used_total(cursor, code_s)
+                    raise _PromoTxnAbort("user_limit_reached")
+
         try:
             cursor.execute(
                 """
                 INSERT INTO promo_code_usages (code, user_id, applied_amount, order_id, used_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (code_s, user_id_i, applied_amount_f, order_id, now_iso),
+                (code_s, user_id_i, applied_amount_f, order_id_s, now_iso),
             )
+        except sqlite3.IntegrityError as e:
+            msg = str(e).upper()
+            if order_id_s and "UNIQUE" in msg:
+                promo = _fetch_promo_row(cursor, code_s) or promo
+                promo["redeemed_by"] = user_id_i
+                promo["applied_amount"] = applied_amount_f
+                promo["order_id"] = order_id_s
+                promo["used_at"] = now_iso
+                return promo
+            raise _PromoTxnAbort("unavailable")
+
+        if reserved_status == "reserved" and order_id_s:
             cursor.execute(
                 """
-                UPDATE promo_codes
-                SET used_total = COALESCE(used_total, 0) + 1
-                WHERE code = ?
+                UPDATE promo_code_reservations
+                SET status = 'redeemed'
+                WHERE payment_id = ? AND status = 'reserved'
                 """,
-                (code_s,),
+                (order_id_s,),
             )
-            conn.commit()
-            promo["used_total"] = used_total + 1
-            promo["usage_limit_per_user"] = usage_limit_per_user
-            promo["user_used_count"] = per_user_count + 1
-            promo["redeemed_by"] = user_id_i
-            promo["applied_amount"] = applied_amount_f
-            promo["order_id"] = order_id
-            promo["used_at"] = now_iso
-            return promo
-        except sqlite3.Error as e:
-            conn.rollback()
-            if str(e).startswith("FOREIGN KEY constraint failed"):
-                return None
-            raise
+
+        used_total = int(promo.get("used_total") or 0)
+        if reserved_status != "reserved":
+            used_total += 1
+        promo["used_total"] = used_total
+        promo["usage_limit_per_user"] = promo.get("usage_limit_per_user")
+        promo["user_used_count"] = _per_user_occupied(cursor, code_s, user_id_i)
+        promo["redeemed_by"] = user_id_i
+        promo["applied_amount"] = applied_amount_f
+        promo["order_id"] = order_id_s
+        promo["used_at"] = now_iso
+        return promo
+
+    result = _with_promo_write(_work)
+    if isinstance(result, tuple):
+        return None
+    return result
 
 # ===== Key Search Functions =====
 
