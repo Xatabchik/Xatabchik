@@ -1328,6 +1328,15 @@ def create_skip_email_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+def create_stars_invoice_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки под системной Pay ⭐: сначала Pay (требование Telegram), затем Назад."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Оплатить ⭐", pay=True)
+    builder.button(text="⬅️ Назад", callback_data="payment_stars_back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def create_ton_connect_keyboard(connect_url: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🚀 Открыть кошелек", url=connect_url)

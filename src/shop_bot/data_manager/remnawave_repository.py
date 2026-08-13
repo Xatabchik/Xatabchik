@@ -109,6 +109,17 @@ def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) 
     return ok
 
 
+def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> bool:
+    """Отменить неоплаченный pending и освободить слот промокода, если он был зарезервирован."""
+    ok = database.cancel_pending_transaction(payment_id, user_id=user_id)
+    if ok:
+        try:
+            release_promo_reservation(payment_id)
+        except Exception:
+            logger.warning("Failed to release promo reservation after cancelling pending %s", payment_id)
+    return ok
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(database.DB_FILE)
     conn.row_factory = sqlite3.Row

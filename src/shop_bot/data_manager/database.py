@@ -4463,6 +4463,47 @@ def refund_payment_once(
     return True
 
 
+def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> bool:
+    """Пометить неоплаченный pending как cancelled, чтобы Stars/вебхук его не закрыли.
+
+    Меняет только ``status='pending'``. Уже paid не трогает. Если передан user_id —
+    только строка этого владельца.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            if user_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE pending_transactions
+                    SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                    WHERE payment_id = ? AND status = 'pending' AND user_id = ?
+                    """,
+                    (pid, int(user_id)),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE pending_transactions
+                    SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                    WHERE payment_id = ? AND status = 'pending'
+                    """,
+                    (pid,),
+                )
+            return cursor.rowcount == 1
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to cancel pending transaction {pid}: {e}")
+        return False
+
+
 def reset_pending_transaction(payment_id: str) -> bool:
     """Reset a completed pending transaction back to 'pending' to allow webhook retry."""
     pid = (payment_id or "").strip()

@@ -43,6 +43,7 @@ from shop_bot.data_manager.remnawave_repository import (
     register_user_if_not_exists,
     get_next_key_number,
     create_payload_pending,
+    cancel_pending_transaction,
     claim_processed_payment,
     unclaim_processed_payment,
     refund_payment_once,
@@ -1134,6 +1135,7 @@ class PaymentProcess(StatesGroup):
     waiting_for_email = State()
     waiting_for_payment_method = State()
     waiting_for_promo_code = State()
+    waiting_for_stars_invoice = State()
 
  
 class TopUpProcess(StatesGroup):
@@ -3354,22 +3356,108 @@ def get_user_router() -> Router:
             logger.info(f"Создано ожидание Stars: ok={ok}, payment_id={payment_id}, user_id={user_id}, price_rub={price_rub}")
         except Exception as e:
             logger.error(f"Не удалось создать ожидание для Stars payment_id={payment_id}: {e}", exc_info=True)
+            ok = False
+        if not ok:
+            await callback.message.answer("❌ Не удалось подготовить оплату Stars. Попробуйте ещё раз.")
+            return
 
         title = f"Подписка на {duration_label}"
         description = f"Оплата VPN на {duration_label}"
         try:
-            await callback.message.answer_invoice(
+            await callback.message.delete()
+        except Exception:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        try:
+            invoice_msg = await callback.message.answer_invoice(
                 title=title,
                 description=description,
                 prices=[LabeledPrice(label=title, amount=stars_amount)],
                 payload=payment_id,
                 currency="XTR",
+                reply_markup=keyboards.create_stars_invoice_keyboard(),
             )
-            await state.clear()
+            invoice_chat_id = getattr(getattr(invoice_msg, "chat", None), "id", None) or callback.message.chat.id
+            invoice_message_id = getattr(invoice_msg, "message_id", None)
+            await state.update_data(
+                stars_payment_id=payment_id,
+                stars_invoice_chat_id=invoice_chat_id,
+                stars_invoice_message_id=invoice_message_id,
+            )
+            await state.set_state(PaymentProcess.waiting_for_stars_invoice)
         except Exception as e:
             logger.error(f"Не удалось создать счет Stars: {e}")
-            await callback.message.edit_text("❌ Не удалось создать счёт в Stars. Попробуйте другой способ оплаты.")
-            await state.clear()
+            try:
+                cancel_pending_transaction(payment_id, user_id)
+            except Exception:
+                pass
+            try:
+                await callback.message.answer("❌ Не удалось создать счёт в Stars. Попробуйте другой способ оплаты.")
+            except Exception:
+                pass
+
+    @user_router.callback_query(F.data == "payment_stars_back")
+    async def payment_stars_back_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+        user_id = callback.from_user.id
+        data = await state.get_data()
+        pid = str(data.get("stars_payment_id") or "").strip()
+        status = (get_pending_status(pid) or "").lower() if pid else ""
+
+        if status == "paid":
+            await callback.answer("Оплата уже подтверждена.", show_alert=True)
+            return
+
+        if pid and status == "pending":
+            meta = get_pending_metadata(pid) or {}
+            try:
+                owner_id = int(meta.get("user_id") or 0)
+            except (TypeError, ValueError):
+                owner_id = 0
+            if owner_id and owner_id != user_id:
+                await callback.answer("Счёт уже недействителен.", show_alert=True)
+                return
+            cancel_pending_transaction(pid, user_id)
+
+        if not data.get("plan_id"):
+            await callback.answer(
+                "Сессия оплаты устарела. Выберите тариф и способ оплаты заново.",
+                show_alert=True,
+            )
+            return
+
+        chat_id = data.get("stars_invoice_chat_id") or (
+            callback.message.chat.id if callback.message else None
+        )
+        message_id = data.get("stars_invoice_message_id") or (
+            callback.message.message_id if callback.message else None
+        )
+        if chat_id and message_id:
+            try:
+                await bot.delete_message(chat_id=int(chat_id), message_id=int(message_id))
+            except TelegramBadRequest:
+                try:
+                    await bot.edit_message_reply_markup(
+                        chat_id=int(chat_id), message_id=int(message_id), reply_markup=None
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        await state.update_data(
+            stars_payment_id=None,
+            stars_invoice_chat_id=None,
+            stars_invoice_message_id=None,
+        )
+        await state.set_state(PaymentProcess.waiting_for_payment_method)
+        await callback.answer()
+        try:
+            await show_payment_options(callback.message, state)
+        except Exception:
+            logger.error("payment_stars_back: failed to restore payment methods", exc_info=True)
 
     @user_router.callback_query(TopUpProcess.waiting_for_topup_method, F.data == "topup_pay_stars")
     async def topup_stars_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -3423,6 +3511,21 @@ def get_user_router() -> Router:
 
     @user_router.pre_checkout_query()
     async def pre_checkout_handler(pre_checkout_q: PreCheckoutQuery):
+        payload = ""
+        try:
+            payload = (pre_checkout_q.invoice_payload or "").strip()
+        except Exception:
+            payload = ""
+        status = (get_pending_status(payload) or "").lower() if payload else ""
+        if status in {"cancelled", "canceled", "paid"}:
+            try:
+                await pre_checkout_q.answer(
+                    ok=False,
+                    error_message="Этот счёт отменён. Выберите способ оплаты заново.",
+                )
+            except Exception:
+                pass
+            return
         try:
             await pre_checkout_q.answer(ok=True)
         except Exception:
@@ -3430,12 +3533,16 @@ def get_user_router() -> Router:
 
 
     @user_router.message(F.successful_payment)
-    async def stars_success_handler(message: types.Message, bot: Bot):
+    async def stars_success_handler(message: types.Message, bot: Bot, state: FSMContext):
         try:
             payload = message.successful_payment.invoice_payload if message.successful_payment else None
         except Exception:
             payload = None
         if not payload:
+            return
+        status = (get_pending_status(payload) or "").lower()
+        if status in {"cancelled", "canceled"}:
+            logger.info(f"Платеж Stars: игнорируем отменённый invoice payload={payload}")
             return
         metadata = find_and_complete_pending_transaction(payload)
         if not metadata:
@@ -3482,6 +3589,10 @@ def get_user_router() -> Router:
         except Exception:
             pass
         await process_successful_payment(bot, metadata)
+        try:
+            await state.clear()
+        except Exception:
+            pass
 
 
 
@@ -7937,6 +8048,30 @@ def get_user_router() -> Router:
 
         await state.clear()
         await process_successful_payment(bot, metadata)
+
+    _STALE_PAY_CALLBACKS = {
+        "pay_balance",
+        "pay_referral_balance",
+        "pay_stars",
+        "pay_yookassa",
+        "pay_platega",
+        "pay_cryptobot",
+        "pay_heleket",
+        "pay_yoomoney",
+        "pay_tonconnect",
+    }
+
+    @user_router.callback_query(F.data.in_(_STALE_PAY_CALLBACKS))
+    async def stale_payment_method_callback(callback: types.CallbackQuery):
+        """Устаревшие pay_* после смены FSM (например, после Stars invoice).
+
+        Регистрируется после штатных обработчиков waiting_for_payment_method,
+        чтобы не перехватывать живой сценарий выбора метода.
+        """
+        await callback.answer(
+            "Сессия оплаты устарела. Выберите тариф и способ оплаты заново.",
+            show_alert=True,
+        )
 
 
 
