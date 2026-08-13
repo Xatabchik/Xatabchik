@@ -8104,7 +8104,8 @@ def create_managed_bot(
 ) -> tuple[bool, str, int | None]:
     """Register a managed bot.
 
-    If the telegram bot user id already exists, update token/username/owner.
+    If the telegram bot user id already exists, the current owner may rotate
+    token/username. A different user cannot take over ``owner_telegram_id``.
     """
     token_s = (token or "").strip()
     if not token_s:
@@ -8124,15 +8125,22 @@ def create_managed_bot(
             row = cur.fetchone()
             if row:
                 bot_id = int(row[0])
+                existing_owner = int(row[1] or 0)
+                if existing_owner != owner_id:
+                    return False, "Этот бот уже зарегистрирован другим владельцем.", None
+                # Same owner: allow token rotation. Owner is pinned in WHERE
+                # so a concurrent takeover cannot win the UPDATE.
                 cur.execute(
                     """
                     UPDATE managed_bots
-                    SET token = ?, username = ?, owner_telegram_id = ?, referrer_bot_id = COALESCE(?, referrer_bot_id), is_active = 1
-                    WHERE id = ?
+                    SET token = ?, username = ?, referrer_bot_id = COALESCE(?, referrer_bot_id), is_active = 1
+                    WHERE id = ? AND owner_telegram_id = ?
                     """,
-                    (token_s, (username or None), owner_id, ref_bot_id, bot_id),
+                    (token_s, (username or None), ref_bot_id, bot_id, owner_id),
                 )
                 conn.commit()
+                if cur.rowcount <= 0:
+                    return False, "Этот бот уже зарегистрирован другим владельцем.", None
                 return True, "Бот обновлён.", bot_id
 
             cur.execute(
@@ -8145,6 +8153,9 @@ def create_managed_bot(
             conn.commit()
             bot_id = int(cur.lastrowid)
             return True, "Бот создан.", bot_id
+    except sqlite3.IntegrityError:
+        # Параллельный INSERT с тем же telegram_bot_user_id (UNIQUE).
+        return False, "Этот бот уже зарегистрирован другим владельцем.", None
     except sqlite3.Error as e:
         logger.error(f"create_managed_bot failed: {e}")
         return False, "Ошибка БД при создании бота.", None
