@@ -1969,10 +1969,22 @@ async def api_telegram_direct_auth(request: Request, req: TelegramDirectAuthRequ
         return JSONResponse({"ok": False, "error": "Auth error"}, status_code=500)
 
 def _validate_password(password: str) -> str | None:
-    if len(password) < 5:
-        return "Пароль должен содержать минимум 5 символов"
+    """Проверка пароля при регистрации / сбросе / смене.
+
+    Раньше хватало 5 символов без цифр («ababa») — это принималось.
+    Существующие аккаунты с таким паролем по-прежнему входят (login
+    политику не применяет); новые пароли должны быть длиннее и смешанные.
+    """
+    if not isinstance(password, str):
+        password = str(password or "")
+    if len(password) < 8:
+        return "Пароль должен содержать минимум 8 символов"
     if password.isdigit():
         return "Пароль не должен состоять только из цифр"
+    if not any(c.isalpha() for c in password):
+        return "Пароль должен содержать хотя бы одну букву"
+    if not any(c.isdigit() for c in password):
+        return "Пароль должен содержать хотя бы одну цифру"
     if len(set(password)) < 2:
         return "Пароль слишком простой — используйте разные символы"
     return None

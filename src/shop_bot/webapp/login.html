@@ -322,13 +322,23 @@
                 }
 
                 if (isRegister) {
-                    if (password.length < 5) {
-                        emailError.textContent = "Пароль должен содержать минимум 5 символов";
+                    if (password.length < 8) {
+                        emailError.textContent = "Пароль должен содержать минимум 8 символов";
                         emailError.classList.remove('hidden');
                         return;
                     }
                     if (/^\d+$/.test(password)) {
                         emailError.textContent = "Пароль не должен состоять только из цифр";
+                        emailError.classList.remove('hidden');
+                        return;
+                    }
+                    if (!/[A-Za-zА-Яа-яЁё]/.test(password)) {
+                        emailError.textContent = "Пароль должен содержать хотя бы одну букву";
+                        emailError.classList.remove('hidden');
+                        return;
+                    }
+                    if (!/\d/.test(password)) {
+                        emailError.textContent = "Пароль должен содержать хотя бы одну цифру";
                         emailError.classList.remove('hidden');
                         return;
                     }
