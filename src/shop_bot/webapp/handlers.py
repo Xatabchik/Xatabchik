@@ -10,6 +10,8 @@ from pydantic import BaseModel
 import uuid
 import asyncio
 import time
+import threading
+from collections import deque
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -69,6 +71,49 @@ TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 24 * 60 * 60
 # Rate-limit auth endpoints to reduce brute-force of tokens / initData replay.
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
 AUTH_RATE_LIMIT = "30/minute"
+
+# Дополнительно к IP: один и тот же email нельзя молотить с разных адресов
+# (SlowAPI считает только get_remote_address). Лимит тот же 30/мин, чтобы
+# не ужесточать UX; измерение идёт по нормализованному адресу, существующий
+# и несуществующий email считаются одинаково (без enumeration через 429).
+EMAIL_AUTH_PER_EMAIL_LIMIT = 30
+EMAIL_AUTH_PER_EMAIL_WINDOW_SECONDS = 60.0
+_EMAIL_AUTH_HITS: dict[str, deque[float]] = {}
+_EMAIL_AUTH_HITS_LOCK = threading.Lock()
+
+
+def _email_auth_rate_limit_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": f"Rate limit exceeded: {EMAIL_AUTH_PER_EMAIL_LIMIT} per 1 minute",
+        },
+        status_code=429,
+    )
+
+
+def _email_auth_rate_limited(email: str) -> bool:
+    """True, если по этому email уже исчерпан EMAIL_AUTH_PER_EMAIL_LIMIT за окно."""
+    key = (email or "").strip().lower()
+    if not key:
+        return False
+    now = time.time()
+    window = float(EMAIL_AUTH_PER_EMAIL_WINDOW_SECONDS)
+    limit = int(EMAIL_AUTH_PER_EMAIL_LIMIT)
+    with _EMAIL_AUTH_HITS_LOCK:
+        q = _EMAIL_AUTH_HITS.setdefault(key, deque())
+        while q and now - q[0] > window:
+            q.popleft()
+        if len(q) >= limit:
+            return True
+        q.append(now)
+        return False
+
+
+def _reject_if_email_auth_rate_limited(email: str) -> JSONResponse | None:
+    if _email_auth_rate_limited(email):
+        return _email_auth_rate_limit_response()
+    return None
 
 
 def _resolve_user_from_request_token(data: dict, request: Request) -> dict | None:
@@ -2048,6 +2093,10 @@ async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool
 async def api_email_register(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
 
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
+
     pw_err = _validate_password(req.password)
     if pw_err:
         return {"ok": False, "error": pw_err}
@@ -2072,6 +2121,9 @@ async def api_email_register(request: Request, req: EmailAuthRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_verify(request: Request, req: EmailVerifyRequest):
     from shop_bot.data_manager import database
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     user = database.get_user_by_email(req.email)
     code = (req.code or "").strip()
     # Не раскрываем, существует ли email. Код обязателен всегда: раньше при
@@ -2090,6 +2142,9 @@ async def api_email_verify(request: Request, req: EmailVerifyRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_resend(request: Request, req: EmailResendRequest):
     from shop_bot.data_manager import database
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     user = database.get_user_by_email(req.email)
     if not user or user.get('email_verified'):
         return {"ok": True}
@@ -2114,6 +2169,9 @@ async def api_email_resend(request: Request, req: EmailResendRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_login(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     user = database.get_user_by_email(req.email)
     if not user or not database.verify_password(req.password, user.get('auth_pass')):
         return {"ok": False, "error": "Неверный email или пароль"}
@@ -2132,6 +2190,9 @@ async def api_email_login(request: Request, req: EmailAuthRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_reset_request(request: Request, req: PasswordResetRequest):
     from shop_bot.data_manager import database
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     user = database.get_user_by_email(req.email)
     # Всегда один ответ: иначе «Email не найден» / «не синхронизирован»
     # выдают, зарегистрирован ли адрес и привязан ли он к Telegram.
@@ -2166,6 +2227,9 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_reset_check(request: Request, req: PasswordResetCheckRequest):
     import time
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     email_lower = req.email.lower().strip()
     if email_lower not in PASSWORD_RESET_TOKENS:
         return {"ok": False, "error": "Код не запрашивался или истёк"}
@@ -2183,6 +2247,9 @@ async def api_email_reset_check(request: Request, req: PasswordResetCheckRequest
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_reset_verify(request: Request, req: PasswordResetVerifyRequest):
     import time
+    limited = _reject_if_email_auth_rate_limited(req.email)
+    if limited:
+        return limited
     email_lower = req.email.lower().strip()
     if email_lower not in PASSWORD_RESET_TOKENS:
         return {"ok": False, "error": "Код не запрашивался или истёк"}
