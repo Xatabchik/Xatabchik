@@ -2421,6 +2421,19 @@ def _ensure_promo_tables(cursor: sqlite3.Cursor) -> None:
         )
     except Exception:
         pass
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS promo_code_reservations (
+            payment_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            reserved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT NOT NULL DEFAULT 'reserved',
+            FOREIGN KEY(code) REFERENCES promo_codes(code) ON DELETE CASCADE
+        )
+        """
+    )
+    _ensure_index(cursor, "idx_promo_reservations_code_user", "promo_code_reservations", "code, user_id, status")
 
 
 def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:

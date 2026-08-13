@@ -47,6 +47,17 @@ from urllib.parse import urlencode, quote
 
 logger = logging.getLogger(__name__)
 
+
+def _create_payload_pending_or_error(payment_id, user_id, amount, meta):
+    """Создать pending; если слот промокода уже занят — вернуть ошибку для API."""
+    try:
+        ok = create_payload_pending(payment_id, user_id, amount, meta)
+    except rw_repo.PromoUnavailableError as e:
+        return {"ok": False, "error": rw_repo.promo_error_message(e.reason)}
+    if not ok:
+        return {"ok": False, "error": "Не удалось создать платёж"}
+    return None
+
 # In-memory storage for temporary auth tokens: {token: user_id}
 TEMP_AUTH_TOKENS = {}
 
@@ -2519,6 +2530,8 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
         promo_discount_amount = 0.0
         if req.promo_code and action_name in ("new", "extend", "gift"):
             promo, error = rw_repo.check_promo_code_available(req.promo_code, user_id)
+            if error in ("total_limit_reached", "user_limit_reached"):
+                return {"ok": False, "error": rw_repo.promo_error_message(error)}
             if promo and (promo.get('discount_percent') or promo.get('discount_amount')):
                 price_before_promo = final_price
                 if promo.get('discount_percent'):
@@ -2543,7 +2556,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-            create_payload_pending(pid, user_id, float(final_price), meta)
+            pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+            if pending_err:
+                return pending_err
             comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
             payload = {
                 "amount": {"value": f"{final_price:.2f}", "currency": "RUB"},
@@ -2574,7 +2589,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-            create_payload_pending(pid, user_id, float(final_price), meta)
+            pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+            if pending_err:
+                return pending_err
             desc = f"Order {pid}"
             try:
                 platega = PlategaAPI(mid, key)
@@ -2599,7 +2616,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-            create_payload_pending(pid, user_id, float(final_price), meta)
+            pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+            if pending_err:
+                return pending_err
             desc = f"Order {pid}"
             try:
                 platega = PlategaAPI(mid, key)
@@ -2622,7 +2641,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-             create_payload_pending(pid, user_id, float(final_price), meta)
+             pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+             if pending_err:
+                 return pending_err
              # payload_str format MUST match what bot expects. Using a generic format for now or just ID
              # safe encoded payload
              payload_str = f"{pid}" 
@@ -2649,7 +2670,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-            create_payload_pending(pid, user_id, float(final_price), meta)
+            pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+            if pending_err:
+                return pending_err
             
             try:
                 result = await create_heleket_payment_request(
@@ -2692,7 +2715,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-             create_payload_pending(pid, user_id, float(final_price), meta)
+             pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+             if pending_err:
+                 return pending_err
              desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
              link = _build_yoomoney_link(wallet, Decimal(str(final_price)), pid, desc)
              
@@ -2720,7 +2745,9 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
             }
-             create_payload_pending(pid, user_id, float(final_price), meta)
+             pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+             if pending_err:
+                 return pending_err
              title = f"{'Подписка' if action_name == 'new' else 'Продление'} на {months} мес."
              desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
              await _send_invoice_stars(user_id, title, desc, pid, stars_amount)
