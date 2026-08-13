@@ -78,7 +78,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_referral_rank_and_count,
     get_all_users,
     set_terms_agreed,
-    set_referral_start_bonus_received,
+    claim_referral_start_bonus,
     set_referral_trial_day_bonus_received,
     set_trial_used,
     set_key_auto_renew,
@@ -1425,7 +1425,7 @@ async def _maybe_pay_referral_start_bonus(bot: Bot, user_id: int, referrer_id: i
         return
 
     user_data = get_user(user_id)
-    if not user_data or user_data.get('referral_start_bonus_received'):
+    if not user_data:
         return
 
     try:
@@ -1443,6 +1443,15 @@ async def _maybe_pay_referral_start_bonus(bot: Bot, user_id: int, referrer_id: i
     if start_bonus <= 0:
         return
 
+    # Claim BEFORE credit: иначе два параллельных /start оба видят флаг=0 и
+    # дважды начисляют одну и ту же сумму.
+    try:
+        claimed = claim_referral_start_bonus(user_id)
+    except Exception:
+        claimed = False
+    if not claimed:
+        return
+
     try:
         add_to_referral_balance(referrer_id, float(start_bonus))
     except Exception as e:
@@ -1452,11 +1461,6 @@ async def _maybe_pay_referral_start_bonus(bot: Bot, user_id: int, referrer_id: i
         add_to_referral_balance_all(referrer_id, float(start_bonus))
     except Exception as e:
         logger.warning(f"Реферальный стартовый бонус: не удалось увеличить referral_balance_all для {referrer_id}: {e}")
-
-    try:
-        set_referral_start_bonus_received(user_id)
-    except Exception:
-        pass
 
     try:
         display_name = user_data.get("username") or str(user_id)
