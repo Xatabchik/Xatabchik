@@ -7,6 +7,7 @@ from shop_bot.data_manager.remnawave_repository import get_setting, get_user_key
 import os
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
+import html
 import uuid
 import asyncio
 import time
@@ -4313,23 +4314,92 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
         logger.error(f"Error searching keys: {e}")
         return {"ok": False, "error": str(e)}
 
+def _html_esc(value) -> str:
+    """Экранировать значение для вставки в HTML-текст или атрибут (CWE-79)."""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+_PUBLIC_FALLBACK_CSP = (
+    "default-src 'none'; "
+    "img-src 'self' https: data:; "
+    "style-src 'unsafe-inline'; "
+    "script-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'"
+)
+_GIFT_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _public_fallback_response(content: str, status_code: int = 200) -> HTMLResponse:
+    return HTMLResponse(
+        content=content,
+        status_code=status_code,
+        headers={"Content-Security-Policy": _PUBLIC_FALLBACK_CSP},
+    )
+
+
+def _parse_public_referrer_id(referrer_id: str) -> int | None:
+    """Только положительный int. Невалидный path не должен попадать в HTML/URL."""
+    try:
+        rid = int(str(referrer_id).strip())
+    except (TypeError, ValueError):
+        return None
+    if rid <= 0:
+        return None
+    return rid
+
+
+def _safe_public_gift_code(gift_code: str | None) -> str | None:
+    raw = (gift_code or "").strip()
+    if _GIFT_CODE_RE.fullmatch(raw):
+        return raw
+    return None
+
+
+def _telegram_bot_deeplink(bot_username: str, start_payload: str | None = None) -> str:
+    user = (bot_username or "").strip()
+    if not user:
+        return ""
+    if start_payload:
+        return f"https://t.me/{user}?start={start_payload}"
+    return f"https://t.me/{user}"
+
+
+def _html_telegram_btn(deeplink: str, label: str) -> str:
+    if not deeplink:
+        return ""
+    return f"<a class='btn' href='{_html_esc(deeplink)}'>{_html_esc(label)}</a>"
+
+
 def _referral_fallback_html(project_name: str, logo_url: str, deeplink: str, error_note: str = "") -> str:
     """Резервная страница рефссылки (реферер не найден/бот не настроен) —
     без единого сценария pending action, просто ссылка в Telegram, как раньше."""
+    name = _html_esc(project_name)
+    note = _html_esc(
+        error_note or "Вас пригласили воспользоваться VPN-сервисом. Нажмите кнопку ниже, чтобы начать через Telegram."
+    )
+    logo = _html_esc(logo_url) if logo_url else ""
+    logo_html = f"<img class='logo' src='{logo}' alt='logo'>" if logo else ""
+    if deeplink and not error_note:
+        action_html = _html_telegram_btn(deeplink, "Открыть в Telegram")
+    elif error_note and not deeplink:
+        action_html = "<p style='color:#f87171'>Бот не настроен.</p>"
+    else:
+        action_html = ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{project_name} — Реферальная ссылка</title>
+<title>{name} — Реферальная ссылка</title>
 <style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}}
 .card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
 h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
 .btn{{display:block;background:#fff;color:#000;font-weight:700;text-decoration:none;padding:.9rem 1.5rem;border-radius:1rem;font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;transition:.2s}}
 .btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}</style></head>
 <body><div class="card">
-{"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else ""}
-<h2>{project_name}</h2>
-<p>{error_note or "Вас пригласили воспользоваться VPN-сервисом. Нажмите кнопку ниже, чтобы начать через Telegram."}</p>
-{"<a class='btn' href='" + deeplink + "'>Открыть в Telegram</a>" if (deeplink and not error_note) else ("" if not error_note else "<p style='color:#f87171'>Бот не настроен.</p>" if not deeplink else "")}
+{logo_html}
+<h2>{name}</h2>
+<p>{note}</p>
+{action_html}
 </div></body></html>"""
 
 
@@ -4354,34 +4424,46 @@ async def web_referral_page(referrer_id: str, request: Request):
             or "VPN Bot"
         )
         logo_url = webapp_settings.get("webapp_logo") or ""
-        deeplink = f"https://t.me/{bot_username}?start=ref_{referrer_id}" if bot_username else ""
 
-        try:
-            rid = int(referrer_id)
-        except (TypeError, ValueError):
-            rid = None
+        rid = _parse_public_referrer_id(referrer_id)
+        if rid is None:
+            # Невалидный path не отражаем в HTML/deeplink (CWE-79).
+            deeplink = _telegram_bot_deeplink(bot_username)
+            return _public_fallback_response(
+                _referral_fallback_html(project_name, logo_url, deeplink)
+            )
 
-        referrer = get_user(rid) if rid else None
+        deeplink = _telegram_bot_deeplink(bot_username, f"ref_{rid}")
+        referrer = get_user(rid)
         if not referrer:
-            return HTMLResponse(content=_referral_fallback_html(project_name, logo_url, deeplink))
+            return _public_fallback_response(
+                _referral_fallback_html(project_name, logo_url, deeplink)
+            )
 
         from shop_bot.data_manager import database
         token = database.create_pending_action("referral", referrer_id=rid)
         if not token:
-            return HTMLResponse(content=_referral_fallback_html(project_name, logo_url, deeplink))
+            return _public_fallback_response(
+                _referral_fallback_html(project_name, logo_url, deeplink)
+            )
 
         return RedirectResponse(url=f"/?pending_token={token}", status_code=302)
     except Exception as e:
         logger.error(f"Referral page error: {e}")
-        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
+        return _public_fallback_response("<h1>Error</h1>", status_code=500)
 
 def _gift_fallback_html(project_name: str, logo_url: str, title: str, desc: str, action_html: str = "") -> str:
     """Резервная страница подарка (не найден/уже активирован) — как и раньше,
     без pending action, потому что действие в этих случаях всё равно не имеет смысла."""
+    name = _html_esc(project_name)
+    safe_title = _html_esc(title)
+    safe_desc = _html_esc(desc)
+    logo = _html_esc(logo_url) if logo_url else ""
+    logo_html = f"<img class='logo' src='{logo}' alt='logo'>" if logo else "<div class='gift-icon'>🎁</div>"
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{project_name} — {title}</title>
+<title>{name} — {safe_title}</title>
 <style>body{{margin:0;background:#0d0d0d;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}}
 .card{{background:#1a1a1a;border:1px solid rgba(255,255,255,.08);border-radius:2rem;padding:2.5rem;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
 h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;margin:.75rem 0 1.5rem}}
@@ -4389,9 +4471,9 @@ h2{{margin:.5rem 0 .25rem;font-size:1.3rem}} p{{color:#aaa;font-size:.85rem;marg
 .btn:hover{{opacity:.85}} img.logo{{width:72px;height:72px;border-radius:1rem;margin-bottom:1rem;object-fit:contain}}
 .gift-icon{{font-size:3rem;margin-bottom:.5rem}}</style></head>
 <body><div class="card">
-{"<img class='logo' src='" + logo_url + "' alt='logo'>" if logo_url else "<div class='gift-icon'>🎁</div>"}
-<h2>{title}</h2>
-<p>{desc}</p>
+{logo_html}
+<h2>{safe_title}</h2>
+<p>{safe_desc}</p>
 {action_html}
 </div></body></html>"""
 
@@ -4422,16 +4504,20 @@ async def web_gift_page(gift_code: str, request: Request):
         )
         logo_url = webapp_settings.get("webapp_logo") or ""
 
-        gift = get_gift_by_code(gift_code) if gift_code else None
-        deeplink = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
+        safe_code = _safe_public_gift_code(gift_code)
+        gift = get_gift_by_code(safe_code) if safe_code else None
+        if bot_username and safe_code:
+            deeplink = _telegram_bot_deeplink(bot_username, f"gift_{safe_code}")
+        else:
+            deeplink = _telegram_bot_deeplink(bot_username)
 
         if not gift:
-            action_html = f"<a class='btn' href='{deeplink}'>Открыть в Telegram</a>" if deeplink else ""
-            return HTMLResponse(content=_gift_fallback_html(
+            action_html = _html_telegram_btn(deeplink, "Открыть в Telegram")
+            return _public_fallback_response(_gift_fallback_html(
                 project_name, logo_url, "Подарочный ключ", "Активируйте подарок через Telegram.", action_html
             ))
         if gift.get("is_activated"):
-            return HTMLResponse(content=_gift_fallback_html(
+            return _public_fallback_response(_gift_fallback_html(
                 project_name, logo_url, "Подарок уже активирован", "Этот подарочный ключ уже был использован."
             ))
 
@@ -4439,17 +4525,17 @@ async def web_gift_page(gift_code: str, request: Request):
         if expires_at:
             try:
                 if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
-                    return HTMLResponse(content=_gift_fallback_html(
+                    return _public_fallback_response(_gift_fallback_html(
                         project_name, logo_url, "Срок действия истёк", "Срок действия этого подарка истёк."
                     ))
             except Exception:
                 pass
 
         from shop_bot.data_manager import database
-        token = database.create_pending_action("gift", gift_code=gift_code)
+        token = database.create_pending_action("gift", gift_code=safe_code)
         if not token:
-            action_html = f"<a class='btn' href='{deeplink}'>Активировать в Telegram</a>" if deeplink else ""
-            return HTMLResponse(content=_gift_fallback_html(
+            action_html = _html_telegram_btn(deeplink, "Активировать в Telegram")
+            return _public_fallback_response(_gift_fallback_html(
                 project_name, logo_url, "Подарочный VPN-ключ",
                 "Нажмите кнопку ниже, чтобы активировать подарок в Telegram.", action_html
             ))
@@ -4457,7 +4543,7 @@ async def web_gift_page(gift_code: str, request: Request):
         return RedirectResponse(url=f"/?pending_token={token}", status_code=302)
     except Exception as e:
         logger.error(f"Gift page error: {e}")
-        return HTMLResponse(content="<h1>Error</h1>", status_code=500)
+        return _public_fallback_response("<h1>Error</h1>", status_code=500)
 
 @app.get("/{path_param}")
 async def dynamic_route(request: Request, path_param: str):
