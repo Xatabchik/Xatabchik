@@ -9137,16 +9137,67 @@ def get_msk_time() -> datetime:
 
 
 def check_transaction_exists(payment_id: str) -> bool:
-    """Проверить, существует ли уже завершённая транзакция с данным payment_id."""
+    """Проверить, существует ли уже завершённая транзакция с данным payment_id.
+
+    TON Connect пишет в ``transactions`` строку со ``status='pending'`` ещё до
+    подтверждения в блокчейне. Раньше этот SELECT не фильтровал статус — из-за
+    этого ``/api/check-payment`` отвечал ``paid: true`` сразу после создания
+    счёта. Финальный статус TON-вебхука — ``paid`` (см. find_and_complete_ton_transaction).
+    """
     if not payment_id:
         return False
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT 1 FROM transactions WHERE payment_id = ? LIMIT 1", (str(payment_id),))
+            cur.execute(
+                """
+                SELECT 1 FROM transactions
+                WHERE payment_id = ?
+                  AND LOWER(TRIM(COALESCE(status, ''))) = 'paid'
+                LIMIT 1
+                """,
+                (str(payment_id),),
+            )
             return cur.fetchone() is not None
     except Exception as e:
         logger.error(f"Failed to check transaction existence for {payment_id}: {e}")
+        return False
+
+
+def payment_owned_by_user(payment_id: str, user_id: int) -> bool:
+    """True, если payment_id есть в pending_transactions или transactions у этого user_id.
+
+    Статус не фильтруем: владелец должен иметь возможность поллить и pending,
+    и уже оплаченный счёт. Чужой payment_id даёт False (без различия «нет» / «чужой»).
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                "SELECT 1 FROM pending_transactions WHERE payment_id = ? AND user_id = ? LIMIT 1",
+                (pid, uid),
+            )
+            if cursor.fetchone() is not None:
+                return True
+            cursor.execute(
+                "SELECT 1 FROM transactions WHERE payment_id = ? AND user_id = ? LIMIT 1",
+                (pid, uid),
+            )
+            return cursor.fetchone() is not None
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logger.error(f"Failed to check payment ownership for {pid}: {e}")
         return False
 
 
