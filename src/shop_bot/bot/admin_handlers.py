@@ -7,9 +7,10 @@ import html as html_escape
 import hashlib
 import json
 from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, Dict
 
-from aiogram import Bot, Router, F, types
-from aiogram.filters import Command, StateFilter
+from aiogram import Bot, Router, F, types, BaseMiddleware
+from aiogram.filters import Command, StateFilter, BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -125,8 +126,60 @@ class Broadcast(StatesGroup):
     waiting_for_confirmation = State()
 
 
+class IsAdminFilter(BaseFilter):
+    """Router-level gate for admin_router (aiogram 3.x BaseFilter).
+
+    Only telegram_ids from admin_telegram_id / admin_telegram_ids pass.
+    """
+
+    async def __call__(
+        self,
+        event: types.TelegramObject,
+        event_from_user: types.User | None = None,
+    ) -> bool:
+        user = event_from_user or getattr(event, "from_user", None)
+        if user is None:
+            return False
+        try:
+            return bool(is_admin(user.id))
+        except Exception:
+            return False
+
+
+class AdminAccessMiddleware(BaseMiddleware):
+    """When a non-admin hits admin_router, answer the callback the same way
+    existing handlers do (`У вас нет прав.`) instead of leaving Telegram spinning.
+    Messages are ignored silently (same as a failed router filter).
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        user = data.get("event_from_user") or getattr(event, "from_user", None)
+        uid = getattr(user, "id", None)
+        try:
+            allowed = bool(uid is not None and is_admin(uid))
+        except Exception:
+            allowed = False
+        if not allowed:
+            if isinstance(event, types.CallbackQuery):
+                try:
+                    await event.answer("У вас нет прав.", show_alert=True)
+                except Exception:
+                    pass
+            return None
+        return await handler(event, data)
+
+
 def get_admin_router() -> Router:
-    admin_router = Router()
+    admin_router = Router(name="admin_router")
+    admin_router.message.filter(IsAdminFilter())
+    admin_router.callback_query.filter(IsAdminFilter())
+    admin_router.message.outer_middleware(AdminAccessMiddleware())
+    admin_router.callback_query.outer_middleware(AdminAccessMiddleware())
 
 
     def _format_user_mention(u: types.User) -> str:
