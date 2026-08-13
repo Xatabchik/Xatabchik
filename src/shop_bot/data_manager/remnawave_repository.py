@@ -672,6 +672,7 @@ _LEGACY_FORWARDERS = (
     # Webapp (Telegram Mini App) support
     "get_msk_time",
     "check_transaction_exists",
+    "payment_owned_by_user",
     "get_seller_user",
     "get_device_tiers",
     "get_user_by_auth_token",

@@ -2654,7 +2654,10 @@
                     const response = await fetch('/api/check-payment', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ payment_id: String(pid) })
+                        body: JSON.stringify({
+                            payment_id: String(pid),
+                            token: window.getAuthToken() || ''
+                        })
                     });
                     const data = await response.json();
                     if (data.ok && data.paid) {
@@ -4418,7 +4421,10 @@
                     const response = await fetch('/api/check-payment', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ payment_id: String(paymentId) })
+                        body: JSON.stringify({
+                            payment_id: String(paymentId),
+                            token: window.getAuthToken() || ''
+                        })
                     });
                     const data = await response.json();
                     if (data.ok && data.paid) {

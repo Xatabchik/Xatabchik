@@ -29,7 +29,7 @@ from shop_bot.bot.keyboards import (
 )
 from shop_bot.data_manager.remnawave_repository import (
     create_payload_pending, get_plan_by_id,
-    deduct_from_balance, check_transaction_exists, add_to_balance, log_transaction,
+    deduct_from_balance, check_transaction_exists, payment_owned_by_user, add_to_balance, log_transaction,
     add_to_referral_balance_all, add_to_referral_balance, deduct_from_referral_balance,
     get_referral_balance, get_balance, get_all_users, is_admin, update_user_stats,
     redeem_promo_code, update_promo_code_status, record_key_from_payload, get_key_by_id,
@@ -3353,15 +3353,38 @@ async def api_apply_promo(req: ApplyPromoRequest, request: Request):
 
 class CheckPaymentRequest(BaseModel):
     payment_id: str
+    token: str | None = None
+    init_data: str | None = None
+
+
+def _check_payment_unpaid() -> dict:
+    """Нейтральный ответ: неизвестный / чужой / ещё не оплаченный / без токена.
+
+    Один и тот же JSON и 200, чтобы не палить существование чужого payment_id
+    через 401/403 или разный ``ok``.
+    """
+    return {"ok": True, "paid": False}
+
 
 @app.post("/api/check-payment")
-async def api_check_payment(req: CheckPaymentRequest):
+async def api_check_payment(req: CheckPaymentRequest, request: Request):
     try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _check_payment_unpaid()
+
         if not req.payment_id or req.payment_id == "undefined" or req.payment_id == "null":
             return {"ok": False, "error": "Invalid payment_id"}
 
+        user_id = int(user["telegram_id"])
+        if not payment_owned_by_user(req.payment_id, user_id):
+            return _check_payment_unpaid()
+
         # Subscription purchases log with the same payment_id; top_up logs a new uuid,
         # so also treat pending status 'paid' as success (webhook already completed it).
+        # transactions.status must be 'paid' — TON Connect inserts a pending row first.
         exists = check_transaction_exists(req.payment_id)
         if not exists:
             try:
@@ -3369,24 +3392,17 @@ async def api_check_payment(req: CheckPaymentRequest):
             except Exception:
                 pending_status = ""
             if pending_status != "paid":
-                return {"ok": True, "paid": False}
-
-        balance = None
-        try:
-            # Best-effort: if we can resolve user from pending metadata, return balance for UI refresh.
-            meta = rw_repo.get_pending_metadata(req.payment_id)
-            if isinstance(meta, dict) and meta.get("user_id"):
-                balance = float(get_balance(int(meta["user_id"])) or 0)
-        except Exception:
-            pass
+                return _check_payment_unpaid()
 
         result = {
             "ok": True,
             "paid": True,
             "message": "Оплата успешно подтверждена",
         }
-        if balance is not None:
-            result["balance"] = balance
+        try:
+            result["balance"] = float(get_balance(user_id) or 0)
+        except Exception:
+            pass
         return result
     except Exception as e:
         logger.error(f"Check payment error: {e}")
