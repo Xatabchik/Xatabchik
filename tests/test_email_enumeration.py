@@ -119,7 +119,13 @@ def test_reset_telegram_linked_user_still_sends_code(temp_db, app_client, monkey
     assert len(sent) == 1
     assert sent[0][0] == 44001
     assert EMAIL_A.lower() in handlers.PASSWORD_RESET_TOKENS
-    assert handlers.PASSWORD_RESET_TOKENS[EMAIL_A.lower()]["code"] in sent[0][1]
+    stored = handlers.PASSWORD_RESET_TOKENS[EMAIL_A.lower()]
+    assert "code" not in stored
+    assert stored.get("code_hash")
+    import re
+    sent_code = re.search(r"<code>(\d{6})</code>", sent[0][1]).group(1)
+    assert sent_code not in stored["code_hash"]
+    assert stored["code_hash"] not in sent[0][1]
 
 
 def test_reset_unknown_and_email_only_same_body(temp_db, app_client, no_smtp):

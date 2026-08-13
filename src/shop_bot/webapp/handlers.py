@@ -43,6 +43,8 @@ import re
 from decimal import Decimal, ROUND_HALF_UP
 import logging
 from urllib.parse import urlencode, quote
+import hashlib
+import hmac
 
 
 logger = logging.getLogger(__name__)
@@ -1709,8 +1711,24 @@ class PasswordResetVerifyRequest(BaseModel):
     code: str
     new_password: str
 
-# Stores dict: { "email@bot.local": {"code": "123456", "expires": float_timestamp} }
+# In-memory reset codes: { "email@bot.local": {"code_hash": sha256, "expires": ts} }
+# Plaintext 6-digit lives only in the Telegram message, not in this dict.
 PASSWORD_RESET_TOKENS = {}
+PASSWORD_RESET_TTL_SECONDS = 600
+
+
+def _hash_password_reset_code(email: str, code: str) -> str:
+    return hashlib.sha256(f"{email.strip().lower()}:{str(code).strip()}".encode("utf-8")).hexdigest()
+
+
+def _password_reset_code_matches(email: str, code: str, stored_hash: str | None) -> bool:
+    if not stored_hash:
+        return False
+    expected = _hash_password_reset_code(email, code or "")
+    try:
+        return hmac.compare_digest(expected, str(stored_hash))
+    except Exception:
+        return False
 
 class SyncTgRequest(BaseModel):
     token: str
@@ -2122,10 +2140,11 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
 
     import random
     import time
+    email_lower = req.email.lower().strip()
     code = str(random.randint(100000, 999999))
-    PASSWORD_RESET_TOKENS[req.email.lower().strip()] = {
-        "code": code,
-        "expires": time.time() + 600
+    PASSWORD_RESET_TOKENS[email_lower] = {
+        "code_hash": _hash_password_reset_code(email_lower, code),
+        "expires": time.time() + PASSWORD_RESET_TTL_SECONDS,
     }
     
     try:
@@ -2134,11 +2153,11 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
             f"🔐 <b>Восстановление пароля</b>\n\nВаш код для сброса безопасности:\n<code>{code}</code>\n\n<i>Код действителен 10 минут. Если вы не запрашивали сброс пароля, проигнорируйте это сообщение.</i>"
         )
         if not success:
-            PASSWORD_RESET_TOKENS.pop(req.email.lower().strip(), None)
+            PASSWORD_RESET_TOKENS.pop(email_lower, None)
             return {"ok": True}
     except Exception as e:
         logger.error(f"Failed to call _send_telegram_message: {e}")
-        PASSWORD_RESET_TOKENS.pop(req.email.lower().strip(), None)
+        PASSWORD_RESET_TOKENS.pop(email_lower, None)
         return {"ok": True}
 
     return {"ok": True}
@@ -2155,7 +2174,7 @@ async def api_email_reset_check(request: Request, req: PasswordResetCheckRequest
     if time.time() > token_data["expires"]:
         return {"ok": False, "error": "Код устарел"}
         
-    if token_data["code"] != req.code:
+    if not _password_reset_code_matches(email_lower, req.code, token_data.get("code_hash")):
         return {"ok": False, "error": "Неверный код"}
         
     return {"ok": True}
@@ -2173,7 +2192,7 @@ async def api_email_reset_verify(request: Request, req: PasswordResetVerifyReque
         del PASSWORD_RESET_TOKENS[email_lower]
         return {"ok": False, "error": "Код устарел"}
         
-    if token_data["code"] != req.code:
+    if not _password_reset_code_matches(email_lower, req.code, token_data.get("code_hash")):
         return {"ok": False, "error": "Неверный код"}
         
     from shop_bot.data_manager import database
