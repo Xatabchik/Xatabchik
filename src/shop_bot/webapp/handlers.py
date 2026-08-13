@@ -2017,13 +2017,17 @@ async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_register(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
-    existing = database.get_user_by_email(req.email)
-    if existing:
-        return {"ok": False, "error": "Email уже зарегистрирован"}
-        
+
     pw_err = _validate_password(req.password)
     if pw_err:
         return {"ok": False, "error": pw_err}
+
+    existing = database.get_user_by_email(req.email)
+    if existing:
+        # Тот же ответ, что у новой регистрации — иначе по «Email уже
+        # зарегистрирован» можно перебирать занятые адреса.
+        return {"ok": True, "requires_verification": True, "email": req.email}
+
     user = database.create_user_by_email(req.email, req.password)
     if not user:
         return {"ok": False, "error": "Ошибка при регистрации"}
@@ -2039,16 +2043,10 @@ async def api_email_register(request: Request, req: EmailAuthRequest):
 async def api_email_verify(request: Request, req: EmailVerifyRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
-    if not user:
-        return {"ok": False, "error": "Email не найден"}
-
-    if user.get('email_verified'):
-        token = database.get_auth_token_by_user_id(user['telegram_id']) or str(uuid.uuid4())
-        database.update_user_auth_token(user['telegram_id'], token)
-        return {"ok": True, "token": token}
-
     code = (req.code or "").strip()
-    if not code or not database.check_email_verification_code(user['telegram_id'], code):
+    # Не раскрываем, существует ли email. Код обязателен всегда: раньше при
+    # email_verified=1 токен выдавался без кода — достаточно было знать адрес.
+    if not user or not code or not database.check_email_verification_code(user['telegram_id'], code):
         return {"ok": False, "error": "Неверный или устаревший код"}
 
     if not database.mark_email_verified(user['telegram_id']):
@@ -2061,14 +2059,10 @@ async def api_email_verify(request: Request, req: EmailVerifyRequest):
 @app.post("/api/auth/email/resend")
 @limiter.limit(AUTH_RATE_LIMIT)
 async def api_email_resend(request: Request, req: EmailResendRequest):
-    import time
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
-    if not user:
-        return {"ok": False, "error": "Email не найден"}
-
-    if user.get('email_verified'):
-        return {"ok": False, "error": "Email уже подтверждён"}
+    if not user or user.get('email_verified'):
+        return {"ok": True}
 
     info = database.get_email_verification(user['telegram_id']) or {}
     last_sent_raw = info.get('email_code_last_sent_at')
@@ -2077,11 +2071,7 @@ async def api_email_resend(request: Request, req: EmailResendRequest):
             last_sent = datetime.strptime(str(last_sent_raw), "%Y-%m-%d %H:%M:%S")
             elapsed = (datetime.utcnow() - last_sent).total_seconds()
             if elapsed < EMAIL_RESEND_COOLDOWN_SECONDS:
-                return {
-                    "ok": False,
-                    "error": f"Подождите {int(EMAIL_RESEND_COOLDOWN_SECONDS - elapsed)} сек. перед повторной отправкой",
-                    "retry_after": int(EMAIL_RESEND_COOLDOWN_SECONDS - elapsed),
-                }
+                return {"ok": True}
         except Exception:
             pass
 
@@ -2113,11 +2103,10 @@ async def api_email_login(request: Request, req: EmailAuthRequest):
 async def api_email_reset_request(request: Request, req: PasswordResetRequest):
     from shop_bot.data_manager import database
     user = database.get_user_by_email(req.email)
-    if not user:
-        return {"ok": False, "error": "Email не найден"}
-        
-    if str(user['telegram_id']).startswith("999"):
-        return {"ok": False, "error": "Аккаунт не синхронизирован с Telegram.\nОтправить сообщение невозможно!"}
+    # Всегда один ответ: иначе «Email не найден» / «не синхронизирован»
+    # выдают, зарегистрирован ли адрес и привязан ли он к Telegram.
+    if not user or database.is_email_only_user(user.get("telegram_id")):
+        return {"ok": True}
 
     import random
     import time
@@ -2133,10 +2122,12 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
             f"🔐 <b>Восстановление пароля</b>\n\nВаш код для сброса безопасности:\n<code>{code}</code>\n\n<i>Код действителен 10 минут. Если вы не запрашивали сброс пароля, проигнорируйте это сообщение.</i>"
         )
         if not success:
-            return {"ok": False, "error": "Ошибка при отправке в Telegram. Возможно, вы заблокировали бота."}
+            PASSWORD_RESET_TOKENS.pop(req.email.lower().strip(), None)
+            return {"ok": True}
     except Exception as e:
         logger.error(f"Failed to call _send_telegram_message: {e}")
-        return {"ok": False, "error": "Ошибка при отправке в Telegram. Возможно, вы заблокировали бота."}
+        PASSWORD_RESET_TOKENS.pop(req.email.lower().strip(), None)
+        return {"ok": True}
 
     return {"ok": True}
 
