@@ -6233,14 +6233,6 @@ def create_webhook_app(bot_controller_instance):
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _mask_token(token: str | None) -> str:
-        t = (token or "").strip()
-        if not t:
-            return ""
-        if len(t) <= 12:
-            return t[:3] + "…" + t[-3:]
-        return t[:6] + "…" + t[-4:]
-
     def _franchise_totals() -> dict:
         res = {
             "total_bots": 0,
@@ -6349,7 +6341,8 @@ def create_webhook_app(bot_controller_instance):
                 for r in rows:
                     d = dict(r)
                     d["is_active"] = bool(int(d.get("is_active") or 0))
-                    d["token_masked"] = _mask_token(d.get("token"))
+                    d["token_masked"] = "задан" if (d.get("token") or "").strip() else ""
+                    d.pop("token", None)
                     try:
                         d["available"] = max(0.0, float(d.get("commission_total") or 0) - float(d.get("requested_withdraw") or 0))
                     except Exception:
@@ -6369,7 +6362,8 @@ def create_webhook_app(bot_controller_instance):
                     return None
                 d = dict(row)
                 d["is_active"] = bool(int(d.get("is_active") or 0))
-                d["token_masked"] = _mask_token(d.get("token"))
+                d["token_masked"] = "задан" if (d.get("token") or "").strip() else ""
+                d.pop("token", None)
                 return d
         except Exception:
             return None

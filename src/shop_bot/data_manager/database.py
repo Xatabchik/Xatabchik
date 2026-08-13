@@ -8056,6 +8056,78 @@ def resolve_factory_bot_id(telegram_bot_user_id: int | None) -> int:
         return 0
 
 
+MANAGED_BOT_TOKEN_PREFIX = "enc1$"
+
+
+def _managed_bot_token_secret() -> bytes:
+    """Ключ шифрования токенов клонов: SHOPBOT_SECRET_KEY или стабильная запись в settings."""
+    env = (os.getenv("SHOPBOT_SECRET_KEY") or "").strip()
+    material = env
+    if not material:
+        material = (get_setting("managed_bot_token_key") or "").strip()
+        if not material:
+            material = secrets.token_hex(32)
+            update_setting("managed_bot_token_key", material)
+    return hashlib.sha256(f"managed-bot-token|{material}".encode("utf-8")).digest()
+
+
+def _managed_bot_token_pad(secret: bytes, nonce: bytes, n: int) -> bytes:
+    out = bytearray()
+    counter = 0
+    while len(out) < n:
+        out.extend(hmac.new(secret, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return bytes(out[:n])
+
+
+def encrypt_managed_bot_token(token: str) -> str:
+    """Зашифровать токен клона для хранения. Уже enc1$ не трогаем."""
+    raw_s = (token or "").strip()
+    if not raw_s:
+        return raw_s
+    if raw_s.startswith(MANAGED_BOT_TOKEN_PREFIX):
+        return raw_s
+    raw = raw_s.encode("utf-8")
+    secret = _managed_bot_token_secret()
+    nonce = secrets.token_bytes(16)
+    pad = _managed_bot_token_pad(secret, nonce, len(raw))
+    cipher = bytes(a ^ b for a, b in zip(raw, pad))
+    mac = hmac.new(secret, nonce + cipher, hashlib.sha256).hexdigest()
+    return f"{MANAGED_BOT_TOKEN_PREFIX}{nonce.hex()}${cipher.hex()}${mac}"
+
+
+def decrypt_managed_bot_token(stored: str) -> str:
+    """Расшифровать токен. Legacy plaintext (без enc1$) возвращается как есть."""
+    s = (stored or "").strip()
+    if not s:
+        return s
+    if not s.startswith(MANAGED_BOT_TOKEN_PREFIX):
+        return s
+    try:
+        nonce_hex, cipher_hex, mac = s[len(MANAGED_BOT_TOKEN_PREFIX):].split("$", 2)
+        nonce = bytes.fromhex(nonce_hex)
+        cipher = bytes.fromhex(cipher_hex)
+        secret = _managed_bot_token_secret()
+        expected = hmac.new(secret, nonce + cipher, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, mac):
+            logging.error("managed bot token MAC mismatch")
+            return ""
+        pad = _managed_bot_token_pad(secret, nonce, len(cipher))
+        return bytes(a ^ b for a, b in zip(cipher, pad)).decode("utf-8")
+    except Exception as e:
+        logging.error("decrypt_managed_bot_token failed: %s", e)
+        return ""
+
+
+def _row_with_decrypted_token(row: dict | None) -> dict | None:
+    if not row:
+        return row
+    data = dict(row)
+    if data.get("token"):
+        data["token"] = decrypt_managed_bot_token(str(data["token"]))
+    return data
+
+
 def get_managed_bot(bot_id: int) -> dict | None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -8063,7 +8135,7 @@ def get_managed_bot(bot_id: int) -> dict | None:
             cur = conn.cursor()
             cur.execute("SELECT * FROM managed_bots WHERE id = ? LIMIT 1", (int(bot_id),))
             row = cur.fetchone()
-            return dict(row) if row else None
+            return _row_with_decrypted_token(dict(row) if row else None)
     except Exception as e:
         logger.error(f"get_managed_bot failed: {e}")
         return None
@@ -8076,7 +8148,7 @@ def get_managed_bot_by_telegram_id(telegram_bot_user_id: int) -> dict | None:
             cur = conn.cursor()
             cur.execute("SELECT * FROM managed_bots WHERE telegram_bot_user_id = ? LIMIT 1", (int(telegram_bot_user_id),))
             row = cur.fetchone()
-            return dict(row) if row else None
+            return _row_with_decrypted_token(dict(row) if row else None)
     except Exception as e:
         logger.error(f"get_managed_bot_by_telegram_id failed: {e}")
         return None
@@ -8088,7 +8160,7 @@ def list_active_managed_bots() -> list[dict]:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT * FROM managed_bots WHERE COALESCE(is_active,1)=1 ORDER BY id ASC")
-            return [dict(r) for r in cur.fetchall()]
+            return [_row_with_decrypted_token(dict(r)) for r in cur.fetchall()]
     except Exception as e:
         logger.error(f"list_active_managed_bots failed: {e}")
         return []
@@ -8107,7 +8179,7 @@ def create_managed_bot(
     If the telegram bot user id already exists, the current owner may rotate
     token/username. A different user cannot take over ``owner_telegram_id``.
     """
-    token_s = (token or "").strip()
+    token_s = encrypt_managed_bot_token((token or "").strip())
     if not token_s:
         return False, "Токен пустой.", None
     try:
