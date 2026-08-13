@@ -1706,20 +1706,42 @@ def update_host_subscription_url(host_name: str, subscription_url: str | None) -
         logging.error(f"Не удалось обновить subscription_url для хоста '{host_name}': {e}")
         return False
 
-def set_referral_start_bonus_received(user_id: int) -> bool:
-    """Пометить, что пользователь получил стартовый бонус за реферальную регистрацию."""
+def claim_referral_start_bonus(user_id: int) -> bool:
+    """Атомарно пометить, что приглашённый получил стартовый реферальный бонус.
+
+    Возвращает True только если этот вызов выиграл гонку: UPDATE с
+    ``WHERE COALESCE(referral_start_bonus_received, 0) = 0`` и ``rowcount > 0``.
+    Начислять баланс рефереру можно только после успешного claim — иначе
+    параллельные /start (или pending-action) дважды кредитуют одну и ту же сумму.
+    """
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE users SET referral_start_bonus_received = 1 WHERE telegram_id = ?",
-                (user_id,)
+                """
+                UPDATE users
+                SET referral_start_bonus_received = 1
+                WHERE telegram_id = ?
+                  AND COALESCE(referral_start_bonus_received, 0) = 0
+                """,
+                (user_id,),
             )
             conn.commit()
             return cursor.rowcount > 0
     except sqlite3.Error as e:
-        logging.error(f"Не удалось пометить получение стартового реферального бонуса для пользователя {user_id}: {e}")
+        logging.error(
+            f"Не удалось атомарно пометить получение стартового реферального бонуса для пользователя {user_id}: {e}"
+        )
         return False
+
+
+def set_referral_start_bonus_received(user_id: int) -> bool:
+    """Пометить, что пользователь получил стартовый бонус за реферальную регистрацию.
+
+    Атомарный claim (см. ``claim_referral_start_bonus``): повторный вызов
+    возвращает False и не сбрасывает флаг.
+    """
+    return claim_referral_start_bonus(user_id)
 
 
 def set_referral_trial_day_bonus_received(user_id: int) -> bool:
@@ -5662,6 +5684,12 @@ def update_plan(plan_id: int, plan_name: str, months: int | None, price: float, 
 
 
 def register_user_if_not_exists(telegram_id: int, username: str, referrer_id):
+    """Зарегистрировать пользователя, если его ещё нет.
+
+    ``referred_by`` выставляется только на INSERT. Уже существующая строка
+    обновляет username и никогда не late-bind'ит реферера — иначе любой
+    ``/start ref_<id>`` мог привязать аккаунт, у которого поле ещё пустое.
+    """
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -5676,13 +5704,6 @@ def register_user_if_not_exists(telegram_id: int, username: str, referrer_id):
             else:
 
                 cursor.execute("UPDATE users SET username = ? WHERE telegram_id = ?", (username, telegram_id))
-                current_ref = row[0]
-                if referrer_id and (current_ref is None or str(current_ref).strip() == "") and int(referrer_id) != int(telegram_id):
-                    try:
-                        cursor.execute("UPDATE users SET referred_by = ? WHERE telegram_id = ?", (int(referrer_id), telegram_id))
-                    except Exception:
-
-                        pass
             conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to register user {telegram_id}: {e}")
@@ -8746,6 +8767,19 @@ def activate_user_gift(
         return False, None
 
 
+def _registration_age_seconds(reg_date_raw) -> float | None:
+    """Возраст аккаунта в секундах, либо None если даты нет / она не парсится."""
+    if not reg_date_raw:
+        return None
+    try:
+        reg_dt = datetime.fromisoformat(str(reg_date_raw).replace("Z", "+00:00"))
+        if reg_dt.tzinfo is not None:
+            reg_dt = reg_dt.replace(tzinfo=None)
+        return (datetime.now() - reg_dt).total_seconds()
+    except Exception:
+        return None
+
+
 def set_referred_by_from_gift(user_id: int, from_user_id: int, *, max_age_seconds: int = 1800) -> bool:
     """Set referred_by to the gift sender when a new user activates a gift.
 
@@ -8768,22 +8802,13 @@ def set_referred_by_from_gift(user_id: int, from_user_id: int, *, max_age_second
             current_ref, reg_date_raw = row
             if current_ref:
                 return False  # already has a referrer
-            if reg_date_raw:
-                try:
-                    reg_dt = datetime.fromisoformat(str(reg_date_raw).replace("Z", "+00:00"))
-                    # Strip timezone for naive comparison
-                    if reg_dt.tzinfo is not None:
-                        reg_dt = reg_dt.replace(tzinfo=None)
-                    age = (datetime.now() - reg_dt).total_seconds()
-                    if age > max_age_seconds:
-                        # Account predates this activation window — not a new user
-                        logging.info(
-                            "set_referred_by_from_gift: skipped user %s "
-                            "(registered %.0f s ago, threshold %d s)", uid, age, max_age_seconds
-                        )
-                        return False
-                except Exception:
-                    pass
+            age = _registration_age_seconds(reg_date_raw)
+            if age is not None and age > max_age_seconds:
+                logging.info(
+                    "set_referred_by_from_gift: skipped user %s "
+                    "(registered %.0f s ago, threshold %d s)", uid, age, max_age_seconds
+                )
+                return False
             cursor.execute(
                 "UPDATE users SET referred_by = ? WHERE telegram_id = ? AND referred_by IS NULL",
                 (fid, uid),
@@ -8804,7 +8829,7 @@ REFERRAL_LINK_INVALID_REFERRER = "invalid_referrer"
 REFERRAL_LINK_NOT_ELIGIBLE = "not_eligible"
 
 
-def link_referrer_if_eligible(user_id: int, referrer_id: int) -> str:
+def link_referrer_if_eligible(user_id: int, referrer_id: int, *, max_age_seconds: int | None = None) -> str:
     """Привязать пользователя к рефереру (users.referred_by), если это допустимо.
 
     Атомарно: UPDATE сразу проверяет условие `referred_by IS NULL` в WHERE и
@@ -8813,11 +8838,11 @@ def link_referrer_if_eligible(user_id: int, referrer_id: int) -> str:
     pending-токену) привязка реферера не может произойти дважды и не может
     затереть уже существующего реферера.
 
-    Не перепривязывает пользователей, у которых уже есть referred_by — это
-    соответствует уже существующей политике для обычной регистрации через бота
-    (см. register_user_if_not_exists: обновление реферера у существующего
-    пользователя тоже допускается только пока referred_by IS NULL, без
-    ограничения по "давности" регистрации).
+    ``max_age_seconds``: если задан, аккаунт старше этого окна не привязывается
+    (тот же guard, что у ``set_referred_by_from_gift``). Webapp pending-action
+    передаёт окно, чтобы старый аккаунт с пустым ``referred_by`` нельзя было
+    late-bind'ить реферальной ссылкой. Админский ручной assign вызывает без
+    окна — существующая возможность назначить реферала сохраняется.
 
     Возвращает один из: linked, already_linked, self_referral_forbidden,
     invalid_referrer, not_eligible.
@@ -8841,13 +8866,26 @@ def link_referrer_if_eligible(user_id: int, referrer_id: int) -> str:
             if not cursor.fetchone():
                 return REFERRAL_LINK_INVALID_REFERRER
 
-            cursor.execute("SELECT referred_by FROM users WHERE telegram_id = ?", (uid,))
+            cursor.execute(
+                "SELECT referred_by, registration_date FROM users WHERE telegram_id = ?",
+                (uid,),
+            )
             row = cursor.fetchone()
             if not row:
                 return REFERRAL_LINK_NOT_ELIGIBLE
 
             if row[0] is not None:
                 return REFERRAL_LINK_ALREADY_LINKED if int(row[0]) == rid else REFERRAL_LINK_ALREADY_LINKED
+
+            if max_age_seconds is not None:
+                age = _registration_age_seconds(row[1])
+                if age is not None and age > max_age_seconds:
+                    logging.info(
+                        "link_referrer_if_eligible: skipped user %s "
+                        "(registered %.0f s ago, threshold %d s)",
+                        uid, age, max_age_seconds,
+                    )
+                    return REFERRAL_LINK_NOT_ELIGIBLE
 
             cursor.execute(
                 "UPDATE users SET referred_by = ? WHERE telegram_id = ? AND referred_by IS NULL AND telegram_id != ?",

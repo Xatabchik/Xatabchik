@@ -3619,7 +3619,7 @@ def _apply_pending_referral(user_id: int, referrer_id: int) -> dict:
     """
     from shop_bot.data_manager import database
 
-    status = database.link_referrer_if_eligible(user_id, referrer_id)
+    status = database.link_referrer_if_eligible(user_id, referrer_id, max_age_seconds=1800)
     message = _REFERRAL_LINK_MESSAGES.get(status, "Не удалось применить реферальную ссылку.")
     ok = status == "linked"
 
@@ -3630,21 +3630,19 @@ def _apply_pending_referral(user_id: int, referrer_id: int) -> dict:
             reward_type = "percent_purchase"
 
         if reward_type == "fixed_start_referrer":
-            user = get_user(user_id)
-            if user and not user.get("referral_start_bonus_received"):
+            try:
+                from decimal import Decimal
+                amount_raw = get_setting("referral_on_start_referrer_amount") or "20"
+                start_bonus = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+            except Exception:
+                start_bonus = None
+            if start_bonus and start_bonus > 0:
                 try:
-                    from decimal import Decimal
-                    amount_raw = get_setting("referral_on_start_referrer_amount") or "20"
-                    start_bonus = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
-                except Exception:
-                    start_bonus = None
-                if start_bonus and start_bonus > 0:
-                    try:
+                    if rw_repo.claim_referral_start_bonus(user_id):
                         rw_repo.add_to_referral_balance(int(referrer_id), float(start_bonus))
                         rw_repo.add_to_referral_balance_all(int(referrer_id), float(start_bonus))
-                        rw_repo.set_referral_start_bonus_received(user_id)
-                    except Exception as e:
-                        logger.warning(f"Referral start bonus failed for referrer {referrer_id}: {e}")
+                except Exception as e:
+                    logger.warning(f"Referral start bonus failed for referrer {referrer_id}: {e}")
 
     return {"ok": ok, "status": status, "message": message}
 

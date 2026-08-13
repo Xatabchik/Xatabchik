@@ -550,6 +550,7 @@ _LEGACY_FORWARDERS = (
     "search_user_keys_by_email",
     "search_all_keys_by_email",
     "run_migration",
+    "claim_referral_start_bonus",
     "set_referral_start_bonus_received",
     "set_referral_trial_day_bonus_received",
     "set_terms_agreed",
