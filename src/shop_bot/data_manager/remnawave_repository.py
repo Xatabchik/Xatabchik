@@ -635,6 +635,8 @@ _LEGACY_FORWARDERS = (
     "is_email_only_user",
     "EMAIL_ONLY_TELEGRAM_ID_MIN",
     "EMAIL_ONLY_TELEGRAM_ID_MAX",
+    "EMAIL_ONLY_LEGACY_TELEGRAM_ID_MIN",
+    "EMAIL_ONLY_LEGACY_TELEGRAM_ID_MAX",
     "record_broadcast_sends",
     "mark_broadcast_run",
     "get_broadcast_stats",

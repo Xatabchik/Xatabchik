@@ -4471,20 +4471,66 @@ def delete_broadcast_campaign(campaign_id: int) -> bool:
         return False
 
 
-# Псевдо-telegram_id для email-аккаунтов без привязки к Telegram
-# (см. create_user_by_email). В этот диапазон бот писать не может.
+# Псевдо-telegram_id для email-аккаунтов без привязки к Telegram.
+# Текущий create_user_by_email выделяет 12-значные ID 999000000000–999999999999.
+# Старый аллокатор давал 9-значные 999000000+n (в проде: 999000002, 999000003).
+# В этот диапазон бот писать не может. Не путать с auth_email у реального Telegram-пользователя.
 EMAIL_ONLY_TELEGRAM_ID_MIN = 999000000000
 EMAIL_ONLY_TELEGRAM_ID_MAX = 999999999999
+EMAIL_ONLY_LEGACY_TELEGRAM_ID_MIN = 999000000
+EMAIL_ONLY_LEGACY_TELEGRAM_ID_MAX = 999999999
+_EMAIL_ONLY_TELEGRAM_ID_RANGES = (
+    (EMAIL_ONLY_LEGACY_TELEGRAM_ID_MIN, EMAIL_ONLY_LEGACY_TELEGRAM_ID_MAX),
+    (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
+)
 
 
-def is_email_only_user(telegram_id: int | None) -> bool:
-    """True, если пользователь зарегистрирован по email и ещё не авторизовался
-    через Telegram (синтетический telegram_id с префиксом 999)."""
+def _coerce_telegram_id(user: dict | int | str | None) -> int | None:
+    if user is None:
+        return None
+    if isinstance(user, dict):
+        user = user.get("telegram_id")
     try:
-        tid = int(telegram_id)
+        return int(user)
     except (TypeError, ValueError):
+        return None
+
+
+def is_email_only_user(user: dict | int | str | None) -> bool:
+    """True, если это email-only аккаунт с синтетическим telegram_id.
+
+    Принимает запись пользователя или сырой telegram_id. Определение идёт по
+    фактическим аллокаторам виртуальных ID, а не по ``auth_email``/``username``:
+
+    * текущий ``create_user_by_email``: 999000000000–999999999999;
+    * legacy 9-значная последовательность 999000000+n (например 999000002).
+
+    Реальный Telegram-пользователь (даже без username и даже с auth_email)
+    сюда не попадает, пока его id не лежит в этих синтетических диапазонах.
+    Совпадает с признаком несинхронизированного аккаунта в webapp
+    (``str(user_id).startswith("999")``) для 9- и 12-значных ID.
+    """
+    tid = _coerce_telegram_id(user)
+    if tid is None:
         return False
-    return EMAIL_ONLY_TELEGRAM_ID_MIN <= tid <= EMAIL_ONLY_TELEGRAM_ID_MAX
+    for low, high in _EMAIL_ONLY_TELEGRAM_ID_RANGES:
+        if low <= tid <= high:
+            return True
+    return False
+
+
+def _sql_exclude_email_only_ids(column: str = "u.telegram_id") -> tuple[str, tuple[int, ...]]:
+    """SQL: колонка не является синтетическим email-only telegram_id."""
+    clauses: list[str] = []
+    params: list[int] = []
+    for low, high in _EMAIL_ONLY_TELEGRAM_ID_RANGES:
+        clauses.append(f"({column} < ? OR {column} > ?)")
+        params.extend((low, high))
+    return " AND ".join(clauses), tuple(params)
+
+
+def _filter_out_email_only_user_ids(user_ids: list[int]) -> list[int]:
+    return [int(uid) for uid in user_ids if not is_email_only_user(uid)]
 
 
 def get_inactive_subscribers() -> list[int]:
@@ -4494,21 +4540,22 @@ def get_inactive_subscribers() -> list[int]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
+            exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
-                """
+                f"""
                 SELECT u.telegram_id FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND (u.telegram_id < ? OR u.telegram_id > ?)
+                  AND {exclude_sql}
                   AND NOT EXISTS (
                     SELECT 1 FROM vpn_keys k
                     WHERE k.user_id = u.telegram_id
                       AND k.expire_at > datetime('now')
                   )
                 """,
-                (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
+                exclude_params,
             )
-            return [row[0] for row in cursor.fetchall()]
+            return _filter_out_email_only_user_ids([row[0] for row in cursor.fetchall()])
     except sqlite3.Error as e:
         logging.error("Failed to get inactive subscribers: %s", e)
         return []
@@ -4564,7 +4611,7 @@ def get_broadcast_recipients(
                 campaign=campaign,
                 run_id=run_id,
             )
-    return selected
+    return _filter_out_email_only_user_ids(selected)
 
 
 def preview_broadcast_audience(
@@ -4618,20 +4665,21 @@ def _load_broadcast_candidate_user_ids() -> list[int]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
+            exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
-                """
+                f"""
                 SELECT u.telegram_id FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND (u.telegram_id < ? OR u.telegram_id > ?)
+                  AND {exclude_sql}
                 """,
-                (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
+                exclude_params,
             )
             seen: set[int] = set()
             out: list[int] = []
             for row in cursor.fetchall():
                 uid = int(row[0])
-                if uid in seen:
+                if uid in seen or is_email_only_user(uid):
                     continue
                 seen.add(uid)
                 out.append(uid)
@@ -5376,6 +5424,8 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
         if not live.get("is_active"):
             stats["paused"] = True
             return stats
+        if is_email_only_user(uid):
+            continue
         if not claim_broadcast_recipient(int(run["id"]), int(campaign_id), int(uid)):
             continue
         try:

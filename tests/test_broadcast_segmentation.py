@@ -101,6 +101,7 @@ def test_target_mode_all_excludes_email_only(temp_db):
 
     insert_user(database.DB_FILE, telegram_id=201, username="tg")
     insert_user(database.DB_FILE, telegram_id=999000000201, username="email", auth_email="e@x.com")
+    insert_user(database.DB_FILE, telegram_id=999000002, username="legacy2", auth_email="legacy2@x.com")
     insert_user(database.DB_FILE, telegram_id=202, username="banned", is_banned=1)
     cid = database.create_broadcast_campaign(
         "all",
@@ -637,6 +638,7 @@ def test_preview_set_equals_send_set(temp_db):
     insert_user(database.DB_FILE, telegram_id=2101, username="a")
     insert_user(database.DB_FILE, telegram_id=2102, username="b")
     insert_user(database.DB_FILE, telegram_id=999000000210, username="email", auth_email="z@x.com")
+    insert_user(database.DB_FILE, telegram_id=999000003, username="legacy3", auth_email="legacy3@x.com")
     cid = database.create_broadcast_campaign(
         "same-set",
         "x",

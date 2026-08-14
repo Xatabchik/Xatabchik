@@ -1341,6 +1341,8 @@ async def _deliver_broadcast_run(bot: Bot, campaign: dict, run: dict) -> None:
         if not live.get("is_active"):
             logger.info("Broadcast %s: кампания отключена, текущий run приостановлен.", campaign_id)
             return
+        if rw_repo.is_email_only_user(int(uid)):
+            continue
         if not rw_repo.claim_broadcast_recipient(run_id, campaign_id, int(uid)):
             continue
         try:
