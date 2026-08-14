@@ -105,9 +105,14 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     create_broadcast_campaign, get_broadcast_campaigns, get_broadcast_campaign,
     update_broadcast_campaign, toggle_broadcast_campaign, delete_broadcast_campaign,
-    get_pending_broadcast_recipients, record_broadcast_sends, mark_broadcast_run,
-    get_broadcast_stats, get_telegram_chat_id_for_user, get_telegram_identity_stats,
-    get_telegram_identity_unclassified_sample, link_user_telegram,
+    get_broadcast_stats, preview_broadcast_audience,
+    build_broadcast_campaign_config, try_start_broadcast_run,
+    clone_broadcast_campaign,
+    format_broadcast_audience_label, BroadcastFilterError,
+    execute_broadcast_campaign_pass, validate_broadcast_telegram_html,
+    is_broadcastable_user,
+    get_telegram_chat_id_for_user, get_telegram_identity_stats,
+    get_telegram_identity_unclassified_sample,
 )
 from shop_bot.data_manager.database import (
     list_referral_payout_methods, list_referral_withdrawal_requests,
@@ -289,6 +294,119 @@ def _dispatch_bot_notification(user_id: int, text: str, **send_kwargs) -> None:
             logger.error(f"Notification dispatch failed: {e}", exc_info=True)
 
     threading.Thread(target=_worker, name="shopbot-user-notification", daemon=True).start()
+
+
+def _broadcast_plan_ids_from_form(form) -> list[int] | None:
+    raw_list = form.getlist("plan_ids")
+    if raw_list:
+        return raw_list
+    raw = (form.get("plan_ids") or "").strip()
+    if not raw:
+        return None
+    return raw
+
+
+def _broadcast_payload_from_form(form) -> dict:
+    target_mode = (form.get("target_mode") or "filtered").strip().lower()
+    if target_mode not in ("all", "filtered"):
+        target_mode = "filtered"
+    schedule_mode = (form.get("schedule_mode") or "recurring").strip().lower()
+    if schedule_mode not in ("once", "recurring"):
+        schedule_mode = "recurring"
+    segment = (form.get("target_segment") or "none").strip().lower()
+    if target_mode == "all":
+        segment = "none"
+    interval_raw = form.get("interval_hours") or "72"
+    try:
+        interval_hours = max(1, int(interval_raw))
+    except (TypeError, ValueError):
+        interval_hours = 72
+    return {
+        "name": (form.get("name") or "").strip(),
+        "text_html": (form.get("text_html") or "").strip(),
+        "interval_hours": interval_hours,
+        "target_segment": segment,
+        "target_mode": target_mode,
+        "plan_ids": _broadcast_plan_ids_from_form(form),
+        "plan_match_mode": (form.get("plan_match_mode") or "any").strip().lower(),
+        "min_distinct_active_plans": form.get("min_distinct_active_plans") or None,
+        "max_distinct_active_plans": form.get("max_distinct_active_plans") or None,
+        "spend_min_rub": form.get("spend_min_rub") or None,
+        "spend_max_rub": form.get("spend_max_rub") or None,
+        "schedule_mode": schedule_mode,
+    }
+
+
+def _broadcast_active_plans_for_admin() -> list[dict]:
+    plans = []
+    for plan in get_all_plans() or []:
+        if int(plan.get("is_active") or 0) != 1:
+            continue
+        duration = plan.get("duration_days")
+        if duration is None:
+            months = plan.get("months")
+            duration = int(months) * 30 if months else None
+        plans.append(
+            {
+                **plan,
+                "duration_label": f"{int(duration)} дн." if duration else "—",
+                "price_label": f"{float(plan.get('price') or 0):.0f} ₽",
+            }
+        )
+    return plans
+
+
+def _send_broadcast_message_blocking(user_id: int, text: str) -> str:
+    """Синхронная отправка для send-now. Возвращает sent / unreachable / failed."""
+    if not is_broadcastable_user(user_id):
+        logger.info("Skip broadcast send-now for user %s: email-only / not broadcastable", user_id)
+        return "skipped"
+
+    loop = None
+    try:
+        loop = _bot_controller.get_loop() if _bot_controller else None
+    except Exception:
+        loop = None
+    live_bot = None
+    try:
+        live_bot = _bot_controller.get_bot_instance() if _bot_controller else None
+    except Exception:
+        live_bot = None
+
+    chat_id = get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip broadcast send-now for user %s: no telegram_chat_id", user_id)
+        return "skipped"
+
+    async def _send(bot_instance):
+        await bot_instance.send_message(int(chat_id), text, parse_mode="HTML")
+
+    try:
+        if live_bot and loop and getattr(loop, "is_running", lambda: False)():
+            fut = asyncio.run_coroutine_threadsafe(_send(live_bot), loop)
+            fut.result(timeout=30)
+            return "sent"
+        token = (get_setting("telegram_bot_token") or "").strip()
+        if not token:
+            raise RuntimeError("telegram_bot_token is not configured")
+
+        async def _run():
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                await _send(bot)
+            finally:
+                try:
+                    await bot.close()
+                except Exception:
+                    pass
+
+        asyncio.run(_run())
+        return "sent"
+    except Exception as e:
+        if telegram_reachability.handle_send_exception(int(user_id), e):
+            return "unreachable"
+        logger.warning("Broadcast send-now failed for user %s: %s", user_id, e)
+        return "failed"
 
 
 
@@ -1505,34 +1623,63 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/analytics/broadcasts')
     @login_required
     def analytics_broadcasts_page():
+        plans = _broadcast_active_plans_for_admin()
+        plans_by_id = {int(p["plan_id"]): p for p in plans if p.get("plan_id") is not None}
         campaigns = get_broadcast_campaigns()
         for c in campaigns:
             c['stats'] = get_broadcast_stats(c['id'])
+            c['audience_label'] = format_broadcast_audience_label(c, plans_by_id)
+            c['latest_run'] = (c['stats'] or {}).get('latest_run')
+            c['plan_ids_list'] = []
+            raw_plans = c.get('plan_ids')
+            if raw_plans:
+                try:
+                    parsed = json.loads(raw_plans) if isinstance(raw_plans, str) else raw_plans
+                    if isinstance(parsed, list):
+                        c['plan_ids_list'] = [int(x) for x in parsed]
+                except Exception:
+                    c['plan_ids_list'] = []
         common_data = get_common_template_data()
         return render_template(
             'analytics/broadcasts.html',
             active_tab='broadcasts',
             campaigns=campaigns,
+            plans=plans,
             **common_data,
+        )
+
+    @flask_app.route('/analytics/broadcasts/preview', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_preview():
+        payload = _broadcast_payload_from_form(request.form)
+        try:
+            cfg = build_broadcast_campaign_config(**payload)
+        except BroadcastFilterError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        preview = preview_broadcast_audience(cfg)
+        return jsonify(
+            {
+                "ok": True,
+                "count": preview["count"],
+                "recipient_count": preview["count"],
+                "sample": preview["sample"],
+            }
         )
 
     @flask_app.route('/analytics/broadcasts/create', methods=['POST'])
     @login_required
     def analytics_broadcasts_create():
-        name = (request.form.get('name') or '').strip()
-        text_html = (request.form.get('text_html') or '').strip()
-        interval_hours = request.form.get('interval_hours', '72')
-        target_segment = request.form.get('target_segment', 'inactive')
-        if not name or not text_html:
+        payload = _broadcast_payload_from_form(request.form)
+        if not payload["name"] or not payload["text_html"]:
             flash('Заполните название и текст рассылки.', 'danger')
             return redirect(url_for('analytics_broadcasts_page'))
         try:
-            interval_hours = max(1, int(interval_hours))
-        except (ValueError, TypeError):
-            interval_hours = 72
-        cid = create_broadcast_campaign(name, text_html, interval_hours, target_segment)
+            cid = create_broadcast_campaign(**payload)
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
         if cid:
-            flash(f'Рассылка «{name}» создана.', 'success')
+            flash(f'Рассылка «{payload["name"]}» создана.', 'success')
         else:
             flash('Ошибка при создании рассылки.', 'danger')
         return redirect(url_for('analytics_broadcasts_page'))
@@ -1540,23 +1687,29 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/analytics/broadcasts/<int:campaign_id>/update', methods=['POST'])
     @login_required
     def analytics_broadcasts_update(campaign_id):
-        name = (request.form.get('name') or '').strip()
-        text_html = (request.form.get('text_html') or '').strip()
-        interval_hours = request.form.get('interval_hours', '72')
-        if not name or not text_html:
+        payload = _broadcast_payload_from_form(request.form)
+        if not payload["name"] or not payload["text_html"]:
             flash('Заполните название и текст рассылки.', 'danger')
             return redirect(url_for('analytics_broadcasts_page'))
         try:
-            interval_hours = max(1, int(interval_hours))
-        except (ValueError, TypeError):
-            interval_hours = 72
-        ok = update_broadcast_campaign(campaign_id, name=name, text_html=text_html, interval_hours=interval_hours)
-        flash('Рассылка обновлена.' if ok else 'Ошибка при обновлении.', 'success' if ok else 'danger')
+            ok = update_broadcast_campaign(campaign_id, update_filters=True, **payload)
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        flash(
+            'Рассылка обновлена. История отправок сохранена.' if ok else 'Ошибка при обновлении.',
+            'success' if ok else 'danger',
+        )
         return redirect(url_for('analytics_broadcasts_page'))
 
     @flask_app.route('/analytics/broadcasts/<int:campaign_id>/toggle', methods=['POST'])
     @login_required
     def analytics_broadcasts_toggle(campaign_id):
+        campaign = get_broadcast_campaign(campaign_id)
+        status = str((campaign or {}).get("status") or "").strip().lower()
+        if status == "completed" and not (campaign or {}).get("is_active"):
+            flash('Завершённую разовую рассылку нельзя включить повторно. Склонируйте её или создайте новую.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
         new_state = toggle_broadcast_campaign(campaign_id)
         flash(f"Рассылка {'включена' if new_state else 'выключена'}.", 'success')
         return redirect(url_for('analytics_broadcasts_page'))
@@ -1570,6 +1723,45 @@ def create_webhook_app(bot_controller_instance):
         flash(f'Рассылка «{name}» удалена.' if ok else 'Ошибка при удалении.', 'success' if ok else 'danger')
         return redirect(url_for('analytics_broadcasts_page'))
 
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/clone', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_clone(campaign_id):
+        try:
+            new_id = clone_broadcast_campaign(campaign_id)
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        if new_id:
+            flash('Создана копия рассылки без истории отправок.', 'success')
+        else:
+            flash('Не удалось клонировать рассылку.', 'danger')
+        return redirect(url_for('analytics_broadcasts_page'))
+
+    @flask_app.route('/analytics/broadcasts/<int:campaign_id>/start-cycle', methods=['POST'])
+    @login_required
+    def analytics_broadcasts_start_cycle(campaign_id):
+        c = get_broadcast_campaign(campaign_id)
+        if not c:
+            flash('Рассылка не найдена.', 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        if str(c.get("status") or "").strip().lower() == "completed":
+            flash('Разовая рассылка уже завершена. Склонируйте её, чтобы отправить снова.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
+        if not c.get("is_active"):
+            flash('Включите рассылку, чтобы начать новый цикл.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
+        try:
+            validate_broadcast_telegram_html(c.get("text_html") or "")
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
+        run = try_start_broadcast_run(campaign_id, force=True)
+        if run:
+            flash(f'Создан новый цикл рассылки (run #{run.get("id")}). Отправка пойдёт планировщиком или кнопкой «Отправить сейчас».', 'success')
+        else:
+            flash('Не удалось создать новый цикл (возможно, уже есть активный запуск).', 'warning')
+        return redirect(url_for('analytics_broadcasts_page'))
+
     @flask_app.route('/analytics/broadcasts/<int:campaign_id>/send-now', methods=['POST'])
     @login_required
     def analytics_broadcasts_send_now(campaign_id):
@@ -1577,34 +1769,26 @@ def create_webhook_app(bot_controller_instance):
         if not c:
             flash('Рассылка не найдена.', 'danger')
             return redirect(url_for('analytics_broadcasts_page'))
-        interval_hours = int(c.get('interval_hours') or 72)
-        recipients = get_pending_broadcast_recipients(campaign_id, interval_hours)
-        mark_broadcast_run(campaign_id)
-        if not recipients:
-            flash('Нет пользователей для отправки (все уже получили или нет неактивных).', 'warning')
+        if str(c.get("status") or "").strip().lower() == "completed":
+            flash('Разовая рассылка уже завершена. Склонируйте её, чтобы отправить снова.', 'warning')
             return redirect(url_for('analytics_broadcasts_page'))
-        text = c.get('text_html') or ''
-        sent = 0
-        failed = 0
-        skipped = 0
-        delivered: list[int] = []
-        for uid in recipients:
-            if get_telegram_chat_id_for_user(int(uid)) is None:
-                skipped += 1
-                continue
-            try:
-                _dispatch_bot_notification(int(uid), text)
-                sent += 1
-                delivered.append(int(uid))
-            except Exception:
-                failed += 1
-        if delivered:
-            record_broadcast_sends(campaign_id, delivered)
+        if not c.get("is_active"):
+            flash('Включите рассылку, чтобы отправить её.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
+        stats = execute_broadcast_campaign_pass(
+            campaign_id,
+            _send_broadcast_message_blocking,
+            force_start=True,
+        )
+        if stats.get("reason") == "invalid_html":
+            flash(stats.get("error") or "Некорректная HTML-разметка Telegram.", "danger")
+            return redirect(url_for('analytics_broadcasts_page'))
+        if stats.get("skipped"):
+            flash('Нет пользователей для отправки или запуск ещё не наступил.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
         flash(
-            f'Отправлено: {sent}, не доставлено: {failed}'
-            + (f', без Telegram: {skipped}' if skipped else '')
-            + '.',
-            'success' if sent else 'warning',
+            f'Отправлено: {stats.get("sent", 0)}, не доставлено: {stats.get("failed", 0)}, недоступны боту: {stats.get("unreachable", 0)}.',
+            'success' if stats.get("sent") else 'warning',
         )
         return redirect(url_for('analytics_broadcasts_page'))
 

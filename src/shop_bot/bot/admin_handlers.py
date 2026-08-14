@@ -8043,7 +8043,9 @@ def get_admin_router() -> Router:
             if user.get('is_unreachable'):
                 unreachable_count += 1
                 continue
-            # Нет telegram_chat_id — не пишем в Telegram.
+            if not database.is_broadcastable_user(user):
+                email_only_count += 1
+                continue
             chat_id = database.get_telegram_chat_id_for_user(user)
             if chat_id is None:
                 email_only_count += 1
