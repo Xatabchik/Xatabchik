@@ -8028,8 +8028,7 @@ def get_admin_router() -> Router:
             if user.get('is_unreachable'):
                 unreachable_count += 1
                 continue
-            # Email-регистрация без авторизации через Telegram — боту некуда писать.
-            if database.is_email_only_user(user_id):
+            if not database.is_broadcastable_user(user):
                 email_only_count += 1
                 continue
             try:
