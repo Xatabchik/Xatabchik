@@ -633,6 +633,7 @@ _LEGACY_FORWARDERS = (
     "BroadcastFilterError",
     "BroadcastHtmlError",
     "is_email_only_user",
+    "is_broadcastable_user",
     "EMAIL_ONLY_TELEGRAM_ID_MIN",
     "EMAIL_ONLY_TELEGRAM_ID_MAX",
     "EMAIL_ONLY_LEGACY_TELEGRAM_ID_MIN",

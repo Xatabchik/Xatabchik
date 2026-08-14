@@ -4530,7 +4530,25 @@ def _sql_exclude_email_only_ids(column: str = "u.telegram_id") -> tuple[str, tup
 
 
 def _filter_out_email_only_user_ids(user_ids: list[int]) -> list[int]:
-    return [int(uid) for uid in user_ids if not is_email_only_user(uid)]
+    return [int(uid) for uid in user_ids if is_broadcastable_user(uid)]
+
+
+def is_broadcastable_user(user: dict | int | str | None) -> bool:
+    """Можно ли включать пользователя в исходящую рассылку.
+
+    Не использует ``auth_email``/``username``: реальный Telegram-пользователь
+    может иметь email и не иметь username. Email-only определяется только
+    виртуальным ``telegram_id`` (текущий и legacy диапазоны).
+    """
+    if user is None:
+        return False
+    if isinstance(user, dict):
+        if user.get("is_banned"):
+            return False
+        if user.get("is_unreachable"):
+            return False
+        return not is_email_only_user(user)
+    return not is_email_only_user(user)
 
 
 def get_inactive_subscribers() -> list[int]:
@@ -4543,7 +4561,7 @@ def get_inactive_subscribers() -> list[int]:
             exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
                 f"""
-                SELECT u.telegram_id FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
                   AND {exclude_sql}
@@ -4555,7 +4573,16 @@ def get_inactive_subscribers() -> list[int]:
                 """,
                 exclude_params,
             )
-            return _filter_out_email_only_user_ids([row[0] for row in cursor.fetchall()])
+            out: list[int] = []
+            for telegram_id, is_banned, is_unreachable in cursor.fetchall():
+                user = {
+                    "telegram_id": int(telegram_id),
+                    "is_banned": is_banned,
+                    "is_unreachable": is_unreachable,
+                }
+                if is_broadcastable_user(user):
+                    out.append(int(telegram_id))
+            return out
     except sqlite3.Error as e:
         logging.error("Failed to get inactive subscribers: %s", e)
         return []
@@ -4668,7 +4695,7 @@ def _load_broadcast_candidate_user_ids() -> list[int]:
             exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
                 f"""
-                SELECT u.telegram_id FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
                   AND {exclude_sql}
@@ -4677,9 +4704,14 @@ def _load_broadcast_candidate_user_ids() -> list[int]:
             )
             seen: set[int] = set()
             out: list[int] = []
-            for row in cursor.fetchall():
-                uid = int(row[0])
-                if uid in seen or is_email_only_user(uid):
+            for telegram_id, is_banned, is_unreachable in cursor.fetchall():
+                uid = int(telegram_id)
+                user = {
+                    "telegram_id": uid,
+                    "is_banned": is_banned,
+                    "is_unreachable": is_unreachable,
+                }
+                if uid in seen or not is_broadcastable_user(user):
                     continue
                 seen.add(uid)
                 out.append(uid)
@@ -5424,7 +5456,7 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
         if not live.get("is_active"):
             stats["paused"] = True
             return stats
-        if is_email_only_user(uid):
+        if not is_broadcastable_user(uid):
             continue
         if not claim_broadcast_recipient(int(run["id"]), int(campaign_id), int(uid)):
             continue
@@ -5438,6 +5470,9 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
                 uid,
                 send_exc,
             )
+        if result == "skipped":
+            release_broadcast_claim(int(run["id"]), int(uid))
+            continue
         if result not in ("sent", "unreachable", "failed"):
             result = "failed"
         apply_broadcast_send_result(int(run["id"]), int(campaign_id), int(uid), result)

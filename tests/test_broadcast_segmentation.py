@@ -100,8 +100,11 @@ def test_target_mode_all_excludes_email_only(temp_db):
     from shop_bot.data_manager import database
 
     insert_user(database.DB_FILE, telegram_id=201, username="tg")
+    insert_user(database.DB_FILE, telegram_id=203, username="")
+    insert_user(database.DB_FILE, telegram_id=204, username="tgmail", auth_email="tg@x.com")
     insert_user(database.DB_FILE, telegram_id=999000000201, username="email", auth_email="e@x.com")
     insert_user(database.DB_FILE, telegram_id=999000002, username="legacy2", auth_email="legacy2@x.com")
+    insert_user(database.DB_FILE, telegram_id=999000003, username="legacy3", auth_email="legacy3@x.com")
     insert_user(database.DB_FILE, telegram_id=202, username="banned", is_banned=1)
     cid = database.create_broadcast_campaign(
         "all",
@@ -112,7 +115,63 @@ def test_target_mode_all_excludes_email_only(temp_db):
         schedule_mode="once",
     )
     recipients = database.get_broadcast_recipients(campaign_id=cid)
-    assert recipients == [201]
+    preview = database.preview_broadcast_audience(campaign_id=cid)
+    assert set(recipients) == {201, 203, 204}
+    assert 999000000201 not in recipients
+    assert 999000002 not in recipients
+    assert 999000003 not in recipients
+    assert preview["count"] == 3
+    sample_ids = {row["telegram_id"] for row in preview["sample"]}
+    assert sample_ids == {201, 203, 204}
+    assert 999000002 not in sample_ids
+    assert 999000003 not in sample_ids
+
+
+def test_is_broadcastable_user_rejects_email_only_not_username(temp_db):
+    from shop_bot.data_manager import database
+
+    assert database.is_broadcastable_user({"telegram_id": 201, "is_banned": 0, "is_unreachable": 0}) is True
+    assert database.is_broadcastable_user({"telegram_id": 203, "username": "", "is_banned": 0}) is True
+    assert database.is_broadcastable_user(
+        {"telegram_id": 204, "auth_email": "tg@x.com", "username": "x", "is_banned": 0}
+    ) is True
+    assert database.is_broadcastable_user(999000000201) is False
+    assert database.is_broadcastable_user(999000002) is False
+    assert database.is_broadcastable_user(999000003) is False
+    assert database.is_broadcastable_user(
+        {"telegram_id": 999000002, "auth_email": "l2@x.com", "is_banned": 0}
+    ) is False
+    assert database.is_broadcastable_user({"telegram_id": 201, "is_banned": 1}) is False
+    assert database.is_broadcastable_user({"telegram_id": 201, "is_unreachable": 1}) is False
+
+
+def test_filtered_campaign_excludes_legacy_email_only(temp_db):
+    from shop_bot.data_manager import database
+
+    plan = _make_plan(database, "EmailFilterHost", "Start")
+    insert_user(database.DB_FILE, telegram_id=311, username="tg")
+    insert_user(database.DB_FILE, telegram_id=312, username="")
+    insert_user(database.DB_FILE, telegram_id=999000002, username="legacy2", auth_email="l2@x.com")
+    insert_user(database.DB_FILE, telegram_id=999000003, username="legacy3", auth_email="l3@x.com")
+    insert_user(database.DB_FILE, telegram_id=999000000311, username="email", auth_email="e@x.com")
+    expire = _future()
+    for uid in (311, 312, 999000002, 999000003, 999000000311):
+        _insert_key(database.DB_FILE, user_id=uid, expire_at=expire, email=f"{uid}@x", plan_id=plan)
+    cid = database.create_broadcast_campaign(
+        "filtered-email",
+        "x",
+        24,
+        "none",
+        target_mode="filtered",
+        plan_ids=[plan],
+        plan_match_mode="any",
+        schedule_mode="once",
+    )
+    recipients = database.get_broadcast_recipients(campaign_id=cid)
+    preview = database.preview_broadcast_audience(campaign_id=cid)
+    assert set(recipients) == {311, 312}
+    assert preview["count"] == 2
+    assert {row["telegram_id"] for row in preview["sample"]} == {311, 312}
 
 
 def test_multiple_active_keys_same_plan_one_user(temp_db):

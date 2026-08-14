@@ -28,6 +28,11 @@ def test_is_email_only_user_detects_virtual_ids():
     assert database.is_email_only_user(None) is False
     assert database.is_email_only_user("not-a-number") is False
     assert database.is_email_only_user({"username": "no-id"}) is False
+    assert database.is_broadcastable_user(123456789) is True
+    assert database.is_broadcastable_user({"telegram_id": 123456789, "username": "", "is_banned": 0}) is True
+    assert database.is_broadcastable_user(999000002) is False
+    assert database.is_broadcastable_user(999000003) is False
+    assert database.is_broadcastable_user(999000000001) is False
 
 
 def test_get_inactive_subscribers_excludes_email_only_users(temp_db):

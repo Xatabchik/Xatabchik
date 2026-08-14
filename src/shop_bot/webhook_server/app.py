@@ -110,6 +110,7 @@ from shop_bot.data_manager.database import (
     clone_broadcast_campaign,
     format_broadcast_audience_label, BroadcastFilterError,
     execute_broadcast_campaign_pass, validate_broadcast_telegram_html,
+    is_broadcastable_user,
 )
 from shop_bot.data_manager.database import (
     list_referral_payout_methods, list_referral_withdrawal_requests,
@@ -330,6 +331,10 @@ def _broadcast_active_plans_for_admin() -> list[dict]:
 
 def _send_broadcast_message_blocking(user_id: int, text: str) -> str:
     """Синхронная отправка для send-now. Возвращает sent / unreachable / failed."""
+    if not is_broadcastable_user(user_id):
+        logger.info("Skip broadcast send-now for user %s: email-only / not broadcastable", user_id)
+        return "skipped"
+
     loop = None
     try:
         loop = _bot_controller.get_loop() if _bot_controller else None
