@@ -749,16 +749,12 @@ def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
         "is_unreachable": "BOOLEAN DEFAULT 0",
         "unreachable_reason": "TEXT",
         "unreachable_since": "TIMESTAMP",
-        "telegram_chat_id": "INTEGER",
-        "telegram_linked_at": "TIMESTAMP",
     }
     for column, definition in mapping.items():
         _ensure_table_column(cursor, "users", column, definition)
     _ensure_unique_index(cursor, "idx_users_auth_token", "users", "auth_token")
     _ensure_unique_index(cursor, "idx_users_auth_email", "users", "auth_email")
     _ensure_index(cursor, "idx_users_is_unreachable", "users", "is_unreachable")
-    _ensure_index(cursor, "idx_users_telegram_chat_id", "users", "telegram_chat_id")
-    _backfill_users_telegram_chat_id(cursor)
 
 
 def _ensure_email_verification_columns(cursor: sqlite3.Cursor) -> None:
@@ -4478,8 +4474,7 @@ def delete_broadcast_campaign(campaign_id: int) -> bool:
 # Псевдо-telegram_id для email-аккаунтов без привязки к Telegram.
 # Текущий create_user_by_email выделяет 12-значные ID 999000000000–999999999999.
 # Старый аллокатор давал 9-значные 999000000+n (в проде: 999000002, 999000003).
-# users.telegram_id — внутренний PK, не адрес Bot API. Адрес — telegram_chat_id.
-# В синтетические диапазоны бот писать не может. Не путать с auth_email у реального Telegram-пользователя.
+# В этот диапазон бот писать не может. Не путать с auth_email у реального Telegram-пользователя.
 EMAIL_ONLY_TELEGRAM_ID_MIN = 999000000000
 EMAIL_ONLY_TELEGRAM_ID_MAX = 999999999999
 EMAIL_ONLY_LEGACY_TELEGRAM_ID_MIN = 999000000
@@ -4502,7 +4497,7 @@ def _coerce_telegram_id(user: dict | int | str | None) -> int | None:
 
 
 def is_email_only_user(user: dict | int | str | None) -> bool:
-    """True, если это email-only аккаунт с синтетическим внутренним telegram_id.
+    """True, если это email-only аккаунт с синтетическим telegram_id.
 
     Принимает запись пользователя или сырой telegram_id. Определение идёт по
     фактическим аллокаторам виртуальных ID, а не по ``auth_email``/``username``:
@@ -4524,7 +4519,8 @@ def is_email_only_user(user: dict | int | str | None) -> bool:
     return False
 
 
-def _sql_not_email_only_telegram_id(column: str = "telegram_id") -> tuple[str, tuple[int, ...]]:
+def _sql_exclude_email_only_ids(column: str = "u.telegram_id") -> tuple[str, tuple[int, ...]]:
+    """SQL: колонка не является синтетическим email-only telegram_id."""
     clauses: list[str] = []
     params: list[int] = []
     for low, high in _EMAIL_ONLY_TELEGRAM_ID_RANGES:
@@ -4533,183 +4529,16 @@ def _sql_not_email_only_telegram_id(column: str = "telegram_id") -> tuple[str, t
     return " AND ".join(clauses), tuple(params)
 
 
-def _sql_exclude_email_only_ids(column: str = "u.telegram_id") -> tuple[str, tuple[int, ...]]:
-    """SQL: колонка не является синтетическим email-only telegram_id."""
-    return _sql_not_email_only_telegram_id(column)
-
-
-def _users_has_telegram_chat_id_column(cursor: sqlite3.Cursor) -> bool:
-    cursor.execute("PRAGMA table_info(users)")
-    return any(row[1] == "telegram_chat_id" for row in cursor.fetchall())
-
-
 def _filter_out_email_only_user_ids(user_ids: list[int]) -> list[int]:
     return [int(uid) for uid in user_ids if is_broadcastable_user(uid)]
 
 
-def _backfill_users_telegram_chat_id(cursor: sqlite3.Cursor) -> None:
-    """Идемпотентный backfill только для достоверно реальных Telegram-пользователей.
-
-    Email-only (новый 12-значный диапазон и legacy 9-значные 999000000+n)
-    оставляем с telegram_chat_id IS NULL. Не используем auth_email/username.
-    UNIQUE по telegram_chat_id не ставится: слияние аккаунтов не анализировалось.
-    """
-    where_sql, params = _sql_not_email_only_telegram_id("telegram_id")
-    cursor.execute(
-        f"""
-        UPDATE users
-        SET telegram_chat_id = telegram_id,
-            telegram_linked_at = COALESCE(telegram_linked_at, registration_date, CURRENT_TIMESTAMP)
-        WHERE telegram_chat_id IS NULL
-          AND {where_sql}
-        """,
-        params,
-    )
-
-
-def link_user_telegram(
-    user_id: int,
-    telegram_chat_id: int,
-    username: str | None = None,
-) -> bool:
-    """Идемпотентно привязать реальный Telegram chat id к строке users (PK = user_id).
-
-    Не создаёт вторую строку. Виртуальный email-only chat id отклоняется.
-    Уже заполненный другой telegram_chat_id не перезаписывается.
-    Строка ищется по PK, затем по уже сохранённому telegram_chat_id — чтобы
-    /start и middleware находили email-only аккаунт после привязки.
-    """
-    try:
-        uid = int(user_id)
-        chat_id = int(telegram_chat_id)
-    except (TypeError, ValueError):
-        return False
-    if is_email_only_user(chat_id):
-        logging.info("link_user_telegram: refuse virtual chat id %s for user %s", chat_id, uid)
-        return False
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT telegram_id, telegram_chat_id, username FROM users WHERE telegram_id = ?", (uid,))
-            row = cursor.fetchone()
-            if not row:
-                cursor.execute(
-                    "SELECT telegram_id, telegram_chat_id, username FROM users WHERE telegram_chat_id = ? LIMIT 1",
-                    (chat_id,),
-                )
-                row = cursor.fetchone()
-            if not row:
-                return False
-            target_pk = int(row["telegram_id"])
-            existing = row["telegram_chat_id"]
-            if existing is not None and int(existing) != chat_id:
-                logging.warning(
-                    "link_user_telegram: user %s already has telegram_chat_id=%s, not replacing with %s",
-                    target_pk,
-                    existing,
-                    chat_id,
-                )
-                return False
-            cursor.execute(
-                "SELECT telegram_id FROM users WHERE telegram_chat_id = ? AND telegram_id != ?",
-                (chat_id, target_pk),
-            )
-            other_chat = cursor.fetchone()
-            if other_chat:
-                logging.warning(
-                    "link_user_telegram: chat id %s already belongs to user %s",
-                    chat_id,
-                    other_chat["telegram_id"],
-                )
-                return False
-            if int(chat_id) != target_pk:
-                cursor.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (chat_id,))
-                other_pk = cursor.fetchone()
-                if other_pk:
-                    logging.warning(
-                        "link_user_telegram: chat id %s already exists as a separate user row",
-                        chat_id,
-                    )
-                    return False
-            sets = ["telegram_chat_id = ?", "telegram_linked_at = COALESCE(telegram_linked_at, CURRENT_TIMESTAMP)"]
-            params: list = [chat_id]
-            if username is not None:
-                sets.append("username = ?")
-                params.append(username)
-            params.append(target_pk)
-            cursor.execute(
-                f"UPDATE users SET {', '.join(sets)} WHERE telegram_id = ?",
-                params,
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        logging.error("Failed to link telegram chat for user %s: %s", uid, e)
-        return False
-
-
-def link_telegram_to_email_user(email_user_id: int, telegram_chat_id: int, username: str | None = None):
-    """Привязать реальный Telegram к email-only строке, не меняя PK telegram_id.
-
-    Возвращает True или текст ошибки для API. Не создаёт вторую строку users.
-    """
-    try:
-        uid = int(email_user_id)
-        chat_id = int(telegram_chat_id)
-    except (TypeError, ValueError):
-        return "Некорректные идентификаторы"
-    existing = get_user(uid)
-    if not existing:
-        return "Пользователь не найден"
-    current = get_telegram_chat_id_for_user(existing)
-    if current is not None:
-        return True if int(current) == chat_id else "Telegram уже привязан"
-    other = get_user(chat_id)
-    if other and int(other["telegram_id"]) != uid:
-        return "Этот Telegram уже привязан к другому аккаунту"
-    if link_user_telegram(uid, chat_id, username):
-        return True
-    return "Не удалось привязать Telegram"
-
-
-def get_telegram_chat_id_for_user(user: dict | int | None) -> int | None:
-    """Адрес для Bot API. Источник истины — users.telegram_chat_id.
-
-    Email-only всегда None. Переходный fallback на legacy telegram_id только
-    если запись достоверно не email-only (ещё не прошёл backfill / link).
-    """
-    record = user if isinstance(user, dict) else None
-    if record is None and user is not None:
-        tid = _coerce_telegram_id(user)
-        record = get_user(tid) if tid is not None else None
-        if record is None and tid is not None:
-            if is_email_only_user(tid):
-                return None
-            return tid
-    if not record:
-        return None
-    raw = record.get("telegram_chat_id")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            chat_id = int(raw)
-        except (TypeError, ValueError):
-            chat_id = None
-        else:
-            if chat_id:
-                return chat_id
-    if is_email_only_user(record):
-        return None
-    return _coerce_telegram_id(record)
-
-
 def is_broadcastable_user(user: dict | int | str | None) -> bool:
-    """Можно ли включать пользователя в исходящую рассылку/уведомление.
+    """Можно ли включать пользователя в исходящую рассылку.
 
-    False для banned, unreachable, email-only и записей без Telegram chat id.
-    Принимает dict пользователя или сырой telegram_id (внутренний PK).
     Не использует ``auth_email``/``username``: реальный Telegram-пользователь
-    может иметь email и не иметь username.
+    может иметь email и не иметь username. Email-only определяется только
+    виртуальным ``telegram_id`` (текущий и legacy диапазоны).
     """
     if user is None:
         return False
@@ -4718,110 +4547,24 @@ def is_broadcastable_user(user: dict | int | str | None) -> bool:
             return False
         if user.get("is_unreachable"):
             return False
-        return get_telegram_chat_id_for_user(user) is not None
-    if is_email_only_user(user):
-        return False
-    tid = _coerce_telegram_id(user)
-    if tid is None:
-        return False
-    record = get_user(tid)
-    if record:
-        return is_broadcastable_user(record)
-    return get_telegram_chat_id_for_user({"telegram_id": tid}) is not None
-
-
-def get_telegram_identity_stats() -> dict:
-    """Read-only сводка привязки Telegram для админки."""
-    empty = {
-        "total": 0,
-        "with_chat_id": 0,
-        "without_chat_id": 0,
-        "email_only": 0,
-        "unclassified_without_chat_id": 0,
-    }
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            total = int(cursor.fetchone()[0] or 0)
-            cursor.execute("SELECT COUNT(*) FROM users WHERE telegram_chat_id IS NOT NULL")
-            with_chat = int(cursor.fetchone()[0] or 0)
-            email_sql, email_params = _sql_not_email_only_telegram_id("telegram_id")
-            cursor.execute(
-                f"SELECT COUNT(*) FROM users WHERE NOT ({email_sql})",
-                email_params,
-            )
-            email_only = int(cursor.fetchone()[0] or 0)
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) FROM users
-                WHERE telegram_chat_id IS NULL AND {email_sql}
-                """,
-                email_params,
-            )
-            unclassified = int(cursor.fetchone()[0] or 0)
-            return {
-                "total": total,
-                "with_chat_id": with_chat,
-                "without_chat_id": total - with_chat,
-                "email_only": email_only,
-                "unclassified_without_chat_id": unclassified,
-            }
-    except sqlite3.Error as e:
-        logging.error("Failed to load telegram identity stats: %s", e)
-        return empty
-
-
-def get_telegram_identity_unclassified_sample(limit: int = 20) -> list[dict]:
-    """Ограниченный sample записей без telegram_chat_id, которые не email-only."""
-    try:
-        limit = max(1, min(int(limit or 20), 50))
-    except (TypeError, ValueError):
-        limit = 20
-    where_sql, params = _sql_not_email_only_telegram_id("telegram_id")
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT telegram_id, username,
-                       CASE WHEN auth_email IS NULL OR auth_email = '' THEN 0 ELSE 1 END AS has_auth_email,
-                       telegram_chat_id, registration_date
-                FROM users
-                WHERE telegram_chat_id IS NULL AND {where_sql}
-                ORDER BY registration_date DESC
-                LIMIT ?
-                """,
-                (*params, limit),
-            )
-            return [dict(row) for row in cursor.fetchall()]
-    except sqlite3.Error as e:
-        logging.error("Failed to load telegram identity sample: %s", e)
-        return []
+        return not is_email_only_user(user)
+    return not is_email_only_user(user)
 
 
 def get_inactive_subscribers() -> list[int]:
-    """Внутренние user id (PK) без активных ключей, с реальной Telegram-привязкой."""
+    """User IDs with no active keys (expire_at in the past or no keys at all),
+    not banned, not marked unreachable (blocked the bot / deactivated account),
+    and not email-only accounts without Telegram auth."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            exclude_sql, exclude_params = _sql_not_email_only_telegram_id("u.telegram_id")
-            has_chat = _users_has_telegram_chat_id_column(cursor)
-            chat_select = ", u.telegram_chat_id" if has_chat else ""
-            if has_chat:
-                chat_filter = (
-                    f"(u.telegram_chat_id IS NOT NULL "
-                    f"OR (u.telegram_chat_id IS NULL AND {exclude_sql}))"
-                )
-            else:
-                chat_filter = exclude_sql
+            exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
                 f"""
-                SELECT u.telegram_id, u.is_banned, u.is_unreachable{chat_select} FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND {chat_filter}
+                  AND {exclude_sql}
                   AND NOT EXISTS (
                     SELECT 1 FROM vpn_keys k
                     WHERE k.user_id = u.telegram_id
@@ -4831,15 +4574,12 @@ def get_inactive_subscribers() -> list[int]:
                 exclude_params,
             )
             out: list[int] = []
-            for row in cursor.fetchall():
-                telegram_id, is_banned, is_unreachable = row[0], row[1], row[2]
+            for telegram_id, is_banned, is_unreachable in cursor.fetchall():
                 user = {
                     "telegram_id": int(telegram_id),
                     "is_banned": is_banned,
                     "is_unreachable": is_unreachable,
                 }
-                if has_chat:
-                    user["telegram_chat_id"] = row[3]
                 if is_broadcastable_user(user):
                     out.append(int(telegram_id))
             return out
@@ -4952,36 +4692,25 @@ def _load_broadcast_candidate_user_ids() -> list[int]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            exclude_sql, exclude_params = _sql_not_email_only_telegram_id("u.telegram_id")
-            has_chat = _users_has_telegram_chat_id_column(cursor)
-            chat_select = ", u.telegram_chat_id" if has_chat else ""
-            if has_chat:
-                chat_filter = (
-                    f"(u.telegram_chat_id IS NOT NULL "
-                    f"OR (u.telegram_chat_id IS NULL AND {exclude_sql}))"
-                )
-            else:
-                chat_filter = exclude_sql
+            exclude_sql, exclude_params = _sql_exclude_email_only_ids()
             cursor.execute(
                 f"""
-                SELECT u.telegram_id, u.is_banned, u.is_unreachable{chat_select} FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND {chat_filter}
+                  AND {exclude_sql}
                 """,
                 exclude_params,
             )
             seen: set[int] = set()
             out: list[int] = []
-            for row in cursor.fetchall():
-                uid = int(row[0])
+            for telegram_id, is_banned, is_unreachable in cursor.fetchall():
+                uid = int(telegram_id)
                 user = {
                     "telegram_id": uid,
-                    "is_banned": row[1],
-                    "is_unreachable": row[2],
+                    "is_banned": is_banned,
+                    "is_unreachable": is_unreachable,
                 }
-                if has_chat:
-                    user["telegram_chat_id"] = row[3]
                 if uid in seen or not is_broadcastable_user(user):
                     continue
                 seen.add(uid)
@@ -7640,46 +7369,21 @@ def register_user_if_not_exists(telegram_id: int, username: str, referrer_id):
     ``referred_by`` выставляется только на INSERT. Уже существующая строка
     обновляет username и никогда не late-bind'ит реферера — иначе любой
     ``/start ref_<id>`` мог привязать аккаунт, у которого поле ещё пустое.
-    При реальном Telegram ID заполняет telegram_chat_id / telegram_linked_at.
     """
     try:
-        tid = int(telegram_id)
-        chat_id = None if is_email_only_user(tid) else tid
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT referred_by FROM users WHERE telegram_id = ?", (tid,))
+            cursor.execute("SELECT referred_by FROM users WHERE telegram_id = ?", (telegram_id,))
             row = cursor.fetchone()
-            existing_pk = tid if row else None
-            if existing_pk is None and chat_id is not None:
+            if not row:
+
                 cursor.execute(
-                    "SELECT telegram_id FROM users WHERE telegram_chat_id = ? LIMIT 1",
-                    (chat_id,),
-                )
-                linked = cursor.fetchone()
-                if linked:
-                    existing_pk = int(linked[0])
-            if existing_pk is None:
-                cursor.execute(
-                    """
-                    INSERT INTO users (
-                        telegram_id, username, registration_date, referred_by,
-                        telegram_chat_id, telegram_linked_at
-                    ) VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE NULL END)
-                    """,
-                    (tid, username, datetime.now(), referrer_id, chat_id, chat_id),
+                    "INSERT INTO users (telegram_id, username, registration_date, referred_by) VALUES (?, ?, ?, ?)",
+                    (telegram_id, username, datetime.now(), referrer_id)
                 )
             else:
-                cursor.execute("UPDATE users SET username = ? WHERE telegram_id = ?", (username, existing_pk))
-                if chat_id is not None:
-                    cursor.execute(
-                        """
-                        UPDATE users
-                        SET telegram_chat_id = COALESCE(telegram_chat_id, ?),
-                            telegram_linked_at = COALESCE(telegram_linked_at, CURRENT_TIMESTAMP)
-                        WHERE telegram_id = ?
-                        """,
-                        (chat_id, existing_pk),
-                    )
+
+                cursor.execute("UPDATE users SET username = ? WHERE telegram_id = ?", (username, telegram_id))
             conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to register user {telegram_id}: {e}")
@@ -8225,24 +7929,11 @@ def get_referral_count(user_id: int) -> int:
         return 0
 
 def get_user(telegram_id: int):
-    """Найти пользователя по внутреннему PK, затем по telegram_chat_id.
-
-    После привязки email-only аккаунта PK остаётся виртуальным, а Bot API
-    события приходят с реальным chat id — второй lookup это учитывает.
-    """
-    try:
-        tid = int(telegram_id)
-    except (TypeError, ValueError):
-        return None
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (tid,))
-            user_data = cursor.fetchone()
-            if user_data:
-                return dict(user_data)
-            cursor.execute("SELECT * FROM users WHERE telegram_chat_id = ? LIMIT 1", (tid,))
+            cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
             user_data = cursor.fetchone()
             return dict(user_data) if user_data else None
     except sqlite3.Error as e:
@@ -11360,11 +11051,8 @@ def create_user_by_email(email: str, password: str) -> dict | None:
             next_id = int(row[0]) + 1 if row and row[0] else EMAIL_ONLY_TELEGRAM_ID_MIN + 1
             cur.execute(
                 """
-                INSERT INTO users (
-                    telegram_id, username, agreed_to_terms, auth_email, auth_pass,
-                    email_verified, registration_date, telegram_chat_id, telegram_linked_at
-                )
-                VALUES (?, ?, 1, ?, ?, 0, CURRENT_TIMESTAMP, NULL, NULL)
+                INSERT INTO users (telegram_id, username, agreed_to_terms, auth_email, auth_pass, email_verified, registration_date)
+                VALUES (?, ?, 1, ?, ?, 0, CURRENT_TIMESTAMP)
                 """,
                 (next_id, norm.split('@')[0], norm, password_hash),
             )

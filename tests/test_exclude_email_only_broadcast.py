@@ -22,7 +22,6 @@ def test_is_email_only_user_detects_virtual_ids():
     assert database.is_email_only_user(999999999999) is True
     assert database.is_email_only_user(999000002) is True
     assert database.is_email_only_user(999000003) is True
-    assert database.is_email_only_user({"telegram_id": 999000002}) is True
     assert database.is_email_only_user({"telegram_id": 999000002, "auth_email": "a@x.com"}) is True
     assert database.is_email_only_user({"telegram_id": 123456789, "auth_email": "tg@x.com"}) is False
     assert database.is_email_only_user(123456789) is False
@@ -117,7 +116,6 @@ def test_create_user_by_email_uses_virtual_id_range(temp_db):
     user = database.create_user_by_email("virtual@example.com", "Passw0rd!")
     assert user is not None
     assert database.is_email_only_user(user) is True
-    assert user["telegram_chat_id"] is None
     assert database.EMAIL_ONLY_TELEGRAM_ID_MIN <= user["telegram_id"] <= database.EMAIL_ONLY_TELEGRAM_ID_MAX
 
 

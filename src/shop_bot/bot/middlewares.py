@@ -2,7 +2,7 @@ from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery, Chat
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from shop_bot.data_manager.remnawave_repository import get_user, get_setting, mark_user_reachable, link_user_telegram
+from shop_bot.data_manager.remnawave_repository import get_user, get_setting, mark_user_reachable
 
 class BanMiddleware(BaseMiddleware):
     async def __call__(
@@ -16,16 +16,6 @@ class BanMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_data = get_user(user.id)
-
-        if user_data:
-            try:
-                link_user_telegram(
-                    user_data.get("telegram_id") or user.id,
-                    user.id,
-                    getattr(user, "username", None) or user_data.get("username"),
-                )
-            except Exception:
-                pass
 
         # Пользователь снова взаимодействует с ботом — значит, он разблокировал его
         # (или аккаунт снова активен). Снимаем отметку недоступности, чтобы он вновь

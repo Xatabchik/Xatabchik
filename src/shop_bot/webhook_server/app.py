@@ -111,8 +111,6 @@ from shop_bot.data_manager.database import (
     format_broadcast_audience_label, BroadcastFilterError,
     execute_broadcast_campaign_pass, validate_broadcast_telegram_html,
     is_broadcastable_user,
-    get_telegram_chat_id_for_user, get_telegram_identity_stats,
-    get_telegram_identity_unclassified_sample,
 )
 from shop_bot.data_manager.database import (
     list_referral_payout_methods, list_referral_withdrawal_requests,
@@ -221,36 +219,11 @@ def _dispatch_payment_processing(metadata: dict) -> None:
     threading.Thread(target=_worker, name="shopbot-payment-fulfillment", daemon=True).start()
 
 
-class SkipTelegramSend(Exception):
-    """Нет telegram_chat_id — не ошибка доставки Bot API."""
-
-
-def _require_user_chat_id(user_id) -> int:
-    chat_id = get_telegram_chat_id_for_user(user_id)
-    if chat_id is None:
-        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
-        raise SkipTelegramSend(user_id)
-    return int(chat_id)
-
-
-def _optional_user_chat_id(user_id) -> int | None:
-    chat_id = get_telegram_chat_id_for_user(user_id)
-    if chat_id is None:
-        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
-        return None
-    return int(chat_id)
-
-
-def _dispatch_bot_notification(user_id: int, text: str, **send_kwargs) -> None:
-    """Отправляет текстовое уведомление пользователю бота из админ-панели.
-
-    Адрес берётся из telegram_chat_id. Без привязки Telegram API не вызывается.
-    """
-    chat_id = get_telegram_chat_id_for_user(user_id)
-    if chat_id is None:
-        logger.info("Skip Telegram notification for user %s: no telegram_chat_id", user_id)
-        return
-
+def _dispatch_bot_notification(user_id: int, text: str) -> None:
+    """Отправляет произвольное текстовое уведомление пользователю бота из админ-панели
+    (используется, например, при смене статуса заявки на вывод реферальных средств).
+    Использует ту же схему диспетчеризации, что и обработка платежей: живой Bot-инстанс
+    из работающего event loop, либо временный Bot в отдельном потоке."""
     loop = None
     try:
         loop = _bot_controller.get_loop()
@@ -265,7 +238,7 @@ def _dispatch_bot_notification(user_id: int, text: str, **send_kwargs) -> None:
 
     async def _send(bot_instance):
         try:
-            await bot_instance.send_message(int(chat_id), text, **send_kwargs)
+            await bot_instance.send_message(int(user_id), text)
         except Exception as e:
             if not telegram_reachability.handle_send_exception(int(user_id), e):
                 logger.warning(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
@@ -373,13 +346,8 @@ def _send_broadcast_message_blocking(user_id: int, text: str) -> str:
     except Exception:
         live_bot = None
 
-    chat_id = get_telegram_chat_id_for_user(user_id)
-    if chat_id is None:
-        logger.info("Skip broadcast send-now for user %s: no telegram_chat_id", user_id)
-        return "skipped"
-
     async def _send(bot_instance):
-        await bot_instance.send_message(int(chat_id), text, parse_mode="HTML")
+        await bot_instance.send_message(int(user_id), text, parse_mode="HTML")
 
     try:
         if live_bot and loop and getattr(loop, "is_running", lambda: False)():
@@ -2389,20 +2357,7 @@ def create_webhook_app(bot_controller_instance):
 
         common_data = get_common_template_data()
         common_data['hosts'] = get_all_hosts() or []
-        identity_stats = get_telegram_identity_stats()
-        identity_sample = get_telegram_identity_unclassified_sample(10)
-        return render_template(
-            'users.html',
-            users=users,
-            current_page=page,
-            total_pages=total_pages,
-            q=q,
-            per_page=per_page,
-            sort=sort,
-            telegram_identity_stats=identity_stats,
-            telegram_identity_sample=identity_sample,
-            **common_data,
-        )
+        return render_template('users.html', users=users, current_page=page, total_pages=total_pages, q=q, per_page=per_page, sort=sort, **common_data)
 
 
     @flask_app.route('/users/table.partial')
@@ -2719,9 +2674,20 @@ def create_webhook_app(bot_controller_instance):
 
         try:
             if ok:
-                sign = '+' if delta >= 0 else ''
-                text = f"💳 Ваш баланс был изменён администратором: {sign}{delta:.2f} RUB\nТекущий баланс: {get_balance(user_id):.2f} RUB"
-                _dispatch_bot_notification(user_id, text)
+                bot = _bot_controller.get_bot_instance()
+                if bot:
+                    sign = '+' if delta >= 0 else ''
+                    text = f"💳 Ваш баланс был изменён администратором: {sign}{delta:.2f} RUB\nТекущий баланс: {get_balance(user_id):.2f} RUB"
+                    loop = _bot_controller.get_loop()
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=user_id, text=text), loop)
+                        logger.info(f"Запланирована отправка уведомления о балансе пользователю {user_id}")
+                    else:
+
+                        logger.warning("Цикл событий (EVENT_LOOP) не запущен; использую резервный asyncio.run для уведомления о балансе")
+                        asyncio.run(bot.send_message(chat_id=user_id, text=text))
+                else:
+                    logger.warning("Экземпляр бота отсутствует; не могу отправить уведомление о балансе")
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о балансе: {e}")
         return redirect(url_for('users_page'))
@@ -2748,9 +2714,19 @@ def create_webhook_app(bot_controller_instance):
 
         try:
             if ok:
-                sign = '+' if delta >= 0 else ''
-                text = f"🤝 Ваш реферальный баланс был изменён администратором: {sign}{delta:.2f} RUB\nТекущий реферальный баланс: {get_referral_balance(user_id):.2f} RUB"
-                _dispatch_bot_notification(user_id, text)
+                bot = _bot_controller.get_bot_instance()
+                if bot:
+                    sign = '+' if delta >= 0 else ''
+                    text = f"🤝 Ваш реферальный баланс был изменён администратором: {sign}{delta:.2f} RUB\nТекущий реферальный баланс: {get_referral_balance(user_id):.2f} RUB"
+                    loop = _bot_controller.get_loop()
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=user_id, text=text), loop)
+                        logger.info(f"Запланирована отправка уведомления о реферальном балансе пользователю {user_id}")
+                    else:
+                        logger.warning("Цикл событий (EVENT_LOOP) не запущен; использую резервный asyncio.run для уведомления о реферальном балансе")
+                        asyncio.run(bot.send_message(chat_id=user_id, text=text))
+                else:
+                    logger.warning("Экземпляр бота отсутствует; не могу отправить уведомление о реферальном балансе")
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о реферальном балансе: {e}")
         return redirect(url_for('users_page'))
@@ -3304,7 +3280,8 @@ def create_webhook_app(bot_controller_instance):
 
 
         try:
-            if new_id:
+            bot = _bot_controller.get_bot_instance()
+            if bot and new_id:
                 text = (
                     '🔐 Ваш ключ готов!\n'
                     f'Сервер: {host_name}\n'
@@ -3313,7 +3290,14 @@ def create_webhook_app(bot_controller_instance):
                 if result and result.get('connection_string'):
                     cs = html_escape.escape(result['connection_string'])
                     text += f"\nПодключение:\n<pre><code>{cs}</code></pre>"
-                _dispatch_bot_notification(user_id, text, parse_mode='HTML', disable_web_page_preview=True)
+                loop = _bot_controller.get_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_message(chat_id=user_id, text=text, parse_mode='HTML', disable_web_page_preview=True),
+                        loop
+                    )
+                else:
+                    asyncio.run(bot.send_message(chat_id=user_id, text=text, parse_mode='HTML', disable_web_page_preview=True))
         except Exception as e:
             logger.warning(f"Не удалось уведомить пользователя о новом ключе: {e}")
         return redirect(request.referrer or url_for('admin_keys_page'))
@@ -3414,7 +3398,8 @@ def create_webhook_app(bot_controller_instance):
 
 
             try:
-                if key_id:
+                bot = _bot_controller.get_bot_instance()
+                if bot and key_id:
                     text = (
                         '🔐 Ваш ключ готов!\n'
                         f'Сервер: {host_name}\n'
@@ -3423,7 +3408,14 @@ def create_webhook_app(bot_controller_instance):
                     if result and result.get('connection_string'):
                         cs = html_escape.escape(result['connection_string'])
                         text += f"\nПодключение:\n<pre><code>{cs}</code></pre>"
-                    _dispatch_bot_notification(user_id, text, parse_mode='HTML', disable_web_page_preview=True)
+                    loop = _bot_controller.get_loop()
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            bot.send_message(chat_id=user_id, text=text, parse_mode='HTML', disable_web_page_preview=True),
+                            loop
+                        )
+                    else:
+                        asyncio.run(bot.send_message(chat_id=user_id, text=text, parse_mode='HTML', disable_web_page_preview=True))
             except Exception as e:
                 logger.warning(f"Не удалось уведомить пользователя (ajax): {e}")
 
@@ -3612,7 +3604,12 @@ def create_webhook_app(bot_controller_instance):
                     f"Новая дата истечения: {new_dt_local.strftime('%Y-%m-%d %H:%M')}"
                 )
                 if user_id:
-                    _dispatch_bot_notification(user_id, text)
+                    bot = _bot_controller.get_bot_instance()
+                    loop = _bot_controller.get_loop()
+                    if bot and loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=user_id, text=text), loop)
+                    elif bot:
+                        asyncio.run(bot.send_message(chat_id=user_id, text=text))
             except Exception:
                 pass
 
@@ -3680,12 +3677,17 @@ def create_webhook_app(bot_controller_instance):
                 removed += 1
 
                 try:
+                    bot = _bot_controller.get_bot_instance()
+                    loop = _bot_controller.get_loop()
                     text = (
                         "Ваш ключ был автоматически удалён по истечении срока.\n"
                         f"Хост: {k.get('host_name')}\nEmail: {k.get('key_email')}\n"
                         "При необходимости вы можете оформить новый ключ."
                     )
-                    _dispatch_bot_notification(k.get('user_id'), text)
+                    if bot and loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=k.get('user_id'), text=text), loop)
+                    else:
+                        asyncio.run(bot.send_message(chat_id=k.get('user_id'), text=text))
                 except Exception:
                     pass
             except Exception:
@@ -4051,12 +4053,10 @@ def create_webhook_app(bot_controller_instance):
                     try:
                         bot = _support_bot_controller.get_bot_instance()
                         loop = _support_bot_controller.get_loop()
-                        user_chat_id = _optional_user_chat_id(ticket.get('user_id'))
+                        user_chat_id = ticket.get('user_id')
                         if bot and loop and loop.is_running() and user_chat_id:
                             text = f"Ответ по тикету #{ticket_id}:\n\n{message}"
                             asyncio.run_coroutine_threadsafe(bot.send_message(user_chat_id, text), loop)
-                        elif user_chat_id is None:
-                            logger.info("Ответ поддержки: пользователь %s без telegram_chat_id — Telegram не вызывается.", ticket.get('user_id'))
                         else:
                             logger.error("Ответ поддержки: support-бот или цикл событий недоступны; сообщение пользователю не отправлено.")
                     except Exception as e:
@@ -4093,7 +4093,7 @@ def create_webhook_app(bot_controller_instance):
                     try:
                         bot = _support_bot_controller.get_bot_instance()
                         loop = _support_bot_controller.get_loop()
-                        user_chat_id = _optional_user_chat_id(ticket.get('user_id'))
+                        user_chat_id = ticket.get('user_id')
                         if bot and loop and loop.is_running() and user_chat_id:
                             text = f"✅ Ваш тикет #{ticket_id} был закрыт администратором. Вы можете создать новое обращение при необходимости."
                             asyncio.run_coroutine_threadsafe(bot.send_message(int(user_chat_id), text), loop)
@@ -4121,7 +4121,7 @@ def create_webhook_app(bot_controller_instance):
                     try:
                         bot = _support_bot_controller.get_bot_instance()
                         loop = _support_bot_controller.get_loop()
-                        user_chat_id = _optional_user_chat_id(ticket.get('user_id'))
+                        user_chat_id = ticket.get('user_id')
                         if bot and loop and loop.is_running() and user_chat_id:
                             text = f"🔓 Ваш тикет #{ticket_id} снова открыт. Вы можете продолжить переписку."
                             asyncio.run_coroutine_threadsafe(bot.send_message(int(user_chat_id), text), loop)
@@ -5028,33 +5028,42 @@ def create_webhook_app(bot_controller_instance):
         flash(f'Пользователь {user_id} был заблокирован.', 'success')
 
         try:
-            text = "🚫 Ваш аккаунт заблокирован администратором. Если это ошибка — напишите в поддержку."
+            bot = _bot_controller.get_bot_instance()
+            if bot:
+                text = "🚫 Ваш аккаунт заблокирован администратором. Если это ошибка — напишите в поддержку."
 
-            try:
-                support = (get_setting("support_bot_username") or get_setting("support_user") or "").strip()
-            except Exception:
-                support = ""
-            kb = InlineKeyboardBuilder()
-            url: str | None = None
-            if support:
-                if support.startswith("@"):
-                    url = f"tg://resolve?domain={support[1:]}"
-                elif support.startswith("tg://"):
-                    url = support
-                elif support.startswith("http://") or support.startswith("https://"):
-                    try:
-                        part = support.split("/")[-1].split("?")[0]
-                        if part:
-                            url = f"tg://resolve?domain={part}"
-                    except Exception:
+                try:
+                    support = (get_setting("support_bot_username") or get_setting("support_user") or "").strip()
+                except Exception:
+                    support = ""
+                kb = InlineKeyboardBuilder()
+                url: str | None = None
+                if support:
+                    if support.startswith("@"):
+                        url = f"tg://resolve?domain={support[1:]}"
+                    elif support.startswith("tg://"):
                         url = support
+                    elif support.startswith("http://") or support.startswith("https://"):
+                        try:
+                            part = support.split("/")[-1].split("?")[0]
+                            if part:
+                                url = f"tg://resolve?domain={part}"
+                        except Exception:
+                            url = support
+                    else:
+                        url = f"tg://resolve?domain={support}"
+                if url:
+                    kb.button(text="🆘 Написать в поддержку", url=url)
                 else:
-                    url = f"tg://resolve?domain={support}"
-            if url:
-                kb.button(text="🆘 Написать в поддержку", url=url)
-            else:
-                kb.button(text="🆘 Поддержка", callback_data="show_help")
-            _dispatch_bot_notification(user_id, text, reply_markup=kb.as_markup())
+                    kb.button(text="🆘 Поддержка", callback_data="show_help")
+                loop = _bot_controller.get_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_message(chat_id=user_id, text=text, reply_markup=kb.as_markup()),
+                        loop
+                    )
+                else:
+                    asyncio.run(bot.send_message(chat_id=user_id, text=text, reply_markup=kb.as_markup()))
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о бане пользователю {user_id}: {e}")
         return redirect(url_for('users_page'))
@@ -5066,10 +5075,19 @@ def create_webhook_app(bot_controller_instance):
         flash(f'Пользователь {user_id} был разблокирован.', 'success')
 
         try:
-            kb = InlineKeyboardBuilder()
-            kb.row(keyboards.get_main_menu_button())
-            text = "✅ Доступ к аккаунту восстановлен администратором."
-            _dispatch_bot_notification(user_id, text, reply_markup=kb.as_markup())
+            bot = _bot_controller.get_bot_instance()
+            if bot:
+                kb = InlineKeyboardBuilder()
+                kb.row(keyboards.get_main_menu_button())
+                text = "✅ Доступ к аккаунту восстановлен администратором."
+                loop = _bot_controller.get_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_message(chat_id=user_id, text=text, reply_markup=kb.as_markup()),
+                        loop
+                    )
+                else:
+                    asyncio.run(bot.send_message(chat_id=user_id, text=text, reply_markup=kb.as_markup()))
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о разбане пользователю {user_id}: {e}")
         return redirect(url_for('users_page'))
@@ -5144,12 +5162,18 @@ def create_webhook_app(bot_controller_instance):
 
 
         try:
-            text = (
-                "❌ Ваши VPN‑ключи были отозваны администратором.\n"
-                f"Всего ключей: {total}\n"
-                f"Отозвано: {success_count}"
-            )
-            _dispatch_bot_notification(user_id, text)
+            bot = _bot_controller.get_bot_instance()
+            if bot:
+                text = (
+                    "❌ Ваши VPN‑ключи были отозваны администратором.\n"
+                    f"Всего ключей: {total}\n"
+                    f"Отозвано: {success_count}"
+                )
+                loop = _bot_controller.get_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(bot.send_message(chat_id=user_id, text=text), loop)
+                else:
+                    asyncio.run(bot.send_message(chat_id=user_id, text=text))
         except Exception:
             pass
 
