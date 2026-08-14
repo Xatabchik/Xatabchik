@@ -109,7 +109,7 @@ from shop_bot.data_manager.database import (
     build_broadcast_campaign_config, try_start_broadcast_run,
     clone_broadcast_campaign,
     format_broadcast_audience_label, BroadcastFilterError,
-    execute_broadcast_campaign_pass,
+    execute_broadcast_campaign_pass, validate_broadcast_telegram_html,
 )
 from shop_bot.data_manager.database import (
     list_referral_payout_methods, list_referral_withdrawal_requests,
@@ -1689,7 +1689,11 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/analytics/broadcasts/<int:campaign_id>/clone', methods=['POST'])
     @login_required
     def analytics_broadcasts_clone(campaign_id):
-        new_id = clone_broadcast_campaign(campaign_id)
+        try:
+            new_id = clone_broadcast_campaign(campaign_id)
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
+            return redirect(url_for('analytics_broadcasts_page'))
         if new_id:
             flash('Создана копия рассылки без истории отправок.', 'success')
         else:
@@ -1708,6 +1712,11 @@ def create_webhook_app(bot_controller_instance):
             return redirect(url_for('analytics_broadcasts_page'))
         if not c.get("is_active"):
             flash('Включите рассылку, чтобы начать новый цикл.', 'warning')
+            return redirect(url_for('analytics_broadcasts_page'))
+        try:
+            validate_broadcast_telegram_html(c.get("text_html") or "")
+        except BroadcastFilterError as e:
+            flash(str(e), 'danger')
             return redirect(url_for('analytics_broadcasts_page'))
         run = try_start_broadcast_run(campaign_id, force=True)
         if run:
@@ -1734,6 +1743,9 @@ def create_webhook_app(bot_controller_instance):
             _send_broadcast_message_blocking,
             force_start=True,
         )
+        if stats.get("reason") == "invalid_html":
+            flash(stats.get("error") or "Некорректная HTML-разметка Telegram.", "danger")
+            return redirect(url_for('analytics_broadcasts_page'))
         if stats.get("skipped"):
             flash('Нет пользователей для отправки или запуск ещё не наступил.', 'warning')
             return redirect(url_for('analytics_broadcasts_page'))

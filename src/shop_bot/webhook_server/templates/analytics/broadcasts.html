@@ -98,7 +98,7 @@
     <div class="col-12">
       <label class="form-label">Текст сообщения (HTML) <span class="text-danger">*</span></label>
       <textarea name="text_html" class="form-control font-monospace" rows="5" required>{{ c.text_html if c else '' }}</textarea>
-      <div class="form-text">Telegram HTML: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;u&gt;</code>, <code>&lt;a href="..."&gt;</code>, <code>&lt;code&gt;</code>.</div>
+      <div class="form-text">Только Telegram HTML: <code>b strong i em u ins s strike del code pre a blockquote tg-spoiler</code>. Теги должны быть закрыты; у <code>&lt;a&gt;</code> нужен безопасный <code>href</code> (http, https, tg).</div>
     </div>
   </div>
 
@@ -188,6 +188,9 @@
             {% if c.status == 'completed' %}
               <span class="badge bg-blue-lt">завершена</span>
               {% if c.completed_at %}<div class="text-secondary small">{{ c.completed_at[:16] }}</div>{% endif %}
+            {% elif c.last_error %}
+              <span class="badge bg-red-lt">ошибка</span>
+              <div class="text-danger small" style="max-width:220px;">{{ c.last_error }}</div>
             {% elif c.is_active %}
               <span class="badge bg-green-lt">активна</span>
             {% else %}

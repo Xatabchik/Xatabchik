@@ -1298,6 +1298,16 @@ async def check_broadcast_campaigns(bot: Bot):
         if status == "completed":
             continue
         campaign_id = int(c["id"])
+        try:
+            rw_repo.validate_broadcast_telegram_html(c.get("text_html") or "")
+        except rw_repo.BroadcastHtmlError as e:
+            active = rw_repo.get_active_broadcast_run(campaign_id)
+            if active:
+                rw_repo.abort_broadcast_run(int(active["id"]), str(e))
+            else:
+                rw_repo.set_broadcast_campaign_last_error(campaign_id, str(e))
+            logger.error("Broadcast %s: %s", campaign_id, e)
+            continue
         run = rw_repo.get_active_broadcast_run(campaign_id)
         if not run:
             run = rw_repo.try_start_broadcast_run(campaign_id, force=False)
@@ -1310,13 +1320,19 @@ async def _deliver_broadcast_run(bot: Bot, campaign: dict, run: dict) -> None:
     campaign_id = int(campaign["id"])
     run_id = int(run["id"])
     snapshot_campaign = rw_repo.campaign_from_run_snapshot(campaign, run)
+    text = snapshot_campaign.get("text_html") or campaign.get("text_html") or ""
+    try:
+        rw_repo.validate_broadcast_telegram_html(text)
+    except rw_repo.BroadcastHtmlError as e:
+        rw_repo.abort_broadcast_run(run_id, str(e))
+        logger.error("Broadcast %s run %s: %s", campaign_id, run_id, e)
+        return
     recipients = rw_repo.get_broadcast_recipients(
         snapshot_campaign,
         campaign_id=campaign_id,
         exclude_already_sent=True,
         run_id=run_id,
     )
-    text = snapshot_campaign.get("text_html") or campaign.get("text_html") or ""
     sent = 0
     failed = 0
     unreachable = 0

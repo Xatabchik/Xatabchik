@@ -865,3 +865,276 @@ def test_preview_filtered_and_legacy_do_not_write_and_omit_full_name(temp_db):
     with sqlite3.connect(database.DB_FILE) as conn:
         assert conn.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM broadcast_sends").fetchone()[0] == 0
+
+
+def _insert_raw_campaign(db_path, *, name="legacy-html", text_html="<div>bad</div>", target_mode="all"):
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO broadcast_campaigns
+                (name, text_html, interval_hours, target_segment, target_mode, schedule_mode, is_active)
+            VALUES (?, ?, 24, 'none', ?, 'once', 1)
+            """,
+            (name, text_html, target_mode),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def _admin_flask_client(tmp_path):
+    import sys
+    import types
+    from shop_bot.webhook_server import app as wh_mod
+
+    if "shop_bot.data_manager.backup_manager" not in sys.modules:
+        fake_bm = types.ModuleType("shop_bot.data_manager.backup_manager")
+        fake_bm.BACKUPS_DIR = tmp_path
+        sys.modules["shop_bot.data_manager.backup_manager"] = fake_bm
+
+    class _FakeBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_bot_instance(self):
+            return None
+
+        def get_loop(self):
+            return None
+
+    flask_app = wh_mod.create_webhook_app(_FakeBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+    return client
+
+
+def test_validate_telegram_html_accepts_allowed_markup(temp_db):
+    from shop_bot.data_manager import database
+
+    assert database.validate_broadcast_telegram_html("plain") == "plain"
+    assert database.validate_broadcast_telegram_html("<b>hi</b>") == "<b>hi</b>"
+    nested = "<blockquote expandable><b>x</b> <a href=\"https://t.me/x\">link</a></blockquote>"
+    assert database.validate_broadcast_telegram_html(nested) == nested
+    spoiler = "<tg-spoiler>secret</tg-spoiler>"
+    assert database.validate_broadcast_telegram_html(spoiler) == spoiler
+    code = "<pre><code class=\"language-python\">x &amp; y</code></pre>"
+    assert database.validate_broadcast_telegram_html(code) == code
+    assert database.validate_broadcast_telegram_html('<a href="tg://user?id=1">u</a>')
+
+
+def test_validate_telegram_html_rejects_invalid_markup(temp_db):
+    from shop_bot.data_manager import database
+
+    cases = {
+        "<>": "некорректный тег",
+        "<div>x</div>": "неподдерживаемый тег <div>",
+        "<b>x": "незакрытый тег <b>",
+        "<b>x</i>": "неверная вложенность",
+        "<a href=\"javascript:alert(1)\">x</a>": "недопустимый href",
+        "<a>x</a>": "отсутствует атрибут href",
+        "<b onclick=\"x\">y</b>": "недопустимый атрибут",
+        "1 > 2": "неэкранированный символ '>'",
+        "a & b": "неэкранированный символ '&'",
+    }
+    for raw, needle in cases.items():
+        with pytest.raises(database.BroadcastHtmlError) as exc:
+            database.validate_broadcast_telegram_html(raw)
+        message = str(exc.value)
+        assert message.startswith("Некорректная HTML-разметка Telegram:")
+        assert needle in message
+
+
+def test_create_and_update_reject_invalid_html(temp_db):
+    from shop_bot.data_manager import database
+
+    with pytest.raises(database.BroadcastHtmlError, match="неподдерживаемый тег"):
+        database.create_broadcast_campaign("bad", "<div>x</div>", 24, "none", target_mode="all")
+    assert database.get_broadcast_campaigns() == []
+
+    cid = database.create_broadcast_campaign(
+        "ok",
+        "<b>hi</b>",
+        24,
+        "none",
+        target_mode="all",
+        schedule_mode="once",
+    )
+    with pytest.raises(database.BroadcastHtmlError, match="некорректный тег"):
+        database.update_broadcast_campaign(
+            cid,
+            name="ok",
+            text_html="broken <>",
+            interval_hours=24,
+            target_mode="all",
+            target_segment="none",
+            schedule_mode="once",
+            update_filters=True,
+        )
+    assert database.get_broadcast_campaign(cid)["text_html"] == "<b>hi</b>"
+
+
+def test_preview_rejects_unsupported_tag(temp_db, tmp_path):
+    from shop_bot.data_manager import database
+
+    with pytest.raises(database.BroadcastHtmlError, match="неподдерживаемый тег"):
+        database.build_broadcast_campaign_config(
+            name="preview-bad",
+            text_html="<script>x</script>",
+            target_mode="all",
+            schedule_mode="once",
+            target_segment="none",
+        )
+
+    client = _admin_flask_client(tmp_path)
+    resp = client.post(
+        "/analytics/broadcasts/preview",
+        data={
+            "name": "preview-bad",
+            "text_html": "<div>nope</div>",
+            "target_mode": "all",
+            "schedule_mode": "once",
+            "target_segment": "none",
+            "interval_hours": "24",
+        },
+    )
+    assert resp.status_code == 400
+    payload = resp.get_json()
+    assert payload["ok"] is False
+    assert payload["error"].startswith("Некорректная HTML-разметка Telegram:")
+    assert "неподдерживаемый тег <div>" in payload["error"]
+
+
+def test_invalid_legacy_html_does_not_send_or_mark_sent(temp_db):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=4101, username="html-bad")
+    cid = _insert_raw_campaign(database.DB_FILE, text_html="broken <> markup")
+    sender = RecordingSender()
+    stats = database.execute_broadcast_campaign_pass(cid, sender, force_start=True)
+    assert stats["reason"] == "invalid_html"
+    assert stats.get("sent", 0) == 0
+    assert sender.calls == []
+    assert sender.sent == []
+    campaign = database.get_broadcast_campaign(cid)
+    assert campaign["last_error"].startswith("Некорректная HTML-разметка Telegram:")
+    assert "некорректный тег" in campaign["last_error"]
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=? AND COALESCE(status, 'sent')='sent'",
+            (cid,),
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=?", (cid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_runs WHERE campaign_id=?", (cid,)).fetchone()[0] == 0
+
+
+def test_unsupported_tag_legacy_campaign_aborts_active_run(temp_db):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=4102, username="html-div")
+    cid = database.create_broadcast_campaign(
+        "was-valid",
+        "<b>hi</b>",
+        24,
+        "none",
+        target_mode="all",
+        schedule_mode="once",
+    )
+    run = database.try_start_broadcast_run(cid, force=True)
+    assert run
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute("UPDATE broadcast_campaigns SET text_html=? WHERE id=?", ("<div>x</div>", cid))
+        conn.commit()
+    sender = RecordingSender()
+    stats = database.execute_broadcast_campaign_pass(cid, sender, force_start=True)
+    assert stats["reason"] == "invalid_html"
+    assert sender.calls == []
+    aborted = database.get_broadcast_run(int(run["id"]))
+    assert aborted["status"] == "failed"
+    campaign = database.get_broadcast_campaign(cid)
+    assert "неподдерживаемый тег <div>" in campaign["last_error"]
+    assert str(campaign.get("status") or "").lower() != "completed"
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=? AND COALESCE(status, 'sent')='sent'",
+            (cid,),
+        ).fetchone()[0] == 0
+
+
+def test_valid_html_still_sends(temp_db):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=4103, username="html-ok")
+    cid = database.create_broadcast_campaign(
+        "ok-html",
+        "<b>hi</b>",
+        24,
+        "none",
+        target_mode="all",
+        schedule_mode="once",
+    )
+    sender = RecordingSender()
+    stats = database.execute_broadcast_campaign_pass(cid, sender, force_start=True)
+    assert stats.get("skipped") is False
+    assert sender.sent == [4103]
+    assert database.get_broadcast_campaign(cid)["last_error"] is None
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=? AND COALESCE(status, 'sent')='sent'",
+            (cid,),
+        ).fetchone()[0] == 1
+
+
+def test_scheduler_skips_invalid_html_without_send(temp_db):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from shop_bot.data_manager import database
+    from shop_bot.data_manager import scheduler
+
+    insert_user(database.DB_FILE, telegram_id=4104, username="sched-bad")
+    cid = _insert_raw_campaign(database.DB_FILE, text_html="<font>x</font>")
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    asyncio.run(scheduler.check_broadcast_campaigns(bot))
+    bot.send_message.assert_not_called()
+    campaign = database.get_broadcast_campaign(cid)
+    assert campaign["last_error"].startswith("Некорректная HTML-разметка Telegram:")
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=?", (cid,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_runs WHERE campaign_id=?", (cid,)).fetchone()[0] == 0
+
+
+def test_http_create_and_send_now_show_html_error(temp_db, tmp_path):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=4105, username="http-html")
+    client = _admin_flask_client(tmp_path)
+
+    create_resp = client.post(
+        "/analytics/broadcasts/create",
+        data={
+            "name": "http-bad",
+            "text_html": "<div>nope</div>",
+            "target_mode": "all",
+            "schedule_mode": "once",
+            "target_segment": "none",
+            "interval_hours": "24",
+        },
+    )
+    assert create_resp.status_code == 302
+    with client.session_transaction() as sess:
+        flashes = [msg for _cat, msg in sess.get("_flashes", [])]
+    assert any(msg.startswith("Некорректная HTML-разметка Telegram:") for msg in flashes)
+    assert database.get_broadcast_campaigns() == []
+
+    cid = _insert_raw_campaign(database.DB_FILE, name="legacy-http", text_html="<>")
+    send_resp = client.post(f"/analytics/broadcasts/{cid}/send-now")
+    assert send_resp.status_code == 302
+    with client.session_transaction() as sess:
+        flashes = [msg for _cat, msg in sess.get("_flashes", [])]
+    assert any("Некорректная HTML-разметка Telegram:" in msg for msg in flashes)
+    campaign = database.get_broadcast_campaign(cid)
+    assert campaign["last_error"].startswith("Некорректная HTML-разметка Telegram:")
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends WHERE campaign_id=?", (cid,)).fetchone()[0] == 0

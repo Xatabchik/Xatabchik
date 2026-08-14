@@ -10,6 +10,8 @@ import time
 import re
 import uuid
 from typing import Any
+from html import unescape as html_unescape
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -2568,7 +2570,8 @@ def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:
             schedule_mode TEXT,
             next_run_at TIMESTAMP,
             completed_at TIMESTAMP,
-            status TEXT
+            status TEXT,
+            last_error TEXT
         )
         """
     )
@@ -2584,6 +2587,7 @@ def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:
         ("next_run_at", "TIMESTAMP"),
         ("completed_at", "TIMESTAMP"),
         ("status", "TEXT"),
+        ("last_error", "TEXT"),
     ):
         _ensure_table_column(cursor, "broadcast_campaigns", _col, _def)
     cursor.execute(
@@ -3824,6 +3828,120 @@ class BroadcastFilterError(ValueError):
     """Некорректные параметры сегмента рассылки."""
 
 
+class BroadcastHtmlError(BroadcastFilterError):
+    """Некорректная HTML-разметка Telegram в тексте рассылки."""
+
+    def __init__(self, reason: str):
+        self.reason = (reason or "").strip() or "некорректная разметка"
+        super().__init__(f"Некорректная HTML-разметка Telegram: {self.reason}.")
+
+
+TELEGRAM_HTML_TAGS = frozenset({
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "code", "pre", "a", "blockquote", "tg-spoiler",
+})
+TELEGRAM_HTML_ATTRS = {
+    "a": frozenset({"href"}),
+    "code": frozenset({"class"}),
+    "blockquote": frozenset({"expandable"}),
+}
+_TELEGRAM_HTML_TAG_RE = re.compile(
+    r"<(/)?([a-zA-Z][\w-]*)((?:\s+[^\s<>/=]+(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s\"'=<>`]+))?)*)\s*(/)?>",
+)
+_TELEGRAM_HTML_ATTR_RE = re.compile(
+    r"""([^\s<>/=\x00]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""",
+)
+_TELEGRAM_HTML_ENTITY_RE = re.compile(
+    r"&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);",
+)
+
+
+def _parse_telegram_html_attrs(raw: str) -> list[tuple[str, str | None]]:
+    attrs: list[tuple[str, str | None]] = []
+    for match in _TELEGRAM_HTML_ATTR_RE.finditer(raw or ""):
+        name = match.group(1).lower()
+        value = match.group(2)
+        if value is None:
+            value = match.group(3)
+        if value is None:
+            value = match.group(4)
+        attrs.append((name, value))
+    return attrs
+
+
+def _validate_telegram_href(href: str | None) -> None:
+    if href is None or not str(href).strip():
+        raise BroadcastHtmlError("у тега <a> отсутствует атрибут href")
+    value = html_unescape(str(href).strip())
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https", "tg"):
+        raise BroadcastHtmlError("недопустимый href у тега <a> (разрешены http, https, tg)")
+
+
+def validate_broadcast_telegram_html(text: str | None) -> str:
+    """Строгая проверка Telegram HTML. Пустая строка допустима как «нет тегов»."""
+    source = text if text is not None else ""
+    stack: list[str] = []
+    i = 0
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == "<":
+            match = _TELEGRAM_HTML_TAG_RE.match(source, i)
+            if not match:
+                raise BroadcastHtmlError("некорректный тег или незакрытая угловая скобка")
+            closing = bool(match.group(1))
+            name = match.group(2).lower()
+            raw_attrs = match.group(3) or ""
+            self_closing = bool(match.group(4))
+            if name not in TELEGRAM_HTML_TAGS:
+                raise BroadcastHtmlError(f"неподдерживаемый тег <{name}>")
+            attrs = _parse_telegram_html_attrs(raw_attrs)
+            allowed = TELEGRAM_HTML_ATTRS.get(name, frozenset())
+            seen: set[str] = set()
+            href_value = None
+            for attr_name, attr_value in attrs:
+                if attr_name in seen:
+                    raise BroadcastHtmlError(f"повтор атрибута {attr_name} у тега <{name}>")
+                seen.add(attr_name)
+                if attr_name not in allowed:
+                    raise BroadcastHtmlError(f"недопустимый атрибут {attr_name} у тега <{name}>")
+                if name == "a" and attr_name == "href":
+                    href_value = attr_value
+                if name == "code" and attr_name == "class" and attr_value is not None:
+                    if not re.fullmatch(r"language-[\w-]+", attr_value.strip()):
+                        raise BroadcastHtmlError("атрибут class у <code> должен быть вида language-…")
+            if closing and (raw_attrs.strip() or self_closing):
+                raise BroadcastHtmlError(f"некорректный закрывающий тег </{name}>")
+            if closing:
+                if not stack:
+                    raise BroadcastHtmlError(f"лишний закрывающий тег </{name}>")
+                opened = stack.pop()
+                if opened != name:
+                    raise BroadcastHtmlError(f"неверная вложенность: </{name}> закрывает <{opened}>")
+            else:
+                if name == "a":
+                    _validate_telegram_href(href_value)
+                if self_closing:
+                    raise BroadcastHtmlError(f"самозакрывающийся тег <{name}/> не поддерживается")
+                stack.append(name)
+            i = match.end()
+            continue
+        if ch == ">":
+            raise BroadcastHtmlError("неэкранированный символ '>' — используйте &gt;")
+        if ch == "&":
+            entity = _TELEGRAM_HTML_ENTITY_RE.match(source, i)
+            if not entity:
+                raise BroadcastHtmlError("неэкранированный символ '&' — используйте &amp;")
+            i = entity.end()
+            continue
+        i += 1
+    if stack:
+        raise BroadcastHtmlError(f"незакрытый тег <{stack[-1]}>")
+    return source
+
+
 def _broadcast_effective_target_mode(campaign: dict | None) -> str:
     """NULL/пусто/неизвестное → legacy inactive (старые кампании без target_mode)."""
     if not campaign:
@@ -4101,10 +4219,12 @@ def build_broadcast_campaign_config(
         interval_hours=interval_hours,
     )
     stored_interval = filters["interval_hours"] if filters["interval_hours"] is not None else int(interval_hours or 72)
+    normalized_text = (text_html or "").strip()
+    validate_broadcast_telegram_html(normalized_text)
     return {
         "id": campaign_id,
         "name": (name or "").strip(),
-        "text_html": (text_html or "").strip(),
+        "text_html": normalized_text,
         "interval_hours": stored_interval,
         "target_segment": filters["target_segment"],
         "target_mode": filters["target_mode"],
@@ -4156,8 +4276,8 @@ def create_broadcast_campaign(
                     name, text_html, interval_hours, target_segment,
                     target_mode, plan_ids, plan_match_mode,
                     min_distinct_active_plans, max_distinct_active_plans,
-                    spend_min_rub, spend_max_rub, schedule_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    spend_min_rub, spend_max_rub, schedule_mode, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     cfg["name"],
@@ -4257,6 +4377,7 @@ def update_broadcast_campaign(
             "spend_max_rub": current.get("spend_max_rub"),
             "schedule_mode": current.get("schedule_mode"),
         }
+        validate_broadcast_telegram_html(cfg["text_html"])
         if interval_hours is not None:
             try:
                 parsed_interval = int(interval_hours)
@@ -4275,6 +4396,7 @@ def update_broadcast_campaign(
                     target_segment=?, target_mode=?, plan_ids=?, plan_match_mode=?,
                     min_distinct_active_plans=?, max_distinct_active_plans=?,
                     spend_min_rub=?, spend_max_rub=?, schedule_mode=?,
+                    last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
@@ -5158,6 +5280,50 @@ def mark_broadcast_run(campaign_id: int) -> None:
         logging.error("Failed to mark broadcast run for campaign %s: %s", campaign_id, e)
 
 
+def set_broadcast_campaign_last_error(campaign_id: int, message: str | None) -> None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE broadcast_campaigns SET last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                ((message[:500] if message else None), int(campaign_id)),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to set broadcast last_error for campaign %s: %s", campaign_id, e)
+
+
+def abort_broadcast_run(run_id: int, error_message: str) -> None:
+    """Завершить run как failed без перевода once-кампании в completed и без отправок."""
+    run = get_broadcast_run(run_id)
+    if not run:
+        return
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                UPDATE broadcast_runs
+                SET completed_at = datetime('now'),
+                    status = 'failed'
+                WHERE id = ? AND status IN ('queued', 'running')
+                """,
+                (int(run_id),),
+            )
+            cursor.execute(
+                """
+                UPDATE broadcast_campaigns
+                SET last_error = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                ((error_message or "")[:500], int(run["campaign_id"])),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to abort broadcast run %s: %s", run_id, e)
+
+
 def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: bool = False) -> dict:
     """Один проход scheduler/send-now: старт или продолжение run, уникальная отправка, завершение.
 
@@ -5169,6 +5335,20 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
         return {"skipped": True, "reason": "inactive"}
     if str(campaign.get("status") or "").strip().lower() == BROADCAST_CAMPAIGN_STATUS_COMPLETED:
         return {"skipped": True, "reason": "completed"}
+
+    text = campaign.get("text_html") or ""
+    try:
+        validate_broadcast_telegram_html(text)
+    except BroadcastHtmlError as exc:
+        active = get_active_broadcast_run(int(campaign_id))
+        if active:
+            abort_broadcast_run(int(active["id"]), str(exc))
+        else:
+            set_broadcast_campaign_last_error(int(campaign_id), str(exc))
+        logging.error("Broadcast %s: HTML validation failed: %s", campaign_id, exc)
+        return {"skipped": True, "reason": "invalid_html", "error": str(exc), "sent": 0}
+
+    set_broadcast_campaign_last_error(int(campaign_id), None)
 
     run = get_active_broadcast_run(int(campaign_id))
     if not run:
@@ -5184,6 +5364,12 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
         run_id=int(run["id"]),
     )
     text = snapshot.get("text_html") or campaign.get("text_html") or ""
+    try:
+        validate_broadcast_telegram_html(text)
+    except BroadcastHtmlError as exc:
+        abort_broadcast_run(int(run["id"]), str(exc))
+        return {"skipped": True, "reason": "invalid_html", "error": str(exc), "sent": 0, "run_id": int(run["id"])}
+
     stats = {"sent": 0, "failed": 0, "unreachable": 0, "run_id": int(run["id"]), "skipped": False}
     for uid in recipients:
         live = get_broadcast_campaign(int(campaign_id)) or campaign
@@ -5194,13 +5380,13 @@ def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: b
             continue
         try:
             result = send_fn(int(uid), text)
-        except Exception as exc:
+        except Exception as send_exc:
             result = "failed"
             logger.warning(
                 "Broadcast %s: не удалось отправить пользователю %s: %s",
                 campaign_id,
                 uid,
-                exc,
+                send_exc,
             )
         if result not in ("sent", "unreachable", "failed"):
             result = "failed"
