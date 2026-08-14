@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import aiohttp
-from shop_bot.data_manager.remnawave_repository import get_setting, get_user_keys, get_msk_time, get_webapp_settings, get_user, get_referral_count, get_all_hosts, list_squads, get_plans_for_host, is_email_only_user
+from shop_bot.data_manager.remnawave_repository import get_setting, get_user_keys, get_msk_time, get_webapp_settings, get_user, get_referral_count, get_all_hosts, list_squads, get_plans_for_host
 import os
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
@@ -862,7 +862,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
              pass
 
     sync_btn_html = ""
-    if is_email_only_user(user):
+    if isinstance(user_id, int) and str(user_id).startswith("999"):
          bot_username = get_setting("telegram_bot_username") or "bot"
          sync_btn_html = f'''
                     <button onclick="syncTelegram('{bot_username}')" class="mt-2 w-full bg-[#0088cc]/20 hover:bg-[#0088cc]/30 text-[#00aaff] border border-[#0088cc]/30 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
@@ -2197,7 +2197,7 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
     user = database.get_user_by_email(req.email)
     # Всегда один ответ: иначе «Email не найден» / «не синхронизирован»
     # выдают, зарегистрирован ли адрес и привязан ли он к Telegram.
-    if not user or database.is_email_only_user(user):
+    if not user or database.is_email_only_user(user.get("telegram_id")):
         return {"ok": True}
 
     import random
