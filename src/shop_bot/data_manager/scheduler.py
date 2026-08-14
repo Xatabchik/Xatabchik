@@ -1289,45 +1289,79 @@ async def check_auto_renewals(bot: Bot):
 
 
 async def check_broadcast_campaigns(bot: Bot):
-    """Send queued broadcast campaigns to inactive subscribers."""
+    """Отправка рассылок: один run на кампанию, не более одного сообщения на пользователя в run."""
     campaigns = rw_repo.get_broadcast_campaigns()
-    now = datetime.now()
     for c in campaigns:
         if not c.get("is_active"):
             continue
-        interval_hours = int(c.get("interval_hours") or 72)
-        last_run_raw = c.get("last_run_at")
-        if last_run_raw:
-            last_run = _parse_dt_safe(str(last_run_raw))
-            if last_run and (now - last_run).total_seconds() < interval_hours * 3600:
-                continue
-        campaign_id = int(c["id"])
-        recipients = rw_repo.get_pending_broadcast_recipients(campaign_id, interval_hours)
-        rw_repo.mark_broadcast_run(campaign_id)
-        if not recipients:
-            logger.debug(f"Broadcast {campaign_id}: нет получателей.")
+        status = str(c.get("status") or "").strip().lower()
+        if status == "completed":
             continue
-        text = c.get("text_html") or ""
-        sent_ids: list[int] = []
-        failed = 0
-        unreachable = 0
-        for uid in recipients:
-            try:
-                await bot.send_message(int(uid), text, parse_mode="HTML")
-                sent_ids.append(uid)
-            except Exception as e:
+        campaign_id = int(c["id"])
+        run = rw_repo.get_active_broadcast_run(campaign_id)
+        if not run:
+            run = rw_repo.try_start_broadcast_run(campaign_id, force=False)
+        if not run:
+            continue
+        await _deliver_broadcast_run(bot, c, run)
+
+
+async def _deliver_broadcast_run(bot: Bot, campaign: dict, run: dict) -> None:
+    campaign_id = int(campaign["id"])
+    run_id = int(run["id"])
+    snapshot_campaign = rw_repo.campaign_from_run_snapshot(campaign, run)
+    recipients = rw_repo.get_broadcast_recipients(
+        snapshot_campaign,
+        campaign_id=campaign_id,
+        exclude_already_sent=True,
+        run_id=run_id,
+    )
+    text = snapshot_campaign.get("text_html") or campaign.get("text_html") or ""
+    sent = 0
+    failed = 0
+    unreachable = 0
+    for uid in recipients:
+        live = rw_repo.get_broadcast_campaign(campaign_id) or campaign
+        if not live.get("is_active"):
+            logger.info("Broadcast %s: кампания отключена, текущий run приостановлен.", campaign_id)
+            return
+        if not rw_repo.claim_broadcast_recipient(run_id, campaign_id, int(uid)):
+            continue
+        try:
+            await bot.send_message(int(uid), text, parse_mode="HTML")
+            rw_repo.apply_broadcast_send_result(run_id, campaign_id, int(uid), "sent")
+            sent += 1
+        except Exception as e:
+            if telegram_reachability.handle_send_exception(int(uid), e):
+                rw_repo.apply_broadcast_send_result(
+                    run_id,
+                    campaign_id,
+                    int(uid),
+                    "unreachable",
+                    error_message=str(e)[:500],
+                )
+                unreachable += 1
+            else:
+                rw_repo.apply_broadcast_send_result(
+                    run_id,
+                    campaign_id,
+                    int(uid),
+                    "failed",
+                    error_message=str(e)[:500],
+                )
                 failed += 1
-                if telegram_reachability.handle_send_exception(int(uid), e):
-                    unreachable += 1
-                else:
-                    logger.warning(f"Broadcast {campaign_id}: не удалось отправить пользователю {uid}: {e}")
-            await asyncio.sleep(0.05)  # stay within Telegram rate limits
-        if sent_ids:
-            rw_repo.record_broadcast_sends(campaign_id, sent_ids)
-        logger.info(
-            f"Broadcast {campaign_id} «{c.get('name')}»: отправлено {len(sent_ids)}, не доставлено {failed} "
-            f"(из них недоступны боту {unreachable})."
-        )
+                logger.warning("Broadcast %s: не удалось отправить пользователю %s: %s", campaign_id, uid, e)
+        await asyncio.sleep(0.05)
+    rw_repo.complete_broadcast_run(run_id)
+    logger.info(
+        "Broadcast %s «%s» run %s: отправлено %s, ошибок %s, недоступны боту %s.",
+        campaign_id,
+        campaign.get("name"),
+        run_id,
+        sent,
+        failed,
+        unreachable,
+    )
 
 
 async def periodic_subscription_check(bot_controller: BotController):

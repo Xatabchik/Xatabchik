@@ -2,6 +2,119 @@
 
 {% block title %}Продажи и аналитика — Рассылки{% endblock %}
 
+{% macro campaign_fields(c=None, form_id='broadcast-create') %}
+  {% set mode = (c.target_mode if c and c.target_mode else 'filtered') %}
+  {% set sched = (c.schedule_mode if c and c.schedule_mode else 'recurring') %}
+  {% set selected_plans = c.plan_ids_list if c and c.plan_ids_list else [] %}
+  <div class="row g-2">
+    <div class="col-md-6">
+      <label class="form-label">Название <span class="text-danger">*</span></label>
+      <input type="text" name="name" class="form-control" value="{{ c.name if c else '' }}" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Режим аудитории</label>
+      <div class="btn-group w-100" role="group">
+        <input type="radio" class="btn-check js-target-mode" name="target_mode" id="{{ form_id }}-mode-all" value="all" {% if mode == 'all' %}checked{% endif %}>
+        <label class="btn btn-outline-primary" for="{{ form_id }}-mode-all">Все пользователи</label>
+        <input type="radio" class="btn-check js-target-mode" name="target_mode" id="{{ form_id }}-mode-filtered" value="filtered" {% if mode != 'all' %}checked{% endif %}>
+        <label class="btn btn-outline-primary" for="{{ form_id }}-mode-filtered">Настроить сегмент</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-2 mt-1">
+    <div class="col-md-6">
+      <label class="form-label">Тип рассылки</label>
+      <div class="btn-group w-100" role="group">
+        <input type="radio" class="btn-check js-schedule-mode" name="schedule_mode" id="{{ form_id }}-sched-once" value="once" {% if sched == 'once' %}checked{% endif %}>
+        <label class="btn btn-outline-secondary" for="{{ form_id }}-sched-once">Разовая отправка</label>
+        <input type="radio" class="btn-check js-schedule-mode" name="schedule_mode" id="{{ form_id }}-sched-recurring" value="recurring" {% if sched != 'once' %}checked{% endif %}>
+        <label class="btn btn-outline-secondary" for="{{ form_id }}-sched-recurring">Повторяющаяся рассылка</label>
+      </div>
+      <div class="alert alert-info mt-2 mb-0 py-2 small js-once-hint" {% if sched != 'once' %}style="display:none"{% endif %}>
+        Каждый подходящий пользователь получит сообщение один раз. После завершения кампания будет закрыта.
+      </div>
+      <div class="alert alert-info mt-2 mb-0 py-2 small js-recurring-hint" {% if sched == 'once' %}style="display:none"{% endif %}>
+        В каждом цикле пользователь получит не более одного сообщения. В следующем цикле сообщение может быть отправлено повторно, если пользователь продолжает соответствовать условиям.
+      </div>
+    </div>
+    <div class="col-md-3 js-interval-wrap" {% if sched == 'once' %}style="display:none"{% endif %}>
+      <label class="form-label">Интервал, часы</label>
+      <input type="number" name="interval_hours" class="form-control js-interval-input" value="{{ c.interval_hours if c else 72 }}" min="1" max="8760">
+    </div>
+  </div>
+
+  <div class="js-segment-filters mt-3 {% if mode == 'all' %}opacity-50{% endif %}">
+    <div class="row g-2">
+      <div class="col-md-4">
+        <label class="form-label">Legacy-сегмент</label>
+        <select name="target_segment" class="form-select js-filter-input">
+          <option value="none" {% if c and c.target_segment != 'inactive' %}selected{% endif %}>Не применять</option>
+          <option value="inactive" {% if not c or c.target_segment == 'inactive' %}selected{% endif %}>Без активной подписки</option>
+        </select>
+      </div>
+      <div class="col-md-8">
+        <label class="form-label">Тарифы</label>
+        <select name="plan_ids" class="form-select js-filter-input" multiple size="5">
+          {% for p in plans %}
+          <option value="{{ p.plan_id }}" {% if p.plan_id in selected_plans %}selected{% endif %}>
+            {{ p.host_name }} — {{ p.plan_name }} · {{ p.duration_label }} · {{ p.price_label }}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">Пустой список = не фильтровать по тарифам. Учитываются только активные ключи.</div>
+      </div>
+    </div>
+    <div class="row g-2 mt-1">
+      <div class="col-md-4">
+        <label class="form-label">Условие тарифов</label>
+        <select name="plan_match_mode" class="form-select js-filter-input">
+          <option value="any" {% if not c or c.plan_match_mode != 'all' %}selected{% endif %}>Хотя бы один из выбранных</option>
+          <option value="all" {% if c and c.plan_match_mode == 'all' %}selected{% endif %}>Все выбранные</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Количество разных активных тарифов</label>
+        <div class="input-group">
+          <span class="input-group-text">от</span>
+          <input type="number" min="0" name="min_distinct_active_plans" class="form-control js-filter-input" value="{{ c.min_distinct_active_plans if c and c.min_distinct_active_plans is not none else '' }}">
+          <span class="input-group-text">до</span>
+          <input type="number" min="0" name="max_distinct_active_plans" class="form-control js-filter-input" value="{{ c.max_distinct_active_plans if c and c.max_distinct_active_plans is not none else '' }}">
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Подтверждённые траты, ₽</label>
+        <div class="input-group">
+          <span class="input-group-text">от</span>
+          <input type="number" min="0" step="0.01" name="spend_min_rub" class="form-control js-filter-input" value="{{ c.spend_min_rub if c and c.spend_min_rub is not none else '' }}">
+          <span class="input-group-text">до</span>
+          <input type="number" min="0" step="0.01" name="spend_max_rub" class="form-control js-filter-input" value="{{ c.spend_max_rub if c and c.spend_max_rub is not none else '' }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-2 mt-2">
+    <div class="col-12">
+      <label class="form-label">Текст сообщения (HTML) <span class="text-danger">*</span></label>
+      <textarea name="text_html" class="form-control font-monospace" rows="5" required>{{ c.text_html if c else '' }}</textarea>
+      <div class="form-text">Telegram HTML: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;u&gt;</code>, <code>&lt;a href="..."&gt;</code>, <code>&lt;code&gt;</code>.</div>
+    </div>
+  </div>
+
+  <div class="alert alert-warning mt-3 mb-0">
+    Каждый пользователь получит не более одного сообщения в рамках этой кампании (в одном цикле).
+  </div>
+
+  <div class="d-flex align-items-center gap-2 mt-3">
+    <button type="button" class="btn btn-outline-secondary js-preview-btn">
+      <i class="ti ti-users me-1"></i>Предпросмотр аудитории
+    </button>
+    <span class="js-preview-result text-secondary small">Уникальных получателей: —</span>
+  </div>
+  <div class="js-preview-sample small mt-2"></div>
+{% endmacro %}
+
 {% block content %}
 <div class="page-header d-print-none mb-3">
   <div class="row align-items-center"><div class="col"><h1 class="page-title mb-1">Продажи и аналитика</h1></div></div>
@@ -9,7 +122,6 @@
 
 {% include "analytics/_tabs.html" %}
 
-{# ── Flash messages ─────────────────────────────────────────────────────────── #}
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% if messages %}
     {% for category, message in messages %}
@@ -21,37 +133,12 @@
   {% endif %}
 {% endwith %}
 
-{# ── Create campaign card ──────────────────────────────────────────────────── #}
 <div class="card mb-3">
   <div class="card-header"><h3 class="card-title">Создать рассылку</h3></div>
-  <form method="post" action="{{ url_for('analytics_broadcasts_create') }}">
+  <form method="post" action="{{ url_for('analytics_broadcasts_create') }}" class="js-broadcast-form" data-preview-url="{{ url_for('analytics_broadcasts_preview') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
     <div class="card-body">
-      <div class="row g-2">
-        <div class="col-md-4">
-          <label class="form-label">Название <span class="text-danger">*</span></label>
-          <input type="text" name="name" class="form-control" placeholder="Напр.: Реактивация февраль" required>
-        </div>
-        <div class="col-md-2">
-          <label class="form-label">Повтор (часы) <span class="text-danger">*</span></label>
-          <input type="number" name="interval_hours" class="form-control" value="72" min="1" max="8760" required>
-          <div class="form-text">Раз в N часов для каждого пользователя.</div>
-        </div>
-        <div class="col-md-2">
-          <label class="form-label">Сегмент</label>
-          <select name="target_segment" class="form-select">
-            <option value="inactive" selected>Без активной подписки</option>
-          </select>
-        </div>
-      </div>
-      <div class="row g-2 mt-1">
-        <div class="col-12">
-          <label class="form-label">Текст сообщения (HTML) <span class="text-danger">*</span></label>
-          <textarea name="text_html" class="form-control font-monospace" rows="5"
-            placeholder="Поддерживается HTML-разметка Telegram: &lt;b&gt;жирный&lt;/b&gt;, &lt;i&gt;курсив&lt;/i&gt;, &lt;a href=&quot;...&quot;&gt;ссылка&lt;/a&gt; и т.д." required></textarea>
-          <div class="form-text">Telegram HTML: <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;u&gt;</code>, <code>&lt;a href="..."&gt;</code>, <code>&lt;code&gt;</code>.</div>
-        </div>
-      </div>
+      {{ campaign_fields(None, 'broadcast-create') }}
     </div>
     <div class="card-footer text-end">
       <button type="submit" class="btn btn-primary"><i class="ti ti-plus me-1"></i>Создать рассылку</button>
@@ -59,53 +146,75 @@
   </form>
 </div>
 
-{# ── Campaigns table ───────────────────────────────────────────────────────── #}
 <div class="card">
   <div class="card-header"><h3 class="card-title">Рассылки</h3></div>
   <div class="card-body border-bottom py-2 text-secondary small">
-    Активные рассылки автоматически отправляются планировщиком с заданной периодичностью.
-    Кнопка «Отправить сейчас» запускает мгновенную рассылку пользователям, ещё не получившим её.
-    Пользователи, заблокировавшие бота или деактивировавшие аккаунт, автоматически исключаются
-    из рассылок (см. карточку «Доступность для рассылок» на странице <a href="{{ url_for('statistics_page') }}">Статистика</a>)
-    и возвращаются в список, как только снова напишут боту.
-    Также исключаются пользователи, зарегистрированные по email и ещё не авторизовавшиеся через Telegram
-    (им нельзя доставить сообщение в бота).
+    Активные рассылки обрабатываются планировщиком. Разовая кампания закрывается после одного цикла.
+    Повторяющаяся создаёт новый цикл не раньше чем через заданный интервал.
+    Кнопка «Отправить сейчас» запускает текущий или новый цикл явно.
+    Пользователи, заблокировавшие бота, email-only аккаунты и забаненные исключаются.
   </div>
   <div class="table-responsive">
     <table class="table table-vcenter card-table">
       <thead>
         <tr>
           <th>Название</th>
-          <th>Сегмент</th>
-          <th>Повтор</th>
-          <th>Отправлено (всего)</th>
-          <th>Последний запуск</th>
+          <th>Аудитория</th>
+          <th>Тип</th>
           <th>Статус</th>
+          <th>Запуски</th>
+          <th>Статистика</th>
           <th class="w-1">Действия</th>
         </tr>
       </thead>
       <tbody>
         {% for c in campaigns %}
+        {% set latest = c.latest_run %}
         <tr>
           <td>
             <div class="fw-semibold">{{ c.name }}</div>
-            <div class="text-secondary small text-truncate" style="max-width:320px;" title="{{ c.text_html }}">{{ c.text_html[:120] }}{% if c.text_html|length > 120 %}…{% endif %}</div>
+            <div class="text-secondary small text-truncate" style="max-width:280px;" title="{{ c.text_html }}">{{ c.text_html[:120] }}{% if c.text_html|length > 120 %}…{% endif %}</div>
           </td>
-          <td>
-            {% if c.target_segment == 'inactive' %}<span class="badge bg-blue-lt">Без подписки</span>{% else %}<span class="badge bg-secondary-lt">{{ c.target_segment }}</span>{% endif %}
-          </td>
-          <td class="text-nowrap">
-            каждые {{ c.interval_hours }} ч.
-          </td>
-          <td>{{ c.stats.total_sends }}</td>
+          <td class="small">{{ c.audience_label }}</td>
           <td class="text-nowrap small">
-            {% if c.last_run_at %}{{ c.last_run_at[:16] }}{% else %}<span class="text-secondary">—</span>{% endif %}
+            {% if c.schedule_mode == 'once' %}
+              <span class="badge bg-azure-lt">разовая</span>
+            {% else %}
+              <span class="badge bg-purple-lt">повторяющаяся</span>
+              <div class="text-secondary">каждые {{ c.interval_hours }} ч.</div>
+            {% endif %}
           </td>
           <td>
-            {% if c.is_active %}<span class="badge bg-green-lt">активна</span>{% else %}<span class="badge bg-secondary-lt">приостановлена</span>{% endif %}
+            {% if c.status == 'completed' %}
+              <span class="badge bg-blue-lt">завершена</span>
+              {% if c.completed_at %}<div class="text-secondary small">{{ c.completed_at[:16] }}</div>{% endif %}
+            {% elif c.is_active %}
+              <span class="badge bg-green-lt">активна</span>
+            {% else %}
+              <span class="badge bg-secondary-lt">приостановлена</span>
+            {% endif %}
+          </td>
+          <td class="small text-nowrap">
+            <div>Последний: {% if c.last_run_at %}{{ c.last_run_at[:16] }}{% else %}—{% endif %}</div>
+            {% if c.schedule_mode != 'once' %}
+              <div>Следующий: {% if c.next_run_at %}{{ c.next_run_at[:16] }}{% else %}—{% endif %}</div>
+            {% endif %}
+            {% if latest %}
+              <div class="text-secondary">run #{{ latest.id }} · {{ latest.status }}
+                · {{ latest.sent_count or 0 }}/{{ (latest.sent_count or 0) + (latest.failed_count or 0) + (latest.unreachable_count or 0) }}
+              </div>
+            {% endif %}
+          </td>
+          <td class="small">
+            <div>Всего отправлено: {{ c.stats.total_sends }}</div>
+            {% if latest %}
+              <div>Последний run: {{ latest.sent_count or 0 }} ок,
+                {{ latest.failed_count or 0 }} ошибок,
+                {{ latest.unreachable_count or 0 }} недоступны</div>
+            {% endif %}
           </td>
           <td class="text-nowrap">
-            {# Toggle #}
+            {% if c.status != 'completed' %}
             <form method="post" action="{{ url_for('analytics_broadcasts_toggle', campaign_id=c.id) }}" class="d-inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
               <button type="submit" class="btn btn-sm {{ 'btn-outline-secondary' if c.is_active else 'btn-outline-success' }}"
@@ -113,20 +222,33 @@
                 {% if c.is_active %}<i class="ti ti-player-pause"></i>{% else %}<i class="ti ti-player-play"></i>{% endif %}
               </button>
             </form>
-            {# Send now #}
             <form method="post" action="{{ url_for('analytics_broadcasts_send_now', campaign_id=c.id) }}" class="d-inline"
-              onsubmit="return confirm('Отправить рассылку «{{ c.name }}» прямо сейчас всем неактивным пользователям, ещё не получавшим её?');">
+              onsubmit="return confirm('Отправить рассылку «{{ c.name }}» сейчас? Каждый пользователь получит не более одного сообщения в этом цикле.');">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
               <button type="submit" class="btn btn-sm btn-outline-primary" title="Отправить сейчас">
                 <i class="ti ti-send"></i>
               </button>
             </form>
-            {# Edit (toggle modal) #}
+            {% if c.schedule_mode != 'once' %}
+            <form method="post" action="{{ url_for('analytics_broadcasts_start_cycle', campaign_id=c.id) }}" class="d-inline"
+              onsubmit="return confirm('Начать новый цикл «{{ c.name }}»? История прошлых циклов сохранится.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-cyan" title="Начать новый цикл">
+                <i class="ti ti-repeat"></i>
+              </button>
+            </form>
+            {% endif %}
             <button type="button" class="btn btn-sm btn-outline-warning" title="Редактировать"
               data-bs-toggle="modal" data-bs-target="#editModal{{ c.id }}">
               <i class="ti ti-pencil"></i>
             </button>
-            {# Delete #}
+            {% endif %}
+            <form method="post" action="{{ url_for('analytics_broadcasts_clone', campaign_id=c.id) }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+              <button type="submit" class="btn btn-sm btn-outline-azure" title="Клонировать кампанию">
+                <i class="ti ti-copy"></i>
+              </button>
+            </form>
             <form method="post" action="{{ url_for('analytics_broadcasts_delete', campaign_id=c.id) }}" class="d-inline"
               onsubmit="return confirm('Удалить рассылку «{{ c.name }}»? История отправок также будет удалена.');">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
@@ -135,7 +257,6 @@
           </td>
         </tr>
 
-        {# Edit modal #}
         <div class="modal fade" id="editModal{{ c.id }}" tabindex="-1">
           <div class="modal-dialog modal-lg">
             <div class="modal-content">
@@ -143,21 +264,11 @@
                 <h5 class="modal-title">Редактировать рассылку</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
               </div>
-              <form method="post" action="{{ url_for('analytics_broadcasts_update', campaign_id=c.id) }}">
+              <form method="post" action="{{ url_for('analytics_broadcasts_update', campaign_id=c.id) }}" class="js-broadcast-form" data-preview-url="{{ url_for('analytics_broadcasts_preview') }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                 <div class="modal-body">
-                  <div class="mb-3">
-                    <label class="form-label">Название</label>
-                    <input type="text" name="name" class="form-control" value="{{ c.name }}" required>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label">Повтор (часы)</label>
-                    <input type="number" name="interval_hours" class="form-control" value="{{ c.interval_hours }}" min="1" max="8760" required>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label">Текст сообщения (HTML)</label>
-                    <textarea name="text_html" class="form-control font-monospace" rows="7" required>{{ c.text_html }}</textarea>
-                  </div>
+                  {{ campaign_fields(c, 'broadcast-edit-' ~ c.id) }}
+                  <div class="form-text mt-2">Изменение текста, сегмента или расписания не сбрасывает историю отправок и не создаёт новый цикл.</div>
                 </div>
                 <div class="modal-footer">
                   <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
@@ -174,4 +285,87 @@
     </table>
   </div>
 </div>
+
+<script>
+(function () {
+  function csrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+  }
+
+  function bindBroadcastForm(form) {
+    const filters = form.querySelector('.js-segment-filters');
+    const intervalWrap = form.querySelector('.js-interval-wrap');
+    const intervalInput = form.querySelector('.js-interval-input');
+    const onceHint = form.querySelector('.js-once-hint');
+    const recurringHint = form.querySelector('.js-recurring-hint');
+
+    function currentMode() {
+      const checked = form.querySelector('.js-target-mode:checked');
+      return checked ? checked.value : 'filtered';
+    }
+    function currentSchedule() {
+      const checked = form.querySelector('.js-schedule-mode:checked');
+      return checked ? checked.value : 'recurring';
+    }
+    function syncMode() {
+      const all = currentMode() === 'all';
+      if (filters) {
+        filters.classList.toggle('opacity-50', all);
+        filters.querySelectorAll('.js-filter-input').forEach((el) => {
+          el.disabled = all;
+        });
+      }
+    }
+    function syncSchedule() {
+      const once = currentSchedule() === 'once';
+      if (intervalWrap) intervalWrap.style.display = once ? 'none' : '';
+      if (intervalInput) {
+        intervalInput.disabled = once;
+        intervalInput.required = !once;
+      }
+      if (onceHint) onceHint.style.display = once ? '' : 'none';
+      if (recurringHint) recurringHint.style.display = once ? 'none' : '';
+    }
+
+    form.querySelectorAll('.js-target-mode').forEach((el) => el.addEventListener('change', syncMode));
+    form.querySelectorAll('.js-schedule-mode').forEach((el) => el.addEventListener('change', syncSchedule));
+    syncMode();
+    syncSchedule();
+
+    const previewBtn = form.querySelector('.js-preview-btn');
+    const previewResult = form.querySelector('.js-preview-result');
+    const previewSample = form.querySelector('.js-preview-sample');
+    if (previewBtn) {
+      previewBtn.addEventListener('click', async () => {
+        const url = form.getAttribute('data-preview-url');
+        const data = new FormData(form);
+        if (!data.get('csrf_token')) data.set('csrf_token', csrfToken());
+        previewResult.textContent = 'Считаем аудиторию…';
+        try {
+          const resp = await fetch(url, { method: 'POST', body: data, headers: { 'X-CSRFToken': csrfToken() } });
+          const json = await resp.json();
+          if (!json.ok) {
+            previewResult.textContent = json.error || 'Ошибка предпросмотра';
+            return;
+          }
+          previewResult.textContent = 'Уникальных получателей: ' + json.count;
+          if (previewSample) {
+            const rows = (json.sample || []).map((row) => {
+              const name = row.username || row.full_name || '—';
+              return '#' + row.user_id + ' · ' + name;
+            });
+            previewSample.textContent = rows.length ? rows.join('\n') : '';
+            previewSample.style.whiteSpace = 'pre-wrap';
+          }
+        } catch (err) {
+          previewResult.textContent = 'Не удалось получить предпросмотр';
+        }
+      });
+    }
+  }
+
+  document.querySelectorAll('.js-broadcast-form').forEach(bindBroadcastForm);
+})();
+</script>
 {% endblock %}

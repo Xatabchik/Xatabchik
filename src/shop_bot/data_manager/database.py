@@ -2557,21 +2557,87 @@ def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:
             send_count INTEGER DEFAULT 0,
             last_run_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            target_mode TEXT,
+            plan_ids TEXT,
+            plan_match_mode TEXT,
+            min_distinct_active_plans INTEGER,
+            max_distinct_active_plans INTEGER,
+            spend_min_rub REAL,
+            spend_max_rub REAL,
+            schedule_mode TEXT,
+            next_run_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            status TEXT
         )
         """
     )
+    for _col, _def in (
+        ("target_mode", "TEXT"),
+        ("plan_ids", "TEXT"),
+        ("plan_match_mode", "TEXT"),
+        ("min_distinct_active_plans", "INTEGER"),
+        ("max_distinct_active_plans", "INTEGER"),
+        ("spend_min_rub", "REAL"),
+        ("spend_max_rub", "REAL"),
+        ("schedule_mode", "TEXT"),
+        ("next_run_at", "TIMESTAMP"),
+        ("completed_at", "TIMESTAMP"),
+        ("status", "TEXT"),
+    ):
+        _ensure_table_column(cursor, "broadcast_campaigns", _col, _def)
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS broadcast_sends (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             campaign_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
-            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            run_id INTEGER,
+            status TEXT DEFAULT 'sent',
+            error_code TEXT,
+            error_message TEXT
         )
         """
     )
+    for _col, _def in (
+        ("run_id", "INTEGER"),
+        ("status", "TEXT DEFAULT 'sent'"),
+        ("error_code", "TEXT"),
+        ("error_message", "TEXT"),
+    ):
+        _ensure_table_column(cursor, "broadcast_sends", _col, _def)
     _ensure_index(cursor, "idx_broadcast_sends_cuid_time", "broadcast_sends", "campaign_id, user_id, sent_at")
+    try:
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_broadcast_sends_run_user "
+            "ON broadcast_sends(run_id, user_id) WHERE run_id IS NOT NULL"
+        )
+    except Exception:
+        pass
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS broadcast_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            status TEXT NOT NULL DEFAULT 'running',
+            audience_snapshot TEXT,
+            sent_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            unreachable_count INTEGER DEFAULT 0
+        )
+        """
+    )
+    _ensure_index(cursor, "idx_broadcast_runs_campaign", "broadcast_runs", "campaign_id, started_at")
+    try:
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_broadcast_runs_one_active "
+            "ON broadcast_runs(campaign_id) WHERE status IN ('queued', 'running')"
+        )
+    except Exception:
+        pass
 
 
 def get_all_ssh_targets() -> list[dict]:
@@ -3739,13 +3805,374 @@ def get_utm_analytics() -> list[dict]:
 # Рассылки
 # =============================
 
-def create_broadcast_campaign(name: str, text_html: str, interval_hours: int = 72, target_segment: str = "inactive") -> int | None:
+BROADCAST_TARGET_MODE_ALL = "all"
+BROADCAST_TARGET_MODE_FILTERED = "filtered"
+BROADCAST_TARGET_MODE_LEGACY = "legacy"
+BROADCAST_PLAN_MATCH_ANY = "any"
+BROADCAST_PLAN_MATCH_ALL = "all"
+BROADCAST_SEGMENT_INACTIVE = "inactive"
+BROADCAST_SEGMENT_NONE = "none"
+BROADCAST_SCHEDULE_ONCE = "once"
+BROADCAST_SCHEDULE_RECURRING = "recurring"
+BROADCAST_CAMPAIGN_STATUS_ACTIVE = "active"
+BROADCAST_CAMPAIGN_STATUS_PAUSED = "paused"
+BROADCAST_CAMPAIGN_STATUS_COMPLETED = "completed"
+_BROADCAST_SPENT_EXCLUDED_METHODS = ("balance", "referral_payout")
+
+
+class BroadcastFilterError(ValueError):
+    """Некорректные параметры сегмента рассылки."""
+
+
+def _broadcast_effective_target_mode(campaign: dict | None) -> str:
+    """NULL/пусто/неизвестное → legacy inactive (старые кампании без target_mode)."""
+    if not campaign:
+        return BROADCAST_TARGET_MODE_LEGACY
+    mode = str(campaign.get("target_mode") or "").strip().lower()
+    if mode in (BROADCAST_TARGET_MODE_ALL, BROADCAST_TARGET_MODE_FILTERED):
+        return mode
+    return BROADCAST_TARGET_MODE_LEGACY
+
+
+def _broadcast_effective_schedule_mode(campaign: dict | None) -> str:
+    """NULL/пусто → recurring: старые кампании с interval_hours остаются периодическими."""
+    if not campaign:
+        return BROADCAST_SCHEDULE_RECURRING
+    mode = str(campaign.get("schedule_mode") or "").strip().lower()
+    if mode == BROADCAST_SCHEDULE_ONCE:
+        return BROADCAST_SCHEDULE_ONCE
+    return BROADCAST_SCHEDULE_RECURRING
+
+
+def _parse_broadcast_plan_ids(raw) -> list[int] | None:
+    """NULL/пусто/[] → нет фильтра по тарифам. Битый JSON → ошибка на валидации, здесь []."""
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        ids: list[int] = []
+        seen: set[int] = set()
+        for item in raw:
+            try:
+                pid = int(item)
+            except (TypeError, ValueError):
+                continue
+            if pid > 0 and pid not in seen:
+                seen.add(pid)
+                ids.append(pid)
+        return ids or None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return _parse_broadcast_plan_ids(parsed)
+
+
+def _parse_plan_id_from_key_description(description) -> int | None:
+    if not description:
+        return None
+    s = str(description).strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        meta = json.loads(s)
+    except Exception:
+        return None
+    if not isinstance(meta, dict) or meta.get("plan_id") is None:
+        return None
+    try:
+        pid = int(meta.get("plan_id"))
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def validate_broadcast_filters(
+    *,
+    target_mode: str | None = None,
+    target_segment: str | None = None,
+    plan_ids=None,
+    plan_match_mode: str | None = None,
+    min_distinct_active_plans=None,
+    max_distinct_active_plans=None,
+    spend_min_rub=None,
+    spend_max_rub=None,
+    schedule_mode: str | None = None,
+    interval_hours=None,
+) -> dict:
+    """Нормализовать и проверить фильтры. BroadcastFilterError при невалидных диапазонах/JSON."""
+    mode = str(target_mode or "").strip().lower()
+    if mode not in ("", BROADCAST_TARGET_MODE_ALL, BROADCAST_TARGET_MODE_FILTERED):
+        raise BroadcastFilterError("target_mode must be empty, 'all', or 'filtered'")
+    if not mode:
+        mode = None
+
+    segment = str(target_segment or "").strip().lower()
+    if not segment:
+        segment = BROADCAST_SEGMENT_INACTIVE if mode is None else BROADCAST_SEGMENT_NONE
+    if segment not in (BROADCAST_SEGMENT_INACTIVE, BROADCAST_SEGMENT_NONE, ""):
+        # неизвестный сегмент не ломает старые кампании
+        if mode is not None and segment not in (BROADCAST_SEGMENT_INACTIVE, BROADCAST_SEGMENT_NONE):
+            raise BroadcastFilterError("target_segment must be 'inactive' or 'none'")
+
+    parsed_ids = None
+    if plan_ids is not None and not (isinstance(plan_ids, str) and not str(plan_ids).strip()):
+        if isinstance(plan_ids, str):
+            try:
+                loaded = json.loads(plan_ids)
+            except Exception:
+                raise BroadcastFilterError("plan_ids must be a JSON array of plan_id")
+            if not isinstance(loaded, list):
+                raise BroadcastFilterError("plan_ids must be a JSON array of plan_id")
+            plan_ids = loaded
+        if isinstance(plan_ids, (list, tuple)):
+            if len(plan_ids) == 0:
+                parsed_ids = None
+            else:
+                ids: list[int] = []
+                seen: set[int] = set()
+                for item in plan_ids:
+                    try:
+                        pid = int(item)
+                    except (TypeError, ValueError):
+                        raise BroadcastFilterError("plan_ids must contain integers")
+                    if pid <= 0:
+                        raise BroadcastFilterError("plan_ids must contain positive plan_id")
+                    if pid not in seen:
+                        seen.add(pid)
+                        ids.append(pid)
+                parsed_ids = ids or None
+        else:
+            raise BroadcastFilterError("plan_ids must be a JSON array of plan_id")
+
+    match_mode = str(plan_match_mode or "").strip().lower() or None
+    if match_mode is not None and match_mode not in (BROADCAST_PLAN_MATCH_ANY, BROADCAST_PLAN_MATCH_ALL):
+        raise BroadcastFilterError("plan_match_mode must be 'any' or 'all'")
+    if parsed_ids and not match_mode:
+        match_mode = BROADCAST_PLAN_MATCH_ANY
+    if not parsed_ids:
+        match_mode = None
+
+    def _opt_int(name, raw):
+        if raw is None or raw == "":
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise BroadcastFilterError(f"{name} must be an integer >= 0")
+        if value < 0:
+            raise BroadcastFilterError(f"{name} must be an integer >= 0")
+        return value
+
+    def _opt_float(name, raw):
+        if raw is None or raw == "":
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise BroadcastFilterError(f"{name} must be a number >= 0")
+        if value < 0:
+            raise BroadcastFilterError(f"{name} must be a number >= 0")
+        return value
+
+    min_plans = _opt_int("min_distinct_active_plans", min_distinct_active_plans)
+    max_plans = _opt_int("max_distinct_active_plans", max_distinct_active_plans)
+    if min_plans is not None and max_plans is not None and min_plans > max_plans:
+        raise BroadcastFilterError("min_distinct_active_plans must be <= max_distinct_active_plans")
+
+    spend_min = _opt_float("spend_min_rub", spend_min_rub)
+    spend_max = _opt_float("spend_max_rub", spend_max_rub)
+    if spend_min is not None and spend_max is not None and spend_min > spend_max:
+        raise BroadcastFilterError("spend_min_rub must be <= spend_max_rub")
+
+    sched = str(schedule_mode or "").strip().lower()
+    if sched in ("", "null", "none"):
+        sched = None
+    elif sched not in (BROADCAST_SCHEDULE_ONCE, BROADCAST_SCHEDULE_RECURRING):
+        raise BroadcastFilterError("schedule_mode must be 'once' or 'recurring'")
+
+    parsed_interval = None
+    if interval_hours is not None and interval_hours != "":
+        try:
+            parsed_interval = int(interval_hours)
+        except (TypeError, ValueError):
+            raise BroadcastFilterError("interval_hours must be a positive integer")
+        if parsed_interval < 1:
+            raise BroadcastFilterError("interval_hours must be a positive integer")
+    if sched == BROADCAST_SCHEDULE_RECURRING and parsed_interval is None:
+        parsed_interval = 72
+    if sched == BROADCAST_SCHEDULE_ONCE and parsed_interval is None:
+        parsed_interval = 72
+
+    return {
+        "target_mode": mode,
+        "target_segment": segment or BROADCAST_SEGMENT_NONE,
+        "plan_ids": json.dumps(parsed_ids) if parsed_ids else None,
+        "plan_ids_list": parsed_ids,
+        "plan_match_mode": match_mode,
+        "min_distinct_active_plans": min_plans,
+        "max_distinct_active_plans": max_plans,
+        "spend_min_rub": spend_min,
+        "spend_max_rub": spend_max,
+        "schedule_mode": sched,
+        "interval_hours": parsed_interval,
+    }
+
+
+def format_broadcast_audience_label(campaign: dict, plans_by_id: dict | None = None) -> str:
+    """Читаемое описание аудитории для карточки кампании."""
+    mode = _broadcast_effective_target_mode(campaign)
+    if mode == BROADCAST_TARGET_MODE_ALL:
+        return "Все пользователи"
+    if mode == BROADCAST_TARGET_MODE_LEGACY:
+        return "Без активной подписки"
+    parts: list[str] = []
+    segment = str(campaign.get("target_segment") or "").strip().lower()
+    if segment == BROADCAST_SEGMENT_INACTIVE:
+        parts.append("без активной подписки")
+    plan_ids = _parse_broadcast_plan_ids(campaign.get("plan_ids"))
+    if plan_ids:
+        names = []
+        for pid in plan_ids:
+            plan = (plans_by_id or {}).get(pid) or {}
+            names.append(str(plan.get("plan_name") or pid))
+        match = str(campaign.get("plan_match_mode") or BROADCAST_PLAN_MATCH_ANY).strip().lower()
+        match_label = "хотя бы один" if match != BROADCAST_PLAN_MATCH_ALL else "все выбранные"
+        parts.append(f"тарифы: {', '.join(names)}; {match_label}")
+    min_p = campaign.get("min_distinct_active_plans")
+    max_p = campaign.get("max_distinct_active_plans")
+    if min_p is not None or max_p is not None:
+        lo = "от " + str(int(min_p)) if min_p is not None else ""
+        hi = "до " + str(int(max_p)) if max_p is not None else ""
+        rng = " ".join(x for x in (lo, hi) if x)
+        parts.append(f"активных тарифов: {rng}".strip())
+    spend_min = campaign.get("spend_min_rub")
+    spend_max = campaign.get("spend_max_rub")
+    if spend_min is not None or spend_max is not None:
+        bits = []
+        if spend_min is not None:
+            bits.append(f"от {float(spend_min):,.0f} ₽".replace(",", " "))
+        if spend_max is not None:
+            bits.append(f"до {float(spend_max):,.0f} ₽".replace(",", " "))
+        parts.append("траты: " + " ".join(bits))
+    return "; ".join(parts) if parts else "Все пользователи (фильтры не заданы)"
+
+
+def build_broadcast_campaign_config(
+    *,
+    name: str | None = None,
+    text_html: str | None = None,
+    interval_hours: int = 72,
+    target_segment: str | None = "inactive",
+    target_mode: str | None = None,
+    plan_ids=None,
+    plan_match_mode: str | None = None,
+    min_distinct_active_plans=None,
+    max_distinct_active_plans=None,
+    spend_min_rub=None,
+    spend_max_rub=None,
+    schedule_mode: str | None = None,
+    campaign_id: int | None = None,
+) -> dict:
+    """Нормализованный конфиг кампании для preview и отбора без записи в БД."""
+    mode = str(target_mode or "").strip().lower()
+    if mode == BROADCAST_TARGET_MODE_ALL:
+        plan_ids = None
+        plan_match_mode = None
+        min_distinct_active_plans = None
+        max_distinct_active_plans = None
+        spend_min_rub = None
+        spend_max_rub = None
+        target_segment = BROADCAST_SEGMENT_NONE
+    filters = validate_broadcast_filters(
+        target_mode=target_mode,
+        target_segment=target_segment,
+        plan_ids=plan_ids,
+        plan_match_mode=plan_match_mode,
+        min_distinct_active_plans=min_distinct_active_plans,
+        max_distinct_active_plans=max_distinct_active_plans,
+        spend_min_rub=spend_min_rub,
+        spend_max_rub=spend_max_rub,
+        schedule_mode=schedule_mode,
+        interval_hours=interval_hours,
+    )
+    stored_interval = filters["interval_hours"] if filters["interval_hours"] is not None else int(interval_hours or 72)
+    return {
+        "id": campaign_id,
+        "name": (name or "").strip(),
+        "text_html": (text_html or "").strip(),
+        "interval_hours": stored_interval,
+        "target_segment": filters["target_segment"],
+        "target_mode": filters["target_mode"],
+        "plan_ids": filters["plan_ids"],
+        "plan_match_mode": filters["plan_match_mode"],
+        "min_distinct_active_plans": filters["min_distinct_active_plans"],
+        "max_distinct_active_plans": filters["max_distinct_active_plans"],
+        "spend_min_rub": filters["spend_min_rub"],
+        "spend_max_rub": filters["spend_max_rub"],
+        "schedule_mode": filters["schedule_mode"],
+    }
+
+
+def create_broadcast_campaign(
+    name: str,
+    text_html: str,
+    interval_hours: int = 72,
+    target_segment: str = "inactive",
+    *,
+    target_mode: str | None = None,
+    plan_ids=None,
+    plan_match_mode: str | None = None,
+    min_distinct_active_plans=None,
+    max_distinct_active_plans=None,
+    spend_min_rub=None,
+    spend_max_rub=None,
+    schedule_mode: str | None = None,
+) -> int | None:
+    cfg = build_broadcast_campaign_config(
+        name=name,
+        text_html=text_html,
+        interval_hours=interval_hours,
+        target_segment=target_segment,
+        target_mode=target_mode,
+        plan_ids=plan_ids,
+        plan_match_mode=plan_match_mode,
+        min_distinct_active_plans=min_distinct_active_plans,
+        max_distinct_active_plans=max_distinct_active_plans,
+        spend_min_rub=spend_min_rub,
+        spend_max_rub=spend_max_rub,
+        schedule_mode=schedule_mode,
+    )
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO broadcast_campaigns (name, text_html, interval_hours, target_segment) VALUES (?, ?, ?, ?)",
-                (name.strip(), text_html.strip(), int(interval_hours), target_segment),
+                """
+                INSERT INTO broadcast_campaigns (
+                    name, text_html, interval_hours, target_segment,
+                    target_mode, plan_ids, plan_match_mode,
+                    min_distinct_active_plans, max_distinct_active_plans,
+                    spend_min_rub, spend_max_rub, schedule_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cfg["name"],
+                    cfg["text_html"],
+                    int(cfg["interval_hours"]),
+                    cfg["target_segment"],
+                    cfg["target_mode"],
+                    cfg["plan_ids"],
+                    cfg["plan_match_mode"],
+                    cfg["min_distinct_active_plans"],
+                    cfg["max_distinct_active_plans"],
+                    cfg["spend_min_rub"],
+                    cfg["spend_max_rub"],
+                    cfg["schedule_mode"],
+                ),
             )
             conn.commit()
             return cursor.lastrowid
@@ -3779,13 +4206,93 @@ def get_broadcast_campaign(campaign_id: int) -> dict | None:
         return None
 
 
-def update_broadcast_campaign(campaign_id: int, *, name: str, text_html: str, interval_hours: int) -> bool:
+def update_broadcast_campaign(
+    campaign_id: int,
+    *,
+    name: str,
+    text_html: str,
+    interval_hours: int,
+    target_segment: str | None = None,
+    target_mode: str | None = None,
+    plan_ids=None,
+    plan_match_mode: str | None = None,
+    min_distinct_active_plans=None,
+    max_distinct_active_plans=None,
+    spend_min_rub=None,
+    spend_max_rub=None,
+    schedule_mode: str | None = None,
+    update_filters: bool = False,
+) -> bool:
+    """Обновляет текст/фильтры/расписание. Не сбрасывает историю отправок и не стартует run."""
+    current = get_broadcast_campaign(campaign_id)
+    if not current:
+        return False
+    if update_filters:
+        cfg = build_broadcast_campaign_config(
+            name=name,
+            text_html=text_html,
+            interval_hours=interval_hours,
+            target_segment=target_segment if target_segment is not None else current.get("target_segment"),
+            target_mode=target_mode if target_mode is not None else current.get("target_mode"),
+            plan_ids=plan_ids if plan_ids is not None else current.get("plan_ids"),
+            plan_match_mode=plan_match_mode if plan_match_mode is not None else current.get("plan_match_mode"),
+            min_distinct_active_plans=min_distinct_active_plans if min_distinct_active_plans is not None else current.get("min_distinct_active_plans"),
+            max_distinct_active_plans=max_distinct_active_plans if max_distinct_active_plans is not None else current.get("max_distinct_active_plans"),
+            spend_min_rub=spend_min_rub if spend_min_rub is not None else current.get("spend_min_rub"),
+            spend_max_rub=spend_max_rub if spend_max_rub is not None else current.get("spend_max_rub"),
+            schedule_mode=schedule_mode if schedule_mode is not None else current.get("schedule_mode"),
+        )
+    else:
+        cfg = {
+            "name": name.strip(),
+            "text_html": text_html.strip(),
+            "interval_hours": int(interval_hours),
+            "target_segment": current.get("target_segment"),
+            "target_mode": current.get("target_mode"),
+            "plan_ids": current.get("plan_ids"),
+            "plan_match_mode": current.get("plan_match_mode"),
+            "min_distinct_active_plans": current.get("min_distinct_active_plans"),
+            "max_distinct_active_plans": current.get("max_distinct_active_plans"),
+            "spend_min_rub": current.get("spend_min_rub"),
+            "spend_max_rub": current.get("spend_max_rub"),
+            "schedule_mode": current.get("schedule_mode"),
+        }
+        if interval_hours is not None:
+            try:
+                parsed_interval = int(interval_hours)
+            except (TypeError, ValueError):
+                raise BroadcastFilterError("interval_hours must be a positive integer")
+            if parsed_interval < 1:
+                raise BroadcastFilterError("interval_hours must be a positive integer")
+            cfg["interval_hours"] = parsed_interval
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE broadcast_campaigns SET name=?, text_html=?, interval_hours=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (name.strip(), text_html.strip(), int(interval_hours), int(campaign_id)),
+                """
+                UPDATE broadcast_campaigns SET
+                    name=?, text_html=?, interval_hours=?,
+                    target_segment=?, target_mode=?, plan_ids=?, plan_match_mode=?,
+                    min_distinct_active_plans=?, max_distinct_active_plans=?,
+                    spend_min_rub=?, spend_max_rub=?, schedule_mode=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (
+                    cfg["name"],
+                    cfg["text_html"],
+                    int(cfg["interval_hours"]),
+                    cfg["target_segment"],
+                    cfg["target_mode"],
+                    cfg["plan_ids"],
+                    cfg["plan_match_mode"],
+                    cfg["min_distinct_active_plans"],
+                    cfg["max_distinct_active_plans"],
+                    cfg["spend_min_rub"],
+                    cfg["spend_max_rub"],
+                    cfg["schedule_mode"],
+                    int(campaign_id),
+                ),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -3795,18 +4302,31 @@ def update_broadcast_campaign(campaign_id: int, *, name: str, text_html: str, in
 
 
 def toggle_broadcast_campaign(campaign_id: int) -> bool:
-    """Flip is_active. Returns new is_active state."""
+    """Flip is_active. Не сбрасывает историю и не перезапускает completed-кампанию."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT is_active FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
+            cursor.execute(
+                "SELECT is_active, status FROM broadcast_campaigns WHERE id = ?",
+                (int(campaign_id),),
+            )
             row = cursor.fetchone()
             if not row:
                 return False
-            new_state = 0 if row[0] else 1
+            is_active, status = row[0], (row[1] or "")
+            if str(status).strip().lower() == BROADCAST_CAMPAIGN_STATUS_COMPLETED and not is_active:
+                return False
+            new_state = 0 if is_active else 1
+            new_status = BROADCAST_CAMPAIGN_STATUS_PAUSED if not new_state else BROADCAST_CAMPAIGN_STATUS_ACTIVE
+            if str(status).strip().lower() == BROADCAST_CAMPAIGN_STATUS_COMPLETED:
+                new_status = BROADCAST_CAMPAIGN_STATUS_COMPLETED
             cursor.execute(
-                "UPDATE broadcast_campaigns SET is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (new_state, int(campaign_id)),
+                """
+                UPDATE broadcast_campaigns
+                SET is_active=?, status=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (new_state, new_status, int(campaign_id)),
             )
             conn.commit()
             return bool(new_state)
@@ -3820,6 +4340,7 @@ def delete_broadcast_campaign(campaign_id: int) -> bool:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM broadcast_sends WHERE campaign_id = ?", (int(campaign_id),))
+            cursor.execute("DELETE FROM broadcast_runs WHERE campaign_id = ?", (int(campaign_id),))
             cursor.execute("DELETE FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
             conn.commit()
             return cursor.rowcount > 0
@@ -3872,52 +4393,757 @@ def get_inactive_subscribers() -> list[int]:
 
 
 def get_pending_broadcast_recipients(campaign_id: int, interval_hours: int) -> list[int]:
-    """Inactive users who haven't been sent this campaign in the last `interval_hours`."""
-    inactive = set(get_inactive_subscribers())
-    if not inactive:
+    """Получатели, которым ещё не отправляли текущий цикл.
+
+    Сигнатура сохранена для старых тестов. interval_hours учитывается в
+    legacy-режиме как окно по broadcast_sends (прежнее поведение).
+    """
+    campaign = get_broadcast_campaign(campaign_id)
+    if not campaign:
         return []
+    campaign = dict(campaign)
+    campaign["interval_hours"] = int(interval_hours)
+    return get_broadcast_recipients(
+        campaign,
+        campaign_id=campaign_id,
+        exclude_already_sent=True,
+    )
+
+
+def get_broadcast_recipients(
+    campaign: dict | None = None,
+    *,
+    campaign_id: int | None = None,
+    exclude_already_sent: bool = False,
+    run_id: int | None = None,
+) -> list[int]:
+    """Единый отбор уникальных user_id для preview и scheduler."""
+    if campaign is None:
+        if campaign_id is None:
+            return []
+        campaign = get_broadcast_campaign(int(campaign_id))
+        if not campaign:
+            return []
+
+    target_mode = _broadcast_effective_target_mode(campaign)
+    if target_mode == BROADCAST_TARGET_MODE_LEGACY:
+        selected = list(dict.fromkeys(get_inactive_subscribers()))
+    elif target_mode == BROADCAST_TARGET_MODE_ALL:
+        selected = _load_broadcast_candidate_user_ids()
+    else:
+        selected = _apply_broadcast_filters(_load_broadcast_candidate_user_ids(), campaign)
+
+    if exclude_already_sent:
+        cid = int(campaign.get("id") or campaign_id or 0)
+        if cid:
+            selected = _exclude_already_sent_recipients(
+                selected,
+                campaign_id=cid,
+                campaign=campaign,
+                run_id=run_id,
+            )
+    return selected
+
+
+def preview_broadcast_audience(
+    campaign: dict | None = None,
+    *,
+    campaign_id: int | None = None,
+    sample_limit: int = 20,
+) -> dict:
+    """Preview без создания run и без записи отправок."""
+    recipients = get_broadcast_recipients(
+        campaign,
+        campaign_id=campaign_id,
+        exclude_already_sent=False,
+    )
+    sample: list[dict] = []
+    if recipients and sample_limit > 0:
+        sample_ids = recipients[: max(0, int(sample_limit))]
+        placeholders = ",".join("?" * len(sample_ids))
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"""
+                    SELECT telegram_id AS user_id, username, full_name, email
+                    FROM users
+                    WHERE telegram_id IN ({placeholders})
+                    """,
+                    sample_ids,
+                )
+                by_id = {int(row["user_id"]): dict(row) for row in cursor.fetchall()}
+            for uid in sample_ids:
+                row = by_id.get(int(uid), {"user_id": uid})
+                sample.append(
+                    {
+                        "user_id": row.get("user_id") or uid,
+                        "username": row.get("username") or "",
+                        "full_name": row.get("full_name") or "",
+                        "email": row.get("email") or "",
+                    }
+                )
+        except sqlite3.Error as e:
+            logging.error("Failed to load broadcast preview sample: %s", e)
+            sample = [{"user_id": uid} for uid in sample_ids]
+    return {"count": len(recipients), "sample": sample}
+
+
+def _load_broadcast_candidate_user_ids() -> list[int]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT DISTINCT user_id FROM broadcast_sends
-                WHERE campaign_id = ?
-                  AND sent_at > datetime('now', '-' || ? || ' hours')
+                SELECT u.telegram_id FROM users u
+                WHERE u.is_banned = 0
+                  AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
+                  AND (u.telegram_id < ? OR u.telegram_id > ?)
                 """,
-                (int(campaign_id), int(interval_hours)),
+                (EMAIL_ONLY_TELEGRAM_ID_MIN, EMAIL_ONLY_TELEGRAM_ID_MAX),
             )
-            recently_sent = {row[0] for row in cursor.fetchall()}
-        return [uid for uid in inactive if uid not in recently_sent]
+            seen: set[int] = set()
+            out: list[int] = []
+            for row in cursor.fetchall():
+                uid = int(row[0])
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                out.append(uid)
+            return out
     except sqlite3.Error as e:
-        logging.error("Failed to get pending broadcast recipients: %s", e)
+        logging.error("Failed to load broadcast candidate users: %s", e)
         return []
 
 
-def record_broadcast_sends(campaign_id: int, user_ids: list[int]) -> int:
-    """Insert send records and bump campaign send_count. Returns count inserted."""
-    if not user_ids:
-        return 0
+def _apply_broadcast_filters(user_ids: list[int], campaign: dict) -> list[int]:
+    selected = list(user_ids)
+    segment = str(campaign.get("target_segment") or "").strip().lower()
+    if segment == BROADCAST_SEGMENT_INACTIVE:
+        inactive = set(get_inactive_subscribers())
+        selected = [uid for uid in selected if uid in inactive]
+
+    plan_ids = _parse_broadcast_plan_ids(campaign.get("plan_ids"))
+    min_plans = campaign.get("min_distinct_active_plans")
+    max_plans = campaign.get("max_distinct_active_plans")
+    spend_min = campaign.get("spend_min_rub")
+    spend_max = campaign.get("spend_max_rub")
+    need_plans = bool(plan_ids) or min_plans is not None or max_plans is not None
+    need_spend = spend_min is not None or spend_max is not None
+
+    plans_by_user: dict[int, set[int]] = {}
+    if need_plans:
+        plans_by_user = _active_plan_ids_by_user()
+    spend_by_user: dict[int, float] = {}
+    if need_spend:
+        spend_by_user = _paid_spend_by_user()
+
+    match_mode = str(campaign.get("plan_match_mode") or BROADCAST_PLAN_MATCH_ANY).strip().lower()
+    result: list[int] = []
+    for uid in selected:
+        uid = int(uid)
+        if plan_ids:
+            user_plans = plans_by_user.get(uid, set())
+            if match_mode == BROADCAST_PLAN_MATCH_ALL:
+                if not set(plan_ids).issubset(user_plans):
+                    continue
+            elif not (user_plans & set(plan_ids)):
+                continue
+        if min_plans is not None or max_plans is not None:
+            distinct = len(plans_by_user.get(uid, set()))
+            if min_plans is not None and distinct < int(min_plans):
+                continue
+            if max_plans is not None and distinct > int(max_plans):
+                continue
+        if need_spend:
+            spent = float(spend_by_user.get(uid, 0.0))
+            if spend_min is not None and spent < float(spend_min):
+                continue
+            if spend_max is not None and spent > float(spend_max):
+                continue
+        result.append(uid)
+    return result
+
+
+def _active_plan_ids_by_user() -> dict[int, set[int]]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.executemany(
-                "INSERT INTO broadcast_sends (campaign_id, user_id) VALUES (?, ?)",
-                [(int(campaign_id), int(uid)) for uid in user_ids],
-            )
             cursor.execute(
-                "UPDATE broadcast_campaigns SET last_run_at=CURRENT_TIMESTAMP, send_count=COALESCE(send_count,0)+?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (len(user_ids), int(campaign_id)),
+                """
+                SELECT user_id, description
+                FROM vpn_keys
+                WHERE expire_at > datetime('now')
+                """
+            )
+            result: dict[int, set[int]] = {}
+            for user_id, description in cursor.fetchall():
+                plan_id = _parse_plan_id_from_key_description(description)
+                if plan_id is None:
+                    continue
+                result.setdefault(int(user_id), set()).add(int(plan_id))
+            return result
+    except sqlite3.Error as e:
+        logging.error("Failed to load active plan ids for broadcast: %s", e)
+        return {}
+
+
+def _paid_spend_by_user() -> dict[int, float]:
+    """Сумма подтверждённых покупок — то же правило, что PR #78 / _user_paid_total."""
+    placeholders = ",".join("?" * len(_BROADCAST_SPENT_EXCLUDED_METHODS))
+    sql = f"""
+        SELECT user_id, COALESCE(SUM(amount_rub), 0) AS total
+        FROM (
+            SELECT user_id, amount_rub
+            FROM transactions
+            WHERE LOWER(TRIM(COALESCE(status, ''))) = 'paid'
+              AND LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ({placeholders})
+            UNION ALL
+            SELECT p.user_id, p.amount_rub
+            FROM pending_transactions p
+            WHERE LOWER(TRIM(COALESCE(p.status, ''))) = 'paid'
+              AND NOT EXISTS (
+                  SELECT 1 FROM transactions t
+                  WHERE t.payment_id = p.payment_id
+                    AND LOWER(TRIM(COALESCE(t.status, ''))) = 'paid'
+              )
+        )
+        GROUP BY user_id
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, list(_BROADCAST_SPENT_EXCLUDED_METHODS))
+            return {int(row[0]): float(row[1] or 0) for row in cursor.fetchall()}
+    except sqlite3.Error as e:
+        logging.error("Failed to load paid spend for broadcast: %s", e)
+        return {}
+
+
+def _exclude_already_sent_recipients(
+    user_ids: list[int],
+    *,
+    campaign_id: int,
+    campaign: dict,
+    run_id: int | None,
+) -> list[int]:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            skip: set[int] = set()
+            if run_id is not None:
+                cursor.execute(
+                    """
+                    SELECT user_id FROM broadcast_sends
+                    WHERE campaign_id = ? AND run_id = ?
+                      AND COALESCE(status, 'sent') IN ('sending', 'sent', 'unreachable')
+                    """,
+                    (int(campaign_id), int(run_id)),
+                )
+                skip = {int(r[0]) for r in cursor.fetchall()}
+            else:
+                target_mode = _broadcast_effective_target_mode(campaign)
+                schedule_mode = _broadcast_effective_schedule_mode(campaign)
+                if target_mode == BROADCAST_TARGET_MODE_LEGACY:
+                    interval_hours = int(campaign.get("interval_hours") or 72)
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT user_id FROM broadcast_sends
+                        WHERE campaign_id = ?
+                          AND sent_at > datetime('now', '-' || ? || ' hours')
+                        """,
+                        (int(campaign_id), int(interval_hours)),
+                    )
+                    skip = {int(r[0]) for r in cursor.fetchall()}
+                elif schedule_mode == BROADCAST_SCHEDULE_ONCE:
+                    cursor.execute(
+                        """
+                        SELECT user_id FROM broadcast_sends
+                        WHERE campaign_id = ?
+                          AND COALESCE(status, 'sent') IN ('sending', 'sent', 'unreachable')
+                        """,
+                        (int(campaign_id),),
+                    )
+                    skip = {int(r[0]) for r in cursor.fetchall()}
+                else:
+                    active_run = get_active_broadcast_run(int(campaign_id))
+                    if active_run:
+                        cursor.execute(
+                            """
+                            SELECT user_id FROM broadcast_sends
+                            WHERE campaign_id = ? AND run_id = ?
+                              AND COALESCE(status, 'sent') IN ('sending', 'sent', 'unreachable')
+                            """,
+                            (int(campaign_id), int(active_run["id"])),
+                        )
+                        skip = {int(r[0]) for r in cursor.fetchall()}
+            return [uid for uid in user_ids if int(uid) not in skip]
+    except sqlite3.Error as e:
+        logging.error("Failed to exclude already sent broadcast recipients: %s", e)
+        return user_ids
+
+
+def _broadcast_audience_snapshot(campaign: dict) -> str:
+    payload = {
+        "target_mode": campaign.get("target_mode"),
+        "schedule_mode": campaign.get("schedule_mode"),
+        "target_segment": campaign.get("target_segment"),
+        "plan_ids": campaign.get("plan_ids"),
+        "plan_match_mode": campaign.get("plan_match_mode"),
+        "min_distinct_active_plans": campaign.get("min_distinct_active_plans"),
+        "max_distinct_active_plans": campaign.get("max_distinct_active_plans"),
+        "spend_min_rub": campaign.get("spend_min_rub"),
+        "spend_max_rub": campaign.get("spend_max_rub"),
+        "interval_hours": campaign.get("interval_hours"),
+        "text_html": campaign.get("text_html"),
+        "name": campaign.get("name"),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def campaign_from_run_snapshot(campaign: dict, run: dict | None) -> dict:
+    """Аудитория и текст на момент старта run; правки кампании текущий цикл не меняют."""
+    merged = dict(campaign or {})
+    raw = (run or {}).get("audience_snapshot")
+    if not raw:
+        return merged
+    try:
+        snap = json.loads(raw)
+    except Exception:
+        return merged
+    if isinstance(snap, dict):
+        for key, value in snap.items():
+            if value is not None:
+                merged[key] = value
+    return merged
+
+
+def campaign_is_due_for_run(campaign: dict, *, now: datetime | None = None) -> bool:
+    """Можно ли стартовать новый run. Не запускает и не меняет данные."""
+    if not campaign or not campaign.get("is_active"):
+        return False
+    status = str(campaign.get("status") or "").strip().lower()
+    if status == BROADCAST_CAMPAIGN_STATUS_COMPLETED:
+        return False
+    if get_active_broadcast_run(int(campaign["id"])):
+        return False
+
+    schedule_mode = _broadcast_effective_schedule_mode(campaign)
+    now = now or datetime.now()
+
+    if schedule_mode == BROADCAST_SCHEDULE_ONCE:
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM broadcast_runs WHERE campaign_id = ?",
+                    (int(campaign["id"]),),
+                )
+                return int(cursor.fetchone()[0] or 0) == 0
+        except sqlite3.Error:
+            return False
+
+    interval_hours = int(campaign.get("interval_hours") or 72)
+    next_run_at = campaign.get("next_run_at")
+    last_run_at = campaign.get("last_run_at")
+    if next_run_at:
+        try:
+            return datetime.fromisoformat(str(next_run_at)) <= now
+        except (TypeError, ValueError):
+            pass
+    if last_run_at:
+        try:
+            last_dt = datetime.fromisoformat(str(last_run_at).replace("Z", ""))
+            return last_dt + timedelta(hours=interval_hours) <= now
+        except (TypeError, ValueError):
+            return True
+    return True
+
+
+def get_active_broadcast_run(campaign_id: int) -> dict | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM broadcast_runs
+                WHERE campaign_id = ? AND status IN ('queued', 'running')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (int(campaign_id),),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error("Failed to read active broadcast run: %s", e)
+        return None
+
+
+def get_latest_broadcast_run(campaign_id: int) -> dict | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM broadcast_runs WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+                (int(campaign_id),),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error("Failed to read latest broadcast run: %s", e)
+        return None
+
+
+def get_broadcast_run(run_id: int) -> dict | None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM broadcast_runs WHERE id = ?", (int(run_id),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error:
+        return None
+
+
+def try_start_broadcast_run(campaign_id: int, *, force: bool = False) -> dict | None:
+    """Атомарно создать run. Два scheduler-процесса не создадут два активных запуска."""
+    campaign = get_broadcast_campaign(campaign_id)
+    if not campaign:
+        return None
+    if not force:
+        existing = get_active_broadcast_run(campaign_id)
+        if existing:
+            return existing
+        if not campaign_is_due_for_run(campaign):
+            return None
+
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT is_active, status FROM broadcast_campaigns WHERE id = ?",
+                (int(campaign_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            is_active, status = row[0], str(row[1] or "").strip().lower()
+            if not is_active and not force:
+                conn.commit()
+                return None
+            if status == BROADCAST_CAMPAIGN_STATUS_COMPLETED and not force:
+                conn.commit()
+                return None
+            cursor.execute(
+                """
+                SELECT id FROM broadcast_runs
+                WHERE campaign_id = ? AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (int(campaign_id),),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                run_id = int(existing[0] if not isinstance(existing, sqlite3.Row) else existing["id"])
+                conn.commit()
+                return get_broadcast_run(run_id)
+
+            schedule_mode = _broadcast_effective_schedule_mode(campaign)
+            if schedule_mode == BROADCAST_SCHEDULE_ONCE:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM broadcast_runs WHERE campaign_id = ?",
+                    (int(campaign_id),),
+                )
+                if int(cursor.fetchone()[0] or 0) > 0:
+                    conn.commit()
+                    return None
+
+            if not force and schedule_mode != BROADCAST_SCHEDULE_ONCE:
+                cursor.execute(
+                    "SELECT last_run_at, next_run_at, interval_hours, is_active, status, schedule_mode FROM broadcast_campaigns WHERE id = ?",
+                    (int(campaign_id),),
+                )
+                due_row = cursor.fetchone()
+                if due_row:
+                    due_campaign = {
+                        "id": int(campaign_id),
+                        "last_run_at": due_row[0],
+                        "next_run_at": due_row[1],
+                        "interval_hours": due_row[2],
+                        "is_active": due_row[3],
+                        "status": due_row[4],
+                        "schedule_mode": due_row[5],
+                    }
+                    if not due_campaign.get("is_active"):
+                        conn.commit()
+                        return None
+                    if str(due_campaign.get("status") or "").strip().lower() == BROADCAST_CAMPAIGN_STATUS_COMPLETED:
+                        conn.commit()
+                        return None
+                    now = datetime.now()
+                    interval_hours = int(due_campaign.get("interval_hours") or 72)
+                    next_run_at = due_campaign.get("next_run_at")
+                    last_run_at = due_campaign.get("last_run_at")
+                    is_due = True
+                    if next_run_at:
+                        try:
+                            is_due = datetime.fromisoformat(str(next_run_at)) <= now
+                        except (TypeError, ValueError):
+                            is_due = True
+                    elif last_run_at:
+                        try:
+                            last_dt = datetime.fromisoformat(str(last_run_at).replace("Z", ""))
+                            is_due = last_dt + timedelta(hours=interval_hours) <= now
+                        except (TypeError, ValueError):
+                            is_due = True
+                    if not is_due:
+                        conn.commit()
+                        return None
+
+            cursor.execute("SELECT * FROM broadcast_campaigns WHERE id = ?", (int(campaign_id),))
+            snap_row = cursor.fetchone()
+            snap_campaign = dict(snap_row) if snap_row else campaign
+            snapshot = _broadcast_audience_snapshot(snap_campaign)
+            cursor.execute(
+                """
+                INSERT INTO broadcast_runs
+                    (campaign_id, started_at, status, audience_snapshot)
+                VALUES (?, datetime('now'), 'running', ?)
+                """,
+                (int(campaign_id), snapshot),
+            )
+            run_id = cursor.lastrowid
+            conn.commit()
+            return get_broadcast_run(int(run_id))
+    except sqlite3.IntegrityError:
+        return get_active_broadcast_run(campaign_id)
+    except sqlite3.Error as e:
+        logging.error("Failed to start broadcast run for campaign %s: %s", campaign_id, e)
+        return None
+
+
+def complete_broadcast_run(run_id: int, *, failed: bool = False) -> None:
+    run = get_broadcast_run(run_id)
+    if not run:
+        return
+    campaign = get_broadcast_campaign(int(run["campaign_id"])) or {}
+    schedule_mode = _broadcast_effective_schedule_mode(campaign)
+    interval_hours = int(campaign.get("interval_hours") or 72)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                UPDATE broadcast_runs
+                SET completed_at = datetime('now'),
+                    status = ?
+                WHERE id = ? AND status IN ('queued', 'running')
+                """,
+                ("failed" if failed else "completed", int(run_id)),
+            )
+            if schedule_mode == BROADCAST_SCHEDULE_ONCE:
+                cursor.execute(
+                    """
+                    UPDATE broadcast_campaigns
+                    SET last_run_at = datetime('now'),
+                        next_run_at = NULL,
+                        is_active = 0,
+                        status = ?,
+                        completed_at = datetime('now'),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (BROADCAST_CAMPAIGN_STATUS_COMPLETED, int(run["campaign_id"])),
+                )
+            else:
+                paused = not campaign.get("is_active")
+                cursor.execute(
+                    """
+                    UPDATE broadcast_campaigns
+                    SET last_run_at = datetime('now'),
+                        next_run_at = datetime('now', ?),
+                        status = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        f"+{interval_hours} hours",
+                        BROADCAST_CAMPAIGN_STATUS_PAUSED if paused else BROADCAST_CAMPAIGN_STATUS_ACTIVE,
+                        int(run["campaign_id"]),
+                    ),
+                )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to complete broadcast run %s: %s", run_id, e)
+
+
+def claim_broadcast_recipient(run_id: int, campaign_id: int, user_id: int) -> bool:
+    """INSERT OR IGNORE. True — эта попытка первая в рамках run."""
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO broadcast_sends
+                    (campaign_id, user_id, sent_at, run_id, status)
+                VALUES (?, ?, datetime('now'), ?, 'sending')
+                """,
+                (int(campaign_id), int(user_id), int(run_id)),
+            )
+            claimed = cursor.rowcount > 0
+            conn.commit()
+            return claimed
+    except sqlite3.Error as e:
+        logging.error("Failed to claim broadcast recipient %s/%s: %s", run_id, user_id, e)
+        return False
+
+
+def finalize_broadcast_send(
+    run_id: int,
+    campaign_id: int,
+    user_id: int,
+    *,
+    status: str,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                UPDATE broadcast_sends
+                SET status = ?, error_code = ?, error_message = ?, sent_at = datetime('now')
+                WHERE run_id = ? AND user_id = ?
+                """,
+                (status, error_code, (error_message or "")[:500], int(run_id), int(user_id)),
+            )
+            if status == "sent":
+                cursor.execute(
+                    "UPDATE broadcast_runs SET sent_count = COALESCE(sent_count, 0) + 1 WHERE id = ?",
+                    (int(run_id),),
+                )
+                cursor.execute(
+                    "UPDATE broadcast_campaigns SET send_count = COALESCE(send_count, 0) + 1 WHERE id = ?",
+                    (int(campaign_id),),
+                )
+            elif status == "unreachable":
+                cursor.execute(
+                    "UPDATE broadcast_runs SET unreachable_count = COALESCE(unreachable_count, 0) + 1 WHERE id = ?",
+                    (int(run_id),),
+                )
+            elif status == "failed":
+                cursor.execute(
+                    "UPDATE broadcast_runs SET failed_count = COALESCE(failed_count, 0) + 1 WHERE id = ?",
+                    (int(run_id),),
+                )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to finalize broadcast send %s/%s: %s", run_id, user_id, e)
+
+
+def release_broadcast_claim(run_id: int, user_id: int) -> None:
+    """Снять claim после временной ошибки, чтобы повтор не блокировался дедупликацией."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM broadcast_sends
+                WHERE run_id = ? AND user_id = ? AND status = 'sending'
+                """,
+                (int(run_id), int(user_id)),
             )
             conn.commit()
-            return len(user_ids)
+    except sqlite3.Error as e:
+        logging.error("Failed to release broadcast claim %s/%s: %s", run_id, user_id, e)
+
+
+def bump_broadcast_run_failed(run_id: int) -> None:
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE broadcast_runs SET failed_count = COALESCE(failed_count, 0) + 1 WHERE id = ?",
+                (int(run_id),),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to bump broadcast failed_count for run %s: %s", run_id, e)
+
+
+def apply_broadcast_send_result(
+    run_id: int,
+    campaign_id: int,
+    user_id: int,
+    result: str,
+    *,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Зафиксировать итог после попытки send_message. 'sent' только при успехе."""
+    if result == "sent":
+        finalize_broadcast_send(run_id, campaign_id, user_id, status="sent")
+    elif result == "unreachable":
+        finalize_broadcast_send(
+            run_id,
+            campaign_id,
+            user_id,
+            status="unreachable",
+            error_code=error_code,
+            error_message=error_message,
+        )
+    else:
+        release_broadcast_claim(run_id, user_id)
+        bump_broadcast_run_failed(run_id)
+
+
+def record_broadcast_sends(campaign_id: int, user_ids: list[int], run_id: int | None = None) -> int:
+    """Совместимость: записывает успешные отправки (после send_message)."""
+    if not user_ids:
+        return 0
+    unique_ids = list(dict.fromkeys(int(uid) for uid in user_ids))
+    if run_id is not None:
+        for uid in unique_ids:
+            finalize_broadcast_send(int(run_id), int(campaign_id), int(uid), status="sent")
+        return len(unique_ids)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.executemany(
+                "INSERT INTO broadcast_sends (campaign_id, user_id, sent_at, status) VALUES (?, ?, ?, 'sent')",
+                [(int(campaign_id), int(uid), now) for uid in unique_ids],
+            )
+            cursor.execute(
+                """
+                UPDATE broadcast_campaigns
+                SET last_run_at=CURRENT_TIMESTAMP,
+                    send_count=COALESCE(send_count,0)+?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (len(unique_ids), int(campaign_id)),
+            )
+            conn.commit()
+            return len(unique_ids)
     except sqlite3.Error as e:
         logging.error("Failed to record broadcast sends for campaign %s: %s", campaign_id, e)
         return 0
 
 
 def mark_broadcast_run(campaign_id: int) -> None:
-    """Update last_run_at even when there are no recipients (avoids tight retry loops)."""
+    """Совместимость: отмечает last_run_at без создания broadcast_runs."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -3930,16 +5156,98 @@ def mark_broadcast_run(campaign_id: int) -> None:
         logging.error("Failed to mark broadcast run for campaign %s: %s", campaign_id, e)
 
 
+def execute_broadcast_campaign_pass(campaign_id: int, send_fn, *, force_start: bool = False) -> dict:
+    """Один проход scheduler/send-now: старт или продолжение run, уникальная отправка, завершение.
+
+    send_fn(user_id, text) -> 'sent' | 'unreachable' | 'failed' либо бросает исключение
+    (тогда результат 'failed'). Preview эту функцию не вызывает.
+    """
+    campaign = get_broadcast_campaign(int(campaign_id))
+    if not campaign or not campaign.get("is_active"):
+        return {"skipped": True, "reason": "inactive"}
+    if str(campaign.get("status") or "").strip().lower() == BROADCAST_CAMPAIGN_STATUS_COMPLETED:
+        return {"skipped": True, "reason": "completed"}
+
+    run = get_active_broadcast_run(int(campaign_id))
+    if not run:
+        run = try_start_broadcast_run(int(campaign_id), force=force_start)
+    if not run:
+        return {"skipped": True, "reason": "not_due"}
+
+    snapshot = campaign_from_run_snapshot(campaign, run)
+    recipients = get_broadcast_recipients(
+        snapshot,
+        campaign_id=int(campaign_id),
+        exclude_already_sent=True,
+        run_id=int(run["id"]),
+    )
+    text = snapshot.get("text_html") or campaign.get("text_html") or ""
+    stats = {"sent": 0, "failed": 0, "unreachable": 0, "run_id": int(run["id"]), "skipped": False}
+    for uid in recipients:
+        live = get_broadcast_campaign(int(campaign_id)) or campaign
+        if not live.get("is_active"):
+            stats["paused"] = True
+            return stats
+        if not claim_broadcast_recipient(int(run["id"]), int(campaign_id), int(uid)):
+            continue
+        try:
+            result = send_fn(int(uid), text)
+        except Exception as exc:
+            result = "failed"
+            logger.warning(
+                "Broadcast %s: не удалось отправить пользователю %s: %s",
+                campaign_id,
+                uid,
+                exc,
+            )
+        if result not in ("sent", "unreachable", "failed"):
+            result = "failed"
+        apply_broadcast_send_result(int(run["id"]), int(campaign_id), int(uid), result)
+        stats[result] = int(stats.get(result) or 0) + 1
+    complete_broadcast_run(int(run["id"]))
+    return stats
+
+
+def clone_broadcast_campaign(campaign_id: int) -> int | None:
+    src = get_broadcast_campaign(campaign_id)
+    if not src:
+        return None
+    name = (src.get("name") or "Кампания").strip()
+    clone_name = f"{name} (копия)"
+    return create_broadcast_campaign(
+        name=clone_name,
+        text_html=src.get("text_html") or "",
+        interval_hours=int(src.get("interval_hours") or 72),
+        target_segment=src.get("target_segment") or BROADCAST_SEGMENT_INACTIVE,
+        target_mode=src.get("target_mode"),
+        plan_ids=src.get("plan_ids"),
+        plan_match_mode=src.get("plan_match_mode") or BROADCAST_PLAN_MATCH_ANY,
+        min_distinct_active_plans=src.get("min_distinct_active_plans"),
+        max_distinct_active_plans=src.get("max_distinct_active_plans"),
+        spend_min_rub=src.get("spend_min_rub"),
+        spend_max_rub=src.get("spend_max_rub"),
+        schedule_mode=_broadcast_effective_schedule_mode(src),
+    )
+
+
 def get_broadcast_stats(campaign_id: int) -> dict:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*), MAX(sent_at) FROM broadcast_sends WHERE campaign_id = ?", (int(campaign_id),))
+            cursor.execute(
+                "SELECT COUNT(*), MAX(sent_at) FROM broadcast_sends WHERE campaign_id = ? AND COALESCE(status, 'sent') = 'sent'",
+                (int(campaign_id),),
+            )
             row = cursor.fetchone()
-            return {"total_sends": int(row[0] or 0), "last_sent_at": row[1]}
+            latest = get_latest_broadcast_run(int(campaign_id))
+            return {
+                "total_sends": int(row[0] or 0),
+                "last_sent_at": row[1],
+                "latest_run": latest,
+            }
     except sqlite3.Error as e:
         logging.error("Failed to get broadcast stats for campaign %s: %s", campaign_id, e)
-        return {"total_sends": 0, "last_sent_at": None}
+        return {"total_sends": 0, "last_sent_at": None, "latest_run": None}
 
 
 def get_all_keys() -> list[dict]:
