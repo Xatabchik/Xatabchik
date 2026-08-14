@@ -14,6 +14,9 @@ def test_is_email_only_user_detects_virtual_ids():
 
     assert database.is_email_only_user(999000000001) is True
     assert database.is_email_only_user(999999999999) is True
+    assert database.is_email_only_user(999000002) is True
+    assert database.is_email_only_user(999000003) is True
+    assert database.is_email_only_user({"telegram_id": 999000002}) is True
     assert database.is_email_only_user(123456789) is False
     assert database.is_email_only_user(None) is False
     assert database.is_email_only_user("not-a-number") is False
@@ -31,6 +34,12 @@ def test_get_inactive_subscribers_excludes_email_only_users(temp_db):
         username="email_only",
         auth_email="only@example.com",
     )
+    insert_user(
+        database.DB_FILE,
+        telegram_id=999000002,
+        username="legacy2",
+        auth_email="legacy2@example.com",
+    )
     # Забаненный реальный пользователь — тоже исключён (уже существующее правило).
     insert_user(database.DB_FILE, telegram_id=10002, username="banned", is_banned=1)
     # Недоступный реальный пользователь — исключён.
@@ -45,6 +54,7 @@ def test_get_inactive_subscribers_excludes_email_only_users(temp_db):
     recipients = database.get_inactive_subscribers()
     assert 10001 in recipients
     assert 999000000042 not in recipients
+    assert 999000002 not in recipients
     assert 10002 not in recipients
     assert 10003 not in recipients
 
@@ -78,4 +88,5 @@ def test_create_user_by_email_uses_virtual_id_range(temp_db):
 
     user = database.create_user_by_email("virtual@example.com", "Passw0rd!")
     assert user is not None
-    assert database.is_email_only_user(user["telegram_id"]) is True
+    assert database.is_email_only_user(user) is True
+    assert user["telegram_chat_id"] is None

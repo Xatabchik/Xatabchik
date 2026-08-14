@@ -58,6 +58,14 @@ def format_time_left(hours: int) -> str:
         else:
             return f"{hours} часов"
 
+def _outgoing_chat_id(user_id) -> int | None:
+    """Bot API chat id for a DB user. None = no Telegram binding; not a delivery error."""
+    chat_id = rw_repo.get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
+    return chat_id
+
+
 async def send_subscription_notification(bot: Bot, user_id: int, key_id: int, time_left_hours: int, expiry_date: datetime):
     try:
         time_text = format_time_left(time_left_hours)
@@ -74,8 +82,11 @@ async def send_subscription_notification(bot: Bot, user_id: int, key_id: int, ti
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.button(text="➕ Продлить ключ", callback_data=f"extend_key_{key_id}")
         builder.adjust(2)
-        
-        await bot.send_message(chat_id=user_id, text=message, reply_markup=builder.as_markup(), parse_mode='Markdown')
+
+        chat_id = _outgoing_chat_id(user_id)
+        if chat_id is None:
+            return
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=builder.as_markup(), parse_mode='Markdown')
         logger.debug(f"Scheduler: Отправлено уведомление пользователю {user_id} по ключу {key_id} (осталось {time_left_hours} ч).")
         
     except Exception as e:
@@ -740,20 +751,22 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
             if lte_transition_to_disabled and not main_exhausted:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул исчерпан для user_id={user_id} — доступ к premium-нодам отключён.")
                 if bot is not None:
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                "⚠️ <b>Лимит LTE-трафика исчерпан</b>\n\n"
-                                "Доступ к премиум-серверам (LTE-пул) временно отключён. "
-                                "Основной безлимитный пул продолжает работать как обычно.\n\n"
-                                "Докупите LTE-трафик в личном кабинете, чтобы восстановить доступ."
-                            ),
-                            parse_mode="HTML",
-                        )
-                    except Exception as e:
-                        if not telegram_reachability.handle_send_exception(user_id, e):
-                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
+                    chat_id = _outgoing_chat_id(user_id)
+                    if chat_id is not None:
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "⚠️ <b>Лимит LTE-трафика исчерпан</b>\n\n"
+                                    "Доступ к премиум-серверам (LTE-пул) временно отключён. "
+                                    "Основной безлимитный пул продолжает работать как обычно.\n\n"
+                                    "Докупите LTE-трафик в личном кабинете, чтобы восстановить доступ."
+                                ),
+                                parse_mode="HTML",
+                            )
+                        except Exception as e:
+                            if not telegram_reachability.handle_send_exception(user_id, e):
+                                logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
             elif lte_transition_to_enabled:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул восстановлен для user_id={user_id} — доступ к premium-нодам включён.")
                 try:
@@ -761,18 +774,20 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 except Exception as e:
                     logger.warning(f"Scheduler[dual-limits]: не удалось запросить сброс baseline LTE user_id={user_id}: {e}")
                 if bot is not None:
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                "✅ <b>Доступ к LTE-пулу восстановлен</b>\n\n"
-                                "Премиум-серверы снова доступны."
-                            ),
-                            parse_mode="HTML",
-                        )
-                    except Exception as e:
-                        if not telegram_reachability.handle_send_exception(user_id, e):
-                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
+                    chat_id = _outgoing_chat_id(user_id)
+                    if chat_id is not None:
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "✅ <b>Доступ к LTE-пулу восстановлен</b>\n\n"
+                                    "Премиум-серверы снова доступны."
+                                ),
+                                parse_mode="HTML",
+                            )
+                        except Exception as e:
+                            if not telegram_reachability.handle_send_exception(user_id, e):
+                                logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
         except Exception as e:
             logger.error(f"Scheduler[dual-limits]: ошибка обработки пользователя {user_id}: {e}", exc_info=True)
 
@@ -948,7 +963,10 @@ async def check_inactive_usage_reminders(bot: Bot):
             )
             connection_string = key.get("subscription_url") or key.get("connection_string")
             kb = keyboards.create_inactive_usage_reminder_keyboard(connection_string)
-            await bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is None:
+                continue
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
 
             database.update_key_usage_monitor(
                 key_id,
@@ -1167,8 +1185,11 @@ async def _notify_auto_renew_success(
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.button(text="👤 Профиль", callback_data="show_profile")
         builder.adjust(2)
+        chat_id = _outgoing_chat_id(user_id)
+        if chat_id is None:
+            return
         await bot.send_message(
-            user_id,
+            chat_id,
             f"✅ <b>Автопродление выполнено</b>\n\n"
             f"Ключ {label} продлён на <b>{days_added} дн.</b>\n"
             f"Списано: <b>{price:.0f} ₽</b> с баланса.",
@@ -1188,8 +1209,11 @@ async def _notify_auto_renew_no_balance(
         builder.button(text="💳 Пополнить баланс", callback_data="top_up_start")
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.adjust(1)
+        chat_id = _outgoing_chat_id(user_id)
+        if chat_id is None:
+            return
         await bot.send_message(
-            user_id,
+            chat_id,
             f"⚠️ <b>Автопродление не выполнено</b>\n\n"
             f"Для продления ключа {label} нужно <b>{price:.0f} ₽</b>,\n"
             f"но на балансе недостаточно средств.\n\n"
@@ -1312,8 +1336,11 @@ async def check_broadcast_campaigns(bot: Bot):
         failed = 0
         unreachable = 0
         for uid in recipients:
+            chat_id = _outgoing_chat_id(uid)
+            if chat_id is None:
+                continue
             try:
-                await bot.send_message(int(uid), text, parse_mode="HTML")
+                await bot.send_message(int(chat_id), text, parse_mode="HTML")
                 sent_ids.append(uid)
             except Exception as e:
                 failed += 1

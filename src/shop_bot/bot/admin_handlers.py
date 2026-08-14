@@ -95,6 +95,13 @@ from shop_bot.core.module_loader import get_global_module_loader
 logger = logging.getLogger(__name__)
 
 
+def _outgoing_chat_id(user_id) -> int | None:
+    chat_id = database.get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
+    return chat_id
+
+
 def _is_true(value) -> bool:
     return str(value).strip().lower() in ("true", "1", "on", "yes", "y")
 
@@ -7275,15 +7282,19 @@ def get_admin_router() -> Router:
             )
             await message.answer(text_admin)
             try:
-                notify_text = (
-                    f"🎁 Администратор выдал вам подарочный ключ #{key_id}\n"
-                    f"Сервер: {host_name}\n"
-                    f"Срок: {days} дн.\n"
-                )
-                if connection_link:
-                    cs = html_escape.escape(connection_link)
-                    notify_text += f"\n🔗 Подписка:\n<pre><code>{cs}</code></pre>"
-                await message.bot.send_message(user_id, notify_text, parse_mode='HTML', disable_web_page_preview=True)
+                chat_id = _outgoing_chat_id(user_id)
+                if chat_id is None:
+                    pass
+                else:
+                    notify_text = (
+                        f"🎁 Администратор выдал вам подарочный ключ #{key_id}\n"
+                        f"Сервер: {host_name}\n"
+                        f"Срок: {days} дн.\n"
+                    )
+                    if connection_link:
+                        cs = html_escape.escape(connection_link)
+                        notify_text += f"\n🔗 Подписка:\n<pre><code>{cs}</code></pre>"
+                    await message.bot.send_message(chat_id, notify_text, parse_mode='HTML', disable_web_page_preview=True)
             except Exception:
                 pass
         else:
@@ -7383,7 +7394,9 @@ def get_admin_router() -> Router:
             if ok:
                 await message.answer(f"✅ Начислено {amount:.2f} RUB на баланс пользователю {user_id}")
                 try:
-                    await message.bot.send_message(user_id, f"💰 Вам начислено {amount:.2f} RUB на баланс администратором.")
+                    chat_id = _outgoing_chat_id(user_id)
+                    if chat_id is not None:
+                        await message.bot.send_message(chat_id, f"💰 Вам начислено {amount:.2f} RUB на баланс администратором.")
                 except Exception:
                     pass
             else:
@@ -7739,7 +7752,9 @@ def get_admin_router() -> Router:
         await message.answer(f"✅ Ключ #{key_id} продлён на {days} дн.")
 
         try:
-            await message.bot.send_message(int(key.get('user_id')), f"ℹ️ Администратор продлил ваш ключ #{key_id} на {days} дн.")
+            chat_id = _outgoing_chat_id(key.get('user_id'))
+            if chat_id is not None:
+                await message.bot.send_message(chat_id, f"ℹ️ Администратор продлил ваш ключ #{key_id} на {days} дн.")
         except Exception:
             pass
 
@@ -8028,12 +8043,13 @@ def get_admin_router() -> Router:
             if user.get('is_unreachable'):
                 unreachable_count += 1
                 continue
-            # Email-регистрация без авторизации через Telegram — боту некуда писать.
-            if database.is_email_only_user(user_id):
+            # Нет telegram_chat_id — не пишем в Telegram.
+            chat_id = database.get_telegram_chat_id_for_user(user)
+            if chat_id is None:
                 email_only_count += 1
                 continue
             try:
-                await _send_broadcast_to(bot, user_id, original_message, final_keyboard, parse_mode=parse_mode)
+                await _send_broadcast_to(bot, chat_id, original_message, final_keyboard, parse_mode=parse_mode)
                 sent_count += 1
                 await asyncio.sleep(0.1)
             except Exception as e:
@@ -8074,10 +8090,12 @@ def get_admin_router() -> Router:
             set_referral_balance(user_id, 0)
             set_referral_balance_all(user_id, 0)
             await message.answer(f"✅ Выплата {balance:.2f} RUB пользователю {user_id} подтверждена.")
-            await message.bot.send_message(
-                user_id,
-                f"✅ Ваша заявка на вывод {balance:.2f} RUB одобрена. Деньги будут переведены в ближайшее время."
-            )
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is not None:
+                await message.bot.send_message(
+                    chat_id,
+                    f"✅ Ваша заявка на вывод {balance:.2f} RUB одобрена. Деньги будут переведены в ближайшее время."
+                )
         except Exception as e:
             await message.answer(f"Ошибка: {e}")
 
@@ -8088,10 +8106,12 @@ def get_admin_router() -> Router:
         try:
             user_id = int(message.text.split("_")[-1])
             await message.answer(f"❌ Заявка пользователя {user_id} отклонена.")
-            await message.bot.send_message(
-                user_id,
-                "❌ Ваша заявка на вывод отклонена. Проверьте корректность реквизитов и попробуйте снова."
-            )
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is not None:
+                await message.bot.send_message(
+                    chat_id,
+                    "❌ Ваша заявка на вывод отклонена. Проверьте корректность реквизитов и попробуйте снова."
+                )
         except Exception as e:
             await message.answer(f"Ошибка: {e}")
 

@@ -9,6 +9,41 @@
   </div>
 </div>
 
+{% if telegram_identity_stats %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h3 class="card-title"><i class="ti ti-brand-telegram me-2"></i>Привязка Telegram</h3>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-6 col-md-3"><div class="text-secondary small">С telegram_chat_id</div><div class="h2 mb-0">{{ telegram_identity_stats.with_chat_id }}</div></div>
+      <div class="col-6 col-md-3"><div class="text-secondary small">Без telegram_chat_id</div><div class="h2 mb-0">{{ telegram_identity_stats.without_chat_id }}</div></div>
+      <div class="col-6 col-md-3"><div class="text-secondary small">Email-only</div><div class="h2 mb-0">{{ telegram_identity_stats.email_only }}</div></div>
+      <div class="col-6 col-md-3"><div class="text-secondary small">Не классифицированы</div><div class="h2 mb-0">{{ telegram_identity_stats.unclassified_without_chat_id }}</div></div>
+    </div>
+    {% if telegram_identity_sample %}
+    <div class="text-secondary small mt-3 mb-2">Sample записей без telegram_chat_id, которые не являются известными email-only (внутренний ID, username, есть ли auth_email, дата регистрации). Пароли и токены не показываются.</div>
+    <div class="table-responsive">
+      <table class="table table-sm">
+        <thead><tr><th>internal id</th><th>username</th><th>auth_email</th><th>chat_id</th><th>регистрация</th></tr></thead>
+        <tbody>
+          {% for row in telegram_identity_sample %}
+          <tr>
+            <td>{{ row.telegram_id }}</td>
+            <td>{{ row.username or '—' }}</td>
+            <td>{% if row.has_auth_email %}да{% else %}нет{% endif %}</td>
+            <td>{{ row.telegram_chat_id or '—' }}</td>
+            <td>{{ row.registration_date or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-header users-card-header">
     <div class="users-toolbar">

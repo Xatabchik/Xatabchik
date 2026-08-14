@@ -271,28 +271,40 @@ async def process_successful_payment(bot: Bot, metadata: dict):
     return await bot_process(bot, metadata)
 
 async def _send_telegram_message(user_id: int, text: str, reply_markup=None, photo=None):
+    from shop_bot.data_manager import database
+    chat_id = database.get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Telegram message for user %s: no telegram_chat_id", user_id)
+        return False
     token = get_setting("telegram_bot_token")
     if not token: return False
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         if photo:
-            await bot.send_photo(chat_id=user_id, photo=photo, caption=text, reply_markup=reply_markup, parse_mode="HTML")
+            await bot.send_photo(chat_id=chat_id, photo=photo, caption=text, reply_markup=reply_markup, parse_mode="HTML")
         else:
-            await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
         return True
     except Exception as e:
-        logger.error(f"Error sending telegram message: {e}")
+        from shop_bot.modules import telegram_reachability
+        if not telegram_reachability.handle_send_exception(user_id, e):
+            logger.error(f"Error sending telegram message: {e}")
         return False
     finally:
         await bot.session.close()
 
 async def _send_invoice_stars(user_id: int, title: str, description: str, payload: str, amount: int):
+    from shop_bot.data_manager import database
+    chat_id = database.get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Stars invoice for user %s: no telegram_chat_id", user_id)
+        return False
     token = get_setting("telegram_bot_token")
     if not token: return False
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         await bot.send_invoice(
-            chat_id=user_id,
+            chat_id=chat_id,
             title=title,
             description=description,
             payload=payload,
@@ -302,7 +314,9 @@ async def _send_invoice_stars(user_id: int, title: str, description: str, payloa
         )
         return True
     except Exception as e:
-        logger.error(f"Error sending Stars invoice: {e}")
+        from shop_bot.modules import telegram_reachability
+        if not telegram_reachability.handle_send_exception(user_id, e):
+            logger.error(f"Error sending Stars invoice: {e}")
         return False
     finally:
         await bot.session.close()
@@ -814,6 +828,7 @@ def _get_key_html(key: dict) -> str:
 def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: int, referral_earned: float = 0.0) -> str:
     if not user:
         return ""
+    from shop_bot.data_manager import database
         
     user_id = user.get("telegram_id")
     balance = user.get("balance") or 0.0
@@ -862,7 +877,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
              pass
 
     sync_btn_html = ""
-    if isinstance(user_id, int) and str(user_id).startswith("999"):
+    if database.get_telegram_chat_id_for_user(user) is None:
          bot_username = get_setting("telegram_bot_username") or "bot"
          sync_btn_html = f'''
                     <button onclick="syncTelegram('{bot_username}')" class="mt-2 w-full bg-[#0088cc]/20 hover:bg-[#0088cc]/30 text-[#00aaff] border border-[#0088cc]/30 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
@@ -1989,6 +2004,11 @@ async def api_create_token(request: Request, req: TokenRequest):
         return JSONResponse({"ok": False, "error": "Invalid auth data"}, status_code=401)
 
     result = _issue_persistent_token_for_telegram_user(int(user_data["id"]))
+    try:
+        from shop_bot.data_manager import database
+        database.link_user_telegram(int(user_data["id"]), int(user_data["id"]), user_data.get("username") or "")
+    except Exception:
+        pass
     status = result.pop("status_code", 200)
     if not result.get("ok"):
         return JSONResponse(result, status_code=status)
@@ -2020,6 +2040,11 @@ async def api_telegram_direct_auth(request: Request, req: TelegramDirectAuthRequ
 
         if user.get("is_banned"):
             return JSONResponse({"ok": False, "error": "Access denied"}, status_code=403)
+
+        try:
+            database.link_user_telegram(user_id, user_id, user_data.get("username") or user.get("username"))
+        except Exception:
+            pass
 
         existing_token = database.get_auth_token_by_user_id(user_id)
         if existing_token:
@@ -2197,7 +2222,8 @@ async def api_email_reset_request(request: Request, req: PasswordResetRequest):
     user = database.get_user_by_email(req.email)
     # Всегда один ответ: иначе «Email не найден» / «не синхронизирован»
     # выдают, зарегистрирован ли адрес и привязан ли он к Telegram.
-    if not user or database.is_email_only_user(user.get("telegram_id")):
+    # Код уходит в Telegram только если есть реальная привязка (telegram_chat_id).
+    if not user or database.get_telegram_chat_id_for_user(user) is None:
         return {"ok": True}
 
     import random
@@ -2461,10 +2487,10 @@ async def api_sync_tg(request: Request, req: SyncTgRequest):
          
     tg_id = tg_data.get('id')
     tg_username = tg_data.get('username') or ''
-    
-    if user['telegram_id'] > 0:
+
+    if database.get_telegram_chat_id_for_user(user) is not None:
          return {"ok": False, "error": "Telegram уже привязан"}
-         
+
     res = database.link_telegram_to_email_user(user['telegram_id'], tg_id, tg_username)
     if res is True:
          return {"ok": True}
