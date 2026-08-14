@@ -4538,6 +4538,11 @@ def _sql_exclude_email_only_ids(column: str = "u.telegram_id") -> tuple[str, tup
     return _sql_not_email_only_telegram_id(column)
 
 
+def _users_has_telegram_chat_id_column(cursor: sqlite3.Cursor) -> bool:
+    cursor.execute("PRAGMA table_info(users)")
+    return any(row[1] == "telegram_chat_id" for row in cursor.fetchall())
+
+
 def _filter_out_email_only_user_ids(user_ids: list[int]) -> list[int]:
     return [int(uid) for uid in user_ids if is_broadcastable_user(uid)]
 
@@ -4802,15 +4807,21 @@ def get_inactive_subscribers() -> list[int]:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             exclude_sql, exclude_params = _sql_not_email_only_telegram_id("u.telegram_id")
+            has_chat = _users_has_telegram_chat_id_column(cursor)
+            chat_select = ", u.telegram_chat_id" if has_chat else ""
+            if has_chat:
+                chat_filter = (
+                    f"(u.telegram_chat_id IS NOT NULL "
+                    f"OR (u.telegram_chat_id IS NULL AND {exclude_sql}))"
+                )
+            else:
+                chat_filter = exclude_sql
             cursor.execute(
                 f"""
-                SELECT u.telegram_id, u.is_banned, u.is_unreachable, u.telegram_chat_id FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable{chat_select} FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND (
-                    u.telegram_chat_id IS NOT NULL
-                    OR (u.telegram_chat_id IS NULL AND {exclude_sql})
-                  )
+                  AND {chat_filter}
                   AND NOT EXISTS (
                     SELECT 1 FROM vpn_keys k
                     WHERE k.user_id = u.telegram_id
@@ -4820,13 +4831,15 @@ def get_inactive_subscribers() -> list[int]:
                 exclude_params,
             )
             out: list[int] = []
-            for telegram_id, is_banned, is_unreachable, telegram_chat_id in cursor.fetchall():
+            for row in cursor.fetchall():
+                telegram_id, is_banned, is_unreachable = row[0], row[1], row[2]
                 user = {
                     "telegram_id": int(telegram_id),
                     "is_banned": is_banned,
                     "is_unreachable": is_unreachable,
-                    "telegram_chat_id": telegram_chat_id,
                 }
+                if has_chat:
+                    user["telegram_chat_id"] = row[3]
                 if is_broadcastable_user(user):
                     out.append(int(telegram_id))
             return out
@@ -4940,28 +4953,35 @@ def _load_broadcast_candidate_user_ids() -> list[int]:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             exclude_sql, exclude_params = _sql_not_email_only_telegram_id("u.telegram_id")
+            has_chat = _users_has_telegram_chat_id_column(cursor)
+            chat_select = ", u.telegram_chat_id" if has_chat else ""
+            if has_chat:
+                chat_filter = (
+                    f"(u.telegram_chat_id IS NOT NULL "
+                    f"OR (u.telegram_chat_id IS NULL AND {exclude_sql}))"
+                )
+            else:
+                chat_filter = exclude_sql
             cursor.execute(
                 f"""
-                SELECT u.telegram_id, u.is_banned, u.is_unreachable, u.telegram_chat_id FROM users u
+                SELECT u.telegram_id, u.is_banned, u.is_unreachable{chat_select} FROM users u
                 WHERE u.is_banned = 0
                   AND (u.is_unreachable IS NULL OR u.is_unreachable = 0)
-                  AND (
-                    u.telegram_chat_id IS NOT NULL
-                    OR (u.telegram_chat_id IS NULL AND {exclude_sql})
-                  )
+                  AND {chat_filter}
                 """,
                 exclude_params,
             )
             seen: set[int] = set()
             out: list[int] = []
-            for telegram_id, is_banned, is_unreachable, telegram_chat_id in cursor.fetchall():
-                uid = int(telegram_id)
+            for row in cursor.fetchall():
+                uid = int(row[0])
                 user = {
                     "telegram_id": uid,
-                    "is_banned": is_banned,
-                    "is_unreachable": is_unreachable,
-                    "telegram_chat_id": telegram_chat_id,
+                    "is_banned": row[1],
+                    "is_unreachable": row[2],
                 }
+                if has_chat:
+                    user["telegram_chat_id"] = row[3]
                 if uid in seen or not is_broadcastable_user(user):
                     continue
                 seen.add(uid)
