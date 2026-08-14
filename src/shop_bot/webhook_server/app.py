@@ -1620,7 +1620,14 @@ def create_webhook_app(bot_controller_instance):
         except BroadcastFilterError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
         preview = preview_broadcast_audience(cfg)
-        return jsonify({"ok": True, "count": preview["count"], "sample": preview["sample"]})
+        return jsonify(
+            {
+                "ok": True,
+                "count": preview["count"],
+                "recipient_count": preview["count"],
+                "sample": preview["sample"],
+            }
+        )
 
     @flask_app.route('/analytics/broadcasts/create', methods=['POST'])
     @login_required

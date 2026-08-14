@@ -4451,7 +4451,11 @@ def preview_broadcast_audience(
     campaign_id: int | None = None,
     sample_limit: int = 20,
 ) -> dict:
-    """Preview без создания run и без записи отправок."""
+    """Preview без создания run и без записи отправок.
+
+    Sample использует только колонки production-схемы `users`: telegram_id, username.
+    Не обращается к full_name / first_name / last_name / email.
+    """
     recipients = get_broadcast_recipients(
         campaign,
         campaign_id=campaign_id,
@@ -4461,32 +4465,30 @@ def preview_broadcast_audience(
     if recipients and sample_limit > 0:
         sample_ids = recipients[: max(0, int(sample_limit))]
         placeholders = ",".join("?" * len(sample_ids))
+        by_id: dict[int, dict] = {}
         try:
             with sqlite3.connect(DB_FILE) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(
                     f"""
-                    SELECT telegram_id AS user_id, username, full_name, email
+                    SELECT telegram_id, username
                     FROM users
                     WHERE telegram_id IN ({placeholders})
                     """,
                     sample_ids,
                 )
-                by_id = {int(row["user_id"]): dict(row) for row in cursor.fetchall()}
-            for uid in sample_ids:
-                row = by_id.get(int(uid), {"user_id": uid})
-                sample.append(
-                    {
-                        "user_id": row.get("user_id") or uid,
-                        "username": row.get("username") or "",
-                        "full_name": row.get("full_name") or "",
-                        "email": row.get("email") or "",
-                    }
-                )
+                by_id = {int(row["telegram_id"]): dict(row) for row in cursor.fetchall()}
         except sqlite3.Error as e:
             logging.error("Failed to load broadcast preview sample: %s", e)
-            sample = [{"user_id": uid} for uid in sample_ids]
+        for uid in sample_ids:
+            row = by_id.get(int(uid), {})
+            sample.append(
+                {
+                    "telegram_id": int(uid),
+                    "username": row.get("username"),
+                }
+            )
     return {"count": len(recipients), "sample": sample}
 
 

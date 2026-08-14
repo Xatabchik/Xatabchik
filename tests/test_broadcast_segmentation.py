@@ -332,7 +332,10 @@ def test_preview_matches_selector_and_does_not_write(temp_db):
     preview = database.preview_broadcast_audience(cfg)
     recipients = database.get_broadcast_recipients(cfg)
     assert preview["count"] == len(recipients) == 2
-    assert {row["user_id"] for row in preview["sample"]} == {901, 902}
+    assert {row["telegram_id"] for row in preview["sample"]} == {901, 902}
+    for row in preview["sample"]:
+        assert set(row) == {"telegram_id", "username"}
+        assert "full_name" not in row
     with sqlite3.connect(database.DB_FILE) as conn:
         assert conn.execute("SELECT COUNT(*) FROM broadcast_sends").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 0
@@ -671,3 +674,194 @@ def test_once_campaign_completes_and_clone_is_fresh(temp_db):
     assert clone["status"] is None
     assert clone["is_active"] == 1
     assert database.get_latest_broadcast_run(clone_id) is None
+
+
+_PRODUCTION_USERS_DDL = """
+CREATE TABLE users (
+    telegram_id INTEGER PRIMARY KEY,
+    username TEXT,
+    total_spent REAL DEFAULT 0,
+    total_months INTEGER DEFAULT 0,
+    trial_used BOOLEAN DEFAULT 0,
+    agreed_to_terms BOOLEAN DEFAULT 0,
+    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_banned BOOLEAN DEFAULT 0,
+    balance REAL DEFAULT 0,
+    referred_by INTEGER,
+    referral_balance REAL DEFAULT 0,
+    referral_balance_all REAL DEFAULT 0,
+    referral_start_bonus_received BOOLEAN DEFAULT 0,
+    referral_trial_day_bonus_received BOOLEAN DEFAULT 0,
+    subscription_expiry_notifications_enabled BOOLEAN DEFAULT 1,
+    auth_token TEXT,
+    auth_email TEXT,
+    auth_pass TEXT,
+    seller_active BOOLEAN DEFAULT 0,
+    seller_sale REAL DEFAULT 0,
+    utm_slug TEXT,
+    email_verified BOOLEAN DEFAULT 0,
+    email_code_hash TEXT,
+    email_code_expires_at TIMESTAMP,
+    email_code_last_sent_at TIMESTAMP,
+    is_unreachable BOOLEAN DEFAULT 0,
+    unreachable_reason TEXT,
+    unreachable_since TIMESTAMP,
+    pending_email TEXT
+)
+"""
+
+
+def _rebuild_users_like_production(db_path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE users")
+        conn.execute(_PRODUCTION_USERS_DDL)
+        conn.commit()
+    with sqlite3.connect(db_path) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    assert "full_name" not in cols
+    assert "first_name" not in cols
+    assert "last_name" not in cols
+    assert "email" not in cols
+    assert "telegram_id" in cols
+    assert "username" in cols
+
+
+def _assert_preview_sample_shape(sample: list[dict]) -> None:
+    for row in sample:
+        assert "telegram_id" in row
+        assert "username" in row
+        assert "full_name" not in row
+        assert "first_name" not in row
+        assert "last_name" not in row
+        assert "user_id" not in row
+        assert set(row) == {"telegram_id", "username"}
+
+
+def test_preview_works_on_production_users_schema(temp_db, caplog):
+    import logging
+    from shop_bot.data_manager import database
+
+    _rebuild_users_like_production(database.DB_FILE)
+    insert_user(database.DB_FILE, telegram_id=3101, username="alice")
+    insert_user(database.DB_FILE, telegram_id=3102, username="")
+    cfg = database.build_broadcast_campaign_config(
+        name="prod-preview",
+        text_html="x",
+        target_mode="all",
+        schedule_mode="once",
+        target_segment="none",
+    )
+    with caplog.at_level(logging.ERROR):
+        preview = database.preview_broadcast_audience(cfg)
+    assert "no such column: full_name" not in caplog.text
+    assert "Failed to load broadcast preview sample" not in caplog.text
+    assert preview["count"] == 2
+    _assert_preview_sample_shape(preview["sample"])
+    by_id = {row["telegram_id"]: row["username"] for row in preview["sample"]}
+    assert by_id[3101] == "alice"
+    assert not by_id[3102]
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends").fetchone()[0] == 0
+
+
+def test_preview_http_json_has_telegram_id_and_username(temp_db, monkeypatch, tmp_path):
+    import sys
+    import types
+    from shop_bot.data_manager import database
+
+    _rebuild_users_like_production(database.DB_FILE)
+    insert_user(database.DB_FILE, telegram_id=3201, username="bob")
+    insert_user(database.DB_FILE, telegram_id=3202, username="")
+
+    if "shop_bot.data_manager.backup_manager" not in sys.modules:
+        fake_bm = types.ModuleType("shop_bot.data_manager.backup_manager")
+        fake_bm.BACKUPS_DIR = tmp_path
+        sys.modules["shop_bot.data_manager.backup_manager"] = fake_bm
+
+    from shop_bot.webhook_server import app as wh_mod
+
+    class _FakeBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_bot_instance(self):
+            return None
+
+        def get_loop(self):
+            return None
+
+    flask_app = wh_mod.create_webhook_app(_FakeBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+
+    resp = client.post(
+        "/analytics/broadcasts/preview",
+        data={
+            "name": "http-preview",
+            "text_html": "hello",
+            "target_mode": "all",
+            "schedule_mode": "once",
+            "target_segment": "none",
+            "interval_hours": "24",
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["ok"] is True
+    assert payload["recipient_count"] == 2
+    assert payload["count"] == 2
+    _assert_preview_sample_shape(payload["sample"])
+    by_id = {row["telegram_id"]: row["username"] for row in payload["sample"]}
+    assert by_id[3201] == "bob"
+    assert not by_id[3202]
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends").fetchone()[0] == 0
+
+
+def test_preview_filtered_and_legacy_do_not_write_and_omit_full_name(temp_db):
+    from shop_bot.data_manager import database
+
+    _rebuild_users_like_production(database.DB_FILE)
+    insert_user(database.DB_FILE, telegram_id=3301, username="inactive")
+    insert_user(database.DB_FILE, telegram_id=3302, username="active")
+    plan = _make_plan(temp_db, "PreviewHost", "Start")
+    _insert_key(database.DB_FILE, user_id=3302, expire_at=_future(), email="live@x", plan_id=plan)
+
+    legacy = database.build_broadcast_campaign_config(
+        name="legacy",
+        text_html="x",
+        interval_hours=72,
+        target_segment="inactive",
+        schedule_mode="recurring",
+    )
+    filtered = database.build_broadcast_campaign_config(
+        name="filtered",
+        text_html="x",
+        target_mode="filtered",
+        target_segment="none",
+        plan_ids=[plan],
+        schedule_mode="once",
+    )
+    all_mode = database.build_broadcast_campaign_config(
+        name="all",
+        text_html="x",
+        target_mode="all",
+        target_segment="none",
+        schedule_mode="once",
+    )
+    legacy_preview = database.preview_broadcast_audience(legacy)
+    filtered_preview = database.preview_broadcast_audience(filtered)
+    all_preview = database.preview_broadcast_audience(all_mode)
+    assert {row["telegram_id"] for row in legacy_preview["sample"]} == {3301}
+    assert {row["telegram_id"] for row in filtered_preview["sample"]} == {3302}
+    assert {row["telegram_id"] for row in all_preview["sample"]} == {3301, 3302}
+    for preview in (legacy_preview, filtered_preview, all_preview):
+        _assert_preview_sample_shape(preview["sample"])
+        assert preview["count"] == len(preview["sample"])
+    with sqlite3.connect(database.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM broadcast_sends").fetchone()[0] == 0

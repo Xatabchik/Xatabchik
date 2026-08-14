@@ -349,11 +349,13 @@
             previewResult.textContent = json.error || 'Ошибка предпросмотра';
             return;
           }
-          previewResult.textContent = 'Уникальных получателей: ' + json.count;
+          previewResult.textContent = 'Уникальных получателей: ' + (json.recipient_count ?? json.count);
           if (previewSample) {
-            const rows = (json.sample || []).map((row) => {
-              const name = row.username || row.full_name || '—';
-              return '#' + row.user_id + ' · ' + name;
+            const rows = (json.sample || []).map((user) => {
+              const telegramId = user.telegram_id;
+              return user.username
+                ? `@${user.username} · ID ${telegramId}`
+                : `ID ${telegramId}`;
             });
             previewSample.textContent = rows.length ? rows.join('\n') : '';
             previewSample.style.whiteSpace = 'pre-wrap';
