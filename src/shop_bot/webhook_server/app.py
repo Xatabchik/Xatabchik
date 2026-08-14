@@ -42,7 +42,7 @@ from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import backup_manager
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.data_manager.remnawave_repository import (
-    get_all_settings, update_setting, get_all_hosts, get_plans_for_host,
+    get_all_settings, update_setting, get_all_hosts, get_plans_for_host, get_all_plans,
     create_host, delete_host, create_plan, delete_plan, update_plan, set_plan_active, get_user_count,
     get_total_keys_count, get_total_spent_sum, get_daily_stats_for_charts,
     get_recent_transactions, get_paginated_transactions, get_all_users, get_user_keys,
@@ -499,7 +499,11 @@ def create_webhook_app(bot_controller_instance):
 
         if promo_info is None:
             try:
-                _, availability_error = rw_repo.check_promo_code_available(promo_code, user_id)
+                _, availability_error = rw_repo.check_promo_code_available(
+                    promo_code,
+                    user_id,
+                    plan_id=metadata.get("plan_id") if isinstance(metadata, dict) else None,
+                )
             except Exception as e:
                 logger.warning(f"Промо: не удалось повторно проверить доступность для {promo_code}: {e}")
 
@@ -1185,8 +1189,9 @@ def create_webhook_app(bot_controller_instance):
     @login_required
     def analytics_coupons_page():
         coupons = get_coupons_analytics()
+        plans = get_all_plans() or []
         common_data = get_common_template_data()
-        return render_template('analytics/coupons.html', active_tab='coupons', coupons=coupons, **common_data)
+        return render_template('analytics/coupons.html', active_tab='coupons', coupons=coupons, plans=plans, **common_data)
 
     @flask_app.route('/analytics/coupons/create', methods=['POST'])
     @login_required
@@ -1199,10 +1204,19 @@ def create_webhook_app(bot_controller_instance):
         valid_from_raw = (request.form.get('valid_from') or '').strip()
         valid_until_raw = (request.form.get('valid_until') or '').strip()
         description = (request.form.get('description') or '').strip() or None
+        segment_type_raw = (request.form.get('segment_type') or '').strip() or None
+        segment_value_raw = (request.form.get('segment_value') or '').strip()
+        plan_ids_raw = request.form.getlist('applicable_plan_ids')
 
         try:
             valid_from = datetime.fromisoformat(valid_from_raw) if valid_from_raw else None
             valid_until = datetime.fromisoformat(valid_until_raw) if valid_until_raw else None
+            applicable_plan_ids = None
+            if plan_ids_raw:
+                applicable_plan_ids = [int(x) for x in plan_ids_raw if str(x).strip()]
+                if not applicable_plan_ids:
+                    applicable_plan_ids = None
+            segment_value = float(segment_value_raw) if segment_value_raw else None
             ok = rw_repo.create_promo_code(
                 code,
                 discount_percent=float(discount_percent) if discount_percent else None,
@@ -1213,6 +1227,9 @@ def create_webhook_app(bot_controller_instance):
                 valid_until=valid_until,
                 created_by=session.get('admin_id'),
                 description=description,
+                applicable_plan_ids=applicable_plan_ids,
+                segment_type=segment_type_raw,
+                segment_value=segment_value,
             )
         except ValueError as e:
             flash(f'Не удалось создать купон: {e}', 'danger')

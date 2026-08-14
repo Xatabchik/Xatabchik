@@ -1047,6 +1047,25 @@ def create_admin_promo_description_keyboard() -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+
+def create_admin_promo_segment_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Обычный (без ограничения)", callback_data="admin_promo_segment_none")
+    builder.button(text="Нет активной подписки", callback_data="admin_promo_segment_no_sub")
+    builder.button(text="Мин. сумма покупок", callback_data="admin_promo_segment_min_spent")
+    builder.button(text="❌ Отмена", callback_data="admin_cancel")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def create_admin_promo_plans_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Все тарифы", callback_data="admin_promo_plans_all")
+    builder.button(text="Ввести ID тарифов", callback_data="admin_promo_plans_custom")
+    builder.button(text="❌ Отмена", callback_data="admin_cancel")
+    builder.adjust(1)
+    return builder.as_markup()
+
 def create_broadcast_parse_mode_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🔤 Без форматирования", callback_data="broadcast_pm_none")

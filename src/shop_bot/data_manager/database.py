@@ -2417,11 +2417,18 @@ def _ensure_promo_tables(cursor: sqlite3.Cursor) -> None:
             is_active INTEGER DEFAULT 1,
             created_by INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            description TEXT
+            description TEXT,
+            applicable_plan_ids TEXT,
+            segment_type TEXT,
+            segment_value REAL
         )
         """
     )
     _ensure_index(cursor, "idx_promo_codes_valid", "promo_codes", "valid_until")
+    # Additive targeting (NULL = unconditional, same as before this feature).
+    _ensure_table_column(cursor, "promo_codes", "applicable_plan_ids", "TEXT")
+    _ensure_table_column(cursor, "promo_codes", "segment_type", "TEXT")
+    _ensure_table_column(cursor, "promo_codes", "segment_value", "REAL")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS promo_code_usages (
@@ -3289,6 +3296,36 @@ def get_top_buyers(limit: int = 10) -> list[dict]:
     return result
 
 
+def _promo_plans_label(raw_ids) -> str:
+    """Человекочитаемое ограничение тарифов для карточки купона в админке."""
+    if raw_ids is None or str(raw_ids).strip() == "":
+        return "все тарифы"
+    try:
+        parsed = json.loads(raw_ids) if not isinstance(raw_ids, (list, tuple)) else list(raw_ids)
+        ids = [int(x) for x in parsed]
+    except Exception:
+        return "все тарифы"
+    if not ids:
+        return "все тарифы"
+    return "тарифы: " + ", ".join(str(i) for i in ids)
+
+
+def _promo_segment_label(segment_type, segment_value) -> str:
+    """Человекочитаемое ограничение сегмента для карточки купона в админке."""
+    st = (str(segment_type).strip() if segment_type is not None else "")
+    if not st:
+        return "без сегмента"
+    if st == "no_active_subscription":
+        return "нет активной подписки"
+    if st == "min_total_spent":
+        try:
+            value = float(segment_value)
+        except (TypeError, ValueError):
+            value = 0.0
+        return f"сумма покупок ≥ {value:.0f} ₽"
+    return st
+
+
 def get_coupons_analytics() -> list[dict]:
     """Аналитика купонов/промокодов (Этап 6.3) поверх существующих таблиц
     promo_codes / promo_code_usages — без создания новой системы купонов."""
@@ -3358,6 +3395,8 @@ def get_coupons_analytics() -> list[dict]:
                         c["days_left"] = max(0, delta.days + (1 if delta.seconds > 0 else 0))
                     except Exception:
                         c["days_left"] = None
+                c["targeting_plans_label"] = _promo_plans_label(c.get("applicable_plan_ids"))
+                c["targeting_segment_label"] = _promo_segment_label(c.get("segment_type"), c.get("segment_value"))
                 result.append(c)
 
             result.sort(key=lambda c: c["revenue"], reverse=True)
@@ -5426,6 +5465,25 @@ def get_plan_by_id(plan_id: int) -> dict | None:
     except sqlite3.Error as e:
         logging.error(f"Failed to get plan by id '{plan_id}': {e}")
         return None
+
+
+def get_all_plans() -> list[dict]:
+    """Все тарифы (для админки промокодов и валидации applicable_plan_ids)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM plans
+                ORDER BY TRIM(host_name), sort_order,
+                         COALESCE(duration_days, months * 30, months, 0), plan_id
+                """
+            )
+            return [dict(plan) for plan in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to list all plans: %s", e)
+        return []
 
 
 def _parse_json_metadata(raw: str | None) -> dict:

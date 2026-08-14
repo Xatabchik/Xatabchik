@@ -52,7 +52,30 @@
           <input type="text" name="description" class="form-control" placeholder="комментарий, необязательно">
         </div>
       </div>
-      <div class="form-text mt-2">Укажите либо процентную, либо фиксированную скидку (не обе сразу). Хотя бы одна обязательна.</div>
+      <div class="row g-2 mt-1">
+        <div class="col-md-6">
+          <label class="form-label">Тарифы</label>
+          <select name="applicable_plan_ids" class="form-select" multiple size="6">
+            {% for p in plans %}
+            <option value="{{ p.plan_id }}">{{ p.host_name }} — {{ p.plan_name }} ({{ p.plan_id }})</option>
+            {% endfor %}
+          </select>
+          <div class="form-text">Ничего не выбрано = все тарифы (как раньше). Можно выбрать несколько.</div>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Сегмент</label>
+          <select name="segment_type" id="coupon-segment-type" class="form-select">
+            <option value="">Обычный (без ограничения)</option>
+            <option value="no_active_subscription">Нет активной подписки</option>
+            <option value="min_total_spent">Мин. сумма покупок</option>
+          </select>
+        </div>
+        <div class="col-md-3" id="coupon-segment-value-wrap" style="display:none;">
+          <label class="form-label">Мин. сумма, ₽</label>
+          <input type="number" step="0.01" min="0.01" name="segment_value" id="coupon-segment-value" class="form-control" placeholder="например 1000">
+        </div>
+      </div>
+      <div class="form-text mt-2">Укажите либо процентную, либо фиксированную скидку (не обе сразу). Хотя бы одна обязательна. Ограничения тарифов и сегмента необязательны — пустые поля сохраняют прежнее поведение купона.</div>
     </div>
     <div class="card-footer text-end">
       <button type="submit" class="btn btn-primary">Создать купон</button>
@@ -71,7 +94,7 @@
     <table class="table table-vcenter card-table">
       <thead>
         <tr>
-          <th>Код</th><th>Скидка</th><th>Использований</th><th>Сумма скидок</th><th>Выручка</th><th>Конверсия лимита</th><th>Период действия</th><th>Осталось дней</th><th>Статус</th><th class="w-1">Действия</th>
+          <th>Код</th><th>Скидка</th><th>Ограничения</th><th>Использований</th><th>Сумма скидок</th><th>Выручка</th><th>Конверсия лимита</th><th>Период действия</th><th>Осталось дней</th><th>Статус</th><th class="w-1">Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -82,6 +105,19 @@
           </td>
           <td>
             {% if c.discount_percent %}{{ c.discount_percent }}%{% elif c.discount_amount %}{{ c.discount_amount }} ₽{% endif %}
+          </td>
+          <td class="small">
+            {% set targeted = (c.targeting_plans_label and c.targeting_plans_label != 'все тарифы') or (c.targeting_segment_label and c.targeting_segment_label != 'без сегмента') %}
+            {% if targeted %}
+              {% if c.targeting_plans_label and c.targeting_plans_label != 'все тарифы' %}
+                <div><span class="badge bg-blue-lt">{{ c.targeting_plans_label }}</span></div>
+              {% endif %}
+              {% if c.targeting_segment_label and c.targeting_segment_label != 'без сегмента' %}
+                <div class="mt-1"><span class="badge bg-purple-lt">{{ c.targeting_segment_label }}</span></div>
+              {% endif %}
+            {% else %}
+              <span class="text-secondary">без ограничений</span>
+            {% endif %}
           </td>
           <td>{{ c.uses }}{% if c.usage_limit_total %} / {{ c.usage_limit_total }}{% endif %}</td>
           <td>{{ "%.2f"|format(c.discount_sum) }} ₽</td>
@@ -118,7 +154,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="10" class="text-center text-secondary py-4">Купонов пока нет</td></tr>
+        <tr><td colspan="11" class="text-center text-secondary py-4">Купонов пока нет</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -163,6 +199,17 @@ document.addEventListener('DOMContentLoaded', function () {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); }
     });
   });
+
+  const segmentType = document.getElementById('coupon-segment-type');
+  const segmentValueWrap = document.getElementById('coupon-segment-value-wrap');
+  function syncSegmentValueVisibility() {
+    if (!segmentType || !segmentValueWrap) return;
+    segmentValueWrap.style.display = segmentType.value === 'min_total_spent' ? '' : 'none';
+  }
+  if (segmentType) {
+    segmentType.addEventListener('change', syncSegmentValueVisibility);
+    syncSegmentValueVisibility();
+  }
 });
 </script>
 {% endblock %}

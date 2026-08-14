@@ -216,7 +216,8 @@ def test_create_payment_second_user_gets_promo_unavailable(temp_db, monkeypatch)
     assert resp_a.json().get("ok") is True, resp_a.json()
     data_b = resp_b.json()
     assert data_b.get("ok") is False
-    assert "недоступен" in (data_b.get("error") or "").lower()
+    assert data_b.get("error") == rw_repo.promo_error_message("total_limit_reached")
+    assert "недействителен" in (data_b.get("error") or "").lower()
     assert int(rw_repo.get_promo_code("LIMIT1WEB")["used_total"] or 0) == 1
 
 
