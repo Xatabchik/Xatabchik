@@ -22,11 +22,19 @@ from shop_bot.data_manager.remnawave_repository import (
     is_admin,
     get_admin_ids,
     get_user,
+    get_telegram_chat_id_for_user,
     ban_user,
     unban_user,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _outgoing_chat_id(user_id) -> int | None:
+    chat_id = get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
+    return chat_id
 
 class SupportDialog(StatesGroup):
     waiting_for_subject = State()
@@ -521,20 +529,23 @@ def get_support_router() -> Router:
             content = (message.text or message.caption or "").strip()
             if content:
                 add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content)
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is None:
+                return
             header = await bot.send_message(
-                chat_id=user_id,
+                chat_id=chat_id,
                 text=f"💬 Ответ поддержки по тикету #{ticket['ticket_id']}"
             )
             try:
                 await bot.copy_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     from_chat_id=message.chat.id,
                     message_id=message.message_id,
                     reply_to_message_id=header.message_id
                 )
             except Exception:
                 if content:
-                    await bot.send_message(chat_id=user_id, text=content)
+                    await bot.send_message(chat_id=chat_id, text=content)
         except Exception as e:
             logger.warning(f"Не удалось передать сообщение темы форума: {e}")
 
@@ -617,7 +628,9 @@ def get_support_router() -> Router:
                     raise
             try:
                 user_id = int(ticket.get('user_id'))
-                await bot.send_message(chat_id=user_id, text=f"✅ Ваш тикет #{ticket_id} был закрыт администратором. Спасибо за обращение!")
+                chat_id = _outgoing_chat_id(user_id)
+                if chat_id is not None:
+                    await bot.send_message(chat_id=chat_id, text=f"✅ Ваш тикет #{ticket_id} был закрыт администратором. Спасибо за обращение!")
             except Exception:
                 pass
         else:
@@ -656,7 +669,9 @@ def get_support_router() -> Router:
                     raise
             try:
                 user_id = int(ticket.get('user_id'))
-                await bot.send_message(chat_id=user_id, text=f"🔓 Ваш тикет #{ticket_id} был переоткрыт администратором. Вы можете продолжить переписку.")
+                chat_id = _outgoing_chat_id(user_id)
+                if chat_id is not None:
+                    await bot.send_message(chat_id=chat_id, text=f"🔓 Ваш тикет #{ticket_id} был переоткрыт администратором. Вы можете продолжить переписку.")
             except Exception:
                 pass
         else:
@@ -843,11 +858,14 @@ def get_support_router() -> Router:
 
     async def _notify_user_about_ban(bot: Bot, user_id: int, text: str) -> None:
         try:
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is None:
+                return
             markup = _support_contact_markup()
             if markup:
-                await bot.send_message(user_id, text, reply_markup=markup)
+                await bot.send_message(chat_id, text, reply_markup=markup)
             else:
-                await bot.send_message(user_id, text)
+                await bot.send_message(chat_id, text)
         except Exception:
             pass
 
@@ -908,7 +926,9 @@ def get_support_router() -> Router:
         await callback.message.answer(f"✅ Пользователь {user_id} разбанен.")
 
         try:
-            await bot.send_message(user_id, "✅ Ваш аккаунт был разблокирован. Вы снова можете пользоваться ботом.")
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is not None:
+                await bot.send_message(chat_id, "✅ Ваш аккаунт был разблокирован. Вы снова можете пользоваться ботом.")
         except Exception:
             pass
         try:

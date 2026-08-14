@@ -1011,6 +1011,10 @@ def _notify_winners(bot: Any | None, period_end: str, winners: list[dict[str, An
         user_id = int(row.get("user_id") or 0)
         if not user_id:
             continue
+        chat_id = database.get_telegram_chat_id_for_user(user_id)
+        if chat_id is None:
+            logger.info("Skip Ramadan winner Telegram notify for user %s: no telegram_chat_id", user_id)
+            continue
         amount = amounts[idx] if idx < len(amounts) else 0.0
         text = (
             "Поздравляем! Вы в числе победителей Рамадан трекера.\n"
@@ -1029,7 +1033,7 @@ def _notify_winners(bot: Any | None, period_end: str, winners: list[dict[str, An
                 builder = InlineKeyboardBuilder()
                 builder.button(text="Запросить вывод", url=support_url)
                 reply_markup = builder.as_markup()
-            loop.create_task(bot.send_message(user_id, text, reply_markup=reply_markup))
+            loop.create_task(bot.send_message(chat_id, text, reply_markup=reply_markup))
 
 
 def _get_reward_for_user(user_id: int) -> dict[str, Any] | None:

@@ -40,6 +40,7 @@ from shop_bot.data_manager.remnawave_repository import (
     deduct_from_balance,
     get_setting,
     get_user,
+    get_telegram_chat_id_for_user,
     register_user_if_not_exists,
     get_next_key_number,
     create_payload_pending,
@@ -174,6 +175,21 @@ CRYPTO_BOT_TOKEN = get_setting("cryptobot_token")
 PENDING_GIFTS: dict[int, dict] = {}
 logger = logging.getLogger(__name__)
 
+
+def _outgoing_chat_id(user_id) -> int | None:
+    """Адрес Bot API. None = нет Telegram-привязки, не ошибка доставки."""
+    chat_id = get_telegram_chat_id_for_user(user_id)
+    if chat_id is None:
+        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
+    return chat_id
+
+
+async def _send_user_message(bot: Bot, user_id, text, **kwargs):
+    chat_id = _outgoing_chat_id(user_id)
+    if chat_id is None:
+        return None
+    return await bot.send_message(chat_id, text, **kwargs)
+
 errors = {
     "A019": "username уже занят",
     "400": "неверные данные",
@@ -277,6 +293,9 @@ async def _notify_user_key_creation_error(
     lines.append("Попробуй позже или напиши в поддержку.")
     text = "\n".join(lines)
     markup = keyboards.create_support_keyboard()
+    chat_id = _outgoing_chat_id(user_id)
+    if chat_id is None:
+        return
     # Franchise users may only have started the clone bot — try it first.
     if factory_bot_id > 0:
         try:
@@ -285,7 +304,7 @@ async def _notify_user_key_creation_error(
             if token:
                 tmp = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
                 try:
-                    await tmp.send_message(chat_id=user_id, text=text, reply_markup=markup)
+                    await tmp.send_message(chat_id=chat_id, text=text, reply_markup=markup)
                     return
                 except Exception:
                     pass
@@ -297,7 +316,7 @@ async def _notify_user_key_creation_error(
         except Exception:
             pass
     try:
-        await bot.send_message(chat_id=user_id, text=text, reply_markup=markup)
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
     except Exception:
         pass
 
@@ -607,7 +626,9 @@ async def grant_referrer_day_bonus_for_trial(*, referred_user_id: int, bot: Bot)
         pass
 
     try:
-        await bot.send_message(referrer_id_i, "🎁 Вам начислен бонус: +1 день к подписке за то, что ваш реферал активировал триал.")
+        chat_id = get_telegram_chat_id_for_user(referrer_id_i)
+        if chat_id is not None:
+            await bot.send_message(chat_id, "🎁 Вам начислен бонус: +1 день к подписке за то, что ваш реферал активировал триал.")
     except Exception:
         pass
 
@@ -1467,14 +1488,16 @@ async def _maybe_pay_referral_start_bonus(bot: Bot, user_id: int, referrer_id: i
 
     try:
         display_name = user_data.get("username") or str(user_id)
-        await bot.send_message(
-            chat_id=referrer_id,
-            text=(
-                "🎁 Начисление за приглашение!\n"
-                f"Новый пользователь: {display_name} (ID: {user_id})\n"
-                f"Бонус: {float(start_bonus):.2f} RUB"
+        chat_id = get_telegram_chat_id_for_user(referrer_id)
+        if chat_id is not None:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🎁 Начисление за приглашение!\n"
+                    f"Новый пользователь: {display_name} (ID: {user_id})\n"
+                    f"Бонус: {float(start_bonus):.2f} RUB"
+                )
             )
-        )
     except Exception:
         pass
 
@@ -5113,20 +5136,23 @@ def get_user_router() -> Router:
             content = (message.text or message.caption or "").strip()
             if content:
                 add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content)
+            chat_id = _outgoing_chat_id(user_id)
+            if chat_id is None:
+                return
             header = await bot.send_message(
-                chat_id=user_id,
+                chat_id=chat_id,
                 text=f"💬 Ответ поддержки по тикету #{ticket['ticket_id']}"
             )
             try:
                 await bot.copy_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     from_chat_id=message.chat.id,
                     message_id=message.message_id,
                     reply_to_message_id=header.message_id
                 )
             except Exception:
                 if content:
-                    await bot.send_message(chat_id=user_id, text=content)
+                    await bot.send_message(chat_id=chat_id, text=content)
         except Exception as e:
             logger.warning(f"Failed to relay forum thread message: {e}")
 
@@ -9010,7 +9036,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             package = database.get_traffic_package_by_id(package_id_tg) if package_id_tg else None
             if not key_data or not package:
                 logger.error(f"traffic_gb_topup: ключ или пакет не найден (key_id={key_id_tg}, package_id={package_id_tg})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика. Обратитесь в поддержку.")
+                await _send_user_message(bot, user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика. Обратитесь в поддержку.")
                 return
 
             size_gb = float(package.get('size_gb') or 0)
@@ -9051,7 +9077,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     ok_remote = False
 
             if not ok_remote:
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика на сервере. Обратитесь в поддержку.")
+                await _send_user_message(bot, user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика на сервере. Обратитесь в поддержку.")
                 return
 
             try:
@@ -9086,7 +9112,8 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
 
             size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
             try:
-                await bot.send_message(
+                await _send_user_message(
+                    bot,
                     user_id,
                     f"✅ Оплата получена! К вашему тарифу добавлено {size_txt} ГБ трафика.\n"
                     f"Новый лимит трафика действует до ближайшего ежемесячного сброса, после чего вернётся к базовому значению тарифа."
@@ -9106,7 +9133,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             package = database.get_traffic_package_by_id(package_id_lte) if package_id_lte else None
             if not key_data or not package:
                 logger.error(f"lte_gb_topup: ключ или пакет не найден (key_id={key_id_lte}, package_id={package_id_lte})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку LTE. Обратитесь в поддержку.")
+                await _send_user_message(bot, user_id, "⚠️ Оплата получена, но не удалось применить докупку LTE. Обратитесь в поддержку.")
                 return
 
             size_gb = float(package.get('size_gb') or 0)
@@ -9180,7 +9207,8 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
 
             size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
             try:
-                await bot.send_message(
+                await _send_user_message(
+                    bot,
                     user_id,
                     f"✅ Оплата получена! К вашему LTE-пулу (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
                     f"Доступ на premium-нодах восстановлен."
@@ -9198,7 +9226,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             key_data = rw_repo.get_key_by_id(key_id_mr) if key_id_mr else None
             if not key_data:
                 logger.error(f"main_traffic_reset: ключ не найден (key_id={key_id_mr})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось найти ключ для сброса. Обратитесь в поддержку.")
+                await _send_user_message(bot, user_id, "⚠️ Оплата получена, но не удалось найти ключ для сброса. Обратитесь в поддержку.")
                 return
 
             reset_errors = 0
@@ -9256,12 +9284,12 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
 
             if reset_errors == 0:
                 try:
-                    await bot.send_message(user_id, "✅ Оплата получена! Основной пул трафика сброшен, доступ восстановлен на всех нодах.")
+                    await _send_user_message(bot, user_id, "✅ Оплата получена! Основной пул трафика сброшен, доступ восстановлен на всех нодах.")
                 except Exception:
                     pass
             else:
                 try:
-                    await bot.send_message(user_id, "⚠️ Оплата получена, но часть узлов не удалось сбросить. Обратитесь в поддержку, если доступ не восстановился.")
+                    await _send_user_message(bot, user_id, "⚠️ Оплата получена, но часть узлов не удалось сбросить. Обратитесь в поддержку, если доступ не восстановился.")
                 except Exception:
                     pass
         except Exception as e:
@@ -9375,9 +9403,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok_ref:
                             try:
-                                await bot.send_message(
-                                    chat_id=referrer_id,
-                                    text=(
+                                await _send_user_message(
+                                    bot,
+                                    referrer_id,
+                                    (
                                         "💰 Вам начислено реферальное вознаграждение за пополнение баланса!\n"
                                         f"Пользователь: {referrer_username} (ID: {user_id})\n"
                                         f"Сумма: {float(reward):.2f} RUB"
@@ -9400,9 +9429,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             except Exception:
                 gifts_count = 0
             if ok:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
+                await _send_user_message(
+                    bot,
+                    user_id,
+                    (
                         f"✅ Оплата получена!\n"
                         f"💼 Баланс пополнен на {float(price):.2f} RUB.\n"
                         f"Текущий баланс: {current_balance:.2f} RUB."
@@ -9410,9 +9440,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     reply_markup=keyboards.create_profile_keyboard(gifts_count=gifts_count)
                 )
             else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
+                await _send_user_message(
+                    bot,
+                    user_id,
+                    (
                         "⚠️ Оплата получена, но не удалось обновить баланс. "
                         "Обратитесь в поддержку."
                     ),
@@ -9427,15 +9458,18 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             for a in admins:
                 admin_id = a.get('telegram_id')
                 if admin_id:
-                    await bot.send_message(admin_id, f"📥 Пополнение: пользователь {user_id}, сумма {float(price):.2f} RUB")
+                    await _send_user_message(bot, admin_id, f"📥 Пополнение: пользователь {user_id}, сумма {float(price):.2f} RUB")
         except Exception:
             pass
         return
 
-    processing_message = await bot.send_message(
-        chat_id=user_id,
-        text=f"✅ Оплата получена! Обрабатываю ваш запрос на сервере \"{host_name}\"..."
-    )
+    processing_chat_id = _outgoing_chat_id(user_id)
+    processing_message = None
+    if processing_chat_id is not None:
+        processing_message = await bot.send_message(
+            chat_id=processing_chat_id,
+            text=f"✅ Оплата получена! Обрабатываю ваш запрос на сервере \"{host_name}\"..."
+        )
     key_issued = False
     try:
         email = ""
@@ -9726,7 +9760,12 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                             share_keyboard_builder.button(text="⬅️ Назад в меню", callback_data="back_to_main_menu")
                             share_keyboard_builder.adjust(1)
                             
-                            await processing_message.edit_text(gift_message, reply_markup=share_keyboard_builder.as_markup())
+                            if processing_message is not None:
+                                await processing_message.edit_text(gift_message, reply_markup=share_keyboard_builder.as_markup())
+                            else:
+                                await _send_user_message(
+                                    bot, user_id, gift_message, reply_markup=share_keyboard_builder.as_markup()
+                                )
                             key_issued = True
                         else:
                             await _abort_key_fulfillment(
@@ -9874,9 +9913,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok:
                             try:
-                                await bot.send_message(
-                                    chat_id=referrer_id,
-                                    text=(
+                                await _send_user_message(
+                                    bot,
+                                    referrer_id,
+                                    (
                                         "💰 Вам начислено реферальное вознаграждение!\n"
                                         f"Пользователь: {referrer_username} (ID: {user_id})\n"
                                         f"Сумма: {float(reward):.2f} RUB"
@@ -10009,7 +10049,8 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     metadata['promo_disable_failed'] = True
             metadata['promo_applied_amount'] = applied_amount
         
-        await processing_message.delete()
+        if processing_message is not None:
+            await processing_message.delete()
         
         connection_string = None
         new_expiry_date = None
@@ -10052,9 +10093,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     f"📱 <b>Ссылка подписки:</b>\n<code>{html_escape(connection_string or '')}</code>"
                 )
         
-        await bot.send_message(
-            chat_id=user_id,
-            text=final_text,
+        await _send_user_message(
+            bot,
+            user_id,
+            final_text,
             reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code, gift_id=gift_id)
         )
 
@@ -10083,18 +10125,20 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
             except Exception:
                 try:
-                    await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
+                    if processing_message is not None:
+                        await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
                 except Exception:
                     try:
-                        await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
+                        await _send_user_message(bot, user_id, "❌ Ошибка при выдаче ключа.")
                     except Exception:
                         pass
             return False
         try:
-            await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
+            if processing_message is not None:
+                await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
         except Exception:
             try:
-                await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
+                await _send_user_message(bot, user_id, "❌ Ошибка при выдаче ключа.")
             except Exception:
                 pass
         # Ключ уже выдан — считаем оплату успешной, несмотря на ошибку нотификации/пост-обработки.
