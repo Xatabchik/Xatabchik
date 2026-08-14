@@ -2619,8 +2619,10 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
         applied_promo_code = None
         promo_discount_amount = 0.0
         if req.promo_code and action_name in ("new", "extend", "gift"):
-            promo, error = rw_repo.check_promo_code_available(req.promo_code, user_id)
-            if error in ("total_limit_reached", "user_limit_reached"):
+            promo, error = rw_repo.check_promo_code_available(
+                req.promo_code, user_id, plan_id=plan_id
+            )
+            if error:
                 return {"ok": False, "error": rw_repo.promo_error_message(error)}
             if promo and (promo.get('discount_percent') or promo.get('discount_amount')):
                 price_before_promo = final_price
@@ -3319,18 +3321,9 @@ async def api_apply_promo(req: ApplyPromoRequest, request: Request):
         user_id = int(user["telegram_id"])
         code = req.promo_code.strip().upper()
 
-        promo, error = rw_repo.check_promo_code_available(code, user_id)
+        promo, error = rw_repo.check_promo_code_available(code, user_id, plan_id=req.plan_id)
         if not promo:
-            errors = {
-                "not_found": "Промокод не найден",
-                "inactive": "Промокод не активен",
-                "not_started": "Акция еще не началась",
-                "expired": "Срок действия промокода истек",
-                "total_limit_reached": "Промокод закончился",
-                "user_limit_reached": "Вы уже использовали этот промокод",
-                "empty_code": "Введите промокод"
-            }
-            return {"ok": False, "error": errors.get(error, "Ошибка проверки промокода")}
+            return {"ok": False, "error": rw_repo.promo_error_message(error)}
 
         if req.price is None:
             return {"ok": False, "error": "Промокод действителен только при покупке или продлении ключа"}

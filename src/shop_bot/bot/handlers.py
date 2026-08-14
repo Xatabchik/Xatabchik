@@ -62,6 +62,7 @@ from shop_bot.data_manager.remnawave_repository import (
     reserve_promo_code,
     PromoUnavailableError,
     check_promo_code_available,
+    promo_error_message,
     update_promo_code_status,
     record_key_from_payload,
     add_to_referral_balance_all,
@@ -7300,7 +7301,9 @@ def get_user_router() -> Router:
 
         if promo_code:
             # Re-check promo validity (it could be disabled/expired while user is on the payment screen)
-            promo, promo_err = check_promo_code_available(promo_code, message.chat.id)
+            promo, promo_err = check_promo_code_available(
+                promo_code, message.chat.id, plan_id=data.get("plan_id")
+            )
             if promo_err:
                 # Drop promo from state if it's no longer applicable
                 await state.update_data(promo_code=None, promo_discount=0, promo_percent=None, promo_amount=None)
@@ -7424,18 +7427,12 @@ def get_user_router() -> Router:
         if code_raw.lower() in {"отмена", "cancel", "назад", "stop", "стоп"}:
             await show_payment_options(message, state)
             return
-        promo, error = check_promo_code_available(code_raw, message.from_user.id)
+        data = await state.get_data()
+        promo, error = check_promo_code_available(
+            code_raw, message.from_user.id, plan_id=data.get("plan_id")
+        )
         if error:
-            errors = {
-                "not_found": "❌ Промокод не найден.",
-                "inactive": "❌ Промокод отключён.",
-                "not_started": "❌ Промокод ещё не начал действовать.",
-                "expired": "❌ Срок действия промокода истёк.",
-                "total_limit_reached": "❌ Лимит активаций исчерпан.",
-                "user_limit_reached": "❌ Вы уже использовали этот промокод максимально возможное количество раз.",
-                "empty_code": "❌ Промокод не должен быть пустым.",
-            }
-            await message.answer(errors.get(error, "❌ Не удалось применить промокод."))
+            await message.answer(f"❌ {promo_error_message(error)}")
             return
         discount_amount = Decimal(str(promo.get('discount_amount') or 0))
         percent = Decimal(str(promo.get('discount_percent') or 0))
@@ -8960,6 +8957,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 user_id,
                 payment_id,
                 applied_amount=applied_early,
+                plan_id=metadata.get("plan_id") if isinstance(metadata, dict) else None,
             )
             if promo_err or not promo_ok:
                 logger.warning(
@@ -9980,7 +9978,11 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             else:
                 metadata['promo_redeem_failed'] = True
                 try:
-                    _, availability_error = check_promo_code_available(promo_code_val, user_id)
+                    _, availability_error = check_promo_code_available(
+                        promo_code_val,
+                        user_id,
+                        plan_id=(metadata.get("plan_id") if isinstance(metadata, dict) else None),
+                    )
                 except Exception as e:
                     logger.warning(f"Promo: availability check failed for code {promo_code_val}: {e}")
                     availability_error = None

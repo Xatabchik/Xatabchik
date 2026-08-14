@@ -699,6 +699,9 @@
 | `created_by` | INTEGER | ID создателя |
 | `created_at` | TIMESTAMP | Дата создания (по умолчанию текущее время) |
 | `description` | TEXT | Описание промокода |
+| `applicable_plan_ids` | TEXT | JSON-массив `plan_id` (например `[1,3,5]`). `NULL` = применим ко всем тарифам |
+| `segment_type` | TEXT | Ограничение сегмента: `NULL` (без ограничения), `no_active_subscription`, `min_total_spent` |
+| `segment_value` | REAL | Порог для `min_total_spent`: сумма завершённых оплат (`transactions.status='paid'` или `pending_transactions.status='paid'`). Не включает pending, баланс и реферальные выплаты |
 
 **Индексы:**
 - `idx_promo_codes_valid` - индекс на valid_until

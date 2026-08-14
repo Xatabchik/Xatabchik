@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 import time
@@ -90,11 +91,19 @@ def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) 
     reserved = False
     if promo_code:
         applied = meta.get("promo_discount") or 0
+        plan_id = None
+        try:
+            raw_plan = meta.get("plan_id")
+            if raw_plan is not None and str(raw_plan).strip() != "":
+                plan_id = int(raw_plan)
+        except (TypeError, ValueError):
+            plan_id = None
         promo, err = reserve_promo_code(
             promo_code,
             user_id,
             payment_id,
             applied_amount=applied,
+            plan_id=plan_id,
         )
         if err or not promo:
             raise PromoUnavailableError(err or "unavailable")
@@ -530,6 +539,7 @@ _LEGACY_FORWARDERS = (
     "get_open_tickets_count",
     "get_paginated_transactions",
     "get_plan_by_id",
+    "get_all_plans",
     "get_plans_for_host",
     "get_active_plans_for_host",
     "get_recent_transactions",
@@ -866,6 +876,9 @@ def create_promo_code(
     valid_until: datetime | None = None,
     created_by: int | None = None,
     description: str | None = None,
+    applicable_plan_ids: list[int] | str | None = None,
+    segment_type: str | None = None,
+    segment_value: float | None = None,
 ) -> bool:
     code_s = (code or "").strip().upper()
     if not code_s:
@@ -897,6 +910,8 @@ def create_promo_code(
     if valid_from and valid_until:
         if valid_until <= valid_from:
             raise ValueError("valid_until must be after valid_from")
+    plan_ids_json = _serialize_applicable_plan_ids(applicable_plan_ids)
+    segment_type_n, segment_value_n = _normalize_promo_segment(segment_type, segment_value)
     try:
         with _connect() as conn:
             cursor = conn.cursor()
@@ -905,8 +920,9 @@ def create_promo_code(
                 INSERT INTO promo_codes (
                     code, discount_percent, discount_amount,
                     usage_limit_total, usage_limit_per_user,
-                    valid_from, valid_until, created_by, description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    valid_from, valid_until, created_by, description,
+                    applicable_plan_ids, segment_type, segment_value
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     code_s,
@@ -918,6 +934,9 @@ def create_promo_code(
                     valid_until.isoformat() if isinstance(valid_until, datetime) else valid_until,
                     created_by,
                     description,
+                    plan_ids_json,
+                    segment_type_n,
+                    segment_value_n,
                 ),
             )
             conn.commit()
@@ -950,20 +969,241 @@ def list_promo_codes(include_inactive: bool = True) -> list[dict]:
 
 PROMO_RESERVATION_TTL_HOURS = 24
 
+# User-facing text is identical for every eligibility/limit/not-found reason so
+# probing codes cannot reveal whether a coupon exists, which segment it targets,
+# or whether the caller's own limit is exhausted (oracle).
+PROMO_USER_ERROR = "Промокод недействителен"
+
 PROMO_ERROR_MESSAGES = {
     "empty_code": "Введите промокод",
-    "not_found": "Промокод не найден",
-    "inactive": "Промокод не активен",
-    "not_started": "Акция еще не началась",
-    "expired": "Срок действия промокода истек",
-    "total_limit_reached": "Промокод больше недоступен",
-    "user_limit_reached": "Вы уже использовали этот промокод",
-    "unavailable": "Промокод больше недоступен",
+    "not_found": PROMO_USER_ERROR,
+    "inactive": PROMO_USER_ERROR,
+    "not_started": PROMO_USER_ERROR,
+    "expired": PROMO_USER_ERROR,
+    "total_limit_reached": PROMO_USER_ERROR,
+    "user_limit_reached": PROMO_USER_ERROR,
+    "plan_not_eligible": PROMO_USER_ERROR,
+    "segment_not_eligible": PROMO_USER_ERROR,
+    "unavailable": PROMO_USER_ERROR,
 }
+
+PROMO_SEGMENT_NO_ACTIVE_SUBSCRIPTION = "no_active_subscription"
+PROMO_SEGMENT_MIN_TOTAL_SPENT = "min_total_spent"
+PROMO_SEGMENT_TYPES = frozenset(
+    {PROMO_SEGMENT_NO_ACTIVE_SUBSCRIPTION, PROMO_SEGMENT_MIN_TOTAL_SPENT}
+)
+
+# payment_method values that are not "money the user spent on a purchase".
+_PROMO_SPENT_EXCLUDED_METHODS = ("balance", "referral_payout")
 
 
 def promo_error_message(reason: str | None) -> str:
-    return PROMO_ERROR_MESSAGES.get(reason or "", "Промокод больше недоступен")
+    if reason == "empty_code":
+        return PROMO_ERROR_MESSAGES["empty_code"]
+    return PROMO_ERROR_MESSAGES.get(reason or "", PROMO_USER_ERROR)
+
+
+def _serialize_applicable_plan_ids(raw) -> str | None:
+    """Validate and store plan scope as a JSON array of ints, or NULL = all plans."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        try:
+            raw = json.loads(s)
+        except Exception:
+            raise ValueError("applicable_plan_ids must be a JSON array of plan_id")
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("applicable_plan_ids must be a list of plan_id")
+    if len(raw) == 0:
+        raise ValueError("applicable_plan_ids must be a non-empty list of existing plan_id")
+    ids: list[int] = []
+    seen: set[int] = set()
+    for item in raw:
+        try:
+            pid = int(item)
+        except (TypeError, ValueError):
+            raise ValueError("applicable_plan_ids must contain integers")
+        if pid <= 0:
+            raise ValueError("applicable_plan_ids must contain positive plan_id")
+        if pid in seen:
+            continue
+        if database.get_plan_by_id(pid) is None:
+            raise ValueError(f"applicable_plan_ids: plan_id {pid} does not exist")
+        seen.add(pid)
+        ids.append(pid)
+    if not ids:
+        raise ValueError("applicable_plan_ids must be a non-empty list of existing plan_id")
+    return json.dumps(ids)
+
+
+def _normalize_promo_segment(
+    segment_type: str | None, segment_value: float | None
+) -> tuple[str | None, float | None]:
+    st = (str(segment_type).strip() if segment_type is not None else "")
+    if not st:
+        return None, None
+    if st not in PROMO_SEGMENT_TYPES:
+        raise ValueError(
+            'segment_type must be empty, "no_active_subscription", or "min_total_spent"'
+        )
+    if st == PROMO_SEGMENT_MIN_TOTAL_SPENT:
+        try:
+            value = float(segment_value)
+        except (TypeError, ValueError):
+            raise ValueError("segment_value is required and must be > 0 for min_total_spent")
+        if value <= 0:
+            raise ValueError("segment_value is required and must be > 0 for min_total_spent")
+        return st, value
+    return st, None
+
+
+def _parse_applicable_plan_ids(raw) -> list[int] | None:
+    """NULL/empty → unrestricted. Invalid JSON → empty list (fail closed)."""
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        try:
+            ids = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            return []
+        return ids
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        parsed = json.loads(s)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    try:
+        return [int(x) for x in parsed]
+    except (TypeError, ValueError):
+        return []
+
+
+def _coerce_plan_id(plan_id) -> int | None:
+    if plan_id is None or plan_id == "":
+        return None
+    try:
+        return int(plan_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_has_active_subscription(user_id: int) -> bool:
+    """True if the user has at least one vpn_keys row with expire_at > now()."""
+    now = datetime.utcnow()
+    keys = database.get_user_keys(int(user_id)) or []
+    for key in keys:
+        raw = key.get("expire_at") or key.get("expiry_date")
+        if not raw:
+            continue
+        exp = _parse_key_expiry_dt(key)
+        if exp > now:
+            return True
+    return False
+
+
+def _user_paid_total(user_id: int, *, cursor: sqlite3.Cursor | None = None) -> float:
+    """Sum of completed purchases for the user.
+
+    Completed = transactions.status = 'paid' OR pending_transactions.status = 'paid'
+    (same definition as /api/check-payment after PR #75). Pending invoices do not
+    count. Internal balance transfers and referral payouts are excluded — they are
+    not money the user spent on a plan.
+    """
+    uid = int(user_id)
+    placeholders = ",".join("?" * len(_PROMO_SPENT_EXCLUDED_METHODS))
+    tx_sql = f"""
+        SELECT COALESCE(SUM(amount_rub), 0)
+        FROM transactions
+        WHERE user_id = ?
+          AND LOWER(TRIM(COALESCE(status, ''))) = 'paid'
+          AND LOWER(TRIM(COALESCE(payment_method, ''))) NOT IN ({placeholders})
+    """
+    pending_sql = """
+        SELECT COALESCE(SUM(p.amount_rub), 0)
+        FROM pending_transactions p
+        WHERE p.user_id = ?
+          AND LOWER(TRIM(COALESCE(p.status, ''))) = 'paid'
+          AND NOT EXISTS (
+              SELECT 1 FROM transactions t
+              WHERE t.payment_id = p.payment_id
+                AND LOWER(TRIM(COALESCE(t.status, ''))) = 'paid'
+          )
+    """
+    params_tx = (uid, *_PROMO_SPENT_EXCLUDED_METHODS)
+
+    def _sum(cur: sqlite3.Cursor) -> float:
+        cur.execute(tx_sql, params_tx)
+        paid = float(cur.fetchone()[0] or 0)
+        try:
+            cur.execute(pending_sql, (uid,))
+            pending_paid = float(cur.fetchone()[0] or 0)
+        except sqlite3.Error:
+            pending_paid = 0.0
+        return paid + pending_paid
+
+    if cursor is not None:
+        return _sum(cursor)
+    with _connect() as conn:
+        return _sum(conn.cursor())
+
+
+def _user_matches_promo_segment(
+    user_id: int,
+    segment_type: str | None,
+    segment_value,
+    *,
+    cursor: sqlite3.Cursor | None = None,
+) -> bool:
+    """Whether the user satisfies an optional promo segment restriction.
+
+    segment_type is None / empty → always True (unconditional coupon).
+    """
+    st = (str(segment_type).strip() if segment_type is not None else "")
+    if not st:
+        return True
+    if st == PROMO_SEGMENT_NO_ACTIVE_SUBSCRIPTION:
+        return not _user_has_active_subscription(user_id)
+    if st == PROMO_SEGMENT_MIN_TOTAL_SPENT:
+        try:
+            threshold = float(segment_value)
+        except (TypeError, ValueError):
+            return False
+        return _user_paid_total(user_id, cursor=cursor) >= threshold
+    return False
+
+
+def _promo_targeting_error(
+    promo: dict,
+    user_id: int,
+    plan_id: int | None,
+    *,
+    cursor: sqlite3.Cursor | None = None,
+) -> str | None:
+    """plan_not_eligible / segment_not_eligible, or None if targeting passes.
+
+    Must run inside the same atomic section as limit reservation (reserve_promo_code)
+    so a concurrent key/payment cannot sneak a slot after a stale preview check.
+    """
+    plan_ids = _parse_applicable_plan_ids(promo.get("applicable_plan_ids"))
+    if plan_ids is not None:
+        pid = _coerce_plan_id(plan_id)
+        if pid not in plan_ids:
+            return "plan_not_eligible"
+    if not _user_matches_promo_segment(
+        user_id,
+        promo.get("segment_type"),
+        promo.get("segment_value"),
+        cursor=cursor,
+    ):
+        return "segment_not_eligible"
+    return None
 
 
 class _PromoTxnAbort(Exception):
@@ -1069,7 +1309,8 @@ def _fetch_promo_row(cursor: sqlite3.Cursor, code: str) -> dict | None:
         """
         SELECT code, discount_percent, discount_amount,
                usage_limit_total, usage_limit_per_user,
-               used_total, valid_from, valid_until, is_active
+               used_total, valid_from, valid_until, is_active,
+               applicable_plan_ids, segment_type, segment_value
         FROM promo_codes
         WHERE code = ?
         """,
@@ -1110,11 +1351,21 @@ def _decrement_used_total(cursor: sqlite3.Cursor, code: str) -> None:
     )
 
 
-def check_promo_code_available(code: str, user_id: int) -> tuple[dict | None, str | None]:
+def check_promo_code_available(
+    code: str,
+    user_id: int,
+    plan_id: int | None = None,
+) -> tuple[dict | None, str | None]:
     """Проверить возможность использования промокода, не изменяя лимиты.
 
-    Учитывает уже зарезервированные (ещё не оплаченные) слоты. Финальный
-    захват слота — атомарный reserve_promo_code / redeem_promo_code.
+    Порядок внутри одной транзакции (BEGIN IMMEDIATE):
+    1. промокод существует, активен, не просрочен;
+    2. applicable_plan_ids — если задан и plan_id не входит в список → отказ;
+    3. segment_type — если задан и сегмент не совпал → отказ;
+    4. только затем проверка usage_limit_total / usage_limit_per_user.
+
+    Финальный захват слота — атомарный reserve_promo_code / redeem_promo_code,
+    который повторяет шаги 1–3 в той же секции, что и UPDATE used_total.
     """
     try:
         release_stale_promo_reservations()
@@ -1124,30 +1375,39 @@ def check_promo_code_available(code: str, user_id: int) -> tuple[dict | None, st
     if not code_s:
         return None, "empty_code"
     user_id_i = int(user_id)
-    with _connect() as conn:
+    plan_id_i = _coerce_plan_id(plan_id)
+
+    def _work(conn: sqlite3.Connection):
         cursor = conn.cursor()
         promo = _fetch_promo_row(cursor, code_s)
         if promo is None:
-            return None, "not_found"
+            raise _PromoTxnAbort("not_found")
         validity = _promo_validity_error(promo)
-        if validity == "expired":
-            try:
-                update_promo_code_status(code_s, is_active=False)
-            except Exception:
-                pass
-            return None, "expired"
         if validity:
-            return None, validity
+            raise _PromoTxnAbort(validity)
+        targeting = _promo_targeting_error(promo, user_id_i, plan_id_i, cursor=cursor)
+        if targeting:
+            raise _PromoTxnAbort(targeting)
         usage_limit_total = promo.get("usage_limit_total")
         used_total = promo.get("used_total") or 0
         if usage_limit_total and used_total >= usage_limit_total:
-            return None, "total_limit_reached"
+            raise _PromoTxnAbort("total_limit_reached")
         usage_limit_per_user = promo.get("usage_limit_per_user")
         if usage_limit_per_user:
             per_user_count = _per_user_occupied(cursor, code_s, user_id_i)
             if per_user_count >= usage_limit_per_user:
-                return None, "user_limit_reached"
+                raise _PromoTxnAbort("user_limit_reached")
         return promo, None
+
+    result = _with_promo_write(_work)
+    if isinstance(result, tuple):
+        if result[1] == "expired":
+            try:
+                update_promo_code_status(code_s, is_active=False)
+            except Exception:
+                pass
+        return result
+    return None, "unavailable"
 
 
 def reserve_promo_code(
@@ -1156,12 +1416,13 @@ def reserve_promo_code(
     payment_id: str,
     *,
     applied_amount: float = 0.0,
+    plan_id: int | None = None,
 ) -> tuple[dict | None, str | None]:
     """Atomically reserve one promo usage slot for a pending payment.
 
-    Uses a single BEGIN IMMEDIATE transaction: UPDATE used_total ... WHERE
-    limit not reached, then per-user occupancy check. rowcount == 0 →
-    total_limit_reached. Idempotent for the same payment_id.
+    Uses a single BEGIN IMMEDIATE transaction: targeting (plan/segment) first,
+    then UPDATE used_total ... WHERE limit not reached, then per-user occupancy
+    check. rowcount == 0 → total_limit_reached. Idempotent for the same payment_id.
     """
     try:
         release_stale_promo_reservations()
@@ -1174,6 +1435,7 @@ def reserve_promo_code(
     if not payment_id_s:
         return None, "unavailable"
     user_id_i = int(user_id)
+    plan_id_i = _coerce_plan_id(plan_id)
 
     def _work(conn: sqlite3.Connection):
         cursor = conn.cursor()
@@ -1202,6 +1464,9 @@ def reserve_promo_code(
         validity = _promo_validity_error(promo)
         if validity:
             raise _PromoTxnAbort(validity)
+        targeting = _promo_targeting_error(promo, user_id_i, plan_id_i, cursor=cursor)
+        if targeting:
+            raise _PromoTxnAbort(targeting)
         if _atomic_increment_used_total(cursor, code_s) == 0:
             raise _PromoTxnAbort("total_limit_reached")
         usage_limit_per_user = promo.get("usage_limit_per_user")

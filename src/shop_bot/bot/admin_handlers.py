@@ -318,6 +318,18 @@ def get_admin_router() -> Router:
         if valid_until:
             status_parts.append(f"до {str(valid_until)[:16]}")
 
+        plan_ids = promo.get("applicable_plan_ids")
+        if plan_ids:
+            status_parts.append(f"тарифы {plan_ids}")
+        segment_type = (promo.get("segment_type") or "").strip()
+        if segment_type == "no_active_subscription":
+            status_parts.append("нет активной подписки")
+        elif segment_type == "min_total_spent":
+            try:
+                status_parts.append(f"сумма ≥ {float(promo.get('segment_value') or 0):.0f} ₽")
+            except Exception:
+                status_parts.append("мин. сумма покупок")
+
         status_text = ", ".join(status_parts)
         return f"• <code>{code}</code> — скидка: {discount_text} | статус: {status_text}"
 
@@ -4833,6 +4845,9 @@ def get_admin_router() -> Router:
         waiting_for_valid_from = State()
         waiting_for_valid_until = State()
         waiting_for_description = State()
+        waiting_for_segment = State()
+        waiting_for_segment_value = State()
+        waiting_for_plans = State()
         confirming = State()
 
     @admin_router.callback_query(F.data == "admin_promo_menu")
@@ -5172,32 +5187,11 @@ def get_admin_router() -> Router:
         desc = (message.text or '').strip()
         description = None if not desc or desc.lower() in {'skip', 'пропустить', 'нет'} else desc
         await state.update_data(description=description)
-        data = await state.get_data()
-        code = data.get('promo_code')
-        discount_type = data.get('discount_type')
-        discount_value = data.get('discount_value')
-        total_limit = data.get('usage_limit_total')
-        per_user_limit = data.get('usage_limit_per_user')
-        valid_from = data.get('valid_from')
-        valid_until = data.get('valid_until')
-        summary_lines = [
-            "Проверьте данные промокода:",
-            f"Код: <code>{code}</code>",
-            f"Тип скидки: {'процент' if discount_type == 'percent' else 'фиксированная'}",
-            f"Значение: {discount_value:.2f}{'%' if discount_type == 'percent' else ' RUB'}",
-            f"Лимит всего: {total_limit if total_limit is not None else 'без ограничений'}",
-            f"Лимит на пользователя: {per_user_limit if per_user_limit is not None else 'без ограничений'}",
-            f"Действует с: {valid_from.isoformat(' ') if valid_from else '—'}",
-            f"Действует до: {valid_until.isoformat(' ') if valid_until else '—'}",
-            f"Описание: {description or '—'}",
-        ]
-        summary_text = "\n".join(summary_lines)
-        builder = InlineKeyboardBuilder()
-        builder.button(text="✅ Создать", callback_data="admin_promo_confirm")
-        builder.button(text="❌ Отмена", callback_data="admin_cancel")
-        builder.adjust(1, 1)
-        await state.set_state(AdminPromoCreate.confirming)
-        await message.answer(summary_text, reply_markup=builder.as_markup(), parse_mode='HTML')
+        await state.set_state(AdminPromoCreate.waiting_for_segment)
+        await message.answer(
+            "Ограничить промокод сегментом пользователей?",
+            reply_markup=keyboards.create_admin_promo_segment_keyboard()
+        )
 
     @admin_router.callback_query(
         AdminPromoCreate.waiting_for_description,
@@ -5216,6 +5210,13 @@ def get_admin_router() -> Router:
             return
 
         await state.update_data(description=None)
+        await state.set_state(AdminPromoCreate.waiting_for_segment)
+        await callback.message.edit_text(
+            "Ограничить промокод сегментом пользователей?",
+            reply_markup=keyboards.create_admin_promo_segment_keyboard()
+        )
+
+    async def _show_promo_confirm(message_or_callback, state: FSMContext):
         data = await state.get_data()
         code = data.get('promo_code')
         discount_type = data.get('discount_type')
@@ -5224,6 +5225,19 @@ def get_admin_router() -> Router:
         per_user_limit = data.get('usage_limit_per_user')
         valid_from = data.get('valid_from')
         valid_until = data.get('valid_until')
+        description = data.get('description')
+        segment_type = data.get('segment_type')
+        segment_value = data.get('segment_value')
+        plan_ids = data.get('applicable_plan_ids')
+        if not segment_type:
+            segment_text = "без ограничения"
+        elif segment_type == "no_active_subscription":
+            segment_text = "нет активной подписки"
+        elif segment_type == "min_total_spent":
+            segment_text = f"сумма покупок ≥ {float(segment_value or 0):.0f} ₽"
+        else:
+            segment_text = str(segment_type)
+        plans_text = "все тарифы" if not plan_ids else ", ".join(str(i) for i in plan_ids)
         summary_lines = [
             "Проверьте данные промокода:",
             f"Код: <code>{code}</code>",
@@ -5233,7 +5247,9 @@ def get_admin_router() -> Router:
             f"Лимит на пользователя: {per_user_limit if per_user_limit is not None else 'без ограничений'}",
             f"Действует с: {valid_from.isoformat(' ') if valid_from else '—'}",
             f"Действует до: {valid_until.isoformat(' ') if valid_until else '—'}",
-            f"Описание: —",
+            f"Описание: {description or '—'}",
+            f"Тарифы: {plans_text}",
+            f"Сегмент: {segment_text}",
         ]
         summary_text = "\n".join(summary_lines)
         builder = InlineKeyboardBuilder()
@@ -5241,7 +5257,104 @@ def get_admin_router() -> Router:
         builder.button(text="❌ Отмена", callback_data="admin_cancel")
         builder.adjust(1, 1)
         await state.set_state(AdminPromoCreate.confirming)
-        await callback.message.edit_text(summary_text, reply_markup=builder.as_markup(), parse_mode='HTML')
+        target = message_or_callback.message if hasattr(message_or_callback, "message") and hasattr(message_or_callback, "data") else message_or_callback
+        edit = getattr(target, "edit_text", None)
+        if edit and hasattr(message_or_callback, "data"):
+            await target.edit_text(summary_text, reply_markup=builder.as_markup(), parse_mode='HTML')
+        else:
+            await target.answer(summary_text, reply_markup=builder.as_markup(), parse_mode='HTML')
+
+    @admin_router.callback_query(
+        AdminPromoCreate.waiting_for_segment,
+        F.data.in_({
+            "admin_promo_segment_none",
+            "admin_promo_segment_no_sub",
+            "admin_promo_segment_min_spent",
+        })
+    )
+    async def admin_promo_set_segment(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.")
+            return
+        await callback.answer()
+        if callback.data.endswith("none"):
+            await state.update_data(segment_type=None, segment_value=None)
+            await state.set_state(AdminPromoCreate.waiting_for_plans)
+            await callback.message.edit_text(
+                "Ограничить промокод тарифами?",
+                reply_markup=keyboards.create_admin_promo_plans_keyboard()
+            )
+            return
+        if callback.data.endswith("no_sub"):
+            await state.update_data(segment_type="no_active_subscription", segment_value=None)
+            await state.set_state(AdminPromoCreate.waiting_for_plans)
+            await callback.message.edit_text(
+                "Ограничить промокод тарифами?",
+                reply_markup=keyboards.create_admin_promo_plans_keyboard()
+            )
+            return
+        await state.update_data(segment_type="min_total_spent")
+        await state.set_state(AdminPromoCreate.waiting_for_segment_value)
+        await callback.message.edit_text(
+            "Введите минимальную сумму покупок в рублях (только оплаченные транзакции, без pending):",
+            reply_markup=keyboards.create_admin_cancel_keyboard()
+        )
+
+    @admin_router.message(AdminPromoCreate.waiting_for_segment_value)
+    async def admin_promo_set_segment_value(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        raw = (message.text or "").strip().replace(",", ".")
+        try:
+            value = float(raw)
+        except Exception:
+            await message.answer("❌ Введите число больше 0.")
+            return
+        if value <= 0:
+            await message.answer("❌ Сумма должна быть больше 0.")
+            return
+        await state.update_data(segment_value=value)
+        await state.set_state(AdminPromoCreate.waiting_for_plans)
+        await message.answer(
+            "Ограничить промокод тарифами?",
+            reply_markup=keyboards.create_admin_promo_plans_keyboard()
+        )
+
+    @admin_router.callback_query(
+        AdminPromoCreate.waiting_for_plans,
+        F.data.in_({"admin_promo_plans_all", "admin_promo_plans_custom"})
+    )
+    async def admin_promo_set_plans(callback: types.CallbackQuery, state: FSMContext):
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.")
+            return
+        await callback.answer()
+        if callback.data.endswith("all"):
+            await state.update_data(applicable_plan_ids=None)
+            await _show_promo_confirm(callback, state)
+            return
+        await callback.message.edit_text(
+            "Введите ID тарифов через запятую (например: 1, 3, 5):",
+            reply_markup=keyboards.create_admin_cancel_keyboard()
+        )
+
+    @admin_router.message(AdminPromoCreate.waiting_for_plans)
+    async def admin_promo_set_plans_custom(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        parts = [p.strip() for p in (message.text or "").replace(";", ",").split(",") if p.strip()]
+        if not parts:
+            await message.answer("❌ Укажите хотя бы один plan_id или вернитесь и выберите «Все тарифы».")
+            return
+        ids: list[int] = []
+        for part in parts:
+            try:
+                ids.append(int(part))
+            except Exception:
+                await message.answer(f"❌ «{part}» не является числом.")
+                return
+        await state.update_data(applicable_plan_ids=ids)
+        await _show_promo_confirm(message, state)
 
     @admin_router.callback_query(AdminPromoCreate.confirming, F.data == "admin_promo_confirm")
     async def admin_promo_confirm(callback: types.CallbackQuery, state: FSMContext):
@@ -5268,6 +5381,9 @@ def get_admin_router() -> Router:
             'valid_until': valid_until,
             'created_by': callback.from_user.id,
             'description': description,
+            'applicable_plan_ids': data.get('applicable_plan_ids'),
+            'segment_type': data.get('segment_type'),
+            'segment_value': data.get('segment_value'),
         }
         try:
             ok = create_promo_code(**kwargs)
