@@ -58,14 +58,6 @@ def format_time_left(hours: int) -> str:
         else:
             return f"{hours} часов"
 
-def _outgoing_chat_id(user_id) -> int | None:
-    """Bot API chat id for a DB user. None = no Telegram binding; not a delivery error."""
-    chat_id = rw_repo.get_telegram_chat_id_for_user(user_id)
-    if chat_id is None:
-        logger.info("Skip Telegram send for user %s: no telegram_chat_id", user_id)
-    return chat_id
-
-
 async def send_subscription_notification(bot: Bot, user_id: int, key_id: int, time_left_hours: int, expiry_date: datetime):
     try:
         time_text = format_time_left(time_left_hours)
@@ -82,11 +74,8 @@ async def send_subscription_notification(bot: Bot, user_id: int, key_id: int, ti
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.button(text="➕ Продлить ключ", callback_data=f"extend_key_{key_id}")
         builder.adjust(2)
-
-        chat_id = _outgoing_chat_id(user_id)
-        if chat_id is None:
-            return
-        await bot.send_message(chat_id=chat_id, text=message, reply_markup=builder.as_markup(), parse_mode='Markdown')
+        
+        await bot.send_message(chat_id=user_id, text=message, reply_markup=builder.as_markup(), parse_mode='Markdown')
         logger.debug(f"Scheduler: Отправлено уведомление пользователю {user_id} по ключу {key_id} (осталось {time_left_hours} ч).")
         
     except Exception as e:
@@ -751,22 +740,20 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
             if lte_transition_to_disabled and not main_exhausted:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул исчерпан для user_id={user_id} — доступ к premium-нодам отключён.")
                 if bot is not None:
-                    chat_id = _outgoing_chat_id(user_id)
-                    if chat_id is not None:
-                        try:
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=(
-                                    "⚠️ <b>Лимит LTE-трафика исчерпан</b>\n\n"
-                                    "Доступ к премиум-серверам (LTE-пул) временно отключён. "
-                                    "Основной безлимитный пул продолжает работать как обычно.\n\n"
-                                    "Докупите LTE-трафик в личном кабинете, чтобы восстановить доступ."
-                                ),
-                                parse_mode="HTML",
-                            )
-                        except Exception as e:
-                            if not telegram_reachability.handle_send_exception(user_id, e):
-                                logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
+                    try:
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                "⚠️ <b>Лимит LTE-трафика исчерпан</b>\n\n"
+                                "Доступ к премиум-серверам (LTE-пул) временно отключён. "
+                                "Основной безлимитный пул продолжает работать как обычно.\n\n"
+                                "Докупите LTE-трафик в личном кабинете, чтобы восстановить доступ."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        if not telegram_reachability.handle_send_exception(user_id, e):
+                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
             elif lte_transition_to_enabled:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул восстановлен для user_id={user_id} — доступ к premium-нодам включён.")
                 try:
@@ -774,20 +761,18 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 except Exception as e:
                     logger.warning(f"Scheduler[dual-limits]: не удалось запросить сброс baseline LTE user_id={user_id}: {e}")
                 if bot is not None:
-                    chat_id = _outgoing_chat_id(user_id)
-                    if chat_id is not None:
-                        try:
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=(
-                                    "✅ <b>Доступ к LTE-пулу восстановлен</b>\n\n"
-                                    "Премиум-серверы снова доступны."
-                                ),
-                                parse_mode="HTML",
-                            )
-                        except Exception as e:
-                            if not telegram_reachability.handle_send_exception(user_id, e):
-                                logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
+                    try:
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                "✅ <b>Доступ к LTE-пулу восстановлен</b>\n\n"
+                                "Премиум-серверы снова доступны."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        if not telegram_reachability.handle_send_exception(user_id, e):
+                            logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление о восстановлении LTE user_id={user_id}: {e}")
         except Exception as e:
             logger.error(f"Scheduler[dual-limits]: ошибка обработки пользователя {user_id}: {e}", exc_info=True)
 
@@ -963,10 +948,7 @@ async def check_inactive_usage_reminders(bot: Bot):
             )
             connection_string = key.get("subscription_url") or key.get("connection_string")
             kb = keyboards.create_inactive_usage_reminder_keyboard(connection_string)
-            chat_id = _outgoing_chat_id(user_id)
-            if chat_id is None:
-                continue
-            await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+            await bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
 
             database.update_key_usage_monitor(
                 key_id,
@@ -1185,11 +1167,8 @@ async def _notify_auto_renew_success(
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.button(text="👤 Профиль", callback_data="show_profile")
         builder.adjust(2)
-        chat_id = _outgoing_chat_id(user_id)
-        if chat_id is None:
-            return
         await bot.send_message(
-            chat_id,
+            user_id,
             f"✅ <b>Автопродление выполнено</b>\n\n"
             f"Ключ {label} продлён на <b>{days_added} дн.</b>\n"
             f"Списано: <b>{price:.0f} ₽</b> с баланса.",
@@ -1209,11 +1188,8 @@ async def _notify_auto_renew_no_balance(
         builder.button(text="💳 Пополнить баланс", callback_data="top_up_start")
         builder.button(text="🔑 Мои ключи", callback_data="manage_keys")
         builder.adjust(1)
-        chat_id = _outgoing_chat_id(user_id)
-        if chat_id is None:
-            return
         await bot.send_message(
-            chat_id,
+            user_id,
             f"⚠️ <b>Автопродление не выполнено</b>\n\n"
             f"Для продления ключа {label} нужно <b>{price:.0f} ₽</b>,\n"
             f"но на балансе недостаточно средств.\n\n"
@@ -1313,100 +1289,45 @@ async def check_auto_renewals(bot: Bot):
 
 
 async def check_broadcast_campaigns(bot: Bot):
-    """Отправка рассылок: один run на кампанию, не более одного сообщения на пользователя в run."""
+    """Send queued broadcast campaigns to inactive subscribers."""
     campaigns = rw_repo.get_broadcast_campaigns()
+    now = datetime.now()
     for c in campaigns:
         if not c.get("is_active"):
             continue
-        status = str(c.get("status") or "").strip().lower()
-        if status == "completed":
-            continue
+        interval_hours = int(c.get("interval_hours") or 72)
+        last_run_raw = c.get("last_run_at")
+        if last_run_raw:
+            last_run = _parse_dt_safe(str(last_run_raw))
+            if last_run and (now - last_run).total_seconds() < interval_hours * 3600:
+                continue
         campaign_id = int(c["id"])
-        try:
-            rw_repo.validate_broadcast_telegram_html(c.get("text_html") or "")
-        except rw_repo.BroadcastHtmlError as e:
-            active = rw_repo.get_active_broadcast_run(campaign_id)
-            if active:
-                rw_repo.abort_broadcast_run(int(active["id"]), str(e))
-            else:
-                rw_repo.set_broadcast_campaign_last_error(campaign_id, str(e))
-            logger.error("Broadcast %s: %s", campaign_id, e)
+        recipients = rw_repo.get_pending_broadcast_recipients(campaign_id, interval_hours)
+        rw_repo.mark_broadcast_run(campaign_id)
+        if not recipients:
+            logger.debug(f"Broadcast {campaign_id}: нет получателей.")
             continue
-        run = rw_repo.get_active_broadcast_run(campaign_id)
-        if not run:
-            run = rw_repo.try_start_broadcast_run(campaign_id, force=False)
-        if not run:
-            continue
-        await _deliver_broadcast_run(bot, c, run)
-
-
-async def _deliver_broadcast_run(bot: Bot, campaign: dict, run: dict) -> None:
-    campaign_id = int(campaign["id"])
-    run_id = int(run["id"])
-    snapshot_campaign = rw_repo.campaign_from_run_snapshot(campaign, run)
-    text = snapshot_campaign.get("text_html") or campaign.get("text_html") or ""
-    try:
-        rw_repo.validate_broadcast_telegram_html(text)
-    except rw_repo.BroadcastHtmlError as e:
-        rw_repo.abort_broadcast_run(run_id, str(e))
-        logger.error("Broadcast %s run %s: %s", campaign_id, run_id, e)
-        return
-    recipients = rw_repo.get_broadcast_recipients(
-        snapshot_campaign,
-        campaign_id=campaign_id,
-        exclude_already_sent=True,
-        run_id=run_id,
-    )
-    sent = 0
-    failed = 0
-    unreachable = 0
-    for uid in recipients:
-        live = rw_repo.get_broadcast_campaign(campaign_id) or campaign
-        if not live.get("is_active"):
-            logger.info("Broadcast %s: кампания отключена, текущий run приостановлен.", campaign_id)
-            return
-        if not rw_repo.is_broadcastable_user(int(uid)):
-            continue
-        chat_id = _outgoing_chat_id(uid)
-        if chat_id is None:
-            continue
-        if not rw_repo.claim_broadcast_recipient(run_id, campaign_id, int(uid)):
-            continue
-        try:
-            await bot.send_message(int(chat_id), text, parse_mode="HTML")
-            rw_repo.apply_broadcast_send_result(run_id, campaign_id, int(uid), "sent")
-            sent += 1
-        except Exception as e:
-            if telegram_reachability.handle_send_exception(int(uid), e):
-                rw_repo.apply_broadcast_send_result(
-                    run_id,
-                    campaign_id,
-                    int(uid),
-                    "unreachable",
-                    error_message=str(e)[:500],
-                )
-                unreachable += 1
-            else:
-                rw_repo.apply_broadcast_send_result(
-                    run_id,
-                    campaign_id,
-                    int(uid),
-                    "failed",
-                    error_message=str(e)[:500],
-                )
+        text = c.get("text_html") or ""
+        sent_ids: list[int] = []
+        failed = 0
+        unreachable = 0
+        for uid in recipients:
+            try:
+                await bot.send_message(int(uid), text, parse_mode="HTML")
+                sent_ids.append(uid)
+            except Exception as e:
                 failed += 1
-                logger.warning("Broadcast %s: не удалось отправить пользователю %s: %s", campaign_id, uid, e)
-        await asyncio.sleep(0.05)
-    rw_repo.complete_broadcast_run(run_id)
-    logger.info(
-        "Broadcast %s «%s» run %s: отправлено %s, ошибок %s, недоступны боту %s.",
-        campaign_id,
-        campaign.get("name"),
-        run_id,
-        sent,
-        failed,
-        unreachable,
-    )
+                if telegram_reachability.handle_send_exception(int(uid), e):
+                    unreachable += 1
+                else:
+                    logger.warning(f"Broadcast {campaign_id}: не удалось отправить пользователю {uid}: {e}")
+            await asyncio.sleep(0.05)  # stay within Telegram rate limits
+        if sent_ids:
+            rw_repo.record_broadcast_sends(campaign_id, sent_ids)
+        logger.info(
+            f"Broadcast {campaign_id} «{c.get('name')}»: отправлено {len(sent_ids)}, не доставлено {failed} "
+            f"(из них недоступны боту {unreachable})."
+        )
 
 
 async def periodic_subscription_check(bot_controller: BotController):
