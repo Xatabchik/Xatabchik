@@ -2,7 +2,7 @@
 import time
 from aiogram import BaseMiddleware
 from typing import Any, Awaitable, Callable, Dict
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, TelegramObject
+from aiogram.types import TelegramObject
 
 from shop_bot.data_manager import remnawave_repository as rw_repo
 
@@ -30,37 +30,6 @@ def franchise_enabled_cached() -> bool:
     _FRANCHISE_ENABLED_CACHE["value"] = val
     _FRANCHISE_ENABLED_CACHE["ts"] = now
     return val
-
-
-def _markup_has_callback(markup: InlineKeyboardMarkup | None, callback_data: str) -> bool:
-    if not markup:
-        return False
-    for row in markup.inline_keyboard or []:
-        for btn in row:
-            if getattr(btn, "callback_data", None) == callback_data:
-                return True
-    return False
-
-
-def with_delete_self_button(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
-    if _markup_has_callback(markup, "factory_del_self"):
-        return markup or InlineKeyboardMarkup(inline_keyboard=[])
-    extra = [InlineKeyboardButton(text="🗑 Удалить моего бота", callback_data="factory_del_self")]
-    rows = [list(row) for row in (markup.inline_keyboard if markup else [])]
-    insert_at = None
-    for i, row in enumerate(rows):
-        if any(getattr(btn, "callback_data", None) == "partner_withdraw" for btn in row):
-            insert_at = i + 1
-            break
-    if insert_at is None:
-        insert_at = len(rows)
-        if rows:
-            last_cbs = [getattr(btn, "callback_data", None) for btn in rows[-1]]
-            last_text = " ".join(getattr(btn, "text", "") or "" for btn in rows[-1])
-            if "back_to_main_menu" in last_cbs or last_text.startswith("⬅️"):
-                insert_at = len(rows) - 1
-    rows.insert(insert_at, extra)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 class FactoryStatsMiddleware(BaseMiddleware):
@@ -94,38 +63,3 @@ class FactoryStatsMiddleware(BaseMiddleware):
                     rw_repo.reset_current_factory_bot_id(token)
                 except Exception:
                     pass
-
-
-class OwnerCabinetEnhanceMiddleware(BaseMiddleware):
-    """Добавляет кнопку удаления текущего клона в живой partner_cabinet."""
-
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: Dict[str, Any],
-    ) -> Any:
-        result = await handler(event, data)
-        try:
-            if not isinstance(event, CallbackQuery):
-                return result
-            if getattr(event, "data", None) != "partner_cabinet":
-                return result
-            if not event.from_user or not event.message:
-                return result
-            bot = data.get("bot")
-            bot_id = rw_repo.resolve_factory_bot_id(getattr(bot, "id", None) if bot else None)
-            if int(bot_id or 0) <= 0:
-                return result
-            info = rw_repo.get_managed_bot(bot_id) or {}
-            owner_id = int(info.get("owner_telegram_id") or 0)
-            if int(event.from_user.id) != owner_id:
-                return result
-            markup = event.message.reply_markup
-            new_markup = with_delete_self_button(markup)
-            if new_markup is markup:
-                return result
-            await event.message.edit_reply_markup(reply_markup=new_markup)
-        except Exception:
-            pass
-        return result

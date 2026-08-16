@@ -493,24 +493,11 @@ def test_partner_cabinet_keyboard_has_delete_under_withdraw():
     assert block.find("partner_withdraw") < block.find("factory_del_self")
 
 
-def test_delete_self_button_is_inserted_under_withdraw():
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    from shop_bot.factory_bot.middleware import with_delete_self_button
-
-    markup = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Реквизиты", callback_data="partner_requisites")],
-            [InlineKeyboardButton(text="💸 Вывод средств", callback_data="partner_withdraw")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")],
-        ]
-    )
-    new = with_delete_self_button(markup)
-    callbacks = [btn.callback_data for row in new.inline_keyboard for btn in row]
-    assert callbacks == [
-        "partner_requisites",
-        "partner_withdraw",
-        "factory_del_self",
-        "back_to_main_menu",
-    ]
-    same = with_delete_self_button(new)
-    assert [btn.callback_data for row in same.inline_keyboard for btn in row] == callbacks
+def test_main_menu_does_not_contain_delete_bot():
+    keyboards = Path("src/shop_bot/bot/keyboards.py").read_text(encoding="utf-8")
+    service = Path("src/shop_bot/factory_bot/service.py").read_text(encoding="utf-8")
+    middleware = Path("src/shop_bot/factory_bot/middleware.py").read_text(encoding="utf-8")
+    assert "factory_del_self" not in keyboards
+    assert "OwnerCabinetEnhanceMiddleware" not in service
+    assert "OwnerCabinetEnhanceMiddleware" not in middleware
+    assert "with_delete_self_button" not in middleware
