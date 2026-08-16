@@ -2,7 +2,7 @@
 
 ## Что изменилось в этом цикле
 
-Точечные правки runtime-управления клонами: включение/выключение франшизы и отдельных ботов больше не требует `docker-compose restart`. Добавлены остановка одного клона, автоотключение по невалидному токену, кабинет «Мои боты», удаление в веб-админке и отдельный флаг видимости пункта меню.
+Точечные правки runtime-управления клонами: включение/выключение франшизы и отдельных ботов больше не требует `docker-compose restart`. Добавлены остановка одного клона, автоотключение по невалидному токену, удаление текущего клона владельцем, удаление в веб-админке и отдельный флаг видимости пункта меню.
 
 ### Изменённые файлы и закрытые задачи
 
@@ -10,7 +10,7 @@
    - `stop_bot(bot_id)` — идемпотентная остановка одного клона (cancel task, await, без повторного закрытия `bot.session`).
    - `restart_bot(bot_id)` = `stop_bot` + `start_bot` (ротация токена).
    - `runner()` перехватывает `TelegramUnauthorizedError` / `TelegramForbiddenError`, ставит `is_active=0`, логирует **без токена**, корректно завершает task.
-   - В dispatcher клона подключается `get_factory_router()` (список/удаление ботов владельца).
+   - В dispatcher клона подключается `get_owner_cabinet_router()` (удаление текущего бота). Создание новых клонов в `factory_bot` отсутствует.
 
 2. **`src/shop_bot/webhook_server/app.py`** — задачи 2, 6, 7
    - `toggle_franchise_settings()` после записи флага вызывает `start_all()` / `stop_all()` через `asyncio.run_coroutine_threadsafe` на loop root-бота (`future.result(timeout=5)`).
@@ -25,16 +25,16 @@
 
 4. **`src/shop_bot/factory_bot/middleware.py`** — задача 3
    - `FactoryStatsMiddleware` при выключенной франшизе сразу отдаёт управление handler без SQL статистики (лёгкий TTL-кэш `franchise_enabled`).
-   - `OwnerCabinetEnhanceMiddleware` добавляет кнопку «🤖 Мои боты» в живой `partner_cabinet` клона.
+   - `OwnerCabinetEnhanceMiddleware` добавляет кнопку «🗑 Удалить моего бота» в живой `partner_cabinet` клона.
 
 5. **`src/shop_bot/factory_bot/handlers.py` + `keyboards.py`** — задача 5
-   - В `cabinet_menu()` кнопки «🤖 Мои боты» и удаление каждого бота.
-   - Список через `get_managed_bots_by_owner`; удаление заново проверяет `owner_telegram_id == from_user.id`.
-   - После смены токена вызывается `restart_bot`.
+   - В `cabinet_menu()` кнопка «🗑 Удалить моего бота» (текущий клон, без списка «Мои боты»).
+   - Удаление заново проверяет `owner_telegram_id == from_user.id`.
+   - Нет создания ботов, инструкции и `get_factory_router`.
 
 6. **`src/shop_bot/data_manager/database.py` + `remnawave_repository.py`** — задачи 4–6
    - Новые функции: `update_managed_bot_active`, `get_managed_bots_by_owner`, `delete_managed_bot`, `get_factory_cabinet`.
-   - Схема `managed_bots` не менялась (`is_active` переиспользуется). Связанные `factory_user_activity` / `partner_commissions` при удалении **не** стираются.
+   - Схема `managed_bots` не менялась (`is_active` переиспользуется). При удалении чистятся `factory_user_activity` и `partner_commissions`; заявки на вывод сохраняются.
 
 7. **Шаблоны** — задачи 6–7
    - `franchise.html` / `franchise_bot.html` — кнопка удаления с `confirm()`.
@@ -53,8 +53,9 @@
 - Невалидный токен: polling **не** ретраится; `is_active=0`; запись и комиссии остаются. После нового токена — «Включить» или повторная регистрация токена владельцем (`restart_bot`).
 
 ### Кабинет владельца
-- В клоне у владельца в кабинете есть «🤖 Мои боты».
+- В клоне у владельца в кабинете есть «🗑 Удалить моего бота» (удаляется только текущий клон).
 - Удаление проверяет владение на сервере на каждое нажатие.
+- Создание новых клонов — только в root-боте, не в `factory_bot`.
 
 ### Меню веб-админки
 - `franchise_enabled` — включает клонирование и runtime клонов.

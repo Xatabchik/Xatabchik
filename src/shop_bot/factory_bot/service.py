@@ -77,8 +77,8 @@ class ManagedBotsService:
             dp.callback_query.middleware(FactoryStatsMiddleware())
             dp.callback_query.middleware(OwnerCabinetEnhanceMiddleware())
 
-            # Shop-фронтенд клона + узкий кабинет владельца (удаление своего бота).
-            # get_factory_router() с «Создать бота» / инструкцией к клонам не подключается.
+            # Shop-фронтенд клона + кабинет владельца (удаление текущего бота).
+            # Создание новых клонов живёт только в root-боте (bot/handlers.py).
             dp.include_router(get_user_router())
             dp.include_router(get_owner_cabinet_router())
 

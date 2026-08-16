@@ -444,7 +444,20 @@ def test_middleware_skips_when_franchise_disabled(temp_db):
 def test_clone_service_does_not_include_factory_router():
     src = Path("src/shop_bot/factory_bot/service.py").read_text(encoding="utf-8")
     assert "get_owner_cabinet_router()" in src
-    assert "include_router(get_factory_router())" not in src
+    assert "get_factory_router" not in src
+
+
+def test_factory_bot_has_no_create_bot_or_my_bots():
+    handlers = Path("src/shop_bot/factory_bot/handlers.py").read_text(encoding="utf-8")
+    keyboards = Path("src/shop_bot/factory_bot/keyboards.py").read_text(encoding="utf-8")
+    for src in (handlers, keyboards):
+        assert "factory_create_bot" not in src
+        assert "factory_my_bots" not in src
+        assert "Создать бот" not in src
+        assert "Мои боты" not in src
+        assert "get_factory_router" not in src
+    from shop_bot.factory_bot import handlers as h
+    assert not hasattr(h, "get_factory_router")
 
 
 def test_cabinet_menu_uses_delete_self_not_my_bots():
