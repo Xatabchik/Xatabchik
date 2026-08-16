@@ -471,6 +471,7 @@ def test_cabinet_menu_uses_delete_self_not_my_bots():
     ]
     assert "factory_del_self" in callbacks
     assert "factory_my_bots" not in callbacks
+    assert callbacks.index("partner_withdraw") < callbacks.index("factory_del_self")
     confirm = delete_bot_confirm(7)
     confirm_cb = [
         btn.callback_data
@@ -479,3 +480,37 @@ def test_cabinet_menu_uses_delete_self_not_my_bots():
     ]
     assert "factory_del_yes:7" in confirm_cb
     assert "factory_my_bots" not in confirm_cb
+
+
+def test_partner_cabinet_keyboard_has_delete_under_withdraw():
+    src = Path("src/shop_bot/bot/handlers.py").read_text(encoding="utf-8")
+    start = src.find("def _kb_partner_cabinet")
+    end = src.find("def _kb_partner_withdraw")
+    assert start != -1 and end > start
+    block = src[start:end]
+    assert 'callback_data="partner_withdraw"' in block
+    assert 'callback_data="factory_del_self"' in block
+    assert block.find("partner_withdraw") < block.find("factory_del_self")
+
+
+def test_delete_self_button_is_inserted_under_withdraw():
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from shop_bot.factory_bot.middleware import with_delete_self_button
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Реквизиты", callback_data="partner_requisites")],
+            [InlineKeyboardButton(text="💸 Вывод средств", callback_data="partner_withdraw")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")],
+        ]
+    )
+    new = with_delete_self_button(markup)
+    callbacks = [btn.callback_data for row in new.inline_keyboard for btn in row]
+    assert callbacks == [
+        "partner_requisites",
+        "partner_withdraw",
+        "factory_del_self",
+        "back_to_main_menu",
+    ]
+    same = with_delete_self_button(new)
+    assert [btn.callback_data for row in same.inline_keyboard for btn in row] == callbacks

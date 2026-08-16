@@ -46,9 +46,20 @@ def with_delete_self_button(markup: InlineKeyboardMarkup | None) -> InlineKeyboa
     if _markup_has_callback(markup, "factory_del_self"):
         return markup or InlineKeyboardMarkup(inline_keyboard=[])
     extra = [InlineKeyboardButton(text="🗑 Удалить моего бота", callback_data="factory_del_self")]
-    rows = [extra]
-    if markup and markup.inline_keyboard:
-        rows.extend(list(markup.inline_keyboard))
+    rows = [list(row) for row in (markup.inline_keyboard if markup else [])]
+    insert_at = None
+    for i, row in enumerate(rows):
+        if any(getattr(btn, "callback_data", None) == "partner_withdraw" for btn in row):
+            insert_at = i + 1
+            break
+    if insert_at is None:
+        insert_at = len(rows)
+        if rows:
+            last_cbs = [getattr(btn, "callback_data", None) for btn in rows[-1]]
+            last_text = " ".join(getattr(btn, "text", "") or "" for btn in rows[-1])
+            if "back_to_main_menu" in last_cbs or last_text.startswith("⬅️"):
+                insert_at = len(rows) - 1
+    rows.insert(insert_at, extra)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

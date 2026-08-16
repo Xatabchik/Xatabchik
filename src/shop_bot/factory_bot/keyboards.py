@@ -3,8 +3,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def cabinet_menu() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🗑 Удалить моего бота", callback_data="factory_del_self")
     b.button(text="💸 Запросить вывод", callback_data="partner_withdraw")
+    b.button(text="🗑 Удалить моего бота", callback_data="factory_del_self")
     b.button(text="⬅️ Назад", callback_data="partner_cabinet")
     b.adjust(1, 1, 1)
     return b.as_markup()
