@@ -20,6 +20,42 @@ class FactoryStates(StatesGroup):
     waiting_token = State()
     waiting_withdraw_amount = State()
 
+
+def _parse_bot_id_from_callback(data: str, prefix: str) -> int | None:
+    raw = (data or "")
+    if not raw.startswith(prefix):
+        return None
+    suffix = raw[len(prefix):]
+    try:
+        bot_id = int(suffix)
+    except Exception:
+        return None
+    return bot_id if bot_id > 0 else None
+
+
+def _format_bots_list(bots: list[dict]) -> str:
+    if not bots:
+        return "🤖 *Мои боты*\n\nУ вас пока нет клонов."
+    lines = ["🤖 *Мои боты*\n"]
+    for b in bots:
+        username = b.get("username") or "без_username"
+        active = int(b.get("is_active") or 0) == 1
+        status = "активен" if active else "неактивен"
+        lines.append(f"• @{username} (id={b.get('id')}) — {status}")
+    lines.append("\nНажмите «🗑 Удалить», чтобы остановить клон и убрать его из списка.")
+    return "\n".join(lines)
+
+
+async def _show_my_bots(cb: CallbackQuery) -> None:
+    owner_id = int(cb.from_user.id)
+    bots = rw_repo.get_managed_bots_by_owner(owner_id) or []
+    await cb.message.edit_text(
+        _format_bots_list(bots),
+        reply_markup=keyboards.my_bots_menu(bots),
+        parse_mode="Markdown",
+    )
+
+
 def get_factory_router() -> Router:
     r = Router()
 
@@ -108,11 +144,11 @@ def get_factory_router() -> Router:
             await state.clear()
             return
 
-        # Start the new bot immediately
+        # Start / restart immediately (restart нужен при ротации токена).
         service = get_service()
         if service:
             try:
-                await service.start_bot(new_bot_id)
+                await service.restart_bot(new_bot_id)
             except Exception as e:
                 logger.error(f"Failed to start managed bot {new_bot_id}: {e}", exc_info=True)
 
@@ -147,6 +183,58 @@ def get_factory_router() -> Router:
         )
         await cb.message.edit_text(text, reply_markup=keyboards.cabinet_menu(), parse_mode="Markdown")
         await cb.answer()
+
+    @r.callback_query(F.data == "factory_my_bots")
+    async def my_bots(cb: CallbackQuery):
+        await _show_my_bots(cb)
+        await cb.answer()
+
+    @r.callback_query(F.data.startswith("factory_del:"))
+    async def delete_bot_ask(cb: CallbackQuery):
+        bot_id = _parse_bot_id_from_callback(cb.data or "", "factory_del:")
+        if not bot_id:
+            await cb.answer("Некорректный бот.", show_alert=True)
+            return
+        info = rw_repo.get_managed_bot(bot_id) or {}
+        owner_id = int(info.get("owner_telegram_id") or 0)
+        if not info or cb.from_user.id != owner_id:
+            await cb.answer("Можно удалять только свои боты.", show_alert=True)
+            return
+        username = info.get("username") or "без_username"
+        await cb.message.edit_text(
+            f"Удалить бота @{username} (id={bot_id})?\n\n"
+            "Клон будет остановлен. Статистика и комиссии сохранятся для аудита.",
+            reply_markup=keyboards.delete_bot_confirm(bot_id),
+        )
+        await cb.answer()
+
+    @r.callback_query(F.data.startswith("factory_del_yes:"))
+    async def delete_bot_confirm(cb: CallbackQuery):
+        bot_id = _parse_bot_id_from_callback(cb.data or "", "factory_del_yes:")
+        if not bot_id:
+            await cb.answer("Некорректный бот.", show_alert=True)
+            return
+        info = rw_repo.get_managed_bot(bot_id) or {}
+        owner_id = int(info.get("owner_telegram_id") or 0)
+        if not info or cb.from_user.id != owner_id:
+            await cb.answer("Можно удалять только свои боты.", show_alert=True)
+            return
+
+        service = get_service()
+        if service:
+            try:
+                await service.stop_bot(bot_id)
+            except Exception as e:
+                logger.error(f"Failed to stop managed bot {bot_id} before delete: {e}", exc_info=True)
+
+        deleted = rw_repo.delete_managed_bot(bot_id, owner_telegram_id=cb.from_user.id)
+        if not deleted:
+            await cb.answer("Не удалось удалить бота.", show_alert=True)
+            await _show_my_bots(cb)
+            return
+
+        await cb.answer("Бот удалён.")
+        await _show_my_bots(cb)
 
     @r.callback_query(F.data == "factory_withdraw")
     async def withdraw_start(cb: CallbackQuery, bot: Bot, state: FSMContext):

@@ -1971,18 +1971,19 @@ def get_admin_router() -> Router:
             await callback.answer("У вас нет прав.", show_alert=True)
             return
         
-        # Переключаем и получаем новое состояние
+        # Переключаем и получаем новое состояние (БД + запуск/остановка клонов)
         is_enabled = toggle_franchise_settings()
 
-        if not is_enabled:
-            try:
-                from shop_bot.factory_bot.runtime import get_service
-                svc = get_service()
-                if svc:
-                    import asyncio
-                    asyncio.create_task(svc.stop_all())
-            except Exception as _e:
-                logger.warning(f"Не удалось остановить клоны ботов при отключении франшизы: {_e}")
+        try:
+            from shop_bot.factory_bot.runtime import get_service
+            svc = get_service()
+            if svc:
+                if is_enabled:
+                    await svc.start_all()
+                else:
+                    await svc.stop_all()
+        except Exception as _e:
+            logger.warning(f"Не удалось применить клоны ботов при переключении франшизы: {_e}")
 
         status_text = "включена ✅" if is_enabled else "выключена ❌"
         await callback.answer(f"Франшиза {status_text}")

@@ -687,6 +687,7 @@ def initialize_db():
 
                 # Franchise settings
                 "franchise_enabled": "false",
+                "franchise_menu_button_visible": "false",
                 "franchise_commission_percent": "35.0",
                 "franchise_min_withdraw_rub": "1500.0",
 
@@ -8263,6 +8264,120 @@ def list_active_managed_bots() -> list[dict]:
     except Exception as e:
         logger.error(f"list_active_managed_bots failed: {e}")
         return []
+
+
+def update_managed_bot_active(bot_id: int, is_active: int) -> bool:
+    """Параметризованно выставить is_active (0/1). Схему таблицы не меняет."""
+    try:
+        bid = int(bot_id)
+        active = 1 if int(is_active) else 0
+    except Exception:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE managed_bots SET is_active = ? WHERE id = ?", (active, bid))
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"update_managed_bot_active failed: {e}")
+        return False
+
+
+def get_managed_bots_by_owner(owner_telegram_id: int) -> list[dict]:
+    """Список клонов владельца без токена (токен не отдаём в UI)."""
+    try:
+        owner_id = int(owner_telegram_id)
+    except Exception:
+        return []
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, telegram_bot_user_id, username, owner_telegram_id,
+                       referrer_bot_id, is_active, created_at
+                FROM managed_bots
+                WHERE owner_telegram_id = ?
+                ORDER BY id DESC
+                """,
+                (owner_id,),
+            )
+            return [dict(r) for r in (cur.fetchall() or [])]
+    except sqlite3.Error as e:
+        logger.error(f"get_managed_bots_by_owner failed: {e}")
+        return []
+
+
+def delete_managed_bot(bot_id: int, owner_telegram_id: int | None = None) -> bool:
+    """Удалить строку managed_bots. Связанные activity/commissions не трогаем (аудит).
+
+    Если передан owner_telegram_id — удаляем только при совпадении владельца.
+    """
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return False
+    owner_id = None
+    if owner_telegram_id is not None:
+        try:
+            owner_id = int(owner_telegram_id)
+        except Exception:
+            return False
+        if owner_id <= 0:
+            return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            if owner_id is None:
+                cur.execute("DELETE FROM managed_bots WHERE id = ?", (bid,))
+            else:
+                cur.execute(
+                    "DELETE FROM managed_bots WHERE id = ? AND owner_telegram_id = ?",
+                    (bid, owner_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"delete_managed_bot failed: {e}")
+        return False
+
+
+def get_factory_cabinet(bot_id: int) -> dict:
+    """Статистика кабинета клона (пользователи/сообщения/прямые клоны/баланс)."""
+    partner = get_partner_cabinet(bot_id)
+    res = {
+        "total_users": int(partner.get("total_users") or 0),
+        "total_messages": 0,
+        "direct_bots": 0,
+        "balance": float(partner.get("available") or 0.0),
+        "gross_paid_card": float(partner.get("gross_paid_card") or 0.0),
+        "commission_total": float(partner.get("commission_total") or 0.0),
+        "available": float(partner.get("available") or 0.0),
+    }
+    try:
+        b = int(bot_id or 0)
+    except Exception:
+        return res
+    if b <= 0:
+        return res
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(SUM(messages_count),0) FROM factory_user_activity WHERE bot_id = ?",
+                (b,),
+            )
+            res["total_messages"] = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute(
+                "SELECT COUNT(1) FROM managed_bots WHERE COALESCE(referrer_bot_id,0) = ?",
+                (b,),
+            )
+            res["direct_bots"] = int((cur.fetchone() or [0])[0] or 0)
+    except sqlite3.Error as e:
+        logger.error(f"get_factory_cabinet failed: {e}")
+    return res
 
 
 def create_managed_bot(

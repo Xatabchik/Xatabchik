@@ -367,6 +367,7 @@ ALL_SETTINGS_KEYS = [
     "payment_email_prompt_enabled",
     "enable_referral_days_bonus",
     "franchise_enabled",
+    "franchise_menu_button_visible",
     "franchise_commission_percent",
     "franchise_min_withdraw_rub",
 
@@ -406,17 +407,76 @@ def franchise_settings() -> bool:
         return False
 
 
+def franchise_menu_button_visible() -> bool:
+    """Видимость пункта «Франшиза» в меню веб-админки (независимо от franchise_enabled)."""
+    try:
+        val = (get_setting('franchise_menu_button_visible') or 'false').strip().lower()
+        return val in ('1', 'true', 'yes', 'on')
+    except Exception:
+        return False
+
+
+def _run_on_root_bot_loop(action, *, wait: bool = True, timeout: float = 5.0) -> None:
+    """Запустить coroutine action(service) на loop root-бота из Flask-потока.
+
+    Не падает, если сервис/loop ещё не созданы. Не блокирует HTTP дольше timeout.
+    """
+    try:
+        from shop_bot.factory_bot.runtime import get_service
+        svc = get_service()
+        if svc is None:
+            logger.warning("ManagedBotsService недоступен — изменение сохранено в БД и применится при запуске root-бота.")
+            return
+        loop = _bot_controller.get_loop() if _bot_controller else None
+        if loop is None or not loop.is_running():
+            logger.warning("Цикл root-бота недоступен — изменение франшизы применится при следующем запуске.")
+            return
+        coro = action(svc)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            running.create_task(coro)
+            return
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        if not wait:
+            return
+        try:
+            fut.result(timeout=timeout)
+        except Exception as e:
+            logger.warning(f"Не удалось выполнить действие клонов на loop root-бота: {e}")
+    except Exception as e:
+        logger.warning(f"Не удалось связать действие франшизы с ManagedBotsService: {e}")
+
+
+def _apply_franchise_runtime(enabled: bool) -> None:
+    """Включить/выключить все клоны на уже работающем event loop."""
+    try:
+        from shop_bot.factory_bot.middleware import invalidate_franchise_enabled_cache
+        invalidate_franchise_enabled_cache()
+    except Exception:
+        pass
+    if enabled:
+        _run_on_root_bot_loop(lambda svc: svc.start_all())
+    else:
+        _run_on_root_bot_loop(lambda svc: svc.stop_all())
+
+
 def toggle_franchise_settings() -> bool:
     """
     Переключает состояние франшизы (ВКЛ/ВЫКЛ).
     Возвращает новое состояние: True = включена, False = выключена
+    Сразу запускает или останавливает клонов, если root-бот уже работает.
     """
     try:
         current = (get_setting('franchise_enabled') or 'false').strip().lower()
         current_enabled = current in ('1', 'true', 'yes', 'on')
         new_value = 'false' if current_enabled else 'true'
         rw_repo.update_setting('franchise_enabled', new_value)
-        return new_value == 'true'
+        enabled = new_value == 'true'
+        _apply_franchise_runtime(enabled)
+        return enabled
     except Exception:
         return False
 
@@ -603,6 +663,7 @@ def create_webhook_app(bot_controller_instance):
             "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
             "panel_login": (settings.get('panel_login') or '').strip(),
             "franchise_enabled": franchise_settings(),
+            "franchise_menu_button_visible": franchise_menu_button_visible(),
             "module_menu_items": module_loader.get_menu_items(),
         }
 
@@ -726,6 +787,7 @@ def create_webhook_app(bot_controller_instance):
             "brand_title": settings.get('panel_brand_title') or 'Xatabchik',
             "panel_login": (settings.get('panel_login') or '').strip(),
             "franchise_enabled": franchise_settings(),
+            "franchise_menu_button_visible": franchise_menu_button_visible(),
             "module_menu_items": module_loader.get_menu_items(),
             "hosts": common_hosts,
         }
@@ -4062,6 +4124,7 @@ def create_webhook_app(bot_controller_instance):
                 "trial_enabled",
                 "yoomoney_enabled",
                 "franchise_enabled",
+                "franchise_menu_button_visible",
                 "webapp_enabled",
                 "auto_renew_globally_enabled",
                 "smtp_use_tls",
@@ -4071,6 +4134,11 @@ def create_webhook_app(bot_controller_instance):
                 raw = values[-1]
                 value = 'true' if str(raw).lower() in ('on','true','1','yes') else 'false'
                 update_setting(checkbox_key, value)
+
+            try:
+                _apply_franchise_runtime(franchise_settings())
+            except Exception as e:
+                logger.warning(f"Не удалось применить франшизу после сохранения настроек: {e}")
 
             for key in ALL_SETTINGS_KEYS:
                 if key in checkbox_keys or key == 'panel_password':
@@ -6530,8 +6598,42 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось обновить статус бота.', 'danger')
             return redirect(request.referrer or url_for('franchise_page'))
 
+        try:
+            _run_on_root_bot_loop(
+                lambda svc, i=int(bot_id), v=new_val: svc.start_bot(i) if v == 1 else svc.stop_bot(i)
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось применить is_active для bot_id={bot_id} на лету: {e}")
+
         flash('Статус бота обновлён.', 'success')
         return redirect(request.referrer or url_for('franchise_page'))
+
+    @flask_app.route('/franchise/bot/<int:bot_id>/delete', methods=['POST'])
+    @login_required
+    def franchise_delete_bot_route(bot_id: int):
+        bot_id = int(bot_id)
+        existing = _franchise_get_bot(bot_id)
+        if not existing:
+            flash('Бот не найден.', 'warning')
+            return redirect(url_for('franchise_page'))
+
+        try:
+            _run_on_root_bot_loop(lambda svc, i=bot_id: svc.stop_bot(i))
+        except Exception as e:
+            logger.warning(f"Не удалось остановить bot_id={bot_id} перед удалением: {e}")
+
+        try:
+            deleted = rw_repo.delete_managed_bot(bot_id)
+        except Exception:
+            logger.error(f"Не удалось удалить managed bot id={bot_id}", exc_info=True)
+            deleted = False
+
+        if not deleted:
+            flash('Не удалось удалить бота.', 'danger')
+            return redirect(request.referrer or url_for('franchise_page'))
+
+        flash('Бот удалён. Статистика и комиссии сохранены.', 'success')
+        return redirect(url_for('franchise_page'))
 
     @flask_app.route('/franchise/withdraw/<int:req_id>/status', methods=['POST'])
     @login_required

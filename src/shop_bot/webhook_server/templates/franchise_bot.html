@@ -24,6 +24,10 @@
             <button type="submit" class="btn btn-outline-success"><i class="ti ti-power"></i> Включить</button>
           {% endif %}
         </form>
+        <form method="post" action="{{ url_for('franchise_delete_bot_route', bot_id=bot.id) }}" class="d-inline-block">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-outline-danger" onclick="return confirm('Удалить бота #{{ bot.id }}? Клон будет остановлен. Статистика и комиссии сохранятся.')"><i class="ti ti-trash"></i> Удалить</button>
+        </form>
       </div>
     </div>
   </div>
