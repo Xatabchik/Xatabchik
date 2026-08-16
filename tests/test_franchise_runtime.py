@@ -77,7 +77,7 @@ def _patch_service_aiogram(monkeypatch, polling_impl):
     monkeypatch.setattr(svc_mod, "Bot", _FakeBot)
     monkeypatch.setattr(Dispatcher, "start_polling", polling_impl)
     monkeypatch.setattr(svc_mod, "get_user_router", lambda: Router())
-    monkeypatch.setattr(svc_mod, "get_factory_router", lambda: Router())
+    monkeypatch.setattr(svc_mod, "get_owner_cabinet_router", lambda: Router())
 
 
 def test_stop_bot_and_start_bot_are_idempotent(temp_db, monkeypatch):
@@ -184,9 +184,36 @@ def test_delete_managed_bot_requires_owner(temp_db):
     )
     assert ok is True
     database.record_factory_activity(bot_id, OWNER_A)
+    database.accrue_partner_commission(bot_id, "pay-1", 777001, 100.0, "yookassa", 35.0)
+
+    import sqlite3
+
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute(
+            "INSERT INTO partner_withdraw_requests (bot_id, owner_telegram_id, amount_rub, status) VALUES (?, ?, 50, 'paid')",
+            (bot_id, OWNER_A),
+        )
+        conn.execute(
+            "INSERT INTO partner_withdraw_requests (bot_id, owner_telegram_id, amount_rub, status) VALUES (?, ?, 20, 'pending')",
+            (bot_id, OWNER_A),
+        )
+        conn.execute(
+            "INSERT INTO partner_withdraw_requests (bot_id, owner_telegram_id, amount_rub, status) VALUES (?, ?, 30, 'approved')",
+            (bot_id, OWNER_A),
+        )
+        conn.commit()
 
     assert database.delete_managed_bot(bot_id, owner_telegram_id=OWNER_B) is False
     assert database.get_managed_bot(bot_id) is not None
+    with sqlite3.connect(database.DB_FILE) as conn:
+        activity_left = conn.execute(
+            "SELECT COUNT(1) FROM factory_user_activity WHERE bot_id = ?", (bot_id,)
+        ).fetchone()[0]
+        commissions_left = conn.execute(
+            "SELECT COUNT(1) FROM partner_commissions WHERE bot_id = ?", (bot_id,)
+        ).fetchone()[0]
+    assert int(activity_left) == 1
+    assert int(commissions_left) == 1
 
     listed = database.get_managed_bots_by_owner(OWNER_A)
     assert len(listed) == 1
@@ -196,21 +223,29 @@ def test_delete_managed_bot_requires_owner(temp_db):
     assert database.get_managed_bot(bot_id) is None
     assert database.get_managed_bots_by_owner(OWNER_A) == []
 
-    with database.DB_FILE.open("rb"):
-        pass
-    import sqlite3
-
     with sqlite3.connect(database.DB_FILE) as conn:
-        n = conn.execute(
+        activity_left = conn.execute(
             "SELECT COUNT(1) FROM factory_user_activity WHERE bot_id = ?", (bot_id,)
         ).fetchone()[0]
-    assert int(n) == 1
+        commissions_left = conn.execute(
+            "SELECT COUNT(1) FROM partner_commissions WHERE bot_id = ?", (bot_id,)
+        ).fetchone()[0]
+        withdraws = conn.execute(
+            "SELECT status FROM partner_withdraw_requests WHERE bot_id = ? ORDER BY status",
+            (bot_id,),
+        ).fetchall()
+    assert int(activity_left) == 0
+    assert int(commissions_left) == 0
+    assert [row[0] for row in withdraws] == ["approved", "paid", "pending"]
+
+    database.purge_managed_bot_stats(bot_id)
+    database.purge_managed_bot_stats(bot_id)
 
 
 def test_factory_delete_handler_rejects_non_owner(temp_db, monkeypatch):
     from aiogram.types import Update
     from shop_bot.data_manager import database
-    from shop_bot.factory_bot.handlers import get_factory_router
+    from shop_bot.factory_bot.handlers import get_owner_cabinet_router
 
     ok, _, bot_id = database.create_managed_bot(
         token=TOKEN_A,
@@ -232,10 +267,10 @@ def test_factory_delete_handler_rejects_non_owner(temp_db, monkeypatch):
 
     session = _RecordingSession()
 
-    async def _feed(user_id: int, data: str):
+    async def _feed(user_id: int, data: str, telegram_bot_user_id: int = TG_BOT_ID):
         dp = Dispatcher()
-        dp.include_router(get_factory_router())
-        bot = Bot(token="123456789:AATestTokenForFranchiseDelete", session=session)
+        dp.include_router(get_owner_cabinet_router())
+        bot = Bot(token=f"{telegram_bot_user_id}:AATestTokenForFranchiseDelete", session=session)
         user = User(id=user_id, is_bot=False, first_name="Test")
         chat = Chat(id=user_id, type="private")
         msg = Message(
@@ -257,9 +292,58 @@ def test_factory_delete_handler_rejects_non_owner(temp_db, monkeypatch):
     assert database.get_managed_bot(bot_id) is not None
     assert fake_svc.stopped == []
 
+    asyncio.run(_feed(OWNER_B, "factory_del_self"))
+    assert database.get_managed_bot(bot_id) is not None
+
     asyncio.run(_feed(OWNER_A, f"factory_del_yes:{bot_id}"))
     assert database.get_managed_bot(bot_id) is None
     assert fake_svc.stopped == [bot_id]
+
+
+def test_factory_del_self_confirms_current_clone_only(temp_db, monkeypatch):
+    from aiogram.types import Update
+    from shop_bot.data_manager import database
+    from shop_bot.factory_bot.handlers import get_owner_cabinet_router
+
+    ok, _, bot_id = database.create_managed_bot(
+        token=TOKEN_A,
+        telegram_bot_user_id=TG_BOT_ID,
+        username="clone_self_del",
+        owner_telegram_id=OWNER_A,
+    )
+    assert ok is True
+
+    session = _RecordingSession()
+
+    async def _feed(user_id: int):
+        dp = Dispatcher()
+        dp.include_router(get_owner_cabinet_router())
+        bot = Bot(token=f"{TG_BOT_ID}:AATestTokenForFranchiseDelete", session=session)
+        user = User(id=user_id, is_bot=False, first_name="Test")
+        chat = Chat(id=user_id, type="private")
+        msg = Message(
+            message_id=1,
+            date=datetime.now(timezone.utc),
+            chat=chat,
+            from_user=user,
+        )
+        cb = CallbackQuery(
+            id="cb-self",
+            from_user=user,
+            chat_instance="inst",
+            data="factory_del_self",
+            message=msg,
+        )
+        await dp.feed_update(bot, Update(update_id=2, callback_query=cb))
+
+    asyncio.run(_feed(OWNER_A))
+    assert database.get_managed_bot(bot_id) is not None
+    from aiogram.methods import EditMessageText
+
+    edits = [m for m in session.methods if isinstance(m, EditMessageText)]
+    assert edits
+    assert f"factory_del_yes:{bot_id}" in (edits[-1].reply_markup.inline_keyboard[0][0].callback_data or "")
+    assert "factory_my_bots" not in str(session.methods)
 
 
 def test_franchise_menu_visibility_flags(temp_db):
@@ -299,6 +383,9 @@ def test_franchise_delete_route_stops_and_deletes(temp_db, monkeypatch):
     )
     assert ok is True
 
+    database.record_factory_activity(bot_id, OWNER_A)
+    database.accrue_partner_commission(bot_id, "pay-web", 777002, 80.0, "yookassa", 35.0)
+
     class _FakeSvc:
         def __init__(self):
             self.stopped: list[int] = []
@@ -319,6 +406,17 @@ def test_franchise_delete_route_stops_and_deletes(temp_db, monkeypatch):
     resp = client.post(f"/franchise/bot/{bot_id}/delete", follow_redirects=False)
     assert resp.status_code in (302, 303)
     assert database.get_managed_bot(bot_id) is None
+    import sqlite3
+
+    with sqlite3.connect(database.DB_FILE) as conn:
+        activity_left = conn.execute(
+            "SELECT COUNT(1) FROM factory_user_activity WHERE bot_id = ?", (bot_id,)
+        ).fetchone()[0]
+        commissions_left = conn.execute(
+            "SELECT COUNT(1) FROM partner_commissions WHERE bot_id = ?", (bot_id,)
+        ).fetchone()[0]
+    assert int(activity_left) == 0
+    assert int(commissions_left) == 0
 
 
 def test_middleware_skips_when_franchise_disabled(temp_db):
@@ -341,3 +439,30 @@ def test_middleware_skips_when_franchise_disabled(temp_db):
 
     asyncio.run(_run())
     assert called["n"] == 1
+
+
+def test_clone_service_does_not_include_factory_router():
+    src = Path("src/shop_bot/factory_bot/service.py").read_text(encoding="utf-8")
+    assert "get_owner_cabinet_router()" in src
+    assert "include_router(get_factory_router())" not in src
+
+
+def test_cabinet_menu_uses_delete_self_not_my_bots():
+    from shop_bot.factory_bot.keyboards import cabinet_menu, delete_bot_confirm
+
+    markup = cabinet_menu()
+    callbacks = [
+        btn.callback_data
+        for row in markup.inline_keyboard
+        for btn in row
+    ]
+    assert "factory_del_self" in callbacks
+    assert "factory_my_bots" not in callbacks
+    confirm = delete_bot_confirm(7)
+    confirm_cb = [
+        btn.callback_data
+        for row in confirm.inline_keyboard
+        for btn in row
+    ]
+    assert "factory_del_yes:7" in confirm_cb
+    assert "factory_my_bots" not in confirm_cb

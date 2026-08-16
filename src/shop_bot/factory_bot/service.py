@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramUnauthorizedError
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.bot.handlers import get_user_router
 from shop_bot.bot.middlewares import BanMiddleware
-from .handlers import get_factory_router
+from .handlers import get_owner_cabinet_router
 from .middleware import FactoryStatsMiddleware, OwnerCabinetEnhanceMiddleware
 
 logger = logging.getLogger(__name__)
@@ -77,9 +77,10 @@ class ManagedBotsService:
             dp.callback_query.middleware(FactoryStatsMiddleware())
             dp.callback_query.middleware(OwnerCabinetEnhanceMiddleware())
 
-            # Пользовательский роутер (магазин) + кабинет франшизы (мои боты / удаление).
+            # Shop-фронтенд клона + узкий кабинет владельца (удаление своего бота).
+            # get_factory_router() с «Создать бота» / инструкцией к клонам не подключается.
             dp.include_router(get_user_router())
-            dp.include_router(get_factory_router())
+            dp.include_router(get_owner_cabinet_router())
 
             async def runner():
                 logger.info(f"Менеджер бота запущен: bot_id={bot_id} (@{info.get('username')})")

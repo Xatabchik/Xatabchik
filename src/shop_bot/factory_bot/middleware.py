@@ -42,10 +42,10 @@ def _markup_has_callback(markup: InlineKeyboardMarkup | None, callback_data: str
     return False
 
 
-def with_my_bots_button(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
-    if _markup_has_callback(markup, "factory_my_bots"):
+def with_delete_self_button(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
+    if _markup_has_callback(markup, "factory_del_self"):
         return markup or InlineKeyboardMarkup(inline_keyboard=[])
-    extra = [InlineKeyboardButton(text="🤖 Мои боты", callback_data="factory_my_bots")]
+    extra = [InlineKeyboardButton(text="🗑 Удалить моего бота", callback_data="factory_del_self")]
     rows = [extra]
     if markup and markup.inline_keyboard:
         rows.extend(list(markup.inline_keyboard))
@@ -86,7 +86,7 @@ class FactoryStatsMiddleware(BaseMiddleware):
 
 
 class OwnerCabinetEnhanceMiddleware(BaseMiddleware):
-    """Добавляет кнопку «Мои боты» в живой partner_cabinet клона, не трогая bot/handlers.py."""
+    """Добавляет кнопку удаления текущего клона в живой partner_cabinet."""
 
     async def __call__(
         self,
@@ -111,7 +111,7 @@ class OwnerCabinetEnhanceMiddleware(BaseMiddleware):
             if int(event.from_user.id) != owner_id:
                 return result
             markup = event.message.reply_markup
-            new_markup = with_my_bots_button(markup)
+            new_markup = with_delete_self_button(markup)
             if new_markup is markup:
                 return result
             await event.message.edit_reply_markup(reply_markup=new_markup)

@@ -8310,10 +8310,34 @@ def get_managed_bots_by_owner(owner_telegram_id: int) -> list[dict]:
         return []
 
 
+def purge_managed_bot_stats(bot_id: int) -> None:
+    """Удалить активность и комиссии клона. Идемпотентно, ошибки не пробрасывает."""
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            _purge_managed_bot_stats_on_cursor(cur, bid)
+            conn.commit()
+    except sqlite3.Error as e:
+        logger.warning(f"purge_managed_bot_stats failed for bot_id={bot_id}: {e}")
+
+
+def _purge_managed_bot_stats_on_cursor(cur: sqlite3.Cursor, bot_id: int) -> None:
+    cur.execute("DELETE FROM factory_user_activity WHERE bot_id = ?", (bot_id,))
+    cur.execute("DELETE FROM partner_commissions WHERE bot_id = ?", (bot_id,))
+
+
 def delete_managed_bot(bot_id: int, owner_telegram_id: int | None = None) -> bool:
-    """Удалить строку managed_bots. Связанные activity/commissions не трогаем (аудит).
+    """Удалить строку managed_bots и статистику клона.
+
+    factory_user_activity и partner_commissions очищаются. Заявки на вывод
+    (partner_withdraw_requests), включая approved/paid, сохраняются для аудита.
 
     Если передан owner_telegram_id — удаляем только при совпадении владельца.
+    Сбой очистки статистики не блокирует удаление самой записи.
     """
     try:
         bid = int(bot_id)
@@ -8330,6 +8354,19 @@ def delete_managed_bot(bot_id: int, owner_telegram_id: int | None = None) -> boo
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
+            if owner_id is None:
+                cur.execute("SELECT id FROM managed_bots WHERE id = ? LIMIT 1", (bid,))
+            else:
+                cur.execute(
+                    "SELECT id FROM managed_bots WHERE id = ? AND owner_telegram_id = ? LIMIT 1",
+                    (bid, owner_id),
+                )
+            if not cur.fetchone():
+                return False
+            try:
+                _purge_managed_bot_stats_on_cursor(cur, bid)
+            except sqlite3.Error as e:
+                logger.warning(f"purge_managed_bot_stats failed for bot_id={bid}: {e}")
             if owner_id is None:
                 cur.execute("DELETE FROM managed_bots WHERE id = ?", (bid,))
             else:

@@ -666,6 +666,7 @@ _LEGACY_FORWARDERS = (
     "list_active_managed_bots",
     "update_managed_bot_active",
     "get_managed_bots_by_owner",
+    "purge_managed_bot_stats",
     "delete_managed_bot",
     "get_factory_cabinet",
     "create_managed_bot",

@@ -6632,7 +6632,7 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось удалить бота.', 'danger')
             return redirect(request.referrer or url_for('franchise_page'))
 
-        flash('Бот удалён. Статистика и комиссии сохранены.', 'success')
+        flash('Бот удалён. Активность клона очищена. Одобренные/выплаченные заявки на вывод сохранены.', 'success')
         return redirect(url_for('franchise_page'))
 
     @flask_app.route('/franchise/withdraw/<int:req_id>/status', methods=['POST'])
