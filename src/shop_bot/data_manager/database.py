@@ -673,6 +673,7 @@ def initialize_db():
                 "payment_label_yookassa_card": "🏦 Банковская карта",
                 "payment_label_yookassa_sbp": "🏦 СБП / Банковская карта",
                 "payment_label_platega": "💳 Platega",
+                "payment_label_rollypay": "💳 СБП",
                 "payment_label_cryptobot": "💎 Криптовалюта",
                 "payment_label_heleket": "💎 Криптовалюта",
                 "payment_label_tonconnect": "🪙 TON Connect",
