@@ -1644,6 +1644,17 @@
 							Когда отключена, кнопка скрывается от всех пользователей.
 						</div>
 
+						<div class="mb-3">
+							<div class="form-check">
+								<input type="hidden" name="franchise_menu_button_visible" value="off">
+								<input class="form-check-input" type="checkbox" id="franchise_menu_button_visible" name="franchise_menu_button_visible" value="true" {% if settings.franchise_menu_button_visible == 'true' or settings.franchise_menu_button_visible == '1' %}checked{% endif %}>
+								<label class="form-check-label" for="franchise_menu_button_visible">Показывать раздел «Франшиза» в меню админки даже при выключенной франшизе</label>
+							</div>
+						</div>
+						<div class="form-text text-secondary mb-4">
+							Отдельная настройка видимости пункта меню. Сами страницы `/franchise*` доступны при входе в панель независимо от этого флага.
+						</div>
+
 						<hr class="my-4">
 
 						<div class="mb-3">

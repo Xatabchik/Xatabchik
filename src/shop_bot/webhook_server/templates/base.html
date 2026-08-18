@@ -104,7 +104,7 @@
 							<i class="ti ti-device-desktop"></i>
 							<span>Мониторинг</span>
 						</a>
-						{% if franchise_enabled %}
+						{% if franchise_enabled or franchise_menu_button_visible %}
 						<a href="/franchise" class="nav-link">
 							<i class="ti ti-briefcase"></i>
 							<span>Франшиза</span>
@@ -223,7 +223,7 @@
 								<li><a href="{{ url_for('modules_page') }}"><i class="ti ti-puzzle"></i> Модули</a></li>
 								<li><a href="{{ url_for('button_constructor_page') }}"><i class="ti ti-tools"></i> Конструктор кнопок</a></li>
 								<li><a href="{{ url_for('monitor_page') }}"><i class="ti ti-device-desktop"></i> Мониторинг</a></li>
-								{% if franchise_enabled %}<li><a href="/franchise"><i class="ti ti-briefcase"></i> Франшиза</a></li>{% endif %}
+								{% if franchise_enabled or franchise_menu_button_visible %}<li><a href="/franchise"><i class="ti ti-briefcase"></i> Франшиза</a></li>{% endif %}
 								
 								{% if module_menu_items %}
 								<li class="burger-menu-section-title">Модули</li>

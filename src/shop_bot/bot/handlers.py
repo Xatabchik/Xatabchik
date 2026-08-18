@@ -8214,8 +8214,9 @@ def get_user_router() -> Router:
         b = InlineKeyboardBuilder()
         b.button(text="💳 Реквизиты", callback_data="partner_requisites")
         b.button(text="💸 Вывод средств", callback_data="partner_withdraw")
+        b.button(text="🗑 Удалить моего бота", callback_data="factory_del_self")
         b.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
-        b.adjust(1, 1, 1)
+        b.adjust(1, 1, 1, 1)
         return b.as_markup()
 
     def _kb_partner_withdraw() -> types.InlineKeyboardMarkup:
