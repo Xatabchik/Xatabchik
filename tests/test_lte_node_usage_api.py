@@ -431,3 +431,44 @@ def test_numeric_identifier_used_without_extra_request(temp_db):
 
     assert asyncio.run(api.resolve_panel_user_id("64", host_name="H")) == 64
     assert calls == []
+
+
+def test_auth_error_is_reported_as_auth_not_missing_squad(temp_db):
+    """403 от панели — это авторизация, а не «сквада нет»: сообщение должно вести
+    администратора к API-токену и его скоупам, а не к проверке UUID."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    _router(api, [("/accessible-nodes", _Resp(
+        {"message": "Forbidden resource", "error": "Forbidden", "statusCode": 403}, 403))])
+
+    with pytest.raises(api.RemnawaveAPIError) as exc:
+        asyncio.run(api.get_lte_node_uuids_for_host("H"))
+    text = str(exc.value)
+    assert "403" in text and "токен" in text.lower()
+    assert "не найден" not in text
+
+
+def test_missing_squad_is_reported_as_404(temp_db):
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    _router(api, [("/accessible-nodes", _Resp({"statusCode": 404}, 404))])
+
+    with pytest.raises(api.RemnawaveAPIError) as exc:
+        asyncio.run(api.get_lte_node_uuids_for_host("H"))
+    assert "не найден" in str(exc.value)
+
+
+def test_auth_error_does_not_zero_usage_or_disable_key(temp_db):
+    """403 не должен трактоваться как «путь не поддерживается» и обнулять расход:
+    иначе отозванный токен молча выключил бы учёт LTE у всех."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    _router(api, [
+        ("/accessible-nodes", _Resp({"response": {"squadUuid": "squad-lte", "accessibleNodes": [
+            {"uuid": "n1", "nodeName": "DE-1", "countryCode": "DE",
+             "configProfileUuid": "c", "configProfileName": "d", "activeInbounds": []}]}})),
+        ("/bandwidth-stats/", _Resp({"message": "Forbidden resource", "statusCode": 403}, 403)),
+    ])
+
+    with pytest.raises(api.RemnawaveAPIError):
+        _usage(api, nodes=("n1",))

@@ -1249,20 +1249,40 @@ async def get_squad_accessible_nodes(
             raise RemnawaveAPIError(failed[1])
 
     encoded = quote(squad_uuid_n)
-    try:
-        response = await _request_for_host(
-            host_name, "GET", f"/api/internal-squads/{encoded}/accessible-nodes"
-        )
-    except Exception as e:
-        message = (
-            f"Remnawave[{host_name}]: не удалось получить ноды сквада {squad_uuid_n}: {e}. "
-            "Проверьте, что этот UUID существует в GET /api/internal-squads (это должен быть "
-            "internal squad, а не external-сквад и не config profile)."
-        )
+    path = f"/api/internal-squads/{encoded}/accessible-nodes"
+
+    def _remember_failure(message: str) -> RemnawaveAPIError:
         with _squad_nodes_cache_lock:
             _squad_nodes_failures[squad_uuid_n] = (time.monotonic(), message)
         logger.warning(message)
-        raise
+        return RemnawaveAPIError(message)
+
+    try:
+        # 401/403 и 404 разбираем отдельно: у них принципиально разные причины и разные
+        # действия администратора, а по тексту «500 {...}» это неотличимо.
+        response = await _request_for_host(
+            host_name, "GET", path, expected_status=(200, 401, 403, 404)
+        )
+    except Exception as e:
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: не удалось получить ноды сквада {squad_uuid_n}: {e}"
+        ) from e
+
+    if response.status_code in (401, 403):
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: панель отклонила запрос нод сквада {squad_uuid_n} "
+            f"({response.status_code}). Это авторизация, а не отсутствие сквада: проверьте "
+            "API-токен хоста и его скоупы (нужны права на чтение internal-squads / "
+            "accessible-nodes). Токен из сессии веб-панели живёт недолго — нужен постоянный "
+            "API-токен."
+        )
+    if response.status_code == 404:
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: сквад {squad_uuid_n} не найден на панели (404). "
+            "Проверьте, что этот UUID есть в GET /api/internal-squads — это должен быть "
+            "internal squad, а не external-сквад и не config profile."
+        )
+
     with _squad_nodes_cache_lock:
         _squad_nodes_failures.pop(squad_uuid_n, None)
     payload = response.json()
