@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, NamedTuple, Sequence
 from urllib.parse import quote
 import re
 import asyncio
@@ -1305,6 +1305,293 @@ async def get_lte_node_uuids_for_host(host_name: str) -> list[str]:
     `[]` — LTE-сквад не настроен (легитимно). Сбой обращения к панели — исключение.
     """
     return [n["uuid"] for n in await get_lte_nodes_for_host(host_name)]
+
+
+class NodeUsage(NamedTuple):
+    """Расход пользователя по нодам за период + идентификатор сработавшего пути API."""
+
+    per_node: dict[str, int]
+    path: str
+
+
+# Кэш решения «какой путь поддерживает эта панель» — на уровне ИНСТАНСА панели (base_url),
+# а не host_name: два host_name с одинаковыми base_url/token — это одна панель, и повторно
+# зондировать её незачем. TTL позволяет подхватить апгрейд панели без рестарта бота.
+_USAGE_PATH_TTL_SECONDS = 3600
+_usage_path_state: dict[str, dict[str, Any]] = {}
+_usage_path_lock = threading.Lock()
+
+# Идентификаторы путей цепочки (порядок = приоритет).
+USAGE_PATH_SQUAD_SCOPED = "squad_scoped"          # 3.3.2
+USAGE_PATH_USER_BY_ID = "user_by_id"              # 3.3.2
+USAGE_PATH_USER_BY_UUID = "user_by_uuid"          # 2.8.1
+USAGE_PATH_USER_LEGACY = "user_legacy_by_uuid"    # 2.8.1
+USAGE_PATH_LEGACY_WRAPPER = "legacy_wrapper"      # исторический get_user_lte_usage_bytes
+
+
+def _panel_instance_key(host_name: str) -> str:
+    """Идентификатор инстанса панели (base_url) для кэша поддержки путей."""
+    try:
+        return (_load_config_for_host(host_name).get("base_url") or "").strip().rstrip("/")
+    except Exception:
+        return ""
+
+
+def reset_usage_path_cache() -> None:
+    """Сбросить кэш решений о поддерживаемых путях (используется в тестах)."""
+    with _usage_path_lock:
+        _usage_path_state.clear()
+
+
+def _usage_path_unsupported(instance_key: str, path: str) -> bool:
+    if not instance_key:
+        return False
+    with _usage_path_lock:
+        state = _usage_path_state.get(instance_key)
+        if not state:
+            return False
+        if (time.monotonic() - state.get("ts", 0.0)) >= _USAGE_PATH_TTL_SECONDS:
+            _usage_path_state.pop(instance_key, None)
+            return False
+        return path in state.get("unsupported", set())
+
+
+def _mark_usage_path_unsupported(instance_key: str, path: str) -> None:
+    if not instance_key:
+        return
+    with _usage_path_lock:
+        state = _usage_path_state.setdefault(instance_key, {"unsupported": set(), "ts": time.monotonic()})
+        if (time.monotonic() - state.get("ts", 0.0)) >= _USAGE_PATH_TTL_SECONDS:
+            state["unsupported"] = set()
+            state["ts"] = time.monotonic()
+        state["unsupported"].add(path)
+
+
+def _as_api_date(dt: datetime) -> str:
+    """Оба семейства эндпоинтов ждут дату в формате YYYY-MM-DD."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d")
+
+
+def _to_int_bytes(value: Any) -> int:
+    try:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            return int(float(value.strip()))
+    except (TypeError, ValueError):
+        return 0
+    return 0
+
+
+async def resolve_panel_user_id(
+    user_uuid: str,
+    *,
+    host_name: str,
+    user_payload: dict[str, Any] | None = None,
+) -> int | None:
+    """Числовой `id` пользователя панели (нужен путям 3.3.2), 3.3.2/2.8.1 отдают его в
+    payload пользователя рядом с `uuid`. Возвращает None, если поля нет."""
+    payload = user_payload
+    if payload is None:
+        payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+    raw = (payload or {}).get("id")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sum_squad_scoped_days(payload: Any, allowed_nodes: set[str] | None) -> dict[str, int]:
+    """3.3.2: `{response: {days: [{date, nodes: [{uuid, totalBytes}]}]}}` -> сумма по нодам."""
+    body = payload.get("response") if isinstance(payload, dict) else None
+    days = (body or {}).get("days") if isinstance(body, dict) else None
+    per_node: dict[str, int] = {}
+    for day in days or []:
+        for node in (day or {}).get("nodes") or []:
+            node_uuid = str((node or {}).get("uuid") or "").strip()
+            if not node_uuid or (allowed_nodes is not None and node_uuid not in allowed_nodes):
+                continue
+            per_node[node_uuid] = per_node.get(node_uuid, 0) + _to_int_bytes(node.get("totalBytes"))
+    return per_node
+
+
+def _sum_user_series(payload: Any, allowed_nodes: set[str]) -> dict[str, int]:
+    """2.8.1/3.3.2: `{response: {series|topNodes: [{uuid, total}]}}` -> расход по нодам.
+
+    `uuid` в series/topNodes — это UUID ноды; фильтруем по нодам LTE-сквада, т.к. эндпоинт
+    отдаёт расход пользователя по ВСЕМ нодам.
+    """
+    body = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(body, dict):
+        return {}
+    per_node: dict[str, int] = {}
+    for key in ("series", "topNodes"):
+        for row in body.get(key) or []:
+            node_uuid = str((row or {}).get("uuid") or "").strip()
+            if not node_uuid or node_uuid not in allowed_nodes:
+                continue
+            value = _to_int_bytes(row.get("total"))
+            # series и topNodes описывают один и тот же период — берём максимум, а не сумму,
+            # чтобы не удвоить расход, если присутствуют оба списка.
+            per_node[node_uuid] = max(per_node.get(node_uuid, 0), value)
+    return per_node
+
+
+def _sum_legacy_rows(payload: Any, user_uuid: str, allowed_nodes: set[str]) -> dict[str, int]:
+    """2.8.1 legacy: плоский список `{userUuid, nodeUuid, total, date}` -> расход по нодам."""
+    rows = payload.get("response") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return {}
+    per_node: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_user = str(row.get("userUuid") or row.get("user_uuid") or "").strip()
+        if row_user != user_uuid:
+            continue
+        node_uuid = str(row.get("nodeUuid") or row.get("node_uuid") or "").strip()
+        if not node_uuid or node_uuid not in allowed_nodes:
+            continue
+        per_node[node_uuid] = per_node.get(node_uuid, 0) + _to_int_bytes(row.get("total"))
+    return per_node
+
+
+async def get_user_node_usage_for_squad(
+    user_uuid: str,
+    *,
+    host_name: str,
+    squad_uuid: str,
+    node_uuids: Sequence[str],
+    start_date: datetime,
+    end_date: datetime,
+    panel_user_id: int | None = None,
+    user_payload: dict[str, Any] | None = None,
+) -> NodeUsage:
+    """Расход пользователя по нодам LTE-сквада за период — с разбивкой по нодам.
+
+    Версионно-толерантная цепочка (подтверждена по контракту 2.8.1 и 3.3.2):
+
+      1. `GET /api/bandwidth-stats/internal-squads/{squadUuid}/users/{userId}/usage`
+         — 3.3.2, числовой userId, ответ `days[].nodes[]{uuid,totalBytes}`, уже
+         заскоупленный нодами сквада. В 2.8.1 секции INTERNAL_SQUADS нет -> 404.
+      2. `GET /api/bandwidth-stats/users/{userId}` — 3.3.2 (числовой id) и
+      3. `GET /api/bandwidth-stats/users/{userUuid}` — 2.8.1 (UUID): один и тот же
+         маршрут с разным типом параметра, ответ `series[]/topNodes[]{uuid,total}` по
+         всем нодам, фильтруем списком нод сквада.
+      4. `GET /api/bandwidth-stats/users/{userUuid}/legacy` — 2.8.1, плоские строки
+         `{userUuid,nodeUuid,total,date}`. В 3.3.2 секции LEGACY нет -> 404.
+      5. Исторический `get_user_lte_usage_bytes` — оставлен как последний кандидат без
+         изменения его логики выбора пути. Разбивку он дать не может (только сумму), а
+         оба его эндпоинта на 2.8.1/3.3.2 неприменимы (`/api/nodes/{uuid}/usage/range`
+         отсутствует в обеих версиях, а у `POST /bandwidth-stats/nodes/users` другое тело
+         и график вместо строк), поэтому его нулевой результат трактуется как «данных
+         нет», а не как «расход нулевой».
+
+    Ошибки: 404/400/422 -> путь/тип параметра не поддерживается версией, пробуем
+    следующего кандидата и запоминаем решение по инстансу панели. Сетевая ошибка или 5xx
+    -> строгий fail-safe: пробрасываем RemnawaveAPIError, чтобы вызывающий пропустил ключ
+    и НЕ записал нулевой расход. Если ни один путь не дал данных -> RemnawavePathUnsupportedError.
+    """
+    user_uuid_n = (user_uuid or "").strip()
+    allowed = {str(u).strip() for u in (node_uuids or []) if str(u).strip()}
+    if not user_uuid_n or not allowed:
+        return NodeUsage({}, "none")
+
+    instance_key = _panel_instance_key(host_name)
+    start_txt = _as_api_date(start_date)
+    end_txt = _as_api_date(end_date)
+    top_limit = max(20, len(allowed) + 5)
+    squad_uuid_n = (squad_uuid or "").strip()
+
+    async def _numeric_id() -> int | None:
+        nonlocal panel_user_id
+        if panel_user_id is None:
+            panel_user_id = await resolve_panel_user_id(
+                user_uuid_n, host_name=host_name, user_payload=user_payload
+            )
+        return panel_user_id
+
+    # 1. squad-scoped (3.3.2)
+    if squad_uuid_n and not _usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED):
+        numeric_id = await _numeric_id()
+        if numeric_id is None:
+            _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
+        else:
+            response = await _request_optional_path(
+                host_name,
+                "GET",
+                f"/api/bandwidth-stats/internal-squads/{quote(squad_uuid_n)}/users/{numeric_id}/usage",
+                params={"start": start_txt, "end": end_txt},
+            )
+            if response is None:
+                _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
+            else:
+                per_node = _sum_squad_scoped_days(response.json(), allowed)
+                if per_node:
+                    return NodeUsage(per_node, USAGE_PATH_SQUAD_SCOPED)
+
+    # 2/3. per-user разбивка по нодам: 3.3.2 — числовой id, 2.8.1 — UUID.
+    for path_id in (USAGE_PATH_USER_BY_ID, USAGE_PATH_USER_BY_UUID):
+        if _usage_path_unsupported(instance_key, path_id):
+            continue
+        if path_id == USAGE_PATH_USER_BY_ID:
+            ident: Any = await _numeric_id()
+            if ident is None:
+                _mark_usage_path_unsupported(instance_key, path_id)
+                continue
+        else:
+            ident = quote(user_uuid_n)
+        response = await _request_optional_path(
+            host_name,
+            "GET",
+            f"/api/bandwidth-stats/users/{ident}",
+            params={"start": start_txt, "end": end_txt, "topNodesLimit": top_limit},
+        )
+        if response is None:
+            _mark_usage_path_unsupported(instance_key, path_id)
+            continue
+        per_node = _sum_user_series(response.json(), allowed)
+        if per_node:
+            return NodeUsage(per_node, path_id)
+
+    # 4. legacy per-user (2.8.1)
+    if not _usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY):
+        response = await _request_optional_path(
+            host_name,
+            "GET",
+            f"/api/bandwidth-stats/users/{quote(user_uuid_n)}/legacy",
+            params={"start": start_txt, "end": end_txt},
+        )
+        if response is None:
+            _mark_usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY)
+        else:
+            per_node = _sum_legacy_rows(response.json(), user_uuid_n, allowed)
+            if per_node:
+                return NodeUsage(per_node, USAGE_PATH_USER_LEGACY)
+
+    # 5. исторический путь — только как сумма, без разбивки.
+    total = await get_user_lte_usage_bytes(
+        user_uuid_n, list(allowed), start_date, end_date, host_name=host_name
+    )
+    if total > 0:
+        logger.warning(
+            "Remnawave[%s]: разбивка по нодам недоступна, использован исторический "
+            "get_user_lte_usage_bytes (сумма %s байт распределена на одну запись)",
+            host_name, total,
+        )
+        # Разбивки нет — кладём сумму на первую ноду сквада, чтобы не потерять расход.
+        return NodeUsage({sorted(allowed)[0]: total}, USAGE_PATH_LEGACY_WRAPPER)
+
+    raise RemnawavePathUnsupportedError(
+        f"Remnawave[{host_name}]: ни один путь статистики по нодам не дал данных "
+        f"для пользователя {user_uuid_n} (сквад {squad_uuid_n or '—'})"
+    )
 
 
 async def get_squad_node_overlap(host_name: str) -> list[dict[str, Any]]:
