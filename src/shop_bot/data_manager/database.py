@@ -803,6 +803,11 @@ def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
         "remnawave_api_token": "TEXT",
         "node_class": "TEXT DEFAULT 'unlim'",
         "badge": "TEXT DEFAULT '∞'",
+        # Результат последней проверки пересечения нод LTE- и base-сквадов хоста (JSON-список).
+        # Хранится, чтобы карточки хоста в боте и веб-панели показывали предупреждение без
+        # обращения к панели на каждый рендер.
+        "squad_node_overlap": "TEXT",
+        "squad_node_overlap_checked_at": "TIMESTAMP",
     }
     for column, definition in extras.items():
         _ensure_table_column(cursor, "xui_hosts", column, definition)
@@ -2088,6 +2093,56 @@ def set_host_class(host_name: str, node_class: str, badge: str | None = None) ->
     except sqlite3.Error as e:
         logging.error(f"Не удалось установить класс хоста '{host_name}': {e}")
         return False
+
+
+def set_host_squad_overlap(host_name: str, overlap_nodes: list[dict] | None) -> bool:
+    """Сохранить результат проверки пересечения нод LTE- и base-сквадов хоста.
+
+    Пустой список означает «проверено, пересечений нет» — это не то же самое, что NULL
+    («не проверялось»), поэтому дата проверки пишется в обоих случаях.
+    """
+    try:
+        payload = json.dumps(
+            [
+                {"uuid": n.get("uuid"), "node_name": n.get("node_name")}
+                for n in (overlap_nodes or [])
+                if isinstance(n, dict) and n.get("uuid")
+            ],
+            ensure_ascii=False,
+        )
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE xui_hosts SET squad_node_overlap = ?, squad_node_overlap_checked_at = ? "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (payload, _now_str(), normalize_host_name(host_name)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logging.error(f"Failed to store squad node overlap for host '{host_name}': {e}")
+        return False
+
+
+def get_host_squad_overlap(host_name: str) -> list[dict]:
+    """Ноды, доступные и через LTE-, и через base-сквад хоста (по последней проверке)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT squad_node_overlap FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (normalize_host_name(host_name),),
+            )
+            row = cursor.fetchone()
+        raw = row[0] if row else None
+        if not raw:
+            return []
+        parsed = json.loads(raw)
+        return [p for p in parsed if isinstance(p, dict)] if isinstance(parsed, list) else []
+    except (sqlite3.Error, json.JSONDecodeError) as e:
+        logging.error(f"Failed to read squad node overlap for host '{host_name}': {e}")
+        return []
 
 
 def list_hosts_by_class(node_class: str) -> list[dict]:

@@ -1609,6 +1609,28 @@ async def get_squad_node_overlap(host_name: str) -> list[dict[str, Any]]:
     return [n for n in lte_nodes if n["uuid"] in base_uuids]
 
 
+async def refresh_host_squad_overlap(host_name: str) -> list[dict[str, Any]]:
+    """Перепроверить пересечение сквадов хоста и сохранить результат для карточек.
+
+    Вызывается при сохранении сквадов хоста. Пересечение НЕ блокирует сохранение — это
+    предупреждение: устранить его можно только правкой inbound'ов сквадов в Remnawave.
+    """
+    invalidate_squad_nodes_cache()
+    overlap = await get_squad_node_overlap(host_name)
+    if overlap:
+        logger.warning(
+            "Remnawave[%s]: ноды доступны одновременно через LTE- и base-сквад — их трафик "
+            "попадёт в LTE-пул, хотя они же отдаются безлимитным сквадом. Пересечение: %s",
+            host_name,
+            ", ".join(f"{n.get('node_name') or '—'} ({n['uuid']})" for n in overlap),
+        )
+    try:
+        rw_repo.set_host_squad_overlap(host_name, overlap)
+    except Exception as e:
+        logger.warning("Remnawave[%s]: не удалось сохранить результат проверки сквадов: %s", host_name, e)
+    return overlap
+
+
 def extract_subscription_url(user_payload: dict[str, Any] | None) -> str | None:
     if not user_payload:
         return None

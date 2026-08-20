@@ -80,6 +80,7 @@ from shop_bot.data_manager.database import (
     apply_global_remnawave_to_hosts,
     set_host_squads_from_catalog,
     get_host_selected_squad_catalog_ids,
+    get_host_squad_overlap,
 )
 from shop_bot.data_manager.database import (
     create_traffic_package, get_traffic_packages_for_plan, get_traffic_package_by_id,
@@ -4216,6 +4217,12 @@ def create_webhook_app(bot_controller_instance):
                 host['selected_squad_ids'] = set(get_host_selected_squad_catalog_ids(host['host_name']))
             except Exception:
                 host['selected_squad_ids'] = set()
+            # Результат последней проверки пересечения сквадов — из БД, без обращения к панели
+            # на каждый рендер страницы.
+            try:
+                host['squad_node_overlap'] = get_host_squad_overlap(host['host_name'])
+            except Exception:
+                host['squad_node_overlap'] = []
 
         try:
             ssh_targets = get_all_ssh_targets()
@@ -4726,6 +4733,22 @@ def create_webhook_app(bot_controller_instance):
                 continue
         ok = set_host_squads_from_catalog(host_name, catalog_ids)
         flash('Сквады хоста обновлены.' if ok else 'Не удалось обновить сквады хоста.', 'success' if ok else 'danger')
+        if ok:
+            # Пересечение нод LTE- и base-сквада не блокирует сохранение, но админ должен
+            # знать: трафик таких нод попадёт в LTE-пул, хотя их же отдаёт base-сквад.
+            try:
+                overlap = asyncio.run(remnawave_api.refresh_host_squad_overlap(host_name))
+            except Exception as e:
+                overlap = []
+                logger.warning(f"Проверка пересечения сквадов хоста '{host_name}' не удалась: {e}")
+            if overlap:
+                nodes_txt = ', '.join(f"{n.get('node_name') or '—'} ({n.get('uuid')})" for n in overlap)
+                flash(
+                    f"⚠️ Ноды доступны и через LTE-, и через base-сквад: {nodes_txt}. "
+                    "Их трафик будет засчитываться в LTE-пул — исправляется настройкой "
+                    "inbound'ов сквадов в Remnawave.",
+                    'warning',
+                )
         return redirect(url_for('settings_page', tab='hosts'))
 
     @flask_app.route('/update-host-subscription', methods=['POST'])

@@ -495,6 +495,8 @@ _LEGACY_FORWARDERS = (
     "set_host_squad_active",
     "delete_host_squad",
     "get_squad_by_class",
+    "set_host_squad_overlap",
+    "get_host_squad_overlap",
     "adjust_user_balance",
     "adjust_user_referral_balance",
     "ban_user",
