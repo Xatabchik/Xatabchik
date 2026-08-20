@@ -90,6 +90,7 @@ from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
     get_squad_by_class, get_host_class,
     get_lte_state, add_lte_boost_bytes,
+    get_node_usage_for_key, resolve_key_period_start,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -2768,6 +2769,14 @@ def create_webhook_app(bot_controller_instance):
             except Exception:
                 lte_state = None
 
+        node_usage_rows = []
+        node_usage_period_start = None
+        try:
+            node_usage_period_start = resolve_key_period_start(key)
+            node_usage_rows = get_node_usage_for_key(key_id, node_usage_period_start)
+        except Exception as e:
+            logger.warning(f"Не удалось получить расход по нодам для ключа {key_id}: {e}")
+
         return jsonify({
             "ok": True,
             "key": {
@@ -2810,6 +2819,17 @@ def create_webhook_app(bot_controller_instance):
             "qr_data_url": qr_data_url,
             "devices": devices,
             "lte_state": lte_state,
+            # Разбивка расхода по нодам LTE-сквада за текущий расчётный период.
+            "node_usage": [
+                {
+                    "node_uuid": r.get('node_uuid'),
+                    "node_name": r.get('node_name'),
+                    "used_bytes": r.get('used_bytes') or 0,
+                    "updated_at": r.get('updated_at'),
+                }
+                for r in node_usage_rows
+            ],
+            "node_usage_period_start": node_usage_period_start,
         })
 
     @flask_app.route('/admin/keys/<int:key_id>/change-plan', methods=['POST'])
