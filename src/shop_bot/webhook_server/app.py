@@ -4190,10 +4190,18 @@ def create_webhook_app(bot_controller_instance):
         for host in hosts:
             host['plans'] = get_plans_for_host(host['host_name'])
             for plan in host['plans']:
+                # Пулы докупки раздельные: 'main' (основной трафик) и 'lte' (💰 premium-ноды).
+                # Раньше здесь читался только main, поэтому LTE-пакеты, созданные в
+                # Telegram-админке, были не видны, а форма добавления писала в main — и
+                # докупка LTE у пользователей отвечала «пакеты не настроены».
                 try:
-                    plan['traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'])
+                    plan['traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'], pool='main')
                 except Exception:
                     plan['traffic_packages'] = []
+                try:
+                    plan['lte_traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'], pool='lte')
+                except Exception:
+                    plan['lte_traffic_packages'] = []
 
             try:
                 host['latest_speedtest'] = get_latest_speedtest(host['host_name'])
@@ -5287,11 +5295,16 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось обновить тариф (возможно, он не найден).', 'danger')
         return redirect(url_for('settings_page', tab='hosts'))
 
+    def _normalize_package_pool(raw) -> str:
+        """Пул пакета докупки: 'lte' (💰 premium-ноды) или 'main' (основной трафик)."""
+        return 'lte' if str(raw or '').strip().lower() == 'lte' else 'main'
+
     @flask_app.route('/admin/plans/<int:plan_id>/packages')
     @login_required
     def admin_get_traffic_packages_for_plan_json(plan_id: int):
+        pool = _normalize_package_pool(request.args.get('pool'))
         try:
-            packages = get_traffic_packages_for_plan(plan_id)
+            packages = get_traffic_packages_for_plan(plan_id, pool=pool)
             data = [
                 {
                     "package_id": p.get('package_id'),
@@ -5316,8 +5329,17 @@ def create_webhook_app(bot_controller_instance):
             flash('Проверьте поля пакета ГБ.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
 
-        create_traffic_package(plan_id, size_gb, price)
-        flash('Пакет ГБ добавлен.', 'success')
+        # Пул обязателен: без него пакет всегда уходил в 'main', и докупка LTE
+        # у пользователей отвечала «пакеты не настроены».
+        pool = _normalize_package_pool(request.form.get('pool'))
+        if pool == 'lte':
+            plan = get_plan_by_id(plan_id)
+            if not plan or int(plan.get('lte_limit_bytes') or 0) <= 0:
+                flash('Сначала задайте LTE-лимит тарифа («LTE пул, ГБ»), иначе LTE-пакеты не будут доступны.', 'danger')
+                return redirect(url_for('settings_page', tab='hosts'))
+
+        create_traffic_package(plan_id, size_gb, price, pool=pool)
+        flash('LTE-пакет ГБ добавлен.' if pool == 'lte' else 'Пакет ГБ добавлен.', 'success')
         return redirect(url_for('settings_page', tab='hosts'))
 
     @flask_app.route('/update-traffic-package/<int:package_id>', methods=['POST'])
