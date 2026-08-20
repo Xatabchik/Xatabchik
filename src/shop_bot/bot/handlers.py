@@ -5555,8 +5555,48 @@ def get_user_router() -> Router:
         return devices
 
 
+    def _is_key_without_billing_plan(key_data: dict) -> bool:
+        """Триальный или подарочный ключ: биллингового тарифа у него нет.
+
+        Для таких ключей `plan_id` в description намеренно None (см. вызовы
+        `_build_key_origin_meta(source="trial"/"gift", plan_id=None)`), поэтому подставлять
+        им «первый активный тариф хоста» нельзя: это исказило бы и лимиты в карточке
+        ключа, и набор пакетов докупки.
+
+        TODO: для подарочных ключей точный тариф известен в `user_gifts.plan_id`
+        (rw_repo.get_gift_info_by_key_id) — при необходимости докупку для подарков можно
+        включить, резолвя тариф оттуда, а не эвристикой по хосту.
+        """
+        try:
+            tag = str((key_data or {}).get("tag") or "").strip().lower()
+        except Exception:
+            tag = ""
+        if tag in {"trial", "триал"} or "gift" in tag:
+            return True
+        try:
+            desc = (key_data or {}).get("description")
+            if isinstance(desc, str) and desc.strip().startswith("{"):
+                meta = json.loads(desc)
+                if isinstance(meta, dict):
+                    if meta.get("is_trial"):
+                        return True
+                    if str(meta.get("source") or "").strip().lower() in {"trial", "gift"}:
+                        return True
+        except Exception:
+            pass
+        return False
+
     def _resolve_plan_id_for_key(key_data: dict) -> int | None:
-        """Определяет plan_id, привязанный к ключу (из description JSON)."""
+        """Определяет plan_id, привязанный к ключу.
+
+        Приоритеты:
+          1) plan_id из vpn_keys.description (JSON, пишется при покупке/продлении);
+          2) fallback на первый активный тариф хоста — как в `_get_tariff_info_for_key`.
+
+        Без п.2 у ключей, выданных до появления этого поля (или с не-JSON description),
+        докупка ГБ/LTE была недоступна, хотя тариф хоста существует и карточка ключа
+        показывала его название через fallback в `_get_tariff_info_for_key`.
+        """
         try:
             desc = (key_data or {}).get("description")
             if isinstance(desc, str) and desc.strip().startswith("{"):
@@ -5565,7 +5605,23 @@ def get_user_router() -> Router:
                     return int(meta.get("plan_id"))
         except Exception:
             pass
-        return None
+
+        if _is_key_without_billing_plan(key_data):
+            return None
+
+        host_name = (key_data or {}).get("host_name")
+        if not host_name:
+            return None
+        try:
+            plans = get_active_plans_for_host(host_name) or []
+        except Exception:
+            plans = []
+        if not plans:
+            return None
+        try:
+            return int(plans[0].get("plan_id"))
+        except (TypeError, ValueError):
+            return None
 
 
     def _extract_traffic_used_bytes(payload: dict | None) -> int:
