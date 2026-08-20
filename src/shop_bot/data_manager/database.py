@@ -871,10 +871,12 @@ def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     # Миграция для уже существующих БД (CREATE TABLE IF NOT EXISTS не добавит колонки в старую таблицу).
     _ensure_table_column(cursor, "subscription_lte", "lte_used_baseline_bytes", "INTEGER DEFAULT 0")
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_reset_requested", "INTEGER DEFAULT 0")
-    # Отметка о том, что точка отсчёта (baseline) хоть раз выставлялась по факту расхода.
-    # Нужна, чтобы отличить "baseline = 0, потому что расхода не было" от "baseline никогда
-    # не инициализировался" (старые БД): во втором случае накопительный расход панели
-    # мгновенно исчерпал бы LTE-лимит сразу после обновления бота.
+    # Отметка о том, что точка отсчёта (baseline) уже определена. Нужна, чтобы отличить
+    # "baseline = 0, потому что подписка новая и расход считается с нуля" от "baseline
+    # никогда не выставлялся" (строки, созданные до появления этого механизма): во втором
+    # случае накопительный расход панели мгновенно исчерпал бы LTE-лимит после обновления
+    # бота. Строки, существовавшие до миграции, остаются с NULL и получают одноразовый
+    # backfill в воркере; новые строки помечаются сразу при вставке (см. get_lte_state).
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_initialized_at", "TIMESTAMP")
 
 
@@ -5602,6 +5604,16 @@ def update_plan_metadata(plan_id: int, metadata: dict | None) -> bool:
 
 
 def create_traffic_package(plan_id: int, size_gb: float, price: float, pool: str = 'main') -> int | None:
+    """Пакет докупки ГБ для тарифа. `pool`: 'main' (основной трафик) или 'lte' (premium-ноды).
+
+    TODO (известное ограничение, причина F диагностики): пакеты привязаны к `plan_id`, а
+    LTE-пул расходуется на пользователя (`subscription_lte`). Поэтому при нескольких
+    активных тарифах на одном хосте пакеты одного тарифа недоступны владельцам ключей
+    другого — пакеты нужно заводить для каждого тарифа. Перевод привязки на
+    host_name/squad_uuid потребует миграции существующих строк с неоднозначным выбором
+    целевого хоста (у тарифа он один, но пакеты могли создаваться до его смены), поэтому
+    сознательно вынесен за рамки этого фикса.
+    """
     pool = 'lte' if str(pool).strip().lower() == 'lte' else 'main'
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -5724,10 +5736,14 @@ def get_lte_state(user_id: int) -> dict:
             row = cursor.fetchone()
             if row:
                 return dict(row)
+            # Новая подписка: baseline = 0 и он сразу считается определённым — расход
+            # начинаем считать с нуля. Backfill по факту расхода нужен только строкам,
+            # созданным до появления lte_baseline_initialized_at.
+            created_at = _now_str()
             cursor.execute(
-                "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, premium_state) "
-                "VALUES (?, 0, 0, 0, 'enabled')",
-                (int(user_id),)
+                "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, "
+                "premium_state, lte_baseline_initialized_at) VALUES (?, 0, 0, 0, 'enabled', ?)",
+                (int(user_id), created_at)
             )
             conn.commit()
             return {
@@ -5737,7 +5753,7 @@ def get_lte_state(user_id: int) -> dict:
                 "lte_boost_bytes": 0,
                 "lte_used_baseline_bytes": 0,
                 "lte_baseline_reset_requested": 0,
-                "lte_baseline_initialized_at": None,
+                "lte_baseline_initialized_at": created_at,
                 "lte_reset_at": None,
                 "premium_state": "enabled",
             }
