@@ -894,25 +894,66 @@ def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_host_squads_host_name ON host_squads(host_name)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_host_squads_class ON host_squads(host_name, squad_class)")
 
-    # Миграция: переносим существующий xui_hosts.squad_uuid как запись класса 'base',
-    # если для этого хоста ещё нет ни одной записи в host_squads.
+    # Миграция: переносим существующий xui_hosts.squad_uuid в host_squads, если для этого
+    # хоста ещё нет ни одной записи. Класс определяем по node_class хоста: у 💰-premium ноды
+    # единственный сквад и есть LTE-сквад, и раньше он ошибочно переносился как 'base' —
+    # из-за чего вся LTE-логика (докупка, энфорсинг) считала ноду ненастроенной.
     try:
-        cursor.execute("SELECT host_name, squad_uuid FROM xui_hosts WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''")
+        cursor.execute(
+            "SELECT host_name, squad_uuid, COALESCE(node_class, 'unlim') "
+            "FROM xui_hosts WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''"
+        )
         legacy_rows = cursor.fetchall()
-        for host_name, squad_uuid in legacy_rows:
+        for host_name, squad_uuid, node_class in legacy_rows:
             host_name_n = normalize_host_name(host_name)
             squad_uuid_n = (squad_uuid or '').strip()
             if not host_name_n or not squad_uuid_n:
                 continue
-            cursor.execute("SELECT 1 FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT 1 FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             if cursor.fetchone() is not None:
                 continue
+            is_premium = str(node_class or '').strip().lower() == 'premium'
+            squad_class_legacy = 'lte' if is_premium else 'base'
+            label_legacy = 'LTE (legacy)' if is_premium else 'Base (legacy)'
             cursor.execute(
-                "INSERT OR IGNORE INTO host_squads (host_name, squad_uuid, squad_class, label, is_active) VALUES (?, ?, 'base', 'Base (legacy)', 1)",
-                (host_name_n, squad_uuid_n),
+                "INSERT OR IGNORE INTO host_squads (host_name, squad_uuid, squad_class, label, is_active) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (host_name_n, squad_uuid_n, squad_class_legacy, label_legacy),
             )
     except sqlite3.Error as e:
         logging.warning(f"Не удалось мигрировать legacy squad_uuid хостов в host_squads: {e}")
+
+    # Доп. миграция для инсталляций, где перенос выше уже отработал в предыдущей версии и
+    # записал premium-ноду как 'base'. Переклассифицируем только автоматически созданные
+    # записи ('Base (legacy)') у premium-хостов, у которых ровно один сквад и ещё нет lte —
+    # чтобы не затронуть привязки, которые администратор задал руками.
+    try:
+        cursor.execute(
+            """
+            UPDATE host_squads
+               SET squad_class = 'lte', label = 'LTE (legacy)'
+             WHERE squad_class = 'base'
+               AND label = 'Base (legacy)'
+               AND TRIM(host_name) IN (
+                     SELECT TRIM(host_name) FROM xui_hosts
+                      WHERE LOWER(COALESCE(node_class, 'unlim')) = 'premium'
+                   )
+               AND (
+                     SELECT COUNT(*) FROM host_squads hs2
+                      WHERE TRIM(hs2.host_name) = TRIM(host_squads.host_name) COLLATE NOCASE
+                   ) = 1
+            """
+        )
+        if cursor.rowcount:
+            logging.info(
+                "host_squads: %s legacy-сквад(ов) premium-хостов переклассифицированы как 'lte'",
+                cursor.rowcount,
+            )
+    except sqlite3.Error as e:
+        logging.warning(f"Не удалось переклассифицировать legacy-сквады premium-хостов: {e}")
 
 
 def add_host_squad(host_name: str, squad_uuid: str, squad_class: str = 'base', label: str | None = None) -> int | None:
@@ -1080,6 +1121,18 @@ def _ensure_remnawave_squads_catalog(cursor: sqlite3.Cursor) -> None:
                 """,
                 (uuid_n,),
             )
+        # Если legacy-сквад premium-хоста был переклассифицирован в 'lte' (см.
+        # _ensure_host_squads_table), выравниваем и каталог: иначе сохранение галочек
+        # сквадов в веб-панели (set_host_squads_from_catalog) вернуло бы класс 'base'.
+        cursor.execute(
+            """
+            UPDATE remnawave_squads
+               SET squad_class = 'lte'
+             WHERE squad_class = 'base'
+               AND label = 'Base (legacy)'
+               AND squad_uuid IN (SELECT squad_uuid FROM host_squads WHERE squad_class = 'lte')
+            """
+        )
     except sqlite3.Error as e:
         logging.warning(f"Не удалось мигрировать сквады в remnawave_squads: {e}")
 
