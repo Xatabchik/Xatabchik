@@ -6414,10 +6414,10 @@ def get_user_router() -> Router:
                     if lte_squad_cfg:
                         show_lte_topup = True
                         lte_state = database.get_lte_state(user_id)
-                        lte_limit = int(lte_state.get('lte_limit_bytes') or 0) or plan_lte_limit_bytes
                         lte_used = int(lte_state.get('lte_used_bytes') or 0)
-                        lte_boost = int(lte_state.get('lte_boost_bytes') or 0)
-                        lte_total = lte_limit + lte_boost
+                        # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
+                        # буст) — раньше показанный лимит и проверяемый расходились.
+                        lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
                         lte_used_txt = _format_bytes_gb(lte_used)
                         lte_total_txt = _format_bytes_gb(lte_total)
                         lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"

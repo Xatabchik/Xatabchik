@@ -571,7 +571,9 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
     """Двухуровневый учёт трафика (основной пул + независимый LTE-пул на premium-нодах).
 
     - Основной пул = суммарный расход по ВСЕМ ключам пользователя vs (лимит тарифа + докупленный buster).
-    - LTE-пул = суммарный расход только по ключам на premium-нодах vs subscription_lte.lte_limit_bytes.
+    - LTE-пул = расход по ключам на LTE-нодах vs (лимит тарифа + докупленный LTE-буст),
+      см. `database.resolve_lte_limit_bytes()` — единая формула с той, что показывается
+      пользователю в карточке ключа.
 
     Действия (идемпотентны — состояние хранится в vpn_keys.remote_access_state, чтобы не спамить API):
       * Основной исчерпан -> disable_user на ВСЕХ хостах пользователя ('disabled_main').
@@ -602,9 +604,12 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
     for user_id, keys in by_user.items():
         try:
             total_used = 0
-            premium_used = 0
             main_limit = 0
             plan_lte_limit = 0
+            # Расход по LTE-нодам считаем ОДИН раз на пользователя панели: get_user_used_traffic()
+            # возвращает агрегат Remnawave-пользователя, поэтому суммирование по каждому ключу
+            # задваивало один и тот же расход при нескольких LTE-ключах.
+            premium_used_by_uuid: dict[str, int] = {}
 
             for k in keys:
                 host_name = k.get("host_name")
@@ -619,65 +624,91 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                     used = 0
 
                 total_used += used
-                is_premium = database.get_host_class(host_name) == "premium"
+                # В LTE-пул попадают только ключи, у которых LTE-сквад подтверждён через
+                # host_squads: node_class='premium' без сквада — это недонастроенный хост,
+                # его расход не начисляем (fail-open), но предупреждаем в логах.
                 try:
                     has_lte_squad = database.get_squad_by_class(host_name, "lte") is not None
                 except Exception:
                     has_lte_squad = False
-                if is_premium or has_lte_squad:
-                    premium_used += used
+                if has_lte_squad:
+                    premium_used_by_uuid[str(user_uuid)] = used
+                elif database.get_host_class(host_name) == "premium":
+                    logger.warning(
+                        "Scheduler[dual-limits]: хост '%s' помечен как premium, но активного сквада "
+                        "класса 'lte' нет — расход по нему не учитывается в LTE-пуле.",
+                        host_name,
+                    )
 
-                if main_limit == 0:
+                plan_id = None
+                try:
+                    desc = k.get("description")
+                    if isinstance(desc, str) and desc.strip().startswith("{"):
+                        meta = json.loads(desc)
+                        if isinstance(meta, dict) and meta.get("plan_id") is not None:
+                            plan_id = int(meta.get("plan_id"))
+                except Exception:
                     plan_id = None
+                if plan_id:
                     try:
-                        desc = k.get("description")
-                        if isinstance(desc, str) and desc.strip().startswith("{"):
-                            meta = json.loads(desc)
-                            if isinstance(meta, dict) and meta.get("plan_id") is not None:
-                                plan_id = int(meta.get("plan_id"))
+                        plan = database.get_plan_by_id(plan_id)
                     except Exception:
-                        plan_id = None
-                    if plan_id:
+                        plan = None
+                    if plan:
+                        if main_limit == 0:
+                            base = int(plan.get("traffic_limit_bytes") or 0)
+                            if base > 0:
+                                boost = int(k.get("traffic_boost_bytes") or 0)
+                                main_limit = base + boost
+                        # LTE-лимит тарифа берём независимо от основного: у тарифа может быть
+                        # безлимитный основной пул и при этом отдельный LTE-лимит.
                         try:
-                            plan = database.get_plan_by_id(plan_id)
+                            plan_lte_limit = max(plan_lte_limit, int(plan.get("lte_limit_bytes") or 0))
                         except Exception:
-                            plan = None
-                        base = int(plan.get("traffic_limit_bytes") or 0) if plan else 0
-                        if base > 0:
-                            boost = int(k.get("traffic_boost_bytes") or 0)
-                            main_limit = base + boost
-                            if plan_lte_limit == 0:
-                                try:
-                                    plan_lte_limit = int(plan.get("lte_limit_bytes") or 0)
-                                except Exception:
-                                    plan_lte_limit = 0
+                            pass
+
+            premium_used = sum(premium_used_by_uuid.values())
 
             lte = database.get_lte_state(user_id)
-            lte_limit = int(lte.get("lte_limit_bytes") or 0)
-            if lte_limit == 0 and plan_lte_limit > 0:
-                # Инициализация LTE-пула из тарифа при первом проходе воркера.
-                lte_limit = plan_lte_limit
+            if plan_lte_limit > 0 and int(lte.get("lte_limit_bytes") or 0) != plan_lte_limit:
+                # Пересинхронизация базового лимита из тарифа на каждом проходе: раньше он
+                # копировался только когда был равен 0, из-за чего изменение
+                # plans.lte_limit_bytes админом не долетало до существующих пользователей.
+                # Докупленный буст (lte_boost_bytes) при этом не трогаем.
                 database.update_lte_state(user_id, lte_limit_bytes=plan_lte_limit)
+                lte["lte_limit_bytes"] = plan_lte_limit
 
             # --- Точка отсчёта (baseline) LTE-расхода ---
             # Панель Remnawave хранит расход по нодам накопительно (не "с момента сброса LTE"
-            # у конкретного пользователя), поэтому сравнивать lte_limit нужно не с сырым значением
-            # premium_used, а с разницей (premium_used - baseline). Baseline сдвигается на текущее
-            # сырое значение при докупке LTE / возврате доступа (см. database.request_lte_baseline_reset()).
+            # у конкретного пользователя), поэтому сравнивать лимит нужно не с сырым значением
+            # premium_used, а с разницей (premium_used - baseline). Baseline сдвигается только на
+            # границе расчётного периода (ежемесячный сброс), но НЕ при докупке — иначе покупка
+            # минимального пакета заново выдавала бы полный лимит.
             baseline = int(lte.get("lte_used_baseline_bytes") or 0)
             if int(lte.get("lte_baseline_reset_requested") or 0):
                 baseline = premium_used
-                database.update_lte_state(
-                    user_id,
-                    lte_used_baseline_bytes=baseline,
-                    lte_baseline_reset_requested=False,
+                database.commit_lte_baseline(user_id, baseline, expire_boost=True)
+                lte["lte_boost_bytes"] = 0
+                logger.info(
+                    f"Scheduler[dual-limits]: новый расчётный период LTE для user_id={user_id} — "
+                    f"baseline -> {baseline} bytes, докупленный буст обнулён"
                 )
-                logger.info(f"Scheduler[dual-limits]: сброшен baseline LTE для user_id={user_id} -> {baseline} bytes")
+            elif not lte.get("lte_baseline_initialized_at") and premium_used > 0:
+                # Подписка существовала до появления baseline: принимаем накопленный панелью
+                # исторический расход за точку отсчёта, иначе лимит был бы исчерпан сразу.
+                # Одноразово и идемпотентно (отметка lte_baseline_initialized_at).
+                baseline = premium_used
+                database.commit_lte_baseline(user_id, baseline, expire_boost=False)
+                logger.info(
+                    f"Scheduler[dual-limits]: инициализирован baseline LTE для user_id={user_id} "
+                    f"-> {baseline} bytes (первый проход после обновления)"
+                )
 
             premium_used_effective = max(0, premium_used - baseline)
             database.update_lte_state(user_id, lte_used_bytes=premium_used_effective)
 
-            lte_exhausted = lte_limit > 0 and premium_used_effective >= lte_limit
+            lte_limit_effective = database.resolve_lte_limit_bytes(lte, plan_lte_limit)
+            lte_exhausted = lte_limit_effective > 0 and premium_used_effective >= lte_limit_effective
             main_exhausted = main_limit > 0 and total_used >= main_limit
 
             lte_transition_to_disabled = False
@@ -690,7 +721,6 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 if not host_name or not user_uuid:
                     continue
 
-                is_premium = database.get_host_class(host_name) == "premium"
                 try:
                     lte_squad = database.get_squad_by_class(host_name, "lte")
                 except Exception:
@@ -700,8 +730,11 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
 
                 if main_exhausted:
                     desired_state = "disabled_main"
-                elif (is_premium or lte_squad) and lte_exhausted:
-                    desired_state = "disabled_premium_squad" if lte_squad else "disabled_premium"
+                elif lte_squad and lte_exhausted:
+                    # Отключаем по LTE-лимиту только те ключи, чей расход в этот лимит и
+                    # засчитывается (host_squads с классом 'lte'). Legacy-состояние
+                    # 'disabled_premium' по-прежнему корректно снимается ветвью ниже.
+                    desired_state = "disabled_premium_squad"
                 else:
                     desired_state = "enabled"
                 is_lte_disabled = desired_state in ("disabled_premium_squad", "disabled_premium")
@@ -735,7 +768,7 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 except Exception as e:
                     logger.error(f"Scheduler[dual-limits]: ошибка применения состояния {desired_state} для key_id={key_id}: {e}", exc_info=True)
 
-            # Уведомление пользователю + обновление baseline при смене состояния LTE-пула.
+            # Уведомление пользователю при смене состояния LTE-пула.
             # (main_exhausted обрабатывается отдельными уведомлениями об истечении подписки/трафика.)
             if lte_transition_to_disabled and not main_exhausted:
                 logger.info(f"Scheduler[dual-limits]: LTE-пул исчерпан для user_id={user_id} — доступ к premium-нодам отключён.")
@@ -755,11 +788,10 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         if not telegram_reachability.handle_send_exception(user_id, e):
                             logger.warning(f"Scheduler[dual-limits]: не удалось отправить уведомление об исчерпании LTE user_id={user_id}: {e}")
             elif lte_transition_to_enabled:
+                # Baseline здесь НЕ сдвигаем: возврат доступа происходит именно потому, что
+                # расход стал меньше лимита (обычно после докупки), и сброс счётчика выдал бы
+                # пользователю полный лимит заново поверх только что купленного пакета.
                 logger.info(f"Scheduler[dual-limits]: LTE-пул восстановлен для user_id={user_id} — доступ к premium-нодам включён.")
-                try:
-                    database.request_lte_baseline_reset(user_id)
-                except Exception as e:
-                    logger.warning(f"Scheduler[dual-limits]: не удалось запросить сброс baseline LTE user_id={user_id}: {e}")
                 if bot is not None:
                     try:
                         await bot.send_message(

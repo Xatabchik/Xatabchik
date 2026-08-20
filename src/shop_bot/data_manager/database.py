@@ -871,6 +871,11 @@ def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     # Миграция для уже существующих БД (CREATE TABLE IF NOT EXISTS не добавит колонки в старую таблицу).
     _ensure_table_column(cursor, "subscription_lte", "lte_used_baseline_bytes", "INTEGER DEFAULT 0")
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_reset_requested", "INTEGER DEFAULT 0")
+    # Отметка о том, что точка отсчёта (baseline) хоть раз выставлялась по факту расхода.
+    # Нужна, чтобы отличить "baseline = 0, потому что расхода не было" от "baseline никогда
+    # не инициализировался" (старые БД): во втором случае накопительный расход панели
+    # мгновенно исчерпал бы LTE-лимит сразу после обновления бота.
+    _ensure_table_column(cursor, "subscription_lte", "lte_baseline_initialized_at", "TIMESTAMP")
 
 
 def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
@@ -5732,6 +5737,7 @@ def get_lte_state(user_id: int) -> dict:
                 "lte_boost_bytes": 0,
                 "lte_used_baseline_bytes": 0,
                 "lte_baseline_reset_requested": 0,
+                "lte_baseline_initialized_at": None,
                 "lte_reset_at": None,
                 "premium_state": "enabled",
             }
@@ -5744,18 +5750,121 @@ def get_lte_state(user_id: int) -> dict:
             "lte_boost_bytes": 0,
             "lte_used_baseline_bytes": 0,
             "lte_baseline_reset_requested": 0,
+            "lte_baseline_initialized_at": None,
             "lte_reset_at": None,
             "premium_state": "enabled",
         }
 
 
-def request_lte_baseline_reset(user_id: int) -> bool:
-    """Помечает, что нужно сдвинуть точку отсчёта (baseline) LTE-расхода пользователя на "сейчас".
+def resolve_lte_limit_bytes(lte_state: dict | None, plan_lte_limit_bytes: int = 0) -> int:
+    """Единая формула эффективного LTE-лимита: лимит тарифа + докупленный буст.
 
-    Вызывается при докупке LTE-пакета (или ином событии, обнуляющем LTE-счётчик), чтобы
-    воркер `enforce_dual_traffic_limits` на следующем проходе зафиксировал текущее сырое
-    (накопительное) значение расхода по premium-нодам как новую точку отсчёта — иначе
-    накопленный панелью исторический трафик по нодам мгновенно "съест" свежекупленный лимит.
+    Источник истины по базовому лимиту — `plans.lte_limit_bytes`; значение в
+    `subscription_lte.lte_limit_bytes` используется только как fallback (тариф ключа
+    не определился). Функция обязана быть единственной формулой и для отображения
+    в боте, и для энфорсинга в планировщике — раньше они расходились: UI показывал
+    лимит вместе с бустом, а воркер сравнивал расход только с лимитом тарифа.
+    """
+    base = int(plan_lte_limit_bytes or 0)
+    if base <= 0:
+        try:
+            base = int((lte_state or {}).get("lte_limit_bytes") or 0)
+        except (TypeError, ValueError):
+            base = 0
+    try:
+        boost = int((lte_state or {}).get("lte_boost_bytes") or 0)
+    except (TypeError, ValueError):
+        boost = 0
+    return max(0, base) + max(0, boost)
+
+
+def add_lte_boost_bytes(user_id: int, add_bytes: int) -> int | None:
+    """Атомарно увеличить докупленный LTE-буст пользователя на `add_bytes`.
+
+    Read-modify-write через `get_lte_state()` + `update_lte_state()` терял одну из
+    покупок при двух параллельных оплатах (lost update), поэтому инкремент выполняется
+    одним UPDATE внутри BEGIN IMMEDIATE. Возвращает новое значение `lte_boost_bytes`
+    или None, если обновить не удалось.
+    """
+    try:
+        add = int(add_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if add <= 0:
+        return None
+    get_lte_state(user_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "UPDATE subscription_lte "
+                "SET lte_boost_bytes = COALESCE(lte_boost_bytes, 0) + ?, "
+                "    premium_state = 'enabled', updated_at = ? "
+                "WHERE user_id = ?",
+                (add, _now_str(), int(user_id)),
+            )
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                return None
+            cursor.execute("SELECT lte_boost_bytes FROM subscription_lte WHERE user_id = ?", (int(user_id),))
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row[0] or 0) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to add LTE boost for user {user_id}: {e}")
+        return None
+
+
+def commit_lte_baseline(user_id: int, baseline_bytes: int, *, expire_boost: bool) -> bool:
+    """Зафиксировать точку отсчёта (baseline) LTE-расхода одной транзакцией.
+
+    `expire_boost=True` — начало нового расчётного периода: докупленный буст сгорает
+    вместе со сбросом счётчика, симметрично основному пулу (там при ежемесячном сбросе
+    обнуляется `vpn_keys.traffic_boost_bytes`).
+    `expire_boost=False` — первичная инициализация baseline у существующей подписки:
+    счётчик расхода начинаем с текущего накопительного значения панели, но уже
+    оплаченный буст сохраняем.
+    """
+    get_lte_state(user_id)  # ensure row exists
+    try:
+        baseline = max(0, int(baseline_bytes or 0))
+    except (TypeError, ValueError):
+        baseline = 0
+    sets = [
+        "lte_used_baseline_bytes = ?",
+        "lte_baseline_reset_requested = 0",
+        "lte_baseline_initialized_at = ?",
+        "updated_at = ?",
+    ]
+    values: list[Any] = [baseline, _now_str(), _now_str()]
+    if expire_boost:
+        sets.append("lte_boost_bytes = 0")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                f"UPDATE subscription_lte SET {', '.join(sets)} WHERE user_id = ?",
+                values + [int(user_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to commit LTE baseline for user {user_id}: {e}")
+        return False
+
+
+def request_lte_baseline_reset(user_id: int) -> bool:
+    """Помечает начало нового расчётного периода LTE-пула.
+
+    Воркер `enforce_dual_traffic_limits` на следующем проходе зафиксирует текущее сырое
+    (накопительное) значение расхода по LTE-нодам как новую точку отсчёта и обнулит
+    докупленный буст (см. `commit_lte_baseline(expire_boost=True)`).
+
+    ВАЖНО: этот флаг больше не выставляется при докупке LTE-пакета — покупка обязана быть
+    строго аддитивной (+N ГБ к остатку), а не сбросом счётчика расхода. Иначе покупка
+    минимального пакета заново выдавала полный лимит тарифа.
     """
     get_lte_state(user_id)  # ensure row exists
     try:
