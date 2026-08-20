@@ -2995,10 +2995,28 @@ def create_webhook_app(bot_controller_instance):
             user_uuid = key.get('remnawave_user_uuid')
             state = key.get('remote_access_state')
             if user_uuid and state in ('disabled_premium', 'disabled_premium_squad') and (is_premium or lte_squad):
-                asyncio.run(remnawave_api.enable_user(user_uuid, host_name=host_name))
-                update_key_fields(key_id, remote_access_state='enabled')
+                # При точечном отключении из подписки убирался только LTE-сквад, поэтому
+                # enable_user его не вернёт — нужен add_squad_to_user (как в боте).
+                if state == 'disabled_premium_squad' and lte_squad:
+                    ok_restore = asyncio.run(
+                        remnawave_api.add_squad_to_user(
+                            user_uuid, lte_squad['squad_uuid'], host_name=host_name
+                        )
+                    )
+                else:
+                    ok_restore = asyncio.run(remnawave_api.enable_user(user_uuid, host_name=host_name))
+                if ok_restore:
+                    update_key_fields(key_id, remote_access_state='enabled')
+                else:
+                    # Буст начислен, но доступ на сервере не восстановлен — воркер
+                    # enforce_dual_traffic_limits дожмёт это на следующем проходе.
+                    logger.error(
+                        "Докупка LTE ключу %s: не удалось восстановить доступ на хосте '%s' "
+                        "(состояние %s осталось в БД)",
+                        key_id, host_name, state,
+                    )
         except Exception as e:
-            logger.warning(f"Не удалось восстановить доступ ключа {key_id} после докупки LTE: {e}")
+            logger.error(f"Не удалось восстановить доступ ключа {key_id} после докупки LTE: {e}", exc_info=True)
 
         return jsonify({"ok": True, "lte_boost_bytes": new_boost})
 
