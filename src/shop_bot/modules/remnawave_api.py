@@ -1162,17 +1162,24 @@ class RemnawavePathUnsupportedError(RemnawaveAPIError):
 
 
 _SQUAD_NODES_TTL_SECONDS = 600  # 10 минут
+# Короткий негативный кэш: битый/несуществующий squad_uuid не должен опрашиваться
+# заново на каждый ключ этого сквада (воркер ходит раз в dual_limit_interval_sec).
+_SQUAD_NODES_FAILURE_TTL_SECONDS = 120
 _squad_nodes_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_squad_nodes_failures: dict[str, tuple[float, str]] = {}
 _squad_nodes_cache_lock = threading.Lock()
 
 
 def invalidate_squad_nodes_cache(squad_uuid: str | None = None) -> None:
-    """Сбросить кэш нод сквада (целиком или по одному squad_uuid)."""
+    """Сбросить кэш нод сквада (целиком или по одному squad_uuid), включая негативный."""
     with _squad_nodes_cache_lock:
         if squad_uuid:
-            _squad_nodes_cache.pop(str(squad_uuid).strip(), None)
+            key = str(squad_uuid).strip()
+            _squad_nodes_cache.pop(key, None)
+            _squad_nodes_failures.pop(key, None)
         else:
             _squad_nodes_cache.clear()
+            _squad_nodes_failures.clear()
 
 
 async def _request_optional_path(
@@ -1233,11 +1240,31 @@ async def get_squad_accessible_nodes(
             cached = _squad_nodes_cache.get(squad_uuid_n)
         if cached and (time.monotonic() - cached[0]) < _SQUAD_NODES_TTL_SECONDS:
             return list(cached[1])
+        # Негативный кэш: если панель уже ответила ошибкой на этот сквад, не дёргаем её
+        # заново для каждого ключа того же сквада — иначе один битый squad_uuid даёт
+        # N запросов за проход воркера. Ошибка при этом всё равно пробрасывается.
+        with _squad_nodes_cache_lock:
+            failed = _squad_nodes_failures.get(squad_uuid_n)
+        if failed and (time.monotonic() - failed[0]) < _SQUAD_NODES_FAILURE_TTL_SECONDS:
+            raise RemnawaveAPIError(failed[1])
 
     encoded = quote(squad_uuid_n)
-    response = await _request_for_host(
-        host_name, "GET", f"/api/internal-squads/{encoded}/accessible-nodes"
-    )
+    try:
+        response = await _request_for_host(
+            host_name, "GET", f"/api/internal-squads/{encoded}/accessible-nodes"
+        )
+    except Exception as e:
+        message = (
+            f"Remnawave[{host_name}]: не удалось получить ноды сквада {squad_uuid_n}: {e}. "
+            "Проверьте, что этот UUID существует в GET /api/internal-squads (это должен быть "
+            "internal squad, а не external-сквад и не config profile)."
+        )
+        with _squad_nodes_cache_lock:
+            _squad_nodes_failures[squad_uuid_n] = (time.monotonic(), message)
+        logger.warning(message)
+        raise
+    with _squad_nodes_cache_lock:
+        _squad_nodes_failures.pop(squad_uuid_n, None)
     payload = response.json()
     body = payload.get("response") if isinstance(payload, dict) else None
     raw_nodes = (body or {}).get("accessibleNodes") if isinstance(body, dict) else None
@@ -1393,8 +1420,16 @@ async def resolve_panel_user_id(
     host_name: str,
     user_payload: dict[str, Any] | None = None,
 ) -> int | None:
-    """Числовой `id` пользователя панели (нужен путям 3.3.2), 3.3.2/2.8.1 отдают его в
-    payload пользователя рядом с `uuid`. Возвращает None, если поля нет."""
+    """Числовой `id` пользователя панели (нужен путям 3.3.2).
+
+    В 3.3.2 у пользователя вообще нет поля `uuid` (только `id` и `shortUuid`), поэтому
+    `vpn_keys.remnawave_user_uuid` там хранит уже числовой id — в этом случае берём его
+    напрямую, без лишнего запроса к панели (который к тому же может не отвечать).
+    В 2.8.1 хранится UUID, и числовой id приходится доставать из payload.
+    """
+    stored = (user_uuid or "").strip()
+    if stored.isdigit():
+        return int(stored)
     payload = user_payload
     if payload is None:
         payload = await get_user_by_uuid(user_uuid, host_name=host_name)

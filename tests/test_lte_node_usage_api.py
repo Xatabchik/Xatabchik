@@ -390,3 +390,44 @@ def test_empty_node_list_short_circuits(temp_db):
         start_date=START, end_date=END,
     ))
     assert result.per_node == {} and result.path == "none"
+
+
+def test_failing_squad_is_negatively_cached(temp_db):
+    """Битый squad_uuid не опрашивается заново на каждый ключ того же сквада,
+    но ошибка всё равно пробрасывается (не превращается в пустой список)."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-broken"})
+    calls: list[str] = []
+
+    async def failing(host_name, method, path, **kw):
+        calls.append(path)
+        raise api.RemnawaveAPIError("HTTP 500 {'errorCode': 'A154'}")
+
+    api._request_for_host = failing
+
+    for _ in range(5):
+        with pytest.raises(api.RemnawaveAPIError):
+            asyncio.run(api.get_lte_node_uuids_for_host("H"))
+    assert len(calls) == 1, "повторные обращения должны читаться из негативного кэша"
+
+    api.invalidate_squad_nodes_cache("squad-broken")
+    with pytest.raises(api.RemnawaveAPIError):
+        asyncio.run(api.get_lte_node_uuids_for_host("H"))
+    assert len(calls) == 2
+
+
+def test_numeric_identifier_used_without_extra_request(temp_db):
+    """3.3.2 не отдаёт uuid у пользователя, поэтому remnawave_user_uuid хранит числовой id —
+    берём его напрямую, без запроса к панели."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+
+    async def transport(host_name, method, path, **kw):
+        calls.append(path)
+        raise AssertionError("для числового id обращение к панели не требуется")
+
+    api._request_for_host = transport
+
+    assert asyncio.run(api.resolve_panel_user_id("64", host_name="H")) == 64
+    assert calls == []
