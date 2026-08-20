@@ -931,7 +931,8 @@ def add_host_squad(host_name: str, squad_uuid: str, squad_class: str = 'base', l
             # Не более одного активного сквада класса 'base'/'lte' на хост.
             if squad_class_n in ('base', 'lte'):
                 cursor.execute(
-                    "SELECT id FROM host_squads WHERE host_name = ? AND squad_class = ? AND is_active = 1",
+                    "SELECT id FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE "
+                    "AND squad_class = ? AND is_active = 1",
                     (host_name_n, squad_class_n),
                 )
                 existing = cursor.fetchone()
@@ -960,7 +961,7 @@ def get_host_squads(host_name: str, *, only_active: bool = False) -> list[dict]:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            query = "SELECT * FROM host_squads WHERE host_name = ?"
+            query = "SELECT * FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE"
             params: list[Any] = [host_name_n]
             if only_active:
                 query += " AND is_active = 1"
@@ -973,7 +974,13 @@ def get_host_squads(host_name: str, *, only_active: bool = False) -> list[dict]:
 
 
 def get_squad_by_class(host_name: str, squad_class: str) -> dict | None:
-    """Быстрый доступ к активному сквада заданного класса ('base'/'lte'/'other') хоста."""
+    """Быстрый доступ к активному сквада заданного класса ('base'/'lte'/'other') хоста.
+
+    Сравнение имени хоста — через TRIM(...) COLLATE NOCASE, как и в остальных запросах
+    к хостам (`get_host`, `get_host_class`): `vpn_keys.host_name` и `host_squads.host_name`
+    могут отличаться регистром/пробелами, а от результата этого запроса зависит доступность
+    докупки LTE — при промахе она молча пропадала из интерфейса.
+    """
     squad_class_n = str(squad_class or '').strip().lower()
     try:
         host_name_n = normalize_host_name(host_name)
@@ -981,7 +988,8 @@ def get_squad_by_class(host_name: str, squad_class: str) -> dict | None:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM host_squads WHERE host_name = ? AND squad_class = ? AND is_active = 1 ORDER BY id LIMIT 1",
+                "SELECT * FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE "
+                "AND squad_class = ? AND is_active = 1 ORDER BY id LIMIT 1",
                 (host_name_n, squad_class_n),
             )
             row = cursor.fetchone()
@@ -1254,13 +1262,19 @@ def set_host_squads_from_catalog(host_name: str, catalog_ids: list[int]) -> bool
             wanted_uuids = {(sq.get("squad_uuid") or "").strip() for sq in filtered}
             wanted_uuids.discard("")
 
-            cursor.execute("SELECT id, squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT id, squad_uuid FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             existing = [(int(r["id"]), (r["squad_uuid"] or "").strip()) for r in cursor.fetchall()]
             for row_id, uuid_n in existing:
                 if uuid_n not in wanted_uuids:
                     cursor.execute("DELETE FROM host_squads WHERE id = ?", (row_id,))
 
-            cursor.execute("SELECT squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT squad_uuid FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             have = {(r["squad_uuid"] or "").strip() for r in cursor.fetchall()}
             for sq in filtered:
                 uuid_n = (sq.get("squad_uuid") or "").strip()
@@ -1306,7 +1320,7 @@ def get_host_selected_squad_catalog_ids(host_name: str) -> list[int]:
                 SELECT rs.id
                 FROM remnawave_squads rs
                 INNER JOIN host_squads hs ON hs.squad_uuid = rs.squad_uuid
-                WHERE hs.host_name = ?
+                WHERE TRIM(hs.host_name) = TRIM(?) COLLATE NOCASE
                 ORDER BY rs.id
                 """,
                 (host_name_n,),
@@ -1835,7 +1849,10 @@ def get_host_class(host_name: str) -> str:
         host_name_n = normalize_host_name(host_name)
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT node_class FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name_n,))
+            cursor.execute(
+                "SELECT node_class FROM xui_hosts WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             row = cursor.fetchone()
             return (row[0] if row and row[0] else 'unlim')
     except sqlite3.Error as e:
@@ -1877,7 +1894,7 @@ def list_hosts_by_class(node_class: str) -> list[dict]:
 
 
 def update_host_name(old_name: str, new_name: str) -> bool:
-    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys)."""
+    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys, host_squads)."""
     try:
         old_name_n = normalize_host_name(old_name)
         new_name_n = normalize_host_name(new_name)
@@ -1908,6 +1925,12 @@ def update_host_name(old_name: str, new_name: str) -> bool:
                 "UPDATE vpn_keys SET host_name = TRIM(?) WHERE TRIM(host_name) = TRIM(?)",
                 (new_name_n, old_name_n)
             )
+            # host_squads тоже привязан к имени хоста: без переименования LTE-сквад
+            # осиротеет и докупка LTE молча пропадёт у всех ключей этого хоста.
+            cursor.execute(
+                "UPDATE host_squads SET host_name = TRIM(?) WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (new_name_n, old_name_n)
+            )
             conn.commit()
             return True
     except sqlite3.Error as e:
@@ -1921,6 +1944,12 @@ def delete_host(host_name: str):
             cursor = conn.cursor()
             cursor.execute("DELETE FROM plans WHERE TRIM(host_name) = TRIM(?)", (host_name,))
             cursor.execute("DELETE FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name,))
+            # Иначе привязки сквадов остаются "мусором" и могут случайно подхватиться
+            # хостом, созданным позже с тем же именем.
+            cursor.execute(
+                "DELETE FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name,),
+            )
             conn.commit()
             logging.info(f"Хост '{host_name}' и его тарифы успешно удалены.")
     except sqlite3.Error as e:
