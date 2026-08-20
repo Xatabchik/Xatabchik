@@ -554,6 +554,8 @@ async def check_traffic_boost_resets(bot: Bot):
 
             # Сброс основного пула трафика — новый расчётный период, поэтому и LTE-пул (независимый счётчик)
             # тоже должен обнулить свой baseline, чтобы не наследовать расход прошлого месяца.
+            # Вместе с baseline сгорает и докупленный LTE-буст — симметрично основному пулу, где
+            # выше обнуляется traffic_boost_bytes (см. database.commit_lte_baseline).
             try:
                 user_id = key.get("user_id")
                 if user_id:

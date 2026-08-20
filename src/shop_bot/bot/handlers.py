@@ -9113,16 +9113,16 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             size_gb = float(package.get('size_gb') or 0)
             add_bytes = int(size_gb * 1024 * 1024 * 1024)
 
-            lte_state = database.get_lte_state(user_id)
-            new_boost = int(lte_state.get('lte_boost_bytes') or 0) + add_bytes
-            try:
-                database.update_lte_state(user_id, lte_boost_bytes=new_boost, premium_state='enabled')
-                # Сдвигаем точку отсчёта (baseline) LTE-расхода на "сейчас": панель Remnawave хранит
-                # расход по нодам накопительно, поэтому без baseline купленный лимит будет мгновенно
-                # "съеден" уже накопленным историческим трафиком (см. SQUAD_DUAL_LIMIT_PROMPT.md, п.4).
-                database.request_lte_baseline_reset(user_id)
-            except Exception as e:
-                logger.error(f"lte_gb_topup: не удалось обновить lte_state пользователя {user_id}: {e}", exc_info=True)
+            # Докупка строго аддитивна: +N ГБ к остатку. Инкремент атомарный (одна транзакция),
+            # иначе две параллельные оплаты теряли одну из покупок (read-modify-write).
+            # Точку отсчёта расхода (baseline) здесь НЕ сдвигаем: вместе с учётом буста в
+            # энфорсинге это выдавало бы полный лимит тарифа заново за цену минимального пакета.
+            new_boost = database.add_lte_boost_bytes(user_id, add_bytes)
+            if new_boost is None:
+                logger.error(
+                    f"lte_gb_topup: не удалось начислить LTE-буст пользователю {user_id} "
+                    f"(add_bytes={add_bytes})"
+                )
 
             # Немедленно возвращаем доступ на premium-нодах для всех ключей пользователя
             try:

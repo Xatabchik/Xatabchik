@@ -88,7 +88,7 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
     get_squad_by_class, get_host_class,
-    get_lte_state, update_lte_state, request_lte_baseline_reset,
+    get_lte_state, add_lte_boost_bytes,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -2977,13 +2977,15 @@ def create_webhook_app(bot_controller_instance):
         user_id = key.get('user_id')
         host_name = key.get('host_name')
 
+        # Начисление строго аддитивно (+N ГБ к остатку) и атомарно; baseline расхода не
+        # сдвигаем, иначе выдача пары ГБ обнуляла бы весь накопленный расход пользователя.
         try:
-            lte_state = get_lte_state(user_id)
-            new_boost = int(lte_state.get('lte_boost_bytes') or 0) + add_bytes
-            update_lte_state(user_id, lte_boost_bytes=new_boost, premium_state='enabled')
-            request_lte_baseline_reset(user_id)
+            new_boost = add_lte_boost_bytes(user_id, add_bytes)
         except Exception as e:
             logger.error(f"Добавление LTE-трафика ключу {key_id}: ошибка обновления lte_state: {e}")
+            return jsonify({"ok": False, "error": "lte_state_failed"}), 500
+        if new_boost is None:
+            logger.error(f"Добавление LTE-трафика ключу {key_id}: не удалось начислить буст пользователю {user_id}")
             return jsonify({"ok": False, "error": "lte_state_failed"}), 500
 
         # Немедленно возвращаем доступ на premium-нодах, если ключ был отключён из-за исчерпания LTE
