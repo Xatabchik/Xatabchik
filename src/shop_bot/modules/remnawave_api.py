@@ -1593,7 +1593,10 @@ async def get_user_node_usage_for_squad(
 
     instance_key = _panel_instance_key(host_name)
     start_txt = _as_api_date(start_date)
-    end_txt = _as_api_date(end_date)
+    # Верхнюю границу берём на сутки вперёд: эндпоинты статистики оперируют ДАТАМИ, а не
+    # моментами времени, и панель агрегирует расход по своему часовому поясу. Без запаса
+    # расход текущих суток мог не попасть в диапазон при расхождении TZ бота и панели.
+    end_txt = _as_api_date(end_date + timedelta(days=1))
     top_limit = max(20, len(allowed) + 5)
     squad_uuid_n = (squad_uuid or "").strip()
 

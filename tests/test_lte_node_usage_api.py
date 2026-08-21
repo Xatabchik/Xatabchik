@@ -565,3 +565,23 @@ def test_add_squad_sends_uuid_strings_only(temp_db):
     body = [c for c in calls if c[0] == "PATCH"][0][2]
     assert body["activeInternalSquads"] == [BASE_SQUAD, LTE_SQUAD]
     assert all(isinstance(x, str) for x in body["activeInternalSquads"])
+
+
+def test_query_window_includes_next_day_for_timezone_skew(temp_db):
+    """Верхняя граница диапазона — сутки вперёд: панель агрегирует по датам своего
+    часового пояса, и расход текущих суток не должен теряться на границе."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    seen: dict = {}
+
+    async def transport(host_name, method, path, *, params=None, json_payload=None,
+                        expected_status=(200,)):
+        seen.update(params or {})
+        return _Resp({"response": {"days": [
+            {"date": "2026-08-20", "nodes": [{"uuid": "n1", "totalBytes": GB}]}]}})
+
+    api._request_for_host = transport
+    _usage(api, nodes=("n1",))
+
+    assert seen["start"] == "2026-08-01"
+    assert seen["end"] == "2026-08-21", "END должен быть на сутки больше запрошенного"
