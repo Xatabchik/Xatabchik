@@ -1592,6 +1592,9 @@ async def get_user_node_usage_for_squad(
         return NodeUsage({}, "none")
 
     instance_key = _panel_instance_key(host_name)
+    # Путь, который ответил корректно (пусть и без данных): отличает «расхода нет»
+    # от «панель не умеет ни одного пути».
+    answered_path: str | None = None
     start_txt = _as_api_date(start_date)
     # Верхнюю границу берём на сутки вперёд: эндпоинты статистики оперируют ДАТАМИ, а не
     # моментами времени, и панель агрегирует расход по своему часовому поясу. Без запаса
@@ -1623,6 +1626,7 @@ async def get_user_node_usage_for_squad(
             if response is None:
                 _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
             else:
+                answered_path = answered_path or USAGE_PATH_SQUAD_SCOPED
                 per_node = _sum_squad_scoped_days(response.json(), allowed)
                 if per_node:
                     return NodeUsage(per_node, USAGE_PATH_SQUAD_SCOPED)
@@ -1647,6 +1651,7 @@ async def get_user_node_usage_for_squad(
         if response is None:
             _mark_usage_path_unsupported(instance_key, path_id)
             continue
+        answered_path = answered_path or path_id
         per_node = _sum_user_series(response.json(), allowed)
         if per_node:
             return NodeUsage(per_node, path_id)
@@ -1662,26 +1667,41 @@ async def get_user_node_usage_for_squad(
         if response is None:
             _mark_usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY)
         else:
+            answered_path = answered_path or USAGE_PATH_USER_LEGACY
             per_node = _sum_legacy_rows(response.json(), user_uuid_n, allowed)
             if per_node:
                 return NodeUsage(per_node, USAGE_PATH_USER_LEGACY)
 
-    # 5. исторический путь — только как сумма, без разбивки.
-    total = await get_user_lte_usage_bytes(
-        user_uuid_n, list(allowed), start_date, end_date, host_name=host_name
-    )
-    if total > 0:
-        logger.warning(
-            "Remnawave[%s]: разбивка по нодам недоступна, использован исторический "
-            "get_user_lte_usage_bytes (сумма %s байт распределена на одну запись)",
-            host_name, total,
+    # 5. исторический путь — только как сумма, без разбивки. Он неприменим ни к 2.8.1, ни к
+    # 3.3.2 (см. матрицу), поэтому после первой неудачи помечаем его неподдерживаемым, чтобы
+    # не долбить панель заведомо неверным запросом на каждом ключе и каждом проходе.
+    if not _usage_path_unsupported(instance_key, USAGE_PATH_LEGACY_WRAPPER):
+        total = await get_user_lte_usage_bytes(
+            user_uuid_n, list(allowed), start_date, end_date, host_name=host_name
         )
-        # Разбивки нет — кладём сумму на первую ноду сквада, чтобы не потерять расход.
-        return NodeUsage({sorted(allowed)[0]: total}, USAGE_PATH_LEGACY_WRAPPER)
+        if total > 0:
+            logger.warning(
+                "Remnawave[%s]: разбивка по нодам недоступна, использован исторический "
+                "get_user_lte_usage_bytes (сумма %s байт распределена на одну запись)",
+                host_name, total,
+            )
+            # Разбивки нет — кладём сумму на первую ноду сквада, чтобы не потерять расход.
+            return NodeUsage({sorted(allowed)[0]: total}, USAGE_PATH_LEGACY_WRAPPER)
+        _mark_usage_path_unsupported(instance_key, USAGE_PATH_LEGACY_WRAPPER)
+
+    if answered_path:
+        # Панель ответила по рабочему пути, но расхода за период нет. Это ЗНАЧИМЫЙ нуль:
+        # трактовать его как сбой нельзя, иначе ключ без трафика на LTE-нодах вечно
+        # пропускался бы с предупреждением и никогда не получал бы точку отсчёта.
+        logger.info(
+            "Remnawave[%s]: расход по нодам сквада %s за период нулевой (путь %s)",
+            host_name, squad_uuid_n or "—", answered_path,
+        )
+        return NodeUsage({}, answered_path)
 
     raise RemnawavePathUnsupportedError(
-        f"Remnawave[{host_name}]: ни один путь статистики по нодам не дал данных "
-        f"для пользователя {user_uuid_n} (сквад {squad_uuid_n or '—'})"
+        f"Remnawave[{host_name}]: ни один путь статистики по нодам не поддерживается "
+        f"панелью для пользователя {user_uuid_n} (сквад {squad_uuid_n or '—'})"
     )
 
 

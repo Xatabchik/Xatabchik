@@ -585,3 +585,46 @@ def test_query_window_includes_next_day_for_timezone_skew(temp_db):
 
     assert seen["start"] == "2026-08-01"
     assert seen["end"] == "2026-08-21", "END должен быть на сутки больше запрошенного"
+
+
+def test_zero_usage_is_a_valid_answer_not_a_failure(temp_db):
+    """Панель ответила по рабочему пути, но расхода за период нет — это значимый нуль.
+
+    Раньше пустой ответ считался «путь не сработал», цепочка доходила до конца и бросала
+    ошибку, из-за чего ключ без трафика на LTE-нодах вечно пропускался с предупреждением
+    и никогда не получал точку отсчёта.
+    """
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    _router(api, [
+        ("/internal-squads/squad-lte/users/", _Resp({"response": {"days": []}})),
+        ("/bandwidth-stats/users/", _Resp({"response": {"series": [], "topNodes": []}})),
+        ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
+        ("/usage/range", _Resp(None, 404)),
+    ])
+
+    result = _usage(api, nodes=("n1",))
+
+    assert result.per_node == {}
+    assert result.path == api.USAGE_PATH_SQUAD_SCOPED
+
+
+def test_legacy_wrapper_is_probed_once_per_instance(temp_db):
+    """Исторический путь неприменим ни к 2.8.1, ни к 3.3.2 — после первой неудачи он не
+    должен опрашиваться на каждом ключе (иначе панель получает поток заведомых 400)."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+    _router(api, [
+        ("/internal-squads/squad-lte/users/", _Resp(None, 404)),
+        ("/bandwidth-stats/users/", _Resp(None, 404)),
+        ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
+        ("/usage/range", _Resp(None, 404)),
+    ], calls=calls)
+
+    for _ in range(3):
+        with pytest.raises(api.RemnawavePathUnsupportedError):
+            _usage(api, nodes=("n1",))
+
+    legacy_calls = [c for c in calls if "nodes/users" in c or "usage/range" in c]
+    assert len(legacy_calls) <= 2, f"исторический путь опрошен повторно: {legacy_calls}"
