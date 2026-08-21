@@ -105,7 +105,14 @@ def _setup_lte_host(database, host_name="Lte", *, lte_gb=20, traffic_gb=0):
     return plans[f"plan-{host_name}"]
 
 
-def _insert_key(database, *, user_id, host_name, user_uuid, plan_id, email=None, state="enabled"):
+def _insert_key(database, *, user_id, host_name, user_uuid, plan_id, email=None, state="enabled",
+                observed=True):
+    """`observed=True` — ключ уже проходил через воркер с нулевым расходом (точка отсчёта 0).
+
+    Так выглядит обычный ключ в работе: первый проход воркера фиксирует baseline сразу
+    после выдачи, когда расход ещё нулевой. `observed=False` оставляет точку отсчёта
+    неопределённой — состояние ключа, существовавшего до появления учёта по нодам.
+    """
     email = email or f"{user_uuid}@example.com"
     with sqlite3.connect(database.DB_FILE) as conn:
         cur = conn.cursor()
@@ -128,6 +135,8 @@ def _insert_key(database, *, user_id, host_name, user_uuid, plan_id, email=None,
         )
         key_id = cur.lastrowid
         conn.commit()
+    if observed:
+        database.commit_key_lte_baseline(key_id, 0, expire_boost=False)
     return key_id
 
 
@@ -161,7 +170,7 @@ def test_purchased_boost_keeps_access(temp_db):
     database = temp_db
     plan_id = _setup_lte_host(database, lte_gb=20)
     key_id = _insert_key(database, user_id=1, host_name="Lte", user_uuid="u-1", plan_id=plan_id)
-    database.add_lte_boost_bytes(1, 10 * GB)  # докупка 10 ГБ
+    database.add_key_lte_boost_bytes(key_id, 10 * GB)  # докупка 10 ГБ на этот ключ
 
     fake = _FakeRemnawave(
         {"u-1": 25 * GB}, usage_by_node={"node-lte": 25 * GB}, nodes_by_host={"Lte": ["node-lte"]}
@@ -196,7 +205,7 @@ def test_boost_restores_access_without_resetting_usage(temp_db):
     """
     database = temp_db
     plan_id = _setup_lte_host(database, lte_gb=20)
-    _insert_key(database, user_id=3, host_name="Lte", user_uuid="u-3", plan_id=plan_id)
+    key_id = _insert_key(database, user_id=3, host_name="Lte", user_uuid="u-3", plan_id=plan_id)
 
     fake = _FakeRemnawave(
         {"u-3": 25 * GB}, usage_by_node={"node-lte": 25 * GB}, nodes_by_host={"Lte": ["node-lte"]}
@@ -204,11 +213,11 @@ def test_boost_restores_access_without_resetting_usage(temp_db):
     _run_worker(database, fake)
     assert fake.removed_squads, "предусловие: лимит исчерпан"
 
-    database.add_lte_boost_bytes(3, 10 * GB)
+    database.add_key_lte_boost_bytes(key_id, 10 * GB)
     _run_worker(database, fake)
 
     assert fake.added_squads == [("u-3", "squad-Lte")]
-    state = database.get_lte_state(3)
+    state = database.get_key_lte_state(key_id)
     assert state["lte_used_bytes"] == 25 * GB, "расход сохраняется, а не обнуляется"
     assert state["lte_boost_bytes"] == 10 * GB
     # Остаток строго аддитивен: лимит 30 ГБ при расходе 25 ГБ.
@@ -233,30 +242,62 @@ def test_plan_limit_increase_is_picked_up(temp_db):
     )
     _run_worker(database, fake)
 
-    assert database.get_lte_state(4)["lte_limit_bytes"] == 50 * GB
+    assert database.get_key_lte_state(key_id)["lte_limit_bytes"] == 50 * GB
     assert database.get_key_by_id(key_id)["remote_access_state"] == "enabled"
 
 
-def test_usage_counted_once_per_remnawave_user(temp_db):
-    """Два LTE-ключа с одним Remnawave-пользователем не задваивают его расход."""
+def test_keys_of_same_user_have_independent_pools(temp_db):
+    """Ключи одного владельца ведут РАЗДЕЛЬНЫЕ LTE-пулы: расход одного не влияет на другой,
+    и докупка на одном ключе не расходуется на другом."""
     database = temp_db
     plan_id = _setup_lte_host(database, lte_gb=20)
-    _insert_key(database, user_id=5, host_name="Lte", user_uuid="u-5", plan_id=plan_id, email="a@e.com")
     database.create_host("Lte2", "https://panel.example", "", "", 0)
+    database.update_host_remnawave_settings(
+        "Lte2", remnawave_base_url="https://panel.example", remnawave_api_token="tok"
+    )
     database.add_host_squad("Lte2", "squad-Lte2", "lte", "LTE")
-    _insert_key(database, user_id=5, host_name="Lte2", user_uuid="u-5", plan_id=plan_id, email="b@e.com")
+    key_a = _insert_key(database, user_id=5, host_name="Lte", user_uuid="u-5a", plan_id=plan_id, email="a@e.com")
+    key_b = _insert_key(database, user_id=5, host_name="Lte2", user_uuid="u-5b", plan_id=plan_id, email="b@e.com")
 
-    # Один и тот же узел отдают LTE-сквады обоих хостов: расход обязан учитываться один раз.
     fake = _FakeRemnawave(
-        {"u-5": 12 * GB},
-        usage_by_node={"node-shared": 12 * GB},
-        nodes_by_host={"Lte": ["node-shared"], "Lte2": ["node-shared"]},
+        {"u-5a": 18 * GB, "u-5b": 3 * GB},
+        usage_by_node={"node-a": 18 * GB, "node-b": 3 * GB},
+        nodes_by_host={"Lte": ["node-a"], "Lte2": ["node-b"]},
     )
     _run_worker(database, fake)
 
-    # 12 ГБ, а не 24 ГБ — иначе лимит 20 ГБ был бы "исчерпан" на пустом месте.
-    assert database.get_lte_state(5)["lte_used_bytes"] == 12 * GB
-    assert fake.removed_squads == []
+    assert database.get_key_lte_state(key_a)["lte_used_bytes"] == 18 * GB
+    assert database.get_key_lte_state(key_b)["lte_used_bytes"] == 3 * GB
+    assert fake.removed_squads == [], "ни один ключ не превысил свой лимит в 20 ГБ"
+
+    # Докупка адресована ключу A и не должна увеличить лимит ключа B.
+    database.add_key_lte_boost_bytes(key_a, 10 * GB)
+    assert database.get_key_lte_state(key_a)["lte_boost_bytes"] == 10 * GB
+    assert database.get_key_lte_state(key_b)["lte_boost_bytes"] == 0
+
+
+def test_key_exhausts_only_its_own_pool(temp_db):
+    """Превышение лимита на одном ключе отключает premium-ноды только у него."""
+    database = temp_db
+    plan_id = _setup_lte_host(database, lte_gb=20)
+    database.create_host("Lte2", "https://panel.example", "", "", 0)
+    database.update_host_remnawave_settings(
+        "Lte2", remnawave_base_url="https://panel.example", remnawave_api_token="tok"
+    )
+    database.add_host_squad("Lte2", "squad-Lte2", "lte", "LTE")
+    key_a = _insert_key(database, user_id=15, host_name="Lte", user_uuid="u-15a", plan_id=plan_id, email="a15@e.com")
+    key_b = _insert_key(database, user_id=15, host_name="Lte2", user_uuid="u-15b", plan_id=plan_id, email="b15@e.com")
+
+    fake = _FakeRemnawave(
+        {"u-15a": 25 * GB, "u-15b": 1 * GB},
+        usage_by_node={"node-a": 25 * GB, "node-b": 1 * GB},
+        nodes_by_host={"Lte": ["node-a"], "Lte2": ["node-b"]},
+    )
+    _run_worker(database, fake)
+
+    assert fake.removed_squads == [("u-15a", "squad-Lte")]
+    assert database.get_key_by_id(key_a)["remote_access_state"] == "disabled_premium_squad"
+    assert (database.get_key_by_id(key_b).get("remote_access_state") or "enabled") == "enabled"
 
 
 def test_base_only_host_usage_not_billed_to_lte(temp_db):
@@ -265,38 +306,32 @@ def test_base_only_host_usage_not_billed_to_lte(temp_db):
     plan_id = _setup_lte_host(database, lte_gb=20)
     database.create_host("BaseOnly", "https://panel.example", "", "", 0)
     database.add_host_squad("BaseOnly", "squad-base", "base", "Base")
-    _insert_key(database, user_id=6, host_name="BaseOnly", user_uuid="u-6b", plan_id=plan_id)
+    key_id = _insert_key(database, user_id=6, host_name="BaseOnly", user_uuid="u-6b", plan_id=plan_id)
 
     fake = _FakeRemnawave(
         {"u-6b": 100 * GB}, usage_by_node={"node-base": 100 * GB}, nodes_by_host={"Lte": ["node-lte"]}
     )
     _run_worker(database, fake)
 
-    assert database.get_lte_state(6)["lte_used_bytes"] == 0
+    assert database.get_key_lte_state(key_id)["lte_used_bytes"] == 0
     assert fake.removed_squads == []
 
 
-def test_existing_subscription_gets_baseline_initialized(temp_db):
-    """Подписка, созданная до появления baseline, не отключается сразу из-за
-    накопительного исторического расхода панели (одноразовый backfill)."""
+def test_existing_key_gets_baseline_initialized(temp_db):
+    """Ключ, существовавший до появления учёта по нодам (точка отсчёта не определена), не
+    отключается сразу из-за накопленной панелью истории — первый проход задаёт baseline."""
     database = temp_db
     plan_id = _setup_lte_host(database, lte_gb=20)
-    key_id = _insert_key(database, user_id=7, host_name="Lte", user_uuid="u-7", plan_id=plan_id)
-    # Имитируем строку, созданную до миграции: отметки инициализации нет.
-    with sqlite3.connect(database.DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, "
-            "premium_state, lte_baseline_initialized_at) VALUES (?, 0, 0, 0, 'enabled', NULL)",
-            (7,),
-        )
-        conn.commit()
+    key_id = _insert_key(
+        database, user_id=7, host_name="Lte", user_uuid="u-7", plan_id=plan_id, observed=False
+    )
 
     fake = _FakeRemnawave(
         {"u-7": 900 * GB}, usage_by_node={"node-lte": 900 * GB}, nodes_by_host={"Lte": ["node-lte"]}
     )  # исторический расход панели
     _run_worker(database, fake)
 
-    state = database.get_lte_state(7)
+    state = database.get_key_lte_state(key_id)
     assert state["lte_used_baseline_bytes"] == 900 * GB
     assert state["lte_used_bytes"] == 0
     assert state["lte_baseline_initialized_at"]
@@ -323,7 +358,7 @@ def test_node_usage_snapshots_are_written(temp_db):
         ("node-b", 3 * GB, "node-node-b"),
     }
     assert {r["period_start"] for r in rows} == {database.resolve_key_period_start(database.get_key_by_id(key_id))}
-    assert database.get_lte_state(8)["lte_used_bytes"] == 9 * GB
+    assert database.get_key_lte_state(key_id)["lte_used_bytes"] == 9 * GB
 
 
 def test_panel_failure_skips_key_without_zeroing(temp_db):
@@ -337,7 +372,7 @@ def test_panel_failure_skips_key_without_zeroing(temp_db):
         {"u-9": 5 * GB}, usage_by_node={"node-lte": 5 * GB}, nodes_by_host={"Lte": ["node-lte"]}
     )
     _run_worker(database, ok_fake)
-    assert database.get_lte_state(9)["lte_used_bytes"] == 5 * GB
+    assert database.get_key_lte_state(key_id)["lte_used_bytes"] == 5 * GB
 
     # Панель недоступна.
     failing = _FakeRemnawave(
@@ -348,7 +383,7 @@ def test_panel_failure_skips_key_without_zeroing(temp_db):
     )
     _run_worker(database, failing)
 
-    assert database.get_lte_state(9)["lte_used_bytes"] == 5 * GB, "расход не должен обнуляться"
+    assert database.get_key_lte_state(key_id)["lte_used_bytes"] == 5 * GB, "расход не должен обнуляться"
     rows = database.get_node_usage_for_key(key_id)
     assert [r["used_bytes"] for r in rows] == [5 * GB], "нулевой снапшот писаться не должен"
     assert failing.removed_squads == [], "исчерпание лимита по пустым данным не засчитывается"
@@ -384,7 +419,7 @@ def test_per_node_sum_matches_previous_aggregate(temp_db):
     сумма по нодам совпадает с тем, что раньше давал агрегат пользователя."""
     database = temp_db
     plan_id = _setup_lte_host(database, lte_gb=100)
-    _insert_key(database, user_id=11, host_name="Lte", user_uuid="u-11", plan_id=plan_id)
+    key_id = _insert_key(database, user_id=11, host_name="Lte", user_uuid="u-11", plan_id=plan_id)
 
     aggregate = 17 * GB
     fake = _FakeRemnawave(
@@ -394,7 +429,7 @@ def test_per_node_sum_matches_previous_aggregate(temp_db):
     )
     _run_worker(database, fake)
 
-    assert database.get_lte_state(11)["lte_used_bytes"] == aggregate
+    assert database.get_key_lte_state(key_id)["lte_used_bytes"] == aggregate
 
 
 def test_exhausted_limit_really_patches_squad_out(temp_db):

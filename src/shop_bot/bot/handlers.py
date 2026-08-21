@@ -6593,7 +6593,9 @@ def get_user_router() -> Router:
                     lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte') if host_name_for_lte else None
                     if lte_squad_cfg:
                         show_lte_topup = True
-                        lte_state = database.get_lte_state(user_id)
+                        # LTE-пул принадлежит КЛЮЧУ: докупка на одном ключе не расходуется
+                        # на других ключах того же пользователя.
+                        lte_state = database.get_key_lte_state(key_id_to_show)
                         lte_used = int(lte_state.get('lte_used_bytes') or 0)
                         # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
                         # буст) — раньше показанный лимит и проверяемый расходились.
@@ -9351,13 +9353,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             # иначе две параллельные оплаты теряли одну из покупок (read-modify-write).
             # Точку отсчёта расхода (baseline) здесь НЕ сдвигаем: вместе с учётом буста в
             # энфорсинге это выдавало бы полный лимит тарифа заново за цену минимального пакета.
-            new_boost = database.add_lte_boost_bytes(user_id, add_bytes)
+            # Буст начисляется КОНКРЕТНОМУ ключу, который выбрал пользователь: LTE-пул живёт
+            # на ключе, и докупка на одном ключе не должна расходоваться на другом.
+            new_boost = database.add_key_lte_boost_bytes(key_id_lte, add_bytes)
             if new_boost is None:
                 # Ничего не начислено и на сервере ничего не менялось — состояние
                 # консистентно, возвращаем деньги и снимаем idempotency-lock.
                 logger.error(
-                    f"lte_gb_topup: не удалось начислить LTE-буст пользователю {user_id} "
-                    f"(add_bytes={add_bytes})"
+                    f"lte_gb_topup: не удалось начислить LTE-буст ключу {key_id_lte} "
+                    f"(user_id={user_id}, add_bytes={add_bytes})"
                 )
                 await _abort_topup_fulfillment(
                     bot,
@@ -9370,35 +9374,37 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return
 
-            # Немедленно возвращаем доступ на premium-нодах для всех ключей пользователя
+            # Возвращаем доступ на premium-нодах ТОЛЬКО оплаченному ключу: докупка на одном
+            # ключе не должна включать premium-ноды на других ключах пользователя.
             try:
-                user_keys = get_user_keys(user_id)
-                for uk in (user_keys or []):
-                    try:
-                        host_name_uk = uk.get('host_name')
-                        try:
-                            lte_squad_uk = database.get_squad_by_class(host_name_uk, 'lte')
-                        except Exception:
-                            lte_squad_uk = None
-                        is_premium_uk = database.get_host_class(host_name_uk) == 'premium'
-                        if not is_premium_uk and not lte_squad_uk:
-                            continue
-                        uuid_uk = uk.get('remnawave_user_uuid')
-                        state_uk = uk.get('remote_access_state')
-                        if not uuid_uk or state_uk not in ('disabled_premium', 'disabled_premium_squad'):
-                            continue
-                        if state_uk == 'disabled_premium_squad' and lte_squad_uk:
-                            ok = await remnawave_api.add_squad_to_user(
-                                uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
-                            )
-                        else:
-                            ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
-                        if ok:
-                            database.update_key_fields(uk.get('key_id'), remote_access_state='enabled')
-                    except Exception as e:
-                        logger.error(f"lte_gb_topup: не удалось включить доступ для ключа {uk.get('key_id')}: {e}", exc_info=True)
+                host_name_uk = key_data.get('host_name')
+                try:
+                    lte_squad_uk = database.get_squad_by_class(host_name_uk, 'lte')
+                except Exception:
+                    lte_squad_uk = None
+                is_premium_uk = database.get_host_class(host_name_uk) == 'premium'
+                uuid_uk = key_data.get('remnawave_user_uuid')
+                state_uk = key_data.get('remote_access_state')
+                if (
+                    uuid_uk
+                    and (is_premium_uk or lte_squad_uk)
+                    and state_uk in ('disabled_premium', 'disabled_premium_squad')
+                ):
+                    if state_uk == 'disabled_premium_squad' and lte_squad_uk:
+                        ok = await remnawave_api.add_squad_to_user(
+                            uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
+                        )
+                    else:
+                        ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
+                    if ok:
+                        database.update_key_fields(key_id_lte, remote_access_state='enabled')
+                    else:
+                        logger.error(
+                            f"lte_gb_topup: не удалось вернуть доступ ключу {key_id_lte} "
+                            f"(host '{host_name_uk}', состояние {state_uk})"
+                        )
             except Exception as e:
-                logger.error(f"lte_gb_topup: ошибка перебора ключей пользователя {user_id}: {e}", exc_info=True)
+                logger.error(f"lte_gb_topup: ошибка восстановления доступа ключа {key_id_lte}: {e}", exc_info=True)
 
             try:
                 log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''

@@ -1034,6 +1034,138 @@ def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_initialized_at", "TIMESTAMP")
 
 
+def _ensure_key_lte_state_table(cursor: sqlite3.Cursor) -> None:
+    """Состояние LTE-пула НА КЛЮЧ (пришло на смену пользовательскому `subscription_lte`).
+
+    LTE-лимит задаётся тарифом конкретного ключа (`plans.lte_limit_bytes`), а расход
+    считается по нодам LTE-сквада хоста этого ключа, поэтому и остаток, и докупленный
+    буст, и точка отсчёта обязаны жить на ключе. Пользовательская модель сворачивала
+    несколько ключей с разными тарифами в одну строку.
+    """
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS key_lte_state (
+            key_id INTEGER PRIMARY KEY,
+            lte_limit_bytes INTEGER DEFAULT 0,
+            lte_used_bytes INTEGER DEFAULT 0,
+            lte_boost_bytes INTEGER DEFAULT 0,
+            lte_used_baseline_bytes INTEGER DEFAULT 0,
+            lte_baseline_reset_requested INTEGER DEFAULT 0,
+            lte_baseline_initialized_at TIMESTAMP,
+            lte_reset_at TIMESTAMP,
+            premium_state TEXT DEFAULT 'enabled',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    _migrate_subscription_lte_to_keys(cursor)
+
+
+def _migrate_subscription_lte_to_keys(cursor: sqlite3.Cursor) -> None:
+    """Перенести пользовательское состояние LTE на ключи (однократно для каждой строки).
+
+    Раскладка состояния пользователя по его LTE-ключам:
+      * ключ ровно один — переносим состояние 1:1, ничего не теряя и не выдавая заново;
+      * ключей несколько — оплаченный буст делится поровну (остаток первому ключу), чтобы
+        суммарно у пользователя осталось ровно столько оплаченного трафика, сколько он
+        купил, а точка отсчёта у каждого ключа определяется заново на первом проходе
+        воркера (общий baseline пользователя нельзя скопировать в каждый ключ — он бы
+        вычитался многократно). Такие случаи логируются: разложение неоднозначно.
+
+    Идемпотентность — через отметку `subscription_lte.migrated_to_keys_at`: без неё
+    ключ, созданный уже после миграции, при следующем старте получил бы чужой буст.
+    """
+    try:
+        _ensure_table_column(cursor, "subscription_lte", "migrated_to_keys_at", "TIMESTAMP")
+        cursor.execute(
+            "SELECT * FROM subscription_lte WHERE migrated_to_keys_at IS NULL"
+        )
+        columns = [c[0] for c in cursor.description]
+        rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.warning(f"Миграция subscription_lte -> key_lte_state пропущена: {e}")
+        return
+
+    now = _now_str()
+    for row in rows:
+        user_id = row.get("user_id")
+        try:
+            cursor.execute(
+                """
+                SELECT k.key_id
+                FROM vpn_keys k
+                JOIN host_squads hs
+                  ON TRIM(hs.host_name) = TRIM(k.host_name) COLLATE NOCASE
+                 AND hs.squad_class = 'lte' AND hs.is_active = 1
+                WHERE k.user_id = ?
+                ORDER BY k.key_id
+                """,
+                (user_id,),
+            )
+            key_ids = [int(r[0]) for r in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logging.warning(f"Миграция LTE-состояния user_id={user_id}: не удалось найти ключи: {e}")
+            continue
+
+        if not key_ids:
+            # Переносить некуда (нет ключей на хостах с LTE-сквадом) — строку не трогаем,
+            # чтобы состояние не потерялось, если сквад настроят позже.
+            continue
+
+        boost_total = int(row.get("lte_boost_bytes") or 0)
+        single = len(key_ids) == 1
+        if single:
+            shares = [boost_total]
+        else:
+            per_key = boost_total // len(key_ids)
+            shares = [per_key] * len(key_ids)
+            shares[0] += boost_total - per_key * len(key_ids)
+            if boost_total > 0:
+                logging.warning(
+                    "Миграция LTE-состояния user_id=%s: у пользователя %s LTE-ключей, "
+                    "докупленный буст %s байт разделён поровну %s — при необходимости "
+                    "перераспределите вручную в key_lte_state.",
+                    user_id, len(key_ids), boost_total, shares,
+                )
+
+        for key_id, boost_share in zip(key_ids, shares):
+            try:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO key_lte_state (
+                        key_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes,
+                        lte_used_baseline_bytes, lte_baseline_reset_requested,
+                        lte_baseline_initialized_at, lte_reset_at, premium_state, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        key_id,
+                        int(row.get("lte_limit_bytes") or 0),
+                        int(row.get("lte_used_bytes") or 0) if single else 0,
+                        int(boost_share),
+                        int(row.get("lte_used_baseline_bytes") or 0) if single else 0,
+                        int(row.get("lte_baseline_reset_requested") or 0),
+                        row.get("lte_baseline_initialized_at") if single else None,
+                        row.get("lte_reset_at"),
+                        row.get("premium_state") or "enabled",
+                        now,
+                    ),
+                )
+            except sqlite3.Error as e:
+                logging.warning(f"Миграция LTE-состояния key_id={key_id}: {e}")
+
+        try:
+            cursor.execute(
+                "UPDATE subscription_lte SET migrated_to_keys_at = ? WHERE user_id = ?",
+                (now, user_id),
+            )
+            logging.info(
+                "Миграция LTE-состояния: user_id=%s -> ключи %s", user_id, key_ids
+            )
+        except sqlite3.Error as e:
+            logging.warning(f"Миграция LTE-состояния user_id={user_id}: не удалось отметить строку: {e}")
+
+
 def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
     """Классифицированные сквады хоста: 'base' (∞), 'lte' (💰) или 'other'.
 
@@ -1749,6 +1881,9 @@ def run_migration():
             _ensure_subscription_lte_table(cursor)
             _ensure_key_node_usage_snapshots_table(cursor)
             _ensure_host_squads_table(cursor)
+            # После host_squads: миграция состояния LTE на ключи опирается на привязку
+            # хостов к LTE-сквадам, чтобы понять, каким ключам это состояние принадлежит.
+            _ensure_key_lte_state_table(cursor)
             _ensure_remnawave_squads_catalog(cursor)
             _ensure_analytics_tables(cursor)
             _ensure_auth_pending_actions_table(cursor)
@@ -2283,6 +2418,7 @@ def delete_key_by_id(key_id: int) -> bool:
             # пропадать из списка так же, как исчезает обычный ключ.
             cursor.execute("DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0", (key_id,))
             cursor.execute("DELETE FROM key_node_usage_snapshots WHERE key_id = ?", (key_id,))
+            cursor.execute("DELETE FROM key_lte_state WHERE key_id = ?", (key_id,))
             cursor.execute("DELETE FROM vpn_keys WHERE key_id = ?", (key_id,))
             affected = cursor.rowcount
             conn.commit()
@@ -5933,7 +6069,13 @@ def get_plan_lte_limit(plan_id: int) -> int:
 
 
 def get_lte_state(user_id: int) -> dict:
-    """Возвращает состояние независимого LTE-пула трафика пользователя (создаёт запись при отсутствии)."""
+    """УСТАРЕЛО: пользовательская модель LTE-пула.
+
+    Состояние LTE перенесено на ключ (`key_lte_state`, см. `get_key_lte_state`), потому что
+    лимит задаётся тарифом конкретного ключа, а расход считается по нодам его хоста.
+    Функции этой группы оставлены только ради читаемости данных, уже перенесённых
+    миграцией `_migrate_subscription_lte_to_keys`, и в рантайме не используются.
+    """
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
@@ -5976,6 +6118,170 @@ def get_lte_state(user_id: int) -> dict:
             "lte_reset_at": None,
             "premium_state": "enabled",
         }
+
+
+_KEY_LTE_DEFAULT_STATE = {
+    "lte_limit_bytes": 0,
+    "lte_used_bytes": 0,
+    "lte_boost_bytes": 0,
+    "lte_used_baseline_bytes": 0,
+    "lte_baseline_reset_requested": 0,
+    "lte_baseline_initialized_at": None,
+    "lte_reset_at": None,
+    "premium_state": "enabled",
+}
+
+
+def get_key_lte_state(key_id: int) -> dict:
+    """Состояние LTE-пула конкретного ключа (создаёт строку при отсутствии).
+
+    `lte_baseline_initialized_at` намеренно НЕ проставляется при вставке: точку отсчёта
+    выставляет первый проход воркера по фактическому расходу. Для нового ключа расход
+    близок к нулю, а для ключа, у которого LTE-сквад появился позже, это защищает от
+    мгновенного исчерпания лимита накопленной историей нод.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM key_lte_state WHERE key_id = ?", (int(key_id),))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            cursor.execute(
+                "INSERT INTO key_lte_state (key_id, premium_state, updated_at) VALUES (?, 'enabled', ?)",
+                (int(key_id), _now_str()),
+            )
+            conn.commit()
+            return {"key_id": int(key_id), **_KEY_LTE_DEFAULT_STATE}
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get LTE state for key {key_id}: {e}")
+        return {"key_id": int(key_id), **_KEY_LTE_DEFAULT_STATE}
+
+
+def update_key_lte_state(
+    key_id: int,
+    *,
+    lte_limit_bytes: int | None = None,
+    lte_used_bytes: int | None = None,
+    lte_boost_bytes: int | None = None,
+    lte_used_baseline_bytes: int | None = None,
+    lte_baseline_reset_requested: bool | None = None,
+    lte_reset_at: Any = _UNSET,
+    premium_state: str | None = None,
+) -> bool:
+    get_key_lte_state(key_id)  # ensure row exists
+    fields: dict[str, Any] = {}
+    if lte_limit_bytes is not None:
+        fields["lte_limit_bytes"] = int(lte_limit_bytes)
+    if lte_used_bytes is not None:
+        fields["lte_used_bytes"] = int(lte_used_bytes)
+    if lte_boost_bytes is not None:
+        fields["lte_boost_bytes"] = int(lte_boost_bytes)
+    if lte_used_baseline_bytes is not None:
+        fields["lte_used_baseline_bytes"] = int(lte_used_baseline_bytes)
+    if lte_baseline_reset_requested is not None:
+        fields["lte_baseline_reset_requested"] = 1 if lte_baseline_reset_requested else 0
+    if lte_reset_at is not _UNSET:
+        fields["lte_reset_at"] = lte_reset_at
+    if premium_state is not None:
+        fields["premium_state"] = premium_state
+    if not fields:
+        return True
+    fields["updated_at"] = _now_str()
+    try:
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE key_lte_state SET {set_clause} WHERE key_id = ?",
+                list(fields.values()) + [int(key_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to update LTE state for key {key_id}: {e}")
+        return False
+
+
+def add_key_lte_boost_bytes(key_id: int, add_bytes: int) -> int | None:
+    """Атомарно увеличить докупленный LTE-буст КЛЮЧА. Возвращает новое значение."""
+    try:
+        add = int(add_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if add <= 0:
+        return None
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "UPDATE key_lte_state "
+                "SET lte_boost_bytes = COALESCE(lte_boost_bytes, 0) + ?, "
+                "    premium_state = 'enabled', updated_at = ? "
+                "WHERE key_id = ?",
+                (add, _now_str(), int(key_id)),
+            )
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                return None
+            cursor.execute("SELECT lte_boost_bytes FROM key_lte_state WHERE key_id = ?", (int(key_id),))
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row[0] or 0) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to add LTE boost for key {key_id}: {e}")
+        return None
+
+
+def commit_key_lte_baseline(key_id: int, baseline_bytes: int, *, expire_boost: bool) -> bool:
+    """Зафиксировать точку отсчёта LTE-расхода ключа одной транзакцией."""
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        baseline = max(0, int(baseline_bytes or 0))
+    except (TypeError, ValueError):
+        baseline = 0
+    sets = [
+        "lte_used_baseline_bytes = ?",
+        "lte_baseline_reset_requested = 0",
+        "lte_baseline_initialized_at = ?",
+        "updated_at = ?",
+    ]
+    values: list[Any] = [baseline, _now_str(), _now_str()]
+    if expire_boost:
+        sets.append("lte_boost_bytes = 0")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                f"UPDATE key_lte_state SET {', '.join(sets)} WHERE key_id = ?",
+                values + [int(key_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to commit LTE baseline for key {key_id}: {e}")
+        return False
+
+
+def request_key_lte_baseline_reset(key_id: int) -> bool:
+    """Пометить начало нового расчётного периода LTE у ключа (буст сгорит вместе с baseline)."""
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE key_lte_state SET lte_baseline_reset_requested = 1, updated_at = ? WHERE key_id = ?",
+                (_now_str(), int(key_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to request LTE baseline reset for key {key_id}: {e}")
+        return False
 
 
 def resolve_lte_limit_bytes(lte_state: dict | None, plan_lte_limit_bytes: int = 0) -> int:
@@ -7452,6 +7758,10 @@ def delete_key_by_email(email: str) -> bool:
                 )
                 cursor.executemany(
                     "DELETE FROM key_node_usage_snapshots WHERE key_id = ?",
+                    [(kid,) for kid in key_ids],
+                )
+                cursor.executemany(
+                    "DELETE FROM key_lte_state WHERE key_id = ?",
                     [(kid,) for kid in key_ids],
                 )
             cursor.execute(
