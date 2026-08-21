@@ -826,6 +826,21 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 is_lte_disabled = desired_state in ("disabled_premium_squad", "disabled_premium")
 
                 if desired_state == current_state:
+                    if desired_state == "disabled_premium_squad" and lte_squad:
+                        # Идемпотентная сверка с панелью. Раньше снятие сквада могло вернуть
+                        # ложный успех (сравнивалась строка-UUID с массивом объектов), и в БД
+                        # оказывалось 'disabled_premium_squad' при живом сквада в подписке —
+                        # после чего эта ветка навсегда пропускала ключ. Повторный вызов
+                        # ничего не делает, если сквад уже снят, и чинит расхождение, если нет.
+                        try:
+                            await remnawave_api.remove_squad_from_user(
+                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Scheduler[dual-limits]: сверка снятия LTE-сквада для key_id=%s "
+                                "не удалась: %s", key_id, e,
+                            )
                     continue  # уже в нужном состоянии — не дёргаем API повторно
 
                 try:

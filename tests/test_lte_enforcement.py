@@ -453,3 +453,59 @@ def test_exhausted_limit_really_patches_squad_out(temp_db):
     assert patches, "LTE-сквад должен быть снят через PATCH /api/users"
     assert patches[0][2]["activeInternalSquads"] == [base_squad], "base-сквад обязан остаться"
     assert database.get_key_by_id(key_id)["remote_access_state"] == "disabled_premium_squad"
+
+
+def test_stale_disabled_state_is_reconciled_with_panel(temp_db):
+    """Если в БД уже стоит disabled_premium_squad, а в подписке сквад остался (следствие
+    прежнего ложного успеха), воркер обязан досняться, а не пропускать ключ навсегда."""
+    import asyncio
+
+    from shop_bot.data_manager import scheduler
+    from shop_bot.modules import remnawave_api
+
+    database = temp_db
+    base_squad, lte_squad = "squad-base-uuid", "squad-Lte"
+    plan_id = _setup_lte_host(database, lte_gb=20)
+    database.add_host_squad("Lte", base_squad, "base", "BASE")
+    key_id = _insert_key(
+        database, user_id=13, host_name="Lte", user_uuid="88", plan_id=plan_id,
+        state="disabled_premium_squad",
+    )
+
+    calls: list[tuple] = []
+
+    async def transport(host_name, method, path, *, json_payload=None, params=None,
+                        expected_status=(200,)):
+        calls.append((method, path, json_payload))
+        return type("R", (), {
+            "status_code": 200, "text": "{}",
+            "json": lambda self=None: {"response": {
+                "id": 88,
+                "activeInternalSquads": [
+                    {"uuid": base_squad, "name": "BASE"},
+                    {"uuid": lte_squad, "name": "LTE"},   # сквад всё ещё в подписке
+                ],
+            }},
+        })()
+
+    fake = _FakeRemnawave(
+        {"88": 25 * GB}, usage_by_node={"node-lte": 25 * GB}, nodes_by_host={"Lte": ["node-lte"]}
+    )
+    originals = {
+        name: getattr(remnawave_api, name)
+        for name in ("get_user_used_traffic", "get_lte_nodes_for_host",
+                     "get_user_node_usage_for_squad", "_request_for_host")
+    }
+    for name in ("get_user_used_traffic", "get_lte_nodes_for_host", "get_user_node_usage_for_squad"):
+        setattr(remnawave_api, name, getattr(fake, name))
+    remnawave_api._request_for_host = transport
+    try:
+        asyncio.run(scheduler.enforce_dual_traffic_limits(None))
+    finally:
+        for name, fn in originals.items():
+            setattr(remnawave_api, name, fn)
+
+    patches = [c for c in calls if c[0] == "PATCH"]
+    assert patches, "расхождение БД и панели должно чиниться повторным снятием"
+    assert patches[0][2]["activeInternalSquads"] == [base_squad]
+    assert database.get_key_by_id(key_id)["remote_access_state"] == "disabled_premium_squad"
