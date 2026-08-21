@@ -89,6 +89,7 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager import backup_manager
 from shop_bot.bot.handlers import show_main_menu
 from shop_bot.webhook_server.app import franchise_settings, toggle_franchise_settings
+from shop_bot.modules import remnawave_api
 from shop_bot.modules.remnawave_api import create_or_update_key_on_host, delete_client_on_host
 from shop_bot.core.module_loader import get_global_module_loader
 
@@ -2126,6 +2127,12 @@ def get_admin_router() -> Router:
         except Exception:
             lte_squad = None
         lte_squad_txt = "✅ настроен" if lte_squad else "— не настроен"
+        try:
+            overlap = database.get_host_squad_overlap(name) if name and name != '—' else []
+        except Exception:
+            overlap = []
+        if overlap:
+            lte_squad_txt += f" ⚠️ пересечение с base: {len(overlap)} нод(ы)"
 
         lines = [
             f"🖥 <b>Хост:</b> <b>{_safe(name)}</b>",
@@ -2524,6 +2531,25 @@ def get_admin_router() -> Router:
         await state.set_state(AdminHosts.squads_menu)
         if squad_id:
             await message.answer("✅ Сквад добавлен.")
+            # Пересечение нод LTE- и base-сквада не блокирует сохранение, но о нём нужно знать:
+            # трафик пересекающихся нод попадёт в LTE-пул, хотя они же отдаются base-сквадом.
+            try:
+                overlap = await remnawave_api.refresh_host_squad_overlap(host_name)
+            except Exception as e:
+                overlap = []
+                logger.warning(f"Проверка пересечения сквадов хоста '{host_name}' не удалась: {e}")
+            if overlap:
+                nodes_txt = "\n".join(
+                    f"• {_safe(n.get('node_name') or '—')} (<code>{_safe(n.get('uuid'))}</code>)"
+                    for n in overlap
+                )
+                await message.answer(
+                    "⚠️ <b>Ноды доступны и через LTE-, и через base-сквад</b>\n\n"
+                    f"{nodes_txt}\n\n"
+                    "Их трафик будет засчитываться в LTE-пул, хотя те же ноды отдаёт безлимитный "
+                    "сквад. Исправляется только правкой inbound'ов сквадов в Remnawave.",
+                    parse_mode="HTML",
+                )
         else:
             await message.answer(
                 "❌ Не удалось добавить сквад (возможно, уже есть активный сквад этого класса или дубликат UUID)."

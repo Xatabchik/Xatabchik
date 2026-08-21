@@ -6600,6 +6600,9 @@ def get_user_router() -> Router:
                         lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
                         lte_used_txt = _format_bytes_gb(lte_used)
                         lte_total_txt = _format_bytes_gb(lte_total)
+                        # Названия хостов/нод в карточке ключа не показываем: пользователю
+                        # достаточно суммарного LTE-лимита, а разбивка по нодам доступна
+                        # администратору в веб-панели (key_node_usage_snapshots).
                         lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
                         lte_reset_raw = lte_state.get('lte_reset_at')
                         if lte_reset_raw:

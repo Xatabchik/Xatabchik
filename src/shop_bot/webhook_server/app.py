@@ -80,6 +80,7 @@ from shop_bot.data_manager.database import (
     apply_global_remnawave_to_hosts,
     set_host_squads_from_catalog,
     get_host_selected_squad_catalog_ids,
+    get_host_squad_overlap,
 )
 from shop_bot.data_manager.database import (
     create_traffic_package, get_traffic_packages_for_plan, get_traffic_package_by_id,
@@ -89,6 +90,7 @@ from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
     get_squad_by_class, get_host_class,
     get_lte_state, add_lte_boost_bytes,
+    get_node_usage_for_key, resolve_key_period_start,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -2767,6 +2769,14 @@ def create_webhook_app(bot_controller_instance):
             except Exception:
                 lte_state = None
 
+        node_usage_rows = []
+        node_usage_period_start = None
+        try:
+            node_usage_period_start = resolve_key_period_start(key)
+            node_usage_rows = get_node_usage_for_key(key_id, node_usage_period_start)
+        except Exception as e:
+            logger.warning(f"Не удалось получить расход по нодам для ключа {key_id}: {e}")
+
         return jsonify({
             "ok": True,
             "key": {
@@ -2809,6 +2819,17 @@ def create_webhook_app(bot_controller_instance):
             "qr_data_url": qr_data_url,
             "devices": devices,
             "lte_state": lte_state,
+            # Разбивка расхода по нодам LTE-сквада за текущий расчётный период.
+            # Название ноды намеренно не отдаётся в карточку ключа — только идентификатор.
+            "node_usage": [
+                {
+                    "node_uuid": r.get('node_uuid'),
+                    "used_bytes": r.get('used_bytes') or 0,
+                    "updated_at": r.get('updated_at'),
+                }
+                for r in node_usage_rows
+            ],
+            "node_usage_period_start": node_usage_period_start,
         })
 
     @flask_app.route('/admin/keys/<int:key_id>/change-plan', methods=['POST'])
@@ -4216,6 +4237,12 @@ def create_webhook_app(bot_controller_instance):
                 host['selected_squad_ids'] = set(get_host_selected_squad_catalog_ids(host['host_name']))
             except Exception:
                 host['selected_squad_ids'] = set()
+            # Результат последней проверки пересечения сквадов — из БД, без обращения к панели
+            # на каждый рендер страницы.
+            try:
+                host['squad_node_overlap'] = get_host_squad_overlap(host['host_name'])
+            except Exception:
+                host['squad_node_overlap'] = []
 
         try:
             ssh_targets = get_all_ssh_targets()
@@ -4726,6 +4753,22 @@ def create_webhook_app(bot_controller_instance):
                 continue
         ok = set_host_squads_from_catalog(host_name, catalog_ids)
         flash('Сквады хоста обновлены.' if ok else 'Не удалось обновить сквады хоста.', 'success' if ok else 'danger')
+        if ok:
+            # Пересечение нод LTE- и base-сквада не блокирует сохранение, но админ должен
+            # знать: трафик таких нод попадёт в LTE-пул, хотя их же отдаёт base-сквад.
+            try:
+                overlap = asyncio.run(remnawave_api.refresh_host_squad_overlap(host_name))
+            except Exception as e:
+                overlap = []
+                logger.warning(f"Проверка пересечения сквадов хоста '{host_name}' не удалась: {e}")
+            if overlap:
+                nodes_txt = ', '.join(f"{n.get('node_name') or '—'} ({n.get('uuid')})" for n in overlap)
+                flash(
+                    f"⚠️ Ноды доступны и через LTE-, и через base-сквад: {nodes_txt}. "
+                    "Их трафик будет засчитываться в LTE-пул — исправляется настройкой "
+                    "inbound'ов сквадов в Remnawave.",
+                    'warning',
+                )
         return redirect(url_for('settings_page', tab='hosts'))
 
     @flask_app.route('/update-host-subscription', methods=['POST'])

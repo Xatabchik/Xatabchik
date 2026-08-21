@@ -803,6 +803,11 @@ def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
         "remnawave_api_token": "TEXT",
         "node_class": "TEXT DEFAULT 'unlim'",
         "badge": "TEXT DEFAULT '∞'",
+        # Результат последней проверки пересечения нод LTE- и base-сквадов хоста (JSON-список).
+        # Хранится, чтобы карточки хоста в боте и веб-панели показывали предупреждение без
+        # обращения к панели на каждый рендер.
+        "squad_node_overlap": "TEXT",
+        "squad_node_overlap_checked_at": "TIMESTAMP",
     }
     for column, definition in extras.items():
         _ensure_table_column(cursor, "xui_hosts", column, definition)
@@ -847,6 +852,155 @@ def _ensure_traffic_packages_table(cursor: sqlite3.Cursor) -> None:
     # 'enabled' | 'disabled_main' | 'disabled_premium' (legacy, host-level disable)
     # | 'disabled_premium_squad' (точечное отключение только LTE-сквада через host_squads)
     _ensure_table_column(cursor, "vpn_keys", "remote_access_state", "TEXT DEFAULT 'enabled'")
+
+
+def _ensure_key_node_usage_snapshots_table(cursor: sqlite3.Cursor) -> None:
+    """Расход ключа по КОНКРЕТНЫМ нодам за расчётный период.
+
+    Ни `key_usage_monitor` (PK key_id, одно поле last_traffic_bytes), ни `subscription_lte`
+    (одна строка на пользователя) не могут хранить разбивку по нодам, поэтому нужна
+    отдельная таблица. `period_start` согласован с расчётным периодом ключа
+    (`vpn_keys.next_traffic_reset_at`, см. resolve_key_period_start).
+    """
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS key_node_usage_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_id INTEGER NOT NULL,
+            node_uuid TEXT NOT NULL,
+            node_name TEXT,
+            host_name TEXT NOT NULL,
+            used_bytes INTEGER NOT NULL DEFAULT 0,
+            period_start TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(key_id, node_uuid, period_start)
+        )
+        '''
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_key_node_usage_key_period "
+        "ON key_node_usage_snapshots(key_id, period_start)"
+    )
+
+
+def resolve_key_period_start(key: dict | None) -> str:
+    """Начало текущего расчётного периода ключа в формате '%Y-%m-%d %H:%M:%S'.
+
+    Берём `next_traffic_reset_at` (конец периода) минус календарный месяц — так граница
+    совпадает с той, по которой воркер сбрасывает основной пул и baseline LTE. Если поле
+    ещё не заполнено, опираемся на дату создания ключа, а в последнюю очередь — на начало
+    текущего месяца, чтобы период всегда был определён.
+    """
+    raw_next = (key or {}).get("next_traffic_reset_at")
+    if raw_next:
+        try:
+            next_dt = datetime.fromisoformat(str(raw_next).replace(" ", "T"))
+            return add_calendar_months(next_dt, -1).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    raw_created = (key or {}).get("created_at") or (key or {}).get("created_date")
+    if raw_created:
+        try:
+            created_dt = datetime.fromisoformat(str(raw_created).replace(" ", "T"))
+            now = datetime.now()
+            # Rolling-цикл от даты создания: последняя годовщина, не превышающая "сейчас".
+            months = (now.year - created_dt.year) * 12 + (now.month - created_dt.month)
+            candidate = add_calendar_months(created_dt, months)
+            if candidate > now:
+                candidate = add_calendar_months(created_dt, months - 1)
+            return candidate.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    return datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+def upsert_key_node_usage_snapshot(
+    key_id: int,
+    node_uuid: str,
+    *,
+    host_name: str,
+    used_bytes: int,
+    period_start: str,
+    node_name: str | None = None,
+) -> bool:
+    """Записать/обновить расход ключа по одной ноде за период (идемпотентно по
+    UNIQUE(key_id, node_uuid, period_start))."""
+    node_uuid_n = (node_uuid or "").strip()
+    if not node_uuid_n or not key_id:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO key_node_usage_snapshots
+                    (key_id, node_uuid, node_name, host_name, used_bytes, period_start, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key_id, node_uuid, period_start) DO UPDATE SET
+                    used_bytes = excluded.used_bytes,
+                    node_name = COALESCE(excluded.node_name, key_node_usage_snapshots.node_name),
+                    host_name = excluded.host_name,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(key_id),
+                    node_uuid_n,
+                    (node_name or None),
+                    normalize_host_name(host_name),
+                    max(0, int(used_bytes or 0)),
+                    str(period_start),
+                    _now_str(),
+                ),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"Failed to upsert node usage snapshot for key {key_id}/{node_uuid_n}: {e}")
+        return False
+
+
+def get_node_usage_for_key(key_id: int, period_start: str | None = None) -> list[dict]:
+    """Разбивка расхода ключа по нодам за период (по убыванию расхода).
+
+    Без `period_start` берётся последний известный период этого ключа.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if period_start is None:
+                cursor.execute(
+                    "SELECT MAX(period_start) FROM key_node_usage_snapshots WHERE key_id = ?",
+                    (int(key_id),),
+                )
+                row = cursor.fetchone()
+                period_start = row[0] if row else None
+                if not period_start:
+                    return []
+            cursor.execute(
+                "SELECT * FROM key_node_usage_snapshots WHERE key_id = ? AND period_start = ? "
+                "ORDER BY used_bytes DESC, node_uuid",
+                (int(key_id), str(period_start)),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get node usage for key {key_id}: {e}")
+        return []
+
+
+def delete_node_usage_for_key(key_id: int) -> bool:
+    """Удалить все снапшоты ключа (используется при удалении ключа)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM key_node_usage_snapshots WHERE key_id = ?", (int(key_id),))
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"Failed to delete node usage snapshots for key {key_id}: {e}")
+        return False
 
 
 def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
@@ -1593,6 +1747,7 @@ def run_migration():
             _ensure_promo_tables(cursor)
             _ensure_traffic_packages_table(cursor)
             _ensure_subscription_lte_table(cursor)
+            _ensure_key_node_usage_snapshots_table(cursor)
             _ensure_host_squads_table(cursor)
             _ensure_remnawave_squads_catalog(cursor)
             _ensure_analytics_tables(cursor)
@@ -1940,6 +2095,56 @@ def set_host_class(host_name: str, node_class: str, badge: str | None = None) ->
         return False
 
 
+def set_host_squad_overlap(host_name: str, overlap_nodes: list[dict] | None) -> bool:
+    """Сохранить результат проверки пересечения нод LTE- и base-сквадов хоста.
+
+    Пустой список означает «проверено, пересечений нет» — это не то же самое, что NULL
+    («не проверялось»), поэтому дата проверки пишется в обоих случаях.
+    """
+    try:
+        payload = json.dumps(
+            [
+                {"uuid": n.get("uuid"), "node_name": n.get("node_name")}
+                for n in (overlap_nodes or [])
+                if isinstance(n, dict) and n.get("uuid")
+            ],
+            ensure_ascii=False,
+        )
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE xui_hosts SET squad_node_overlap = ?, squad_node_overlap_checked_at = ? "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (payload, _now_str(), normalize_host_name(host_name)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logging.error(f"Failed to store squad node overlap for host '{host_name}': {e}")
+        return False
+
+
+def get_host_squad_overlap(host_name: str) -> list[dict]:
+    """Ноды, доступные и через LTE-, и через base-сквад хоста (по последней проверке)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT squad_node_overlap FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (normalize_host_name(host_name),),
+            )
+            row = cursor.fetchone()
+        raw = row[0] if row else None
+        if not raw:
+            return []
+        parsed = json.loads(raw)
+        return [p for p in parsed if isinstance(p, dict)] if isinstance(parsed, list) else []
+    except (sqlite3.Error, json.JSONDecodeError) as e:
+        logging.error(f"Failed to read squad node overlap for host '{host_name}': {e}")
+        return []
+
+
 def list_hosts_by_class(node_class: str) -> list[dict]:
     node_class = 'premium' if str(node_class).strip().lower() == 'premium' else 'unlim'
     try:
@@ -2077,6 +2282,7 @@ def delete_key_by_id(key_id: int) -> bool:
             # при удалении ключа (по истечении срока, вручную и т.д.) подарок должен
             # пропадать из списка так же, как исчезает обычный ключ.
             cursor.execute("DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0", (key_id,))
+            cursor.execute("DELETE FROM key_node_usage_snapshots WHERE key_id = ?", (key_id,))
             cursor.execute("DELETE FROM vpn_keys WHERE key_id = ?", (key_id,))
             affected = cursor.rowcount
             conn.commit()
@@ -7242,6 +7448,10 @@ def delete_key_by_email(email: str) -> bool:
             if key_ids:
                 cursor.executemany(
                     "DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0",
+                    [(kid,) for kid in key_ids],
+                )
+                cursor.executemany(
+                    "DELETE FROM key_node_usage_snapshots WHERE key_id = ?",
                     [(kid,) for kid in key_ids],
                 )
             cursor.execute(

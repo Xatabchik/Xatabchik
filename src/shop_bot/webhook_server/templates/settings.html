@@ -835,6 +835,20 @@
 								{% else %}
 								<p class="text-secondary small mb-0">Сначала добавьте сквады в блоке Remnawave сверху.</p>
 								{% endif %}
+								{% if host.squad_node_overlap %}
+								{# Пересечение не блокирует сохранение: устранить его можно только
+								   правкой inbound'ов сквадов на стороне Remnawave. #}
+								<div class="alert alert-warning mt-2 mb-0 p-2 small">
+									<i class="ti ti-alert-triangle me-1"></i>
+									<b>Ноды доступны и через LTE-, и через base-сквад</b> — их трафик будет
+									засчитываться в LTE-пул, хотя те же ноды отдаёт безлимитный сквад:
+									<ul class="mb-0 mt-1">
+										{% for n in host.squad_node_overlap %}
+										<li>{{ n.node_name or '—' }} <code>{{ n.uuid }}</code></li>
+										{% endfor %}
+									</ul>
+								</div>
+								{% endif %}
 							</form>
 
 							<details class="rw-drawer nested-drawer" style="margin: 8px 0;">
