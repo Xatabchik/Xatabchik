@@ -89,7 +89,7 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
     get_squad_by_class, get_host_class,
-    get_lte_state, add_lte_boost_bytes,
+    get_key_lte_state, add_key_lte_boost_bytes,
     get_node_usage_for_key, resolve_key_period_start,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
@@ -2765,7 +2765,8 @@ def create_webhook_app(bot_controller_instance):
         lte_limit_bytes = int((plan or {}).get('lte_limit_bytes') or 0)
         if lte_limit_bytes > 0:
             try:
-                lte_state = get_lte_state(key.get('user_id'))
+                # LTE-пул принадлежит ключу, а не пользователю.
+                lte_state = get_key_lte_state(key_id)
             except Exception:
                 lte_state = None
 
@@ -2998,15 +2999,16 @@ def create_webhook_app(bot_controller_instance):
         user_id = key.get('user_id')
         host_name = key.get('host_name')
 
-        # Начисление строго аддитивно (+N ГБ к остатку) и атомарно; baseline расхода не
-        # сдвигаем, иначе выдача пары ГБ обнуляла бы весь накопленный расход пользователя.
+        # Начисление строго аддитивно (+N ГБ к остатку) и атомарно, и адресовано КЛЮЧУ:
+        # LTE-пул живёт на ключе. Baseline расхода не сдвигаем, иначе выдача пары ГБ
+        # обнуляла бы весь накопленный расход.
         try:
-            new_boost = add_lte_boost_bytes(user_id, add_bytes)
+            new_boost = add_key_lte_boost_bytes(key_id, add_bytes)
         except Exception as e:
             logger.error(f"Добавление LTE-трафика ключу {key_id}: ошибка обновления lte_state: {e}")
             return jsonify({"ok": False, "error": "lte_state_failed"}), 500
         if new_boost is None:
-            logger.error(f"Добавление LTE-трафика ключу {key_id}: не удалось начислить буст пользователю {user_id}")
+            logger.error(f"Добавление LTE-трафика ключу {key_id}: не удалось начислить буст (user_id={user_id})")
             return jsonify({"ok": False, "error": "lte_state_failed"}), 500
 
         # Немедленно возвращаем доступ на premium-нодах, если ключ был отключён из-за исчерпания LTE

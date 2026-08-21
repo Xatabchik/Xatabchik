@@ -136,13 +136,13 @@ def test_resolve_lte_limit_prefers_plan_and_adds_boost(temp_db):
 def test_add_lte_boost_is_additive_and_does_not_reset_usage(temp_db):
     """Покупка = +N ГБ к остатку; счётчик расхода и baseline не сбрасываются."""
     database = temp_db
-    database.update_lte_state(101, lte_limit_bytes=20 * GB, lte_used_bytes=18 * GB)
-    database.commit_lte_baseline(101, 100 * GB, expire_boost=False)
+    database.update_key_lte_state(101, lte_limit_bytes=20 * GB, lte_used_bytes=18 * GB)
+    database.commit_key_lte_baseline(101, 100 * GB, expire_boost=False)
 
-    assert database.add_lte_boost_bytes(101, 5 * GB) == 5 * GB
-    assert database.add_lte_boost_bytes(101, 10 * GB) == 15 * GB
+    assert database.add_key_lte_boost_bytes(101, 5 * GB) == 5 * GB
+    assert database.add_key_lte_boost_bytes(101, 10 * GB) == 15 * GB
 
-    state = database.get_lte_state(101)
+    state = database.get_key_lte_state(101)
     assert state["lte_boost_bytes"] == 15 * GB
     assert state["lte_used_bytes"] == 18 * GB, "расход не должен обнуляться покупкой"
     assert state["lte_used_baseline_bytes"] == 100 * GB, "baseline не сдвигается покупкой"
@@ -152,52 +152,38 @@ def test_add_lte_boost_is_additive_and_does_not_reset_usage(temp_db):
 
 def test_add_lte_boost_rejects_non_positive(temp_db):
     database = temp_db
-    assert database.add_lte_boost_bytes(102, 0) is None
-    assert database.add_lte_boost_bytes(102, -5) is None
+    assert database.add_key_lte_boost_bytes(102, 0) is None
+    assert database.add_key_lte_boost_bytes(102, -5) is None
 
 
 def test_period_reset_expires_boost(temp_db):
     """На границе расчётного периода буст сгорает вместе со сбросом baseline."""
     database = temp_db
-    database.update_lte_state(103, lte_limit_bytes=20 * GB)
-    database.add_lte_boost_bytes(103, 5 * GB)
-    database.request_lte_baseline_reset(103)
-    assert int(database.get_lte_state(103)["lte_baseline_reset_requested"]) == 1
+    database.update_key_lte_state(103, lte_limit_bytes=20 * GB)
+    database.add_key_lte_boost_bytes(103, 5 * GB)
+    database.request_key_lte_baseline_reset(103)
+    assert int(database.get_key_lte_state(103)["lte_baseline_reset_requested"]) == 1
 
-    database.commit_lte_baseline(103, 250 * GB, expire_boost=True)
+    database.commit_key_lte_baseline(103, 250 * GB, expire_boost=True)
 
-    state = database.get_lte_state(103)
+    state = database.get_key_lte_state(103)
     assert state["lte_boost_bytes"] == 0
     assert state["lte_used_baseline_bytes"] == 250 * GB
     assert int(state["lte_baseline_reset_requested"] or 0) == 0
     assert state["lte_baseline_initialized_at"]
 
 
-def test_new_subscription_baseline_is_marked_initialized(temp_db):
-    """Новая подписка считается от нуля: baseline = 0 и он сразу помечен определённым,
-    поэтому одноразовый backfill по историческому расходу к ней не применяется."""
+def test_new_key_state_waits_for_first_pass_to_set_baseline(temp_db):
+    """Свежая строка ключа не помечена инициализированной: точку отсчёта выставляет первый
+    проход воркера по фактическому расходу. Для нового ключа расход ~0, а ключ, у которого
+    LTE-сквад появился позже, так защищён от мгновенного исчерпания историей нод."""
     database = temp_db
-    state = database.get_lte_state(104)
+    state = database.get_key_lte_state(104)
     assert state["lte_used_baseline_bytes"] == 0
-    assert state["lte_baseline_initialized_at"], "новая строка должна быть помечена сразу"
+    assert state["lte_baseline_initialized_at"] is None
 
-
-def test_baseline_backfill_applies_only_to_pre_migration_rows(temp_db):
-    """Строки, созданные до появления колонки, остаются с NULL — им нужен backfill."""
-    import sqlite3
-
-    database = temp_db
-    with sqlite3.connect(database.DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, "
-            "premium_state, lte_baseline_initialized_at) VALUES (?, 0, 0, 0, 'enabled', NULL)",
-            (105,),
-        )
-        conn.commit()
-
-    assert database.get_lte_state(105)["lte_baseline_initialized_at"] is None
-    database.commit_lte_baseline(105, 42 * GB, expire_boost=False)
-    state = database.get_lte_state(105)
+    database.commit_key_lte_baseline(104, 42 * GB, expire_boost=False)
+    state = database.get_key_lte_state(104)
     assert state["lte_baseline_initialized_at"]
     assert state["lte_used_baseline_bytes"] == 42 * GB
 
@@ -295,3 +281,117 @@ def test_migrations_are_idempotent(temp_db):
 
     squads = database.get_host_squads("Prem")
     assert len(squads) == 1 and squads[0]["squad_class"] == "lte"
+
+
+# --- перенос состояния LTE с пользователя на ключ ----------------------------
+
+
+def _key_on_lte_host(database, user_id, host_name, email):
+    import sqlite3
+
+    with sqlite3.connect(database.DB_FILE) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO vpn_keys (user_id, host_name, email, key_email, remnawave_user_uuid, "
+            "subscription_url, expire_at, created_at) "
+            "VALUES (?, ?, ?, ?, 'uu', 'v', datetime('now', '+30 days'), CURRENT_TIMESTAMP)",
+            (user_id, host_name, email, email),
+        )
+        key_id = cur.lastrowid
+        conn.commit()
+    return key_id
+
+
+def _seed_user_lte_state(database, user_id, **fields):
+    import sqlite3
+
+    cols = ", ".join(fields)
+    marks = ", ".join("?" for _ in fields)
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute(
+            f"INSERT INTO subscription_lte (user_id, {cols}) VALUES (?, {marks})",
+            [user_id, *fields.values()],
+        )
+        conn.commit()
+
+
+def test_single_key_inherits_user_state_one_to_one(temp_db):
+    """Один LTE-ключ у пользователя — состояние переносится без потерь и без новой амнистии."""
+    database = temp_db
+    database.create_host("Lte", "https://panel.example", "", "", 0)
+    database.add_host_squad("Lte", "squad-lte", "lte", "LTE")
+    key_id = _key_on_lte_host(database, 500, "Lte", "one@e.com")
+    _seed_user_lte_state(
+        database, 500,
+        lte_limit_bytes=20 * GB, lte_used_bytes=7 * GB, lte_boost_bytes=10 * GB,
+        lte_used_baseline_bytes=42 * GB, lte_baseline_initialized_at="2026-08-01 00:00:00",
+    )
+
+    database.initialize_db()
+
+    state = database.get_key_lte_state(key_id)
+    assert state["lte_boost_bytes"] == 10 * GB, "оплаченный буст не должен потеряться"
+    assert state["lte_used_baseline_bytes"] == 42 * GB
+    assert state["lte_used_bytes"] == 7 * GB
+    assert state["lte_baseline_initialized_at"] == "2026-08-01 00:00:00"
+
+
+def test_boost_is_split_between_several_keys(temp_db):
+    """Несколько LTE-ключей — оплаченный буст делится, суммарно ничего не теряется,
+    а точка отсчёта определяется заново по каждому ключу."""
+    database = temp_db
+    database.create_host("Lte", "https://panel.example", "", "", 0)
+    database.add_host_squad("Lte", "squad-lte", "lte", "LTE")
+    key_a = _key_on_lte_host(database, 501, "Lte", "a@e.com")
+    key_b = _key_on_lte_host(database, 501, "Lte", "b@e.com")
+    _seed_user_lte_state(
+        database, 501,
+        lte_boost_bytes=9 * GB, lte_used_baseline_bytes=100 * GB,
+        lte_baseline_initialized_at="2026-08-01 00:00:00",
+    )
+
+    database.initialize_db()
+
+    a = database.get_key_lte_state(key_a)
+    b = database.get_key_lte_state(key_b)
+    assert a["lte_boost_bytes"] + b["lte_boost_bytes"] == 9 * GB
+    # Общий baseline пользователя копировать в каждый ключ нельзя — он вычитался бы дважды.
+    assert a["lte_used_baseline_bytes"] == 0 and b["lte_used_baseline_bytes"] == 0
+    assert a["lte_baseline_initialized_at"] is None
+
+
+def test_migration_is_idempotent_and_does_not_regrant(temp_db):
+    """Повторные запуски не выдают буст заново, и ключ, созданный после миграции,
+    не получает чужое состояние."""
+    database = temp_db
+    database.create_host("Lte", "https://panel.example", "", "", 0)
+    database.add_host_squad("Lte", "squad-lte", "lte", "LTE")
+    key_id = _key_on_lte_host(database, 502, "Lte", "one@e.com")
+    _seed_user_lte_state(database, 502, lte_boost_bytes=5 * GB)
+
+    database.initialize_db()
+    database.initialize_db()
+    assert database.get_key_lte_state(key_id)["lte_boost_bytes"] == 5 * GB
+
+    later_key = _key_on_lte_host(database, 502, "Lte", "later@e.com")
+    database.initialize_db()
+    assert database.get_key_lte_state(later_key)["lte_boost_bytes"] == 0
+
+
+def test_user_without_lte_keys_keeps_state_for_later(temp_db):
+    """Если LTE-ключей ещё нет, строка пользователя не помечается перенесённой —
+    состояние не потеряется, когда сквад настроят."""
+    database = temp_db
+    import sqlite3
+
+    database.create_host("Plain", "https://panel.example", "", "", 0)
+    _key_on_lte_host(database, 503, "Plain", "p@e.com")
+    _seed_user_lte_state(database, 503, lte_boost_bytes=3 * GB)
+
+    database.initialize_db()
+
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM subscription_lte WHERE user_id = 503").fetchone()
+    assert row["migrated_to_keys_at"] is None
+    assert row["lte_boost_bytes"] == 3 * GB
