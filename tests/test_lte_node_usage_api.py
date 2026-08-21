@@ -596,17 +596,42 @@ def test_zero_usage_is_a_valid_answer_not_a_failure(temp_db):
     """
     database, api = temp_db, _api()
     _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
     _router(api, [
         ("/internal-squads/squad-lte/users/", _Resp({"response": {"days": []}})),
         ("/bandwidth-stats/users/", _Resp({"response": {"series": [], "topNodes": []}})),
         ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
         ("/usage/range", _Resp(None, 404)),
-    ])
+    ], calls=calls)
 
     result = _usage(api, nodes=("n1",))
 
     assert result.per_node == {}
     assert result.path == api.USAGE_PATH_SQUAD_SCOPED
+    # Ответ squad-scoped авторитетен и когда пуст: остальные пути дёргать незачем.
+    assert len([c for c in calls if "bandwidth-stats" in c]) == 1, calls
+
+
+def test_numeric_identity_is_not_queried_twice(temp_db):
+    """Когда в ключе хранится числовой id, оба per-user кандидата дают один URL —
+    второй запрос был бы точной копией первого."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+    _router(api, [
+        ("/internal-squads/", _Resp(None, 404)),
+        ("/bandwidth-stats/users/4242", _Resp({"response": {"series": [], "topNodes": []}})),
+        ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
+        ("/usage/range", _Resp(None, 404)),
+    ], calls=calls)
+
+    asyncio.run(api.get_user_node_usage_for_squad(
+        "4242", host_name="H", squad_uuid="squad-lte", node_uuids=["n1"],
+        start_date=START, end_date=END, panel_user_id=4242,
+    ))
+
+    user_calls = [c for c in calls if "/bandwidth-stats/users/" in c and not c.endswith("/legacy")]
+    assert len(user_calls) == 1, user_calls
 
 
 def test_legacy_wrapper_is_probed_once_per_instance(temp_db):

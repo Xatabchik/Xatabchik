@@ -1626,12 +1626,16 @@ async def get_user_node_usage_for_squad(
             if response is None:
                 _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
             else:
-                answered_path = answered_path or USAGE_PATH_SQUAD_SCOPED
-                per_node = _sum_squad_scoped_days(response.json(), allowed)
-                if per_node:
-                    return NodeUsage(per_node, USAGE_PATH_SQUAD_SCOPED)
+                # Ответ этого пути авторитетен и когда он пустой: эндпоинт заскоуплен
+                # нодами сквада и зануляет все дни диапазона, поэтому «нет строк» здесь
+                # означает «расхода не было», а не «путь не дал данных». Остальные
+                # кандидаты нужны только если самого пути на панели нет (404).
+                return NodeUsage(
+                    _sum_squad_scoped_days(response.json(), allowed), USAGE_PATH_SQUAD_SCOPED
+                )
 
     # 2/3. per-user разбивка по нодам: 3.3.2 — числовой id, 2.8.1 — UUID.
+    tried_idents: set[str] = set()
     for path_id in (USAGE_PATH_USER_BY_ID, USAGE_PATH_USER_BY_UUID):
         if _usage_path_unsupported(instance_key, path_id):
             continue
@@ -1642,6 +1646,11 @@ async def get_user_node_usage_for_squad(
                 continue
         else:
             ident = quote(user_uuid_n)
+        # Когда в ключе хранится уже числовой id (3.3.2), оба кандидата дают один и тот же
+        # URL — второй запрос был бы точной копией первого.
+        if str(ident) in tried_idents:
+            continue
+        tried_idents.add(str(ident))
         response = await _request_optional_path(
             host_name,
             "GET",
