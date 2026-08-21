@@ -74,6 +74,132 @@ def compute_next_traffic_reset(from_dt: datetime | None = None) -> str:
     return add_months(base, 1).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _as_limit_bytes(value) -> int:
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
+def plan_main_limit_bytes(plan: dict | None) -> int:
+    return _as_limit_bytes((plan or {}).get("traffic_limit_bytes"))
+
+
+def plan_lte_limit_bytes(plan: dict | None) -> int:
+    return _as_limit_bytes((plan or {}).get("lte_limit_bytes"))
+
+
+def plan_has_monthly_traffic_reset(plan: dict | None) -> bool:
+    """Ежемесячный сброс нужен, если ограничен основной пул и/или LTE."""
+    return plan_main_limit_bytes(plan) > 0 or plan_lte_limit_bytes(plan) > 0
+
+
+def remnawave_traffic_limit_strategy_for_plan(plan: dict | None) -> str:
+    """Стратегия Remnawave относится только к ОСНОВНОМУ пулу.
+
+    LTE-лимит бот считает сам. Если основной пул безлимитный, панели
+    отправляем NO_RESET, даже когда LTE ограничен.
+    """
+    return "MONTH_ROLLING" if plan_main_limit_bytes(plan) > 0 else "NO_RESET"
+
+
+def parse_plan_id_from_key(key: dict | None) -> int | None:
+    desc = (key or {}).get("description")
+    if isinstance(desc, str) and desc.strip().startswith("{"):
+        try:
+            meta = json.loads(desc)
+            if isinstance(meta, dict) and meta.get("plan_id") not in (None, "", "None"):
+                return int(meta.get("plan_id"))
+        except Exception:
+            return None
+    return None
+
+
+def key_is_unbilled_trial_or_gift(key: dict | None) -> bool:
+    tag = str((key or {}).get("tag") or "").strip().lower()
+    if tag in {"trial", "user_gift", "gift"}:
+        return True
+    desc = (key or {}).get("description")
+    if isinstance(desc, str) and desc.strip().startswith("{"):
+        try:
+            meta = json.loads(desc)
+            if isinstance(meta, dict):
+                if meta.get("is_trial"):
+                    return True
+                if str(meta.get("source") or "").strip().lower() in {"trial", "gift"}:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def resolve_plan_for_key(key: dict | None, *, allow_host_fallback: bool = True) -> dict | None:
+    """Тариф ключа: plan_id из description, иначе первый активный тариф хоста.
+
+    Fallback на тариф хоста не применяется к триалам и подаркам — у них нет
+    биллинг-тарифа, даже если на хосте есть платные планы.
+    """
+    plan_id = parse_plan_id_from_key(key)
+    if plan_id is not None:
+        try:
+            return get_plan_by_id(plan_id)
+        except Exception:
+            return None
+    if not allow_host_fallback or key_is_unbilled_trial_or_gift(key):
+        return None
+    host_name = (key or {}).get("host_name")
+    if not host_name:
+        return None
+    try:
+        plans = get_active_plans_for_host(host_name) or []
+    except Exception:
+        plans = []
+    return plans[0] if plans else None
+
+
+def format_next_traffic_reset_display(raw) -> str | None:
+    """Дата ближайшего сброса для карточки ключа (`ДД.ММ.ГГГГ`) либо None."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace(" ", "T"))
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        return None
+
+
+def compute_aligned_next_traffic_reset(key: dict | None, *, now: datetime | None = None) -> str:
+    """Следующий сброс, согласованный с текущим rolling-окном ключа.
+
+    Если `next_traffic_reset_at` уже есть и в будущем — оставляем его.
+    Иначе берём начало текущего периода (`resolve_key_period_start`) плюс месяц
+    и прокручиваем вперёд, пока дата не окажется строго позже `now`.
+    """
+    now = now or datetime.now()
+    existing = (key or {}).get("next_traffic_reset_at")
+    if existing:
+        try:
+            existing_dt = datetime.fromisoformat(str(existing).replace(" ", "T"))
+            if existing_dt > now:
+                return existing_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    period_start = resolve_key_period_start(key)
+    try:
+        start_dt = datetime.fromisoformat(str(period_start).replace(" ", "T"))
+    except Exception:
+        start_dt = now
+    nxt = add_calendar_months(start_dt, 1)
+    for _ in range(24):
+        if nxt > now:
+            break
+        nxt = add_calendar_months(nxt, 1)
+    if nxt <= now:
+        nxt = add_calendar_months(now, 1)
+    return nxt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _to_datetime_str(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
@@ -803,6 +929,11 @@ def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
         "remnawave_api_token": "TEXT",
         "node_class": "TEXT DEFAULT 'unlim'",
         "badge": "TEXT DEFAULT '∞'",
+        # Результат последней проверки пересечения нод LTE- и base-сквадов хоста (JSON-список).
+        # Хранится, чтобы карточки хоста в боте и веб-панели показывали предупреждение без
+        # обращения к панели на каждый рендер.
+        "squad_node_overlap": "TEXT",
+        "squad_node_overlap_checked_at": "TIMESTAMP",
     }
     for column, definition in extras.items():
         _ensure_table_column(cursor, "xui_hosts", column, definition)
@@ -849,6 +980,155 @@ def _ensure_traffic_packages_table(cursor: sqlite3.Cursor) -> None:
     _ensure_table_column(cursor, "vpn_keys", "remote_access_state", "TEXT DEFAULT 'enabled'")
 
 
+def _ensure_key_node_usage_snapshots_table(cursor: sqlite3.Cursor) -> None:
+    """Расход ключа по КОНКРЕТНЫМ нодам за расчётный период.
+
+    Ни `key_usage_monitor` (PK key_id, одно поле last_traffic_bytes), ни `subscription_lte`
+    (одна строка на пользователя) не могут хранить разбивку по нодам, поэтому нужна
+    отдельная таблица. `period_start` согласован с расчётным периодом ключа
+    (`vpn_keys.next_traffic_reset_at`, см. resolve_key_period_start).
+    """
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS key_node_usage_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_id INTEGER NOT NULL,
+            node_uuid TEXT NOT NULL,
+            node_name TEXT,
+            host_name TEXT NOT NULL,
+            used_bytes INTEGER NOT NULL DEFAULT 0,
+            period_start TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(key_id, node_uuid, period_start)
+        )
+        '''
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_key_node_usage_key_period "
+        "ON key_node_usage_snapshots(key_id, period_start)"
+    )
+
+
+def resolve_key_period_start(key: dict | None) -> str:
+    """Начало текущего расчётного периода ключа в формате '%Y-%m-%d %H:%M:%S'.
+
+    Берём `next_traffic_reset_at` (конец периода) минус календарный месяц — так граница
+    совпадает с той, по которой воркер сбрасывает основной пул и baseline LTE. Если поле
+    ещё не заполнено, опираемся на дату создания ключа, а в последнюю очередь — на начало
+    текущего месяца, чтобы период всегда был определён.
+    """
+    raw_next = (key or {}).get("next_traffic_reset_at")
+    if raw_next:
+        try:
+            next_dt = datetime.fromisoformat(str(raw_next).replace(" ", "T"))
+            return add_calendar_months(next_dt, -1).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    raw_created = (key or {}).get("created_at") or (key or {}).get("created_date")
+    if raw_created:
+        try:
+            created_dt = datetime.fromisoformat(str(raw_created).replace(" ", "T"))
+            now = datetime.now()
+            # Rolling-цикл от даты создания: последняя годовщина, не превышающая "сейчас".
+            months = (now.year - created_dt.year) * 12 + (now.month - created_dt.month)
+            candidate = add_calendar_months(created_dt, months)
+            if candidate > now:
+                candidate = add_calendar_months(created_dt, months - 1)
+            return candidate.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    return datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+def upsert_key_node_usage_snapshot(
+    key_id: int,
+    node_uuid: str,
+    *,
+    host_name: str,
+    used_bytes: int,
+    period_start: str,
+    node_name: str | None = None,
+) -> bool:
+    """Записать/обновить расход ключа по одной ноде за период (идемпотентно по
+    UNIQUE(key_id, node_uuid, period_start))."""
+    node_uuid_n = (node_uuid or "").strip()
+    if not node_uuid_n or not key_id:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO key_node_usage_snapshots
+                    (key_id, node_uuid, node_name, host_name, used_bytes, period_start, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key_id, node_uuid, period_start) DO UPDATE SET
+                    used_bytes = excluded.used_bytes,
+                    node_name = COALESCE(excluded.node_name, key_node_usage_snapshots.node_name),
+                    host_name = excluded.host_name,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(key_id),
+                    node_uuid_n,
+                    (node_name or None),
+                    normalize_host_name(host_name),
+                    max(0, int(used_bytes or 0)),
+                    str(period_start),
+                    _now_str(),
+                ),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"Failed to upsert node usage snapshot for key {key_id}/{node_uuid_n}: {e}")
+        return False
+
+
+def get_node_usage_for_key(key_id: int, period_start: str | None = None) -> list[dict]:
+    """Разбивка расхода ключа по нодам за период (по убыванию расхода).
+
+    Без `period_start` берётся последний известный период этого ключа.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if period_start is None:
+                cursor.execute(
+                    "SELECT MAX(period_start) FROM key_node_usage_snapshots WHERE key_id = ?",
+                    (int(key_id),),
+                )
+                row = cursor.fetchone()
+                period_start = row[0] if row else None
+                if not period_start:
+                    return []
+            cursor.execute(
+                "SELECT * FROM key_node_usage_snapshots WHERE key_id = ? AND period_start = ? "
+                "ORDER BY used_bytes DESC, node_uuid",
+                (int(key_id), str(period_start)),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get node usage for key {key_id}: {e}")
+        return []
+
+
+def delete_node_usage_for_key(key_id: int) -> bool:
+    """Удалить все снапшоты ключа (используется при удалении ключа)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM key_node_usage_snapshots WHERE key_id = ?", (int(key_id),))
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logging.error(f"Failed to delete node usage snapshots for key {key_id}: {e}")
+        return False
+
+
 def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     """Отдельный (независимый от основного) пул трафика LTE для «премиум»-нод.
 
@@ -878,6 +1158,138 @@ def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     # бота. Строки, существовавшие до миграции, остаются с NULL и получают одноразовый
     # backfill в воркере; новые строки помечаются сразу при вставке (см. get_lte_state).
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_initialized_at", "TIMESTAMP")
+
+
+def _ensure_key_lte_state_table(cursor: sqlite3.Cursor) -> None:
+    """Состояние LTE-пула НА КЛЮЧ (пришло на смену пользовательскому `subscription_lte`).
+
+    LTE-лимит задаётся тарифом конкретного ключа (`plans.lte_limit_bytes`), а расход
+    считается по нодам LTE-сквада хоста этого ключа, поэтому и остаток, и докупленный
+    буст, и точка отсчёта обязаны жить на ключе. Пользовательская модель сворачивала
+    несколько ключей с разными тарифами в одну строку.
+    """
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS key_lte_state (
+            key_id INTEGER PRIMARY KEY,
+            lte_limit_bytes INTEGER DEFAULT 0,
+            lte_used_bytes INTEGER DEFAULT 0,
+            lte_boost_bytes INTEGER DEFAULT 0,
+            lte_used_baseline_bytes INTEGER DEFAULT 0,
+            lte_baseline_reset_requested INTEGER DEFAULT 0,
+            lte_baseline_initialized_at TIMESTAMP,
+            lte_reset_at TIMESTAMP,
+            premium_state TEXT DEFAULT 'enabled',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    _migrate_subscription_lte_to_keys(cursor)
+
+
+def _migrate_subscription_lte_to_keys(cursor: sqlite3.Cursor) -> None:
+    """Перенести пользовательское состояние LTE на ключи (однократно для каждой строки).
+
+    Раскладка состояния пользователя по его LTE-ключам:
+      * ключ ровно один — переносим состояние 1:1, ничего не теряя и не выдавая заново;
+      * ключей несколько — оплаченный буст делится поровну (остаток первому ключу), чтобы
+        суммарно у пользователя осталось ровно столько оплаченного трафика, сколько он
+        купил, а точка отсчёта у каждого ключа определяется заново на первом проходе
+        воркера (общий baseline пользователя нельзя скопировать в каждый ключ — он бы
+        вычитался многократно). Такие случаи логируются: разложение неоднозначно.
+
+    Идемпотентность — через отметку `subscription_lte.migrated_to_keys_at`: без неё
+    ключ, созданный уже после миграции, при следующем старте получил бы чужой буст.
+    """
+    try:
+        _ensure_table_column(cursor, "subscription_lte", "migrated_to_keys_at", "TIMESTAMP")
+        cursor.execute(
+            "SELECT * FROM subscription_lte WHERE migrated_to_keys_at IS NULL"
+        )
+        columns = [c[0] for c in cursor.description]
+        rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.warning(f"Миграция subscription_lte -> key_lte_state пропущена: {e}")
+        return
+
+    now = _now_str()
+    for row in rows:
+        user_id = row.get("user_id")
+        try:
+            cursor.execute(
+                """
+                SELECT k.key_id
+                FROM vpn_keys k
+                JOIN host_squads hs
+                  ON TRIM(hs.host_name) = TRIM(k.host_name) COLLATE NOCASE
+                 AND hs.squad_class = 'lte' AND hs.is_active = 1
+                WHERE k.user_id = ?
+                ORDER BY k.key_id
+                """,
+                (user_id,),
+            )
+            key_ids = [int(r[0]) for r in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logging.warning(f"Миграция LTE-состояния user_id={user_id}: не удалось найти ключи: {e}")
+            continue
+
+        if not key_ids:
+            # Переносить некуда (нет ключей на хостах с LTE-сквадом) — строку не трогаем,
+            # чтобы состояние не потерялось, если сквад настроят позже.
+            continue
+
+        boost_total = int(row.get("lte_boost_bytes") or 0)
+        single = len(key_ids) == 1
+        if single:
+            shares = [boost_total]
+        else:
+            per_key = boost_total // len(key_ids)
+            shares = [per_key] * len(key_ids)
+            shares[0] += boost_total - per_key * len(key_ids)
+            if boost_total > 0:
+                logging.warning(
+                    "Миграция LTE-состояния user_id=%s: у пользователя %s LTE-ключей, "
+                    "докупленный буст %s байт разделён поровну %s — при необходимости "
+                    "перераспределите вручную в key_lte_state.",
+                    user_id, len(key_ids), boost_total, shares,
+                )
+
+        for key_id, boost_share in zip(key_ids, shares):
+            try:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO key_lte_state (
+                        key_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes,
+                        lte_used_baseline_bytes, lte_baseline_reset_requested,
+                        lte_baseline_initialized_at, lte_reset_at, premium_state, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        key_id,
+                        int(row.get("lte_limit_bytes") or 0),
+                        int(row.get("lte_used_bytes") or 0) if single else 0,
+                        int(boost_share),
+                        int(row.get("lte_used_baseline_bytes") or 0) if single else 0,
+                        int(row.get("lte_baseline_reset_requested") or 0),
+                        row.get("lte_baseline_initialized_at") if single else None,
+                        row.get("lte_reset_at"),
+                        row.get("premium_state") or "enabled",
+                        now,
+                    ),
+                )
+            except sqlite3.Error as e:
+                logging.warning(f"Миграция LTE-состояния key_id={key_id}: {e}")
+
+        try:
+            cursor.execute(
+                "UPDATE subscription_lte SET migrated_to_keys_at = ? WHERE user_id = ?",
+                (now, user_id),
+            )
+            logging.info(
+                "Миграция LTE-состояния: user_id=%s -> ключи %s", user_id, key_ids
+            )
+        except sqlite3.Error as e:
+            logging.warning(f"Миграция LTE-состояния user_id={user_id}: не удалось отметить строку: {e}")
 
 
 def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
@@ -1593,7 +2005,11 @@ def run_migration():
             _ensure_promo_tables(cursor)
             _ensure_traffic_packages_table(cursor)
             _ensure_subscription_lte_table(cursor)
+            _ensure_key_node_usage_snapshots_table(cursor)
             _ensure_host_squads_table(cursor)
+            # После host_squads: миграция состояния LTE на ключи опирается на привязку
+            # хостов к LTE-сквадам, чтобы понять, каким ключам это состояние принадлежит.
+            _ensure_key_lte_state_table(cursor)
             _ensure_remnawave_squads_catalog(cursor)
             _ensure_analytics_tables(cursor)
             _ensure_auth_pending_actions_table(cursor)
@@ -1631,6 +2047,11 @@ def run_migration():
             conn.commit()
     except sqlite3.Error as e:
         logging.error("Сбой миграции базы данных: %s", e)
+        return
+    try:
+        backfill_monthly_traffic_reset_for_existing_keys()
+    except Exception:
+        logging.warning("Backfill monthly traffic reset завершился с ошибкой.", exc_info=True)
 
 
 def insert_resource_metric(
@@ -1940,6 +2361,56 @@ def set_host_class(host_name: str, node_class: str, badge: str | None = None) ->
         return False
 
 
+def set_host_squad_overlap(host_name: str, overlap_nodes: list[dict] | None) -> bool:
+    """Сохранить результат проверки пересечения нод LTE- и base-сквадов хоста.
+
+    Пустой список означает «проверено, пересечений нет» — это не то же самое, что NULL
+    («не проверялось»), поэтому дата проверки пишется в обоих случаях.
+    """
+    try:
+        payload = json.dumps(
+            [
+                {"uuid": n.get("uuid"), "node_name": n.get("node_name")}
+                for n in (overlap_nodes or [])
+                if isinstance(n, dict) and n.get("uuid")
+            ],
+            ensure_ascii=False,
+        )
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE xui_hosts SET squad_node_overlap = ?, squad_node_overlap_checked_at = ? "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (payload, _now_str(), normalize_host_name(host_name)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logging.error(f"Failed to store squad node overlap for host '{host_name}': {e}")
+        return False
+
+
+def get_host_squad_overlap(host_name: str) -> list[dict]:
+    """Ноды, доступные и через LTE-, и через base-сквад хоста (по последней проверке)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT squad_node_overlap FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (normalize_host_name(host_name),),
+            )
+            row = cursor.fetchone()
+        raw = row[0] if row else None
+        if not raw:
+            return []
+        parsed = json.loads(raw)
+        return [p for p in parsed if isinstance(p, dict)] if isinstance(parsed, list) else []
+    except (sqlite3.Error, json.JSONDecodeError) as e:
+        logging.error(f"Failed to read squad node overlap for host '{host_name}': {e}")
+        return []
+
+
 def list_hosts_by_class(node_class: str) -> list[dict]:
     node_class = 'premium' if str(node_class).strip().lower() == 'premium' else 'unlim'
     try:
@@ -2077,6 +2548,8 @@ def delete_key_by_id(key_id: int) -> bool:
             # при удалении ключа (по истечении срока, вручную и т.д.) подарок должен
             # пропадать из списка так же, как исчезает обычный ключ.
             cursor.execute("DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0", (key_id,))
+            cursor.execute("DELETE FROM key_node_usage_snapshots WHERE key_id = ?", (key_id,))
+            cursor.execute("DELETE FROM key_lte_state WHERE key_id = ?", (key_id,))
             cursor.execute("DELETE FROM vpn_keys WHERE key_id = ?", (key_id,))
             affected = cursor.rowcount
             conn.commit()
@@ -5727,7 +6200,13 @@ def get_plan_lte_limit(plan_id: int) -> int:
 
 
 def get_lte_state(user_id: int) -> dict:
-    """Возвращает состояние независимого LTE-пула трафика пользователя (создаёт запись при отсутствии)."""
+    """УСТАРЕЛО: пользовательская модель LTE-пула.
+
+    Состояние LTE перенесено на ключ (`key_lte_state`, см. `get_key_lte_state`), потому что
+    лимит задаётся тарифом конкретного ключа, а расход считается по нодам его хоста.
+    Функции этой группы оставлены только ради читаемости данных, уже перенесённых
+    миграцией `_migrate_subscription_lte_to_keys`, и в рантайме не используются.
+    """
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
@@ -5770,6 +6249,170 @@ def get_lte_state(user_id: int) -> dict:
             "lte_reset_at": None,
             "premium_state": "enabled",
         }
+
+
+_KEY_LTE_DEFAULT_STATE = {
+    "lte_limit_bytes": 0,
+    "lte_used_bytes": 0,
+    "lte_boost_bytes": 0,
+    "lte_used_baseline_bytes": 0,
+    "lte_baseline_reset_requested": 0,
+    "lte_baseline_initialized_at": None,
+    "lte_reset_at": None,
+    "premium_state": "enabled",
+}
+
+
+def get_key_lte_state(key_id: int) -> dict:
+    """Состояние LTE-пула конкретного ключа (создаёт строку при отсутствии).
+
+    `lte_baseline_initialized_at` намеренно НЕ проставляется при вставке: точку отсчёта
+    выставляет первый проход воркера по фактическому расходу. Для нового ключа расход
+    близок к нулю, а для ключа, у которого LTE-сквад появился позже, это защищает от
+    мгновенного исчерпания лимита накопленной историей нод.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM key_lte_state WHERE key_id = ?", (int(key_id),))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            cursor.execute(
+                "INSERT INTO key_lte_state (key_id, premium_state, updated_at) VALUES (?, 'enabled', ?)",
+                (int(key_id), _now_str()),
+            )
+            conn.commit()
+            return {"key_id": int(key_id), **_KEY_LTE_DEFAULT_STATE}
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get LTE state for key {key_id}: {e}")
+        return {"key_id": int(key_id), **_KEY_LTE_DEFAULT_STATE}
+
+
+def update_key_lte_state(
+    key_id: int,
+    *,
+    lte_limit_bytes: int | None = None,
+    lte_used_bytes: int | None = None,
+    lte_boost_bytes: int | None = None,
+    lte_used_baseline_bytes: int | None = None,
+    lte_baseline_reset_requested: bool | None = None,
+    lte_reset_at: Any = _UNSET,
+    premium_state: str | None = None,
+) -> bool:
+    get_key_lte_state(key_id)  # ensure row exists
+    fields: dict[str, Any] = {}
+    if lte_limit_bytes is not None:
+        fields["lte_limit_bytes"] = int(lte_limit_bytes)
+    if lte_used_bytes is not None:
+        fields["lte_used_bytes"] = int(lte_used_bytes)
+    if lte_boost_bytes is not None:
+        fields["lte_boost_bytes"] = int(lte_boost_bytes)
+    if lte_used_baseline_bytes is not None:
+        fields["lte_used_baseline_bytes"] = int(lte_used_baseline_bytes)
+    if lte_baseline_reset_requested is not None:
+        fields["lte_baseline_reset_requested"] = 1 if lte_baseline_reset_requested else 0
+    if lte_reset_at is not _UNSET:
+        fields["lte_reset_at"] = lte_reset_at
+    if premium_state is not None:
+        fields["premium_state"] = premium_state
+    if not fields:
+        return True
+    fields["updated_at"] = _now_str()
+    try:
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE key_lte_state SET {set_clause} WHERE key_id = ?",
+                list(fields.values()) + [int(key_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to update LTE state for key {key_id}: {e}")
+        return False
+
+
+def add_key_lte_boost_bytes(key_id: int, add_bytes: int) -> int | None:
+    """Атомарно увеличить докупленный LTE-буст КЛЮЧА. Возвращает новое значение."""
+    try:
+        add = int(add_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if add <= 0:
+        return None
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "UPDATE key_lte_state "
+                "SET lte_boost_bytes = COALESCE(lte_boost_bytes, 0) + ?, "
+                "    premium_state = 'enabled', updated_at = ? "
+                "WHERE key_id = ?",
+                (add, _now_str(), int(key_id)),
+            )
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                return None
+            cursor.execute("SELECT lte_boost_bytes FROM key_lte_state WHERE key_id = ?", (int(key_id),))
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row[0] or 0) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to add LTE boost for key {key_id}: {e}")
+        return None
+
+
+def commit_key_lte_baseline(key_id: int, baseline_bytes: int, *, expire_boost: bool) -> bool:
+    """Зафиксировать точку отсчёта LTE-расхода ключа одной транзакцией."""
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        baseline = max(0, int(baseline_bytes or 0))
+    except (TypeError, ValueError):
+        baseline = 0
+    sets = [
+        "lte_used_baseline_bytes = ?",
+        "lte_baseline_reset_requested = 0",
+        "lte_baseline_initialized_at = ?",
+        "updated_at = ?",
+    ]
+    values: list[Any] = [baseline, _now_str(), _now_str()]
+    if expire_boost:
+        sets.append("lte_boost_bytes = 0")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                f"UPDATE key_lte_state SET {', '.join(sets)} WHERE key_id = ?",
+                values + [int(key_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to commit LTE baseline for key {key_id}: {e}")
+        return False
+
+
+def request_key_lte_baseline_reset(key_id: int) -> bool:
+    """Пометить начало нового расчётного периода LTE у ключа (буст сгорит вместе с baseline)."""
+    get_key_lte_state(key_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE key_lte_state SET lte_baseline_reset_requested = 1, updated_at = ? WHERE key_id = ?",
+                (_now_str(), int(key_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to request LTE baseline reset for key {key_id}: {e}")
+        return False
 
 
 def resolve_lte_limit_bytes(lte_state: dict | None, plan_lte_limit_bytes: int = 0) -> int:
@@ -7227,6 +7870,93 @@ def update_key_fields(
     return _apply_key_updates(key_id, updates)
 
 
+def apply_key_monthly_reset_fields(
+    key_id: int,
+    plan: dict | None = None,
+    *,
+    restart_cycle: bool = False,
+    key: dict | None = None,
+    expire_main_boost: bool = False,
+) -> bool:
+    """Записать `traffic_limit_strategy` и `next_traffic_reset_at` по тарифу ключа.
+
+    - MONTH_ROLLING только при лимите основного пула (это поле уходит в Remnawave).
+    - Дата сброса ставится, если ограничен основной ИЛИ LTE-пул.
+    - `restart_cycle=True` — новая покупка/смена тарифа: окно от «сейчас».
+    - иначе не трогаем уже проставленную будущую дату; при её отсутствии
+      выравниваем по дате создания ключа.
+    """
+    if key is None:
+        try:
+            key = get_key_by_id(int(key_id))
+        except Exception:
+            key = None
+    if plan is None:
+        plan = resolve_plan_for_key(key)
+    strategy = remnawave_traffic_limit_strategy_for_plan(plan)
+    main_limit = plan_main_limit_bytes(plan)
+    if main_limit <= 0:
+        main_limit = _as_limit_bytes((key or {}).get("traffic_limit_bytes"))
+        if main_limit > 0:
+            strategy = "MONTH_ROLLING"
+    needs_date = plan_has_monthly_traffic_reset(plan) or main_limit > 0
+    next_reset: Any = None
+    if needs_date:
+        next_reset = (
+            compute_next_traffic_reset_str()
+            if restart_cycle
+            else compute_aligned_next_traffic_reset(key)
+        )
+    return update_key_fields(
+        int(key_id),
+        traffic_limit_strategy=strategy,
+        next_traffic_reset_at=next_reset,
+        traffic_boost_bytes=0 if expire_main_boost else None,
+    )
+
+
+def backfill_monthly_traffic_reset_for_existing_keys() -> int:
+    """Проставить MONTH_ROLLING и дату сброса уже выданным лимитным/LTE-ключам.
+
+    Идемпотентно: будущая дата не сдвигается, стратегия переписывается только
+    если основной пул ограничен, а в колонке ещё не MONTH_ROLLING.
+    """
+    try:
+        keys = get_all_keys()
+    except Exception:
+        logging.warning("Backfill monthly traffic reset: не удалось прочитать ключи", exc_info=True)
+        return 0
+    updated = 0
+    for key in keys:
+        try:
+            if key_is_unbilled_trial_or_gift(key) and parse_plan_id_from_key(key) is None:
+                continue
+            plan = resolve_plan_for_key(key)
+            main_limit = plan_main_limit_bytes(plan) or _as_limit_bytes((key or {}).get("traffic_limit_bytes"))
+            lte_limit = plan_lte_limit_bytes(plan)
+            if main_limit <= 0 and lte_limit <= 0:
+                continue
+            key_id = int(key.get("key_id"))
+            before_strategy = key.get("traffic_limit_strategy") or "NO_RESET"
+            before_date = key.get("next_traffic_reset_at")
+            apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False, key=key)
+            after = get_key_by_id(key_id) or {}
+            if (
+                (after.get("traffic_limit_strategy") or "NO_RESET") != before_strategy
+                or (after.get("next_traffic_reset_at") or None) != (before_date or None)
+            ):
+                updated += 1
+        except Exception:
+            logging.warning(
+                "Backfill monthly traffic reset failed for key %s",
+                (key or {}).get("key_id"),
+                exc_info=True,
+            )
+    if updated:
+        logging.info("Backfill monthly traffic reset: обновлено ключей: %s", updated)
+    return updated
+
+
 def delete_key_by_email(email: str) -> bool:
     lookup = _normalize_email(email) or email.strip()
     try:
@@ -7242,6 +7972,14 @@ def delete_key_by_email(email: str) -> bool:
             if key_ids:
                 cursor.executemany(
                     "DELETE FROM user_gifts WHERE key_id = ? AND is_activated = 0",
+                    [(kid,) for kid in key_ids],
+                )
+                cursor.executemany(
+                    "DELETE FROM key_node_usage_snapshots WHERE key_id = ?",
+                    [(kid,) for kid in key_ids],
+                )
+                cursor.executemany(
+                    "DELETE FROM key_lte_state WHERE key_id = ?",
                     [(kid,) for kid in key_ids],
                 )
             cursor.execute(

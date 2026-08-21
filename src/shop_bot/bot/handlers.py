@@ -6561,8 +6561,12 @@ def get_user_router() -> Router:
             except Exception:
                 show_traffic_topup = False
 
-            # Объём использованного трафика и дата ближайшего ежемесячного сброса (если тариф лимитирован по ГБ)
+            # Объём использованного трафика и дата ближайшего ежемесячного сброса
+            # (если тариф лимитирован по ГБ и/или LTE).
             traffic_info_text = None
+            next_reset_display = database.format_next_traffic_reset_display(
+                key_data.get('next_traffic_reset_at')
+            )
             try:
                 if plan_traffic_limit_bytes > 0:
                     used_bytes = _extract_traffic_used_bytes(user_payload)
@@ -6571,14 +6575,8 @@ def get_user_router() -> Router:
                     used_gb_txt = _format_bytes_gb(used_bytes)
                     total_gb_txt = _format_bytes_gb(total_limit_bytes)
                     traffic_info_text = f"♾ Основной: {used_gb_txt} ГБ / {total_gb_txt} ГБ"
-
-                    next_reset_raw = key_data.get('next_traffic_reset_at')
-                    if next_reset_raw:
-                        try:
-                            next_reset_dt = datetime.fromisoformat(str(next_reset_raw).replace(' ', 'T'))
-                            traffic_info_text += f" (сброс {next_reset_dt.strftime('%d.%m.%Y')})"
-                        except Exception:
-                            pass
+                    if next_reset_display:
+                        traffic_info_text += f" (сброс {next_reset_display})"
             except Exception:
                 traffic_info_text = None
 
@@ -6593,21 +6591,21 @@ def get_user_router() -> Router:
                     lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte') if host_name_for_lte else None
                     if lte_squad_cfg:
                         show_lte_topup = True
-                        lte_state = database.get_lte_state(user_id)
+                        # LTE-пул принадлежит КЛЮЧУ: докупка на одном ключе не расходуется
+                        # на других ключах того же пользователя.
+                        lte_state = database.get_key_lte_state(key_id_to_show)
                         lte_used = int(lte_state.get('lte_used_bytes') or 0)
                         # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
                         # буст) — раньше показанный лимит и проверяемый расходились.
                         lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
                         lte_used_txt = _format_bytes_gb(lte_used)
                         lte_total_txt = _format_bytes_gb(lte_total)
+                        # Названия хостов/нод в карточке ключа не показываем: пользователю
+                        # достаточно суммарного LTE-лимита, а разбивка по нодам доступна
+                        # администратору в веб-панели (key_node_usage_snapshots).
                         lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
-                        lte_reset_raw = lte_state.get('lte_reset_at')
-                        if lte_reset_raw:
-                            try:
-                                lte_reset_dt = datetime.fromisoformat(str(lte_reset_raw).replace(' ', 'T'))
-                                lte_line += f" (сброс {lte_reset_dt.strftime('%d.%m.%Y')})"
-                            except Exception:
-                                pass
+                        if next_reset_display:
+                            lte_line += f" (сброс {next_reset_display})"
                         traffic_info_text = f"{traffic_info_text}\n{lte_line}" if traffic_info_text else lte_line
             except Exception:
                 pass
@@ -6751,13 +6749,25 @@ def get_user_router() -> Router:
 
         email = key_data.get('key_email')
         try:
+            plan_id_for_move = _resolve_plan_id_for_key(key_data)
+            plan_for_move = get_plan_by_id(plan_id_for_move) if plan_id_for_move else None
+            move_limit = int((plan_for_move or {}).get('traffic_limit_bytes') or key_data.get('traffic_limit_bytes') or 0)
+            if move_limit < 0:
+                move_limit = 0
+            move_strategy = (
+                database.remnawave_traffic_limit_strategy_for_plan(plan_for_move)
+                if plan_for_move is not None
+                else (key_data.get('traffic_limit_strategy') or 'NO_RESET')
+            )
 
             result = await remnawave_api.create_or_update_key_on_host(
                 new_host_name,
                 email,
                 days_to_add=None,
                 expiry_timestamp_ms=expiry_timestamp_ms_exact,
-                plan_id=_resolve_plan_id_for_key(key_data),
+                plan_id=plan_id_for_move,
+                traffic_limit_bytes=move_limit,
+                traffic_limit_strategy=move_strategy,
             )
             if not result:
                 await callback.message.edit_text(
@@ -9348,13 +9358,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             # иначе две параллельные оплаты теряли одну из покупок (read-modify-write).
             # Точку отсчёта расхода (baseline) здесь НЕ сдвигаем: вместе с учётом буста в
             # энфорсинге это выдавало бы полный лимит тарифа заново за цену минимального пакета.
-            new_boost = database.add_lte_boost_bytes(user_id, add_bytes)
+            # Буст начисляется КОНКРЕТНОМУ ключу, который выбрал пользователь: LTE-пул живёт
+            # на ключе, и докупка на одном ключе не должна расходоваться на другом.
+            new_boost = database.add_key_lte_boost_bytes(key_id_lte, add_bytes)
             if new_boost is None:
                 # Ничего не начислено и на сервере ничего не менялось — состояние
                 # консистентно, возвращаем деньги и снимаем idempotency-lock.
                 logger.error(
-                    f"lte_gb_topup: не удалось начислить LTE-буст пользователю {user_id} "
-                    f"(add_bytes={add_bytes})"
+                    f"lte_gb_topup: не удалось начислить LTE-буст ключу {key_id_lte} "
+                    f"(user_id={user_id}, add_bytes={add_bytes})"
                 )
                 await _abort_topup_fulfillment(
                     bot,
@@ -9367,35 +9379,37 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return
 
-            # Немедленно возвращаем доступ на premium-нодах для всех ключей пользователя
+            # Возвращаем доступ на premium-нодах ТОЛЬКО оплаченному ключу: докупка на одном
+            # ключе не должна включать premium-ноды на других ключах пользователя.
             try:
-                user_keys = get_user_keys(user_id)
-                for uk in (user_keys or []):
-                    try:
-                        host_name_uk = uk.get('host_name')
-                        try:
-                            lte_squad_uk = database.get_squad_by_class(host_name_uk, 'lte')
-                        except Exception:
-                            lte_squad_uk = None
-                        is_premium_uk = database.get_host_class(host_name_uk) == 'premium'
-                        if not is_premium_uk and not lte_squad_uk:
-                            continue
-                        uuid_uk = uk.get('remnawave_user_uuid')
-                        state_uk = uk.get('remote_access_state')
-                        if not uuid_uk or state_uk not in ('disabled_premium', 'disabled_premium_squad'):
-                            continue
-                        if state_uk == 'disabled_premium_squad' and lte_squad_uk:
-                            ok = await remnawave_api.add_squad_to_user(
-                                uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
-                            )
-                        else:
-                            ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
-                        if ok:
-                            database.update_key_fields(uk.get('key_id'), remote_access_state='enabled')
-                    except Exception as e:
-                        logger.error(f"lte_gb_topup: не удалось включить доступ для ключа {uk.get('key_id')}: {e}", exc_info=True)
+                host_name_uk = key_data.get('host_name')
+                try:
+                    lte_squad_uk = database.get_squad_by_class(host_name_uk, 'lte')
+                except Exception:
+                    lte_squad_uk = None
+                is_premium_uk = database.get_host_class(host_name_uk) == 'premium'
+                uuid_uk = key_data.get('remnawave_user_uuid')
+                state_uk = key_data.get('remote_access_state')
+                if (
+                    uuid_uk
+                    and (is_premium_uk or lte_squad_uk)
+                    and state_uk in ('disabled_premium', 'disabled_premium_squad')
+                ):
+                    if state_uk == 'disabled_premium_squad' and lte_squad_uk:
+                        ok = await remnawave_api.add_squad_to_user(
+                            uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
+                        )
+                    else:
+                        ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)
+                    if ok:
+                        database.update_key_fields(key_id_lte, remote_access_state='enabled')
+                    else:
+                        logger.error(
+                            f"lte_gb_topup: не удалось вернуть доступ ключу {key_id_lte} "
+                            f"(host '{host_name_uk}', состояние {state_uk})"
+                        )
             except Exception as e:
-                logger.error(f"lte_gb_topup: ошибка перебора ключей пользователя {user_id}: {e}", exc_info=True)
+                logger.error(f"lte_gb_topup: ошибка восстановления доступа ключа {key_id_lte}: {e}", exc_info=True)
 
             try:
                 log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''
@@ -9766,19 +9780,11 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         except Exception:
             pass
 
-        # strategy makes sense only when traffic limit exists (0 means unлимит)
-        # Принудительно используем MONTH при наличии лимита трафика, независимо от того,
-        # что сохранено в тарифе (в т.ч. для тарифов, созданных до появления ежемесячного сброса).
-        if traffic_limit_bytes is None:
-            traffic_limit_strategy = None
-        else:
-            try:
-                if int(traffic_limit_bytes) == 0:
-                    traffic_limit_strategy = None
-                else:
-                    traffic_limit_strategy = 'MONTH_ROLLING'
-            except Exception:
-                traffic_limit_strategy = 'MONTH_ROLLING'
+        # Remnawave MONTH_ROLLING — только при лимите ОСНОВНОГО пула. LTE-лимит
+        # крутит бот сам; для безлимитного основного явно шлём NO_RESET, чтобы
+        # не унаследовать дефолт сквада и не оставить None (панель подставила бы
+        # squad.default_traffic_strategy).
+        traffic_limit_strategy = database.remnawave_traffic_limit_strategy_for_plan(plan)
 
         days_to_add = _compute_days_to_add(plan_months, plan_days)
         if days_to_add <= 0:
@@ -9894,11 +9900,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return False
             try:
-                if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
-                    rw_repo.update_key(
-                        key_id,
-                        next_traffic_reset_at=database.compute_next_traffic_reset_str(),
-                    )
+                database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=True)
             except Exception:
                 logger.warning(f"Не удалось установить дату сброса трафика для нового ключа {key_id}", exc_info=True)
             key_issued = True
@@ -9929,11 +9931,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                             gift_code=gift_code_unique,
                         )
                         try:
-                            if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
-                                rw_repo.update_key(
-                                    key_id,
-                                    next_traffic_reset_at=database.compute_next_traffic_reset_str(),
-                                )
+                            database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=True)
                         except Exception:
                             logger.warning(f"Не удалось установить дату сброса трафика для подарочного ключа {key_id}", exc_info=True)
                         
@@ -10055,15 +10053,11 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return False
             try:
-                if traffic_limit_bytes and int(traffic_limit_bytes) > 0:
-                    # Продление перезапускает цикл ежемесячного сброса трафика и снимает докупленный буст.
-                    rw_repo.update_key(
-                        key_id,
-                        traffic_boost_bytes=0,
-                        next_traffic_reset_at=database.compute_next_traffic_reset_str(),
-                    )
-                else:
-                    rw_repo.update_key(key_id, next_traffic_reset_at=None)
+                # Продление покупает срок, а не сбрасывает трафик: rolling-окно
+                # остаётся от дня покупки. Если даты ещё не было (старые ключи) —
+                # выравниваем по created_at. Безлимитный основной + LTE-лимит
+                # дату сохраняет; полностью безлимитный — очищает.
+                database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False)
             except Exception:
                 logger.warning(f"Не удалось обновить дату сброса трафика при продлении ключа {key_id}", exc_info=True)
             key_issued = True

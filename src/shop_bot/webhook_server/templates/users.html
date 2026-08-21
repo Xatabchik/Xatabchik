@@ -383,6 +383,10 @@
                 <div class="text-secondary small mb-1">Трафик</div>
                 <div class="fw-semibold" id="kd-traffic">—</div>
               </div>
+              <div class="col-12 d-none" id="kd-node-usage-wrap">
+                <div class="text-secondary small mb-1">Расход по нодам LTE-сквада (сырые данные панели за период, без вычета точки отсчёта)</div>
+                <div id="kd-node-usage" class="small"></div>
+              </div>
             </div>
 
             <div id="kd-note-block" class="kd-note-block d-none mt-3">
@@ -652,6 +656,7 @@
         document.getElementById('kd-plan').textContent = plan ? `${plan.plan_name} (${plan.months} мес., ${Number(plan.price||0).toFixed(0)} RUB)` : 'Не определён';
         const trafficParts = [`База: ${fmtBytes(k.traffic_limit_bytes)}`];
         if (Number(k.traffic_boost_bytes || 0) > 0) trafficParts.push(`+ буст: ${fmtBytes(k.traffic_boost_bytes)}`);
+        if (k.next_traffic_reset_display) trafficParts.push(`(сброс ${k.next_traffic_reset_display})`);
         document.getElementById('kd-traffic').textContent = trafficParts.join(' ');
 
         const subLink = document.getElementById('kd-sub-link');
@@ -677,6 +682,21 @@
 
         const lteWrap = document.getElementById('kd-lte-wrap');
         lteWrap.classList.toggle('d-none', !(plan && Number(plan.lte_limit_bytes || 0) > 0));
+
+        // Разбивка расхода по нодам за текущий расчётный период (key_node_usage_snapshots).
+        const nodeWrap = document.getElementById('kd-node-usage-wrap');
+        const nodeBox = document.getElementById('kd-node-usage');
+        const nodeRows = (data.node_usage || []).filter(r => Number(r.used_bytes || 0) > 0);
+        if (nodeWrap && nodeBox) {
+          nodeWrap.classList.toggle('d-none', nodeRows.length === 0);
+          // Названия нод не показываем нигде в карточке ключа — только идентификатор.
+          nodeBox.innerHTML = nodeRows.map((r, i) => {
+            const ident = (r.node_uuid || '').slice(0, 8) || String(i + 1);
+            return `<div class="d-flex justify-content-between border-bottom py-1">
+              <span class="text-secondary">Нода <code>${ident}</code></span>
+              <span class="fw-semibold">${fmtBytes(r.used_bytes)}</span></div>`;
+          }).join('');
+        }
 
         kdDevicesCache = data.devices || [];
         kdDevicesPage = 1;

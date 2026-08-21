@@ -470,12 +470,17 @@ async def check_device_limit_violations(bot: Bot):
 
 
 async def check_traffic_boost_resets(bot: Bot):
-    """Ежемесячный сброс трафика ключа до базового лимита тарифа.
+    """Ежемесячный сброс трафика ключа до базовых значений тарифа.
 
-    Дата сброса (`next_traffic_reset_at`) отсчитывается от момента покупки/продления ключа
+    Дата сброса (`next_traffic_reset_at`) отсчитывается от дня покупки ключа
     и не зависит от использованного трафика. По достижении этой даты:
-      - сбрасывается использованный трафик на Remnawave (actions/reset-traffic);
-      - лимит трафика возвращается к базовому значению тарифа (докупленный буст обнуляется);
+      - основной пул (если тариф лимитный): сброс used traffic на Remnawave,
+        лимит возвращается к `plans.traffic_limit_bytes`, докупленный буст сгорает,
+        `traffic_limit_strategy` остаётся MONTH_ROLLING;
+      - LTE-пул (если задан `plans.lte_limit_bytes`): новый расчётный период —
+        baseline переустанавливается, докупленный LTE-буст сгорает;
+      - для безлимитного основного пула панель не трогаем — крутим только LTE
+        и дату следующего сброса;
       - дата следующего сброса сдвигается на 1 календарный месяц вперёд.
     """
     try:
@@ -496,74 +501,81 @@ async def check_traffic_boost_resets(bot: Bot):
             if not next_reset_dt or next_reset_dt > now:
                 continue
 
+            plan = database.resolve_plan_for_key(key)
+            main_limit = database.plan_main_limit_bytes(plan)
+            if main_limit <= 0:
+                main_limit = database._as_limit_bytes(key.get("traffic_limit_bytes"))
+            lte_limit = database.plan_lte_limit_bytes(plan)
+            has_main_limit = main_limit > 0
+            has_lte_limit = lte_limit > 0
+
             host_name = key.get("host_name")
             user_uuid = key.get("remnawave_user_uuid")
             email = key.get("key_email") or key.get("email")
             boost = int(key.get("traffic_boost_bytes") or 0)
 
-            if not user_uuid and email:
+            if has_main_limit:
+                if not user_uuid and email:
+                    try:
+                        remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                        if isinstance(remote_user, dict):
+                            user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid")
+                    except Exception:
+                        pass
+
+                if not user_uuid:
+                    logger.warning(
+                        f"Scheduler: не удалось определить remnawave_user_uuid для key_id={key_id}, "
+                        "сброс основного пула отложен до следующего прохода."
+                    )
+                    continue
+
                 try:
-                    remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
-                    if isinstance(remote_user, dict):
-                        user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid")
-                except Exception:
-                    pass
-
-            if not user_uuid:
-                logger.warning(f"Scheduler: не удалось определить remnawave_user_uuid для key_id={key_id}, сброс трафика пропущен.")
-                continue
-
-            plan_id = None
-            try:
-                desc = key.get("description")
-                if isinstance(desc, str) and desc.strip().startswith("{"):
-                    meta = json.loads(desc)
-                    if isinstance(meta, dict) and meta.get("plan_id") is not None:
-                        plan_id = int(meta.get("plan_id"))
-            except Exception:
-                plan_id = None
-
-            base_limit = None
-            if plan_id:
-                try:
-                    plan = database.get_plan_by_id(plan_id)
-                    if plan:
-                        base_limit = plan.get("traffic_limit_bytes")
-                except Exception:
-                    base_limit = None
-
-            try:
-                await remnawave_api.reset_user_traffic(str(user_uuid))
-            except Exception as e:
-                logger.error(f"Scheduler: не удалось сбросить трафик на сервере для key_id={key_id}: {e}", exc_info=True)
-
-            if base_limit is not None and (boost > 0 or int(base_limit) != int(key.get("traffic_limit_bytes") or 0)):
-                try:
-                    await remnawave_api.update_user_traffic_limit(str(user_uuid), int(base_limit), host_name=host_name)
+                    await remnawave_api.reset_user_traffic(str(user_uuid))
                 except Exception as e:
-                    logger.error(f"Scheduler: не удалось вернуть базовый лимит трафика для key_id={key_id}: {e}", exc_info=True)
+                    logger.error(
+                        f"Scheduler: не удалось сбросить трафик на сервере для key_id={key_id}: {e}",
+                        exc_info=True,
+                    )
+
+                if boost > 0 or int(key.get("traffic_limit_bytes") or 0) != int(main_limit):
+                    try:
+                        await remnawave_api.update_user_traffic_limit(
+                            str(user_uuid), int(main_limit), host_name=host_name
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Scheduler: не удалось вернуть базовый лимит трафика для key_id={key_id}: {e}",
+                            exc_info=True,
+                        )
 
             next_next_reset = database.compute_next_traffic_reset_str(from_dt=next_reset_dt)
             try:
-                update_kwargs = {"traffic_boost_bytes": 0, "next_traffic_reset_at": next_next_reset}
-                if base_limit is not None:
-                    update_kwargs["traffic_limit_bytes"] = int(base_limit)
+                update_kwargs = {"next_traffic_reset_at": next_next_reset}
+                if has_main_limit:
+                    update_kwargs["traffic_boost_bytes"] = 0
+                    update_kwargs["traffic_limit_bytes"] = int(main_limit)
+                    update_kwargs["traffic_limit_strategy"] = "MONTH_ROLLING"
                 database.update_key_fields(key_id, **update_kwargs)
             except Exception:
                 pass
 
-            # Сброс основного пула трафика — новый расчётный период, поэтому и LTE-пул (независимый счётчик)
-            # тоже должен обнулить свой baseline, чтобы не наследовать расход прошлого месяца.
-            # Вместе с baseline сгорает и докупленный LTE-буст — симметрично основному пулу, где
-            # выше обнуляется traffic_boost_bytes (см. database.commit_lte_baseline).
-            try:
-                user_id = key.get("user_id")
-                if user_id:
-                    database.request_lte_baseline_reset(int(user_id))
-            except Exception as e:
-                logger.warning(f"Scheduler: не удалось запросить сброс baseline LTE при ежемесячном сбросе key_id={key_id}: {e}")
+            # Новый расчётный период: LTE-пул этого КЛЮЧА обнуляет baseline, чтобы
+            # не наследовать расход прошлого месяца. Вместе с baseline сгорает и
+            # докупленный LTE-буст — симметрично основному пулу.
+            if has_lte_limit:
+                try:
+                    database.request_key_lte_baseline_reset(int(key_id))
+                except Exception as e:
+                    logger.warning(
+                        f"Scheduler: не удалось запросить сброс baseline LTE при ежемесячном сбросе key_id={key_id}: {e}"
+                    )
 
-            logger.info(f"Scheduler: трафик ключа key_id={key_id} сброшен до базового лимита тарифа. Следующий сброс: {next_next_reset}.")
+            logger.info(
+                f"Scheduler: трафик ключа key_id={key_id} сброшен до базовых значений тарифа "
+                f"(main={'yes' if has_main_limit else 'no'}, lte={'yes' if has_lte_limit else 'no'}). "
+                f"Следующий сброс: {next_next_reset}."
+            )
 
         except Exception as e:
             logger.error(f"Scheduler: ошибка ежемесячного сброса трафика для key_id={key.get('key_id')}: {e}", exc_info=True)
@@ -608,41 +620,30 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
         try:
             total_used = 0
             main_limit = 0
-            plan_lte_limit = 0
-            # Расход по LTE-нодам считаем ОДИН раз на пользователя панели: get_user_used_traffic()
-            # возвращает агрегат Remnawave-пользователя, поэтому суммирование по каждому ключу
-            # задваивало один и тот же расход при нескольких LTE-ключах.
-            premium_used_by_uuid: dict[str, int] = {}
+            # Состояние LTE-пула ведётся НА КЛЮЧ: лимит задаётся тарифом конкретного ключа,
+            # а расход считается по нодам LTE-сквада его хоста. Пользовательская модель
+            # сворачивала ключи с разными тарифами в одну строку.
+            lte_exhausted_by_key: dict[Any, bool] = {}
+            lte_incomplete_keys: set[Any] = set()
 
             for k in keys:
+                key_id_for_usage = k.get("key_id")
                 host_name = k.get("host_name")
                 user_uuid = k.get("remnawave_user_uuid")
                 if not host_name or not user_uuid:
                     continue
 
+                # Агрегат пользователя остаётся источником для ОСНОВНОГО пула: там лимит
+                # энфорсит сама панель через trafficLimitBytes, и разбивка по нодам не нужна.
                 try:
                     used = await remnawave_api.get_user_used_traffic(str(user_uuid), host_name=host_name)
                 except Exception as e:
-                    logger.error(f"Scheduler[dual-limits]: не удалось получить трафик key_id={k.get('key_id')}: {e}", exc_info=True)
+                    logger.error(f"Scheduler[dual-limits]: не удалось получить трафик key_id={key_id_for_usage}: {e}", exc_info=True)
                     used = 0
 
                 total_used += used
-                # В LTE-пул попадают только ключи, у которых LTE-сквад подтверждён через
-                # host_squads: node_class='premium' без сквада — это недонастроенный хост,
-                # его расход не начисляем (fail-open), но предупреждаем в логах.
-                try:
-                    has_lte_squad = database.get_squad_by_class(host_name, "lte") is not None
-                except Exception:
-                    has_lte_squad = False
-                if has_lte_squad:
-                    premium_used_by_uuid[str(user_uuid)] = used
-                elif database.get_host_class(host_name) == "premium":
-                    logger.warning(
-                        "Scheduler[dual-limits]: хост '%s' помечен как premium, но активного сквада "
-                        "класса 'lte' нет — расход по нему не учитывается в LTE-пуле.",
-                        host_name,
-                    )
 
+                plan = None
                 plan_id = None
                 try:
                     desc = k.get("description")
@@ -657,61 +658,132 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         plan = database.get_plan_by_id(plan_id)
                     except Exception:
                         plan = None
-                    if plan:
-                        if main_limit == 0:
-                            base = int(plan.get("traffic_limit_bytes") or 0)
-                            if base > 0:
-                                boost = int(k.get("traffic_boost_bytes") or 0)
-                                main_limit = base + boost
-                        # LTE-лимит тарифа берём независимо от основного: у тарифа может быть
-                        # безлимитный основной пул и при этом отдельный LTE-лимит.
-                        try:
-                            plan_lte_limit = max(plan_lte_limit, int(plan.get("lte_limit_bytes") or 0))
-                        except Exception:
-                            pass
+                if plan and main_limit == 0:
+                    base = int(plan.get("traffic_limit_bytes") or 0)
+                    if base > 0:
+                        main_limit = base + int(k.get("traffic_boost_bytes") or 0)
+                # LTE-лимит тарифа читается независимо от основного: тариф может быть
+                # безлимитным по основному пулу и иметь отдельный LTE-лимит.
+                try:
+                    plan_lte_limit = int((plan or {}).get("lte_limit_bytes") or 0)
+                except Exception:
+                    plan_lte_limit = 0
 
-            premium_used = sum(premium_used_by_uuid.values())
+                # В LTE-пул попадают только ключи, у которых LTE-сквад подтверждён через
+                # host_squads: node_class='premium' без сквада — это недонастроенный хост,
+                # его расход не начисляем (fail-open), но предупреждаем в логах.
+                try:
+                    lte_squad = database.get_squad_by_class(host_name, "lte")
+                except Exception:
+                    lte_squad = None
+                if not lte_squad:
+                    if database.get_host_class(host_name) == "premium":
+                        logger.warning(
+                            "Scheduler[dual-limits]: хост '%s' помечен как premium, но активного сквада "
+                            "класса 'lte' нет — расход по нему не учитывается в LTE-пуле.",
+                            host_name,
+                        )
+                    continue
 
-            lte = database.get_lte_state(user_id)
-            if plan_lte_limit > 0 and int(lte.get("lte_limit_bytes") or 0) != plan_lte_limit:
-                # Пересинхронизация базового лимита из тарифа на каждом проходе: раньше он
-                # копировался только когда был равен 0, из-за чего изменение
-                # plans.lte_limit_bytes админом не долетало до существующих пользователей.
-                # Докупленный буст (lte_boost_bytes) при этом не трогаем.
-                database.update_lte_state(user_id, lte_limit_bytes=plan_lte_limit)
-                lte["lte_limit_bytes"] = plan_lte_limit
+                period_start = database.resolve_key_period_start(k)
+                try:
+                    period_start_dt = datetime.fromisoformat(str(period_start).replace(" ", "T"))
+                except Exception:
+                    period_start_dt = datetime.now() - timedelta(days=30)
 
-            # --- Точка отсчёта (baseline) LTE-расхода ---
-            # Панель Remnawave хранит расход по нодам накопительно (не "с момента сброса LTE"
-            # у конкретного пользователя), поэтому сравнивать лимит нужно не с сырым значением
-            # premium_used, а с разницей (premium_used - baseline). Baseline сдвигается только на
-            # границе расчётного периода (ежемесячный сброс), но НЕ при докупке — иначе покупка
-            # минимального пакета заново выдавала бы полный лимит.
-            baseline = int(lte.get("lte_used_baseline_bytes") or 0)
-            if int(lte.get("lte_baseline_reset_requested") or 0):
-                baseline = premium_used
-                database.commit_lte_baseline(user_id, baseline, expire_boost=True)
-                lte["lte_boost_bytes"] = 0
-                logger.info(
-                    f"Scheduler[dual-limits]: новый расчётный период LTE для user_id={user_id} — "
-                    f"baseline -> {baseline} bytes, докупленный буст обнулён"
+                premium_used = 0
+                try:
+                    nodes = await remnawave_api.get_lte_nodes_for_host(host_name)
+                    node_uuids = [n["uuid"] for n in nodes]
+                    if not node_uuids:
+                        logger.warning(
+                            "Scheduler[dual-limits]: у LTE-сквада хоста '%s' нет доступных нод — "
+                            "расход по нему не начисляется.",
+                            host_name,
+                        )
+                        continue
+                    usage = await remnawave_api.get_user_node_usage_for_squad(
+                        str(user_uuid),
+                        host_name=host_name,
+                        squad_uuid=str(lte_squad.get("squad_uuid") or ""),
+                        node_uuids=node_uuids,
+                        start_date=period_start_dt,
+                        end_date=datetime.now(),
+                    )
+                    node_names = {n["uuid"]: n.get("node_name") for n in nodes}
+                    for node_uuid, node_bytes in usage.per_node.items():
+                        database.upsert_key_node_usage_snapshot(
+                            key_id_for_usage,
+                            node_uuid,
+                            host_name=host_name,
+                            used_bytes=node_bytes,
+                            period_start=period_start,
+                            node_name=node_names.get(node_uuid),
+                        )
+                    premium_used = sum(usage.per_node.values())
+                    logger.info(
+                        "Scheduler[dual-limits]: расход LTE key_id=%s посчитан по нодам "
+                        "(путь API: %s, нод: %s, итого %s байт)",
+                        key_id_for_usage, usage.path, len(usage.per_node), premium_used,
+                    )
+                except Exception as e:
+                    # Ни нулевого расхода в снапшоты, ни исчерпания лимита — только пропуск.
+                    lte_incomplete_keys.add(key_id_for_usage)
+                    logger.warning(
+                        "Scheduler[dual-limits]: не удалось получить расход по нодам LTE для "
+                        "key_id=%s (host '%s'): %s — ключ пропущен на этом проходе.",
+                        key_id_for_usage, host_name, e,
+                    )
+                    continue
+
+                lte = database.get_key_lte_state(key_id_for_usage)
+                if plan_lte_limit > 0 and int(lte.get("lte_limit_bytes") or 0) != plan_lte_limit:
+                    # Пересинхронизация базового лимита из тарифа на каждом проходе, чтобы
+                    # изменение plans.lte_limit_bytes долетало до выданных ключей.
+                    # Докупленный буст при этом не трогаем.
+                    database.update_key_lte_state(key_id_for_usage, lte_limit_bytes=plan_lte_limit)
+                    lte["lte_limit_bytes"] = plan_lte_limit
+
+                # --- Точка отсчёта (baseline) LTE-расхода ---
+                # Панель хранит расход по нодам накопительно, поэтому сравнивать лимит нужно
+                # не с сырым значением, а с разницей (raw - baseline). Baseline сдвигается на
+                # границе расчётного периода, но НЕ при докупке — иначе покупка минимального
+                # пакета заново выдавала бы полный лимит.
+                baseline = int(lte.get("lte_used_baseline_bytes") or 0)
+                if int(lte.get("lte_baseline_reset_requested") or 0):
+                    baseline = premium_used
+                    database.commit_key_lte_baseline(key_id_for_usage, baseline, expire_boost=True)
+                    lte["lte_boost_bytes"] = 0
+                    logger.info(
+                        "Scheduler[dual-limits]: новый расчётный период LTE для key_id=%s — "
+                        "baseline -> %s bytes, докупленный буст обнулён",
+                        key_id_for_usage, baseline,
+                    )
+                elif not lte.get("lte_baseline_initialized_at") and premium_used > 0:
+                    # Ключ существовал до появления точки отсчёта: принимаем накопленный
+                    # панелью расход за baseline, иначе лимит исчерпался бы мгновенно.
+                    baseline = premium_used
+                    database.commit_key_lte_baseline(key_id_for_usage, baseline, expire_boost=False)
+                    logger.info(
+                        "Scheduler[dual-limits]: инициализирован baseline LTE для key_id=%s "
+                        "-> %s bytes (первый проход)", key_id_for_usage, baseline,
+                    )
+
+                premium_used_effective = max(0, premium_used - baseline)
+                database.update_key_lte_state(key_id_for_usage, lte_used_bytes=premium_used_effective)
+
+                lte_limit_effective = database.resolve_lte_limit_bytes(lte, plan_lte_limit)
+                lte_exhausted_by_key[key_id_for_usage] = (
+                    lte_limit_effective > 0 and premium_used_effective >= lte_limit_effective
                 )
-            elif not lte.get("lte_baseline_initialized_at") and premium_used > 0:
-                # Подписка существовала до появления baseline: принимаем накопленный панелью
-                # исторический расход за точку отсчёта, иначе лимит был бы исчерпан сразу.
-                # Одноразово и идемпотентно (отметка lte_baseline_initialized_at).
-                baseline = premium_used
-                database.commit_lte_baseline(user_id, baseline, expire_boost=False)
-                logger.info(
-                    f"Scheduler[dual-limits]: инициализирован baseline LTE для user_id={user_id} "
-                    f"-> {baseline} bytes (первый проход после обновления)"
+
+            if lte_incomplete_keys:
+                logger.warning(
+                    "Scheduler[dual-limits]: неполные данные о расходе LTE для ключей %s — "
+                    "их состояние на этом проходе не меняется.",
+                    sorted(str(x) for x in lte_incomplete_keys),
                 )
 
-            premium_used_effective = max(0, premium_used - baseline)
-            database.update_lte_state(user_id, lte_used_bytes=premium_used_effective)
-
-            lte_limit_effective = database.resolve_lte_limit_bytes(lte, plan_lte_limit)
-            lte_exhausted = lte_limit_effective > 0 and premium_used_effective >= lte_limit_effective
             main_exhausted = main_limit > 0 and total_used >= main_limit
 
             lte_transition_to_disabled = False
@@ -733,16 +805,35 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
 
                 if main_exhausted:
                     desired_state = "disabled_main"
-                elif lte_squad and lte_exhausted:
+                elif lte_squad and lte_exhausted_by_key.get(key_id):
                     # Отключаем по LTE-лимиту только те ключи, чей расход в этот лимит и
                     # засчитывается (host_squads с классом 'lte'). Legacy-состояние
                     # 'disabled_premium' по-прежнему корректно снимается ветвью ниже.
                     desired_state = "disabled_premium_squad"
+                elif lte_squad and key_id in lte_incomplete_keys:
+                    # Достоверного расхода нет — не отключаем и не восстанавливаем доступ,
+                    # оставляя текущее состояние до следующего успешного прохода.
+                    continue
                 else:
                     desired_state = "enabled"
                 is_lte_disabled = desired_state in ("disabled_premium_squad", "disabled_premium")
 
                 if desired_state == current_state:
+                    if desired_state == "disabled_premium_squad" and lte_squad:
+                        # Идемпотентная сверка с панелью. Раньше снятие сквада могло вернуть
+                        # ложный успех (сравнивалась строка-UUID с массивом объектов), и в БД
+                        # оказывалось 'disabled_premium_squad' при живом сквада в подписке —
+                        # после чего эта ветка навсегда пропускала ключ. Повторный вызов
+                        # ничего не делает, если сквад уже снят, и чинит расхождение, если нет.
+                        try:
+                            await remnawave_api.remove_squad_from_user(
+                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Scheduler[dual-limits]: сверка снятия LTE-сквада для key_id=%s "
+                                "не удалась: %s", key_id, e,
+                            )
                     continue  # уже в нужном состоянии — не дёргаем API повторно
 
                 try:
@@ -1306,10 +1397,20 @@ async def check_auto_renewals(bot: Bot):
                     email=email,
                     days_to_add=days_to_add,
                     expiry_timestamp_ms=new_expiry_ms,
+                    traffic_limit_bytes=int(plan.get("traffic_limit_bytes") or 0),
+                    traffic_limit_strategy=database.remnawave_traffic_limit_strategy_for_plan(plan),
+                    plan_id=plan.get("plan_id"),
                 )
                 if result:
                     effective_ms = result.get("expiry_timestamp_ms") or new_expiry_ms
                     rw_repo.update_key_fields(key_id, expire_at_ms=int(effective_ms))
+                    try:
+                        database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False)
+                    except Exception:
+                        logger.warning(
+                            f"Auto-renew: не удалось обновить политику сброса трафика ключа {key_id}",
+                            exc_info=True,
+                        )
                     _auto_renew_attempts.pop(key_id, None)
                     logger.info(f"Auto-renew: ключ {key_id} продлён на {days_to_add} дн. (пользователь {user_id}).")
                     await _notify_auto_renew_success(bot, user_id, key_id, price, days_to_add, key_name)

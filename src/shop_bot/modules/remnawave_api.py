@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, NamedTuple, Sequence
 from urllib.parse import quote
 import re
 import asyncio
@@ -925,7 +925,12 @@ async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host
     if not user_uuid:
         return False
     try:
-        payload = {"uuid": user_uuid, "activeInternalSquads": list(dict.fromkeys(squad_uuids or []))}
+        # PATCH /api/users идентифицирует пользователя по `uuid` (2.8.1) либо по числовому
+        # `id` (3.3.2, где поля uuid у пользователя нет вовсе). Что именно хранится в
+        # vpn_keys.remnawave_user_uuid, видно по самому значению.
+        stored = str(user_uuid).strip()
+        payload: dict[str, Any] = {"id": int(stored)} if stored.isdigit() else {"uuid": stored}
+        payload["activeInternalSquads"] = list(dict.fromkeys(squad_uuids or []))
         await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200, 201))
         logger.info(
             "Remnawave[%s]: activeInternalSquads пользователя %s обновлены -> %s",
@@ -940,14 +945,42 @@ async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host
         return False
 
 
+def extract_active_squad_uuids(user_payload: dict[str, Any] | None) -> list[str]:
+    """UUID активных internal-сквадов пользователя из ответа панели.
+
+    ВАЖНО: `activeInternalSquads` в ответе — массив ОБЪЕКТОВ (`{uuid, name, ...}`), и в
+    2.8.1, и в 3.3.2, тогда как `PATCH /api/users` принимает массив строк-UUID. Сравнение
+    строки с объектами всегда давало «сквада нет», из-за чего remove_squad_from_user
+    возвращал ложный успех и LTE-сквад не снимался при исчерпании лимита.
+    """
+    raw = (user_payload or {}).get("activeInternalSquads")
+    if raw is None:
+        raw = (user_payload or {}).get("internalSquads") or []
+    result: list[str] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            uuid_value = item.strip()
+        elif isinstance(item, dict):
+            uuid_value = str(item.get("uuid") or item.get("squadUuid") or "").strip()
+        else:
+            continue
+        if uuid_value and uuid_value not in result:
+            result.append(uuid_value)
+    return result
+
+
 async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
     """Убрать конкретный сквад из activeInternalSquads пользователя, не трогая остальные сквады."""
     if not user_uuid or not squad_uuid:
         return False
     try:
         current = await get_user_by_uuid(user_uuid, host_name=host_name)
-        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        current_squads = extract_active_squad_uuids(current)
         if squad_uuid not in current_squads:
+            logger.info(
+                "Remnawave[%s]: сквад %s уже отсутствует у пользователя %s (активные: %s)",
+                host_name, squad_uuid, user_uuid, current_squads,
+            )
             return True  # уже отсутствует — идемпотентно
         new_squads = [s for s in current_squads if s != squad_uuid]
         return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
@@ -965,7 +998,7 @@ async def add_squad_to_user(user_uuid: str, squad_uuid: str, *, host_name: str) 
         return False
     try:
         current = await get_user_by_uuid(user_uuid, host_name=host_name)
-        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        current_squads = extract_active_squad_uuids(current)
         if squad_uuid in current_squads:
             return True  # уже присутствует — идемпотентно
         new_squads = current_squads + [squad_uuid]
@@ -1135,6 +1168,587 @@ async def get_user_lte_usage_bytes(
         except Exception as e:
             logger.warning("Remnawave: get_node_usage_range fallback для ноды %s не удался: %s", node_uuid, e)
     return total
+
+
+# ==========================================================================================
+# Точный учёт LTE-трафика по конкретным нодам сквада.
+#
+# Матрица путей снята с контракта remnawave/backend по тегам 2.8.1 и 3.3.2 (см. описание PR):
+#
+#   GET /api/internal-squads/{squadUuid}/accessible-nodes
+#       2.8.1 ✅ | 3.3.2 ✅ — схема ответа идентична.
+#
+# `host_name` во всех функциях ниже — исключительно ключ маршрутизации к панели
+# (_request_for_host → _load_config_for_host → base_url/token). Он НЕ идентифицирует ноду
+# или сквад, поэтому кэш скоупится по squad_uuid, а решение о поддержке пути — по base_url
+# инстанса панели.
+# ==========================================================================================
+
+
+class RemnawavePathUnsupportedError(RemnawaveAPIError):
+    """Путь не поддерживается этой версией панели (404 / 400 / 422 на валидации параметра).
+
+    Отделено от сетевых и 5xx-ошибок намеренно: «версия не умеет этот путь» — повод
+    попробовать следующего кандидата в цепочке, а «панель недоступна» — повод пропустить
+    ключ на этом проходе и НЕ записывать нулевой расход.
+    """
+
+
+_SQUAD_NODES_TTL_SECONDS = 600  # 10 минут
+# Короткий негативный кэш: битый/несуществующий squad_uuid не должен опрашиваться
+# заново на каждый ключ этого сквада (воркер ходит раз в dual_limit_interval_sec).
+_SQUAD_NODES_FAILURE_TTL_SECONDS = 120
+_squad_nodes_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_squad_nodes_failures: dict[str, tuple[float, str]] = {}
+_squad_nodes_cache_lock = threading.Lock()
+
+
+def invalidate_squad_nodes_cache(squad_uuid: str | None = None) -> None:
+    """Сбросить кэш нод сквада (целиком или по одному squad_uuid), включая негативный."""
+    with _squad_nodes_cache_lock:
+        if squad_uuid:
+            key = str(squad_uuid).strip()
+            _squad_nodes_cache.pop(key, None)
+            _squad_nodes_failures.pop(key, None)
+        else:
+            _squad_nodes_cache.clear()
+            _squad_nodes_failures.clear()
+
+
+async def _request_optional_path(
+    host_name: str,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> httpx.Response | None:
+    """Запрос к пути, которого может не быть в этой версии панели.
+
+    Возвращает None, если панель ответила 404 (маршрута нет) либо 400/422 (маршрут есть,
+    но параметр другого типа — например, числовой userId вместо UUID в 3.3.2 против 2.8.1).
+    Сетевые ошибки и 5xx пробрасываются как RemnawaveAPIError/httpx-исключения.
+    """
+    response = await _request_for_host(
+        host_name,
+        method,
+        path,
+        params=params,
+        json_payload=json_payload,
+        expected_status=(200, 400, 404, 422),
+    )
+    if response.status_code in (400, 404, 422):
+        logger.debug(
+            "Remnawave[%s]: путь %s не поддерживается (%s) — пробую следующего кандидата",
+            host_name, path, response.status_code,
+        )
+        return None
+    return response
+
+
+async def get_squad_accessible_nodes(
+    squad_uuid: str,
+    *,
+    host_name: str,
+    use_cache: bool = True,
+) -> list[dict[str, Any]]:
+    """Ноды, доступные через internal squad: `GET /api/internal-squads/{uuid}/accessible-nodes`.
+
+    Возвращает список словарей нод (`uuid`, `nodeName`, `countryCode`, `configProfileUuid`,
+    `configProfileName`, `activeInbounds`) — схема подтверждена для 2.8.1 и 3.3.2.
+
+    Пустой список означает «у сквада действительно нет доступных нод». Любой сбой запроса —
+    исключение, а не пустой список: иначе «не удалось узнать» было бы неотличимо от «нод нет»
+    и привело бы к нулевому расходу и ложному «лимит не исчерпан».
+
+    Кэш TTL 10 минут с ключом `squad_uuid` (не `host_name`: два разных host_name, смотрящих
+    в одну панель, обязаны переиспользовать один и тот же список нод).
+    """
+    squad_uuid_n = (squad_uuid or "").strip()
+    if not squad_uuid_n:
+        return []
+
+    if use_cache:
+        with _squad_nodes_cache_lock:
+            cached = _squad_nodes_cache.get(squad_uuid_n)
+        if cached and (time.monotonic() - cached[0]) < _SQUAD_NODES_TTL_SECONDS:
+            return list(cached[1])
+        # Негативный кэш: если панель уже ответила ошибкой на этот сквад, не дёргаем её
+        # заново для каждого ключа того же сквада — иначе один битый squad_uuid даёт
+        # N запросов за проход воркера. Ошибка при этом всё равно пробрасывается.
+        with _squad_nodes_cache_lock:
+            failed = _squad_nodes_failures.get(squad_uuid_n)
+        if failed and (time.monotonic() - failed[0]) < _SQUAD_NODES_FAILURE_TTL_SECONDS:
+            raise RemnawaveAPIError(failed[1])
+
+    encoded = quote(squad_uuid_n)
+    path = f"/api/internal-squads/{encoded}/accessible-nodes"
+
+    def _remember_failure(message: str) -> RemnawaveAPIError:
+        with _squad_nodes_cache_lock:
+            _squad_nodes_failures[squad_uuid_n] = (time.monotonic(), message)
+        logger.warning(message)
+        return RemnawaveAPIError(message)
+
+    try:
+        # 401/403 и 404 разбираем отдельно: у них принципиально разные причины и разные
+        # действия администратора, а по тексту «500 {...}» это неотличимо.
+        response = await _request_for_host(
+            host_name, "GET", path, expected_status=(200, 401, 403, 404)
+        )
+    except Exception as e:
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: не удалось получить ноды сквада {squad_uuid_n}: {e}"
+        ) from e
+
+    if response.status_code in (401, 403):
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: панель отклонила запрос нод сквада {squad_uuid_n} "
+            f"({response.status_code}). Это авторизация, а не отсутствие сквада: проверьте "
+            "API-токен хоста и его скоупы (нужны права на чтение internal-squads / "
+            "accessible-nodes). Токен из сессии веб-панели живёт недолго — нужен постоянный "
+            "API-токен."
+        )
+    if response.status_code == 404:
+        raise _remember_failure(
+            f"Remnawave[{host_name}]: сквад {squad_uuid_n} не найден на панели (404). "
+            "Проверьте, что этот UUID есть в GET /api/internal-squads — это должен быть "
+            "internal squad, а не external-сквад и не config profile."
+        )
+
+    with _squad_nodes_cache_lock:
+        _squad_nodes_failures.pop(squad_uuid_n, None)
+    payload = response.json()
+    body = payload.get("response") if isinstance(payload, dict) else None
+    raw_nodes = (body or {}).get("accessibleNodes") if isinstance(body, dict) else None
+    if not isinstance(raw_nodes, list):
+        raise RemnawaveAPIError(
+            f"Remnawave: неожиданный ответ accessible-nodes для сквада {squad_uuid_n}"
+        )
+
+    nodes: list[dict[str, Any]] = []
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            continue
+        node_uuid = str(item.get("uuid") or "").strip()
+        if not node_uuid:
+            continue
+        nodes.append(
+            {
+                "uuid": node_uuid,
+                "node_name": item.get("nodeName") or item.get("name"),
+                "country_code": item.get("countryCode"),
+                "config_profile_uuid": item.get("configProfileUuid"),
+                "active_inbounds": item.get("activeInbounds") or [],
+            }
+        )
+
+    with _squad_nodes_cache_lock:
+        _squad_nodes_cache[squad_uuid_n] = (time.monotonic(), list(nodes))
+    return nodes
+
+
+async def get_squad_nodes_for_class(host_name: str, squad_class: str) -> list[dict[str, Any]]:
+    """Ноды активного сквада заданного класса ('lte'/'base') у хоста.
+
+    Пустой список, если сквад такого класса не настроен — это легитимная конфигурация
+    (лог info, не ошибка). Сбой обращения к панели пробрасывается наверх.
+    """
+    if not host_name:
+        return []
+    try:
+        squad_cfg = rw_repo.get_squad_by_class(host_name, squad_class)
+    except Exception as e:
+        logger.error(
+            "Remnawave[%s]: не удалось прочитать сквад класса '%s' из БД: %s",
+            host_name, squad_class, e,
+        )
+        raise RemnawaveAPIError(f"Не удалось прочитать сквад класса '{squad_class}'") from e
+    squad_uuid = str((squad_cfg or {}).get("squad_uuid") or "").strip()
+    if not squad_uuid:
+        logger.info(
+            "Remnawave[%s]: сквад класса '%s' не настроен — список нод пуст.",
+            host_name, squad_class,
+        )
+        return []
+    return await get_squad_accessible_nodes(squad_uuid, host_name=host_name)
+
+
+async def get_lte_nodes_for_host(host_name: str) -> list[dict[str, Any]]:
+    """Ноды активного LTE-сквада хоста (с именами — для карточки ключа и снапшотов)."""
+    return await get_squad_nodes_for_class(host_name, "lte")
+
+
+async def get_lte_node_uuids_for_host(host_name: str) -> list[str]:
+    """UUID нод активного LTE-сквада хоста.
+
+    `[]` — LTE-сквад не настроен (легитимно). Сбой обращения к панели — исключение.
+    """
+    return [n["uuid"] for n in await get_lte_nodes_for_host(host_name)]
+
+
+class NodeUsage(NamedTuple):
+    """Расход пользователя по нодам за период + идентификатор сработавшего пути API."""
+
+    per_node: dict[str, int]
+    path: str
+
+
+# Кэш решения «какой путь поддерживает эта панель» — на уровне ИНСТАНСА панели (base_url),
+# а не host_name: два host_name с одинаковыми base_url/token — это одна панель, и повторно
+# зондировать её незачем. TTL позволяет подхватить апгрейд панели без рестарта бота.
+_USAGE_PATH_TTL_SECONDS = 3600
+_usage_path_state: dict[str, dict[str, Any]] = {}
+_usage_path_lock = threading.Lock()
+
+# Идентификаторы путей цепочки (порядок = приоритет).
+USAGE_PATH_SQUAD_SCOPED = "squad_scoped"          # 3.3.2
+USAGE_PATH_USER_BY_ID = "user_by_id"              # 3.3.2
+USAGE_PATH_USER_BY_UUID = "user_by_uuid"          # 2.8.1
+USAGE_PATH_USER_LEGACY = "user_legacy_by_uuid"    # 2.8.1
+USAGE_PATH_LEGACY_WRAPPER = "legacy_wrapper"      # исторический get_user_lte_usage_bytes
+
+
+def _panel_instance_key(host_name: str) -> str:
+    """Идентификатор инстанса панели (base_url) для кэша поддержки путей."""
+    try:
+        return (_load_config_for_host(host_name).get("base_url") or "").strip().rstrip("/")
+    except Exception:
+        return ""
+
+
+def reset_usage_path_cache() -> None:
+    """Сбросить кэш решений о поддерживаемых путях (используется в тестах)."""
+    with _usage_path_lock:
+        _usage_path_state.clear()
+
+
+def _usage_path_unsupported(instance_key: str, path: str) -> bool:
+    if not instance_key:
+        return False
+    with _usage_path_lock:
+        state = _usage_path_state.get(instance_key)
+        if not state:
+            return False
+        if (time.monotonic() - state.get("ts", 0.0)) >= _USAGE_PATH_TTL_SECONDS:
+            _usage_path_state.pop(instance_key, None)
+            return False
+        return path in state.get("unsupported", set())
+
+
+def _mark_usage_path_unsupported(instance_key: str, path: str) -> None:
+    if not instance_key:
+        return
+    with _usage_path_lock:
+        state = _usage_path_state.setdefault(instance_key, {"unsupported": set(), "ts": time.monotonic()})
+        if (time.monotonic() - state.get("ts", 0.0)) >= _USAGE_PATH_TTL_SECONDS:
+            state["unsupported"] = set()
+            state["ts"] = time.monotonic()
+        state["unsupported"].add(path)
+
+
+def _as_api_date(dt: datetime) -> str:
+    """Оба семейства эндпоинтов ждут дату в формате YYYY-MM-DD."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d")
+
+
+def _to_int_bytes(value: Any) -> int:
+    try:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            return int(float(value.strip()))
+    except (TypeError, ValueError):
+        return 0
+    return 0
+
+
+async def resolve_panel_user_id(
+    user_uuid: str,
+    *,
+    host_name: str,
+    user_payload: dict[str, Any] | None = None,
+) -> int | None:
+    """Числовой `id` пользователя панели (нужен путям 3.3.2).
+
+    В 3.3.2 у пользователя вообще нет поля `uuid` (только `id` и `shortUuid`), поэтому
+    `vpn_keys.remnawave_user_uuid` там хранит уже числовой id — в этом случае берём его
+    напрямую, без лишнего запроса к панели (который к тому же может не отвечать).
+    В 2.8.1 хранится UUID, и числовой id приходится доставать из payload.
+    """
+    stored = (user_uuid or "").strip()
+    if stored.isdigit():
+        return int(stored)
+    payload = user_payload
+    if payload is None:
+        payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+    raw = (payload or {}).get("id")
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sum_squad_scoped_days(payload: Any, allowed_nodes: set[str] | None) -> dict[str, int]:
+    """3.3.2: `{response: {days: [{date, nodes: [{uuid, totalBytes}]}]}}` -> сумма по нодам."""
+    body = payload.get("response") if isinstance(payload, dict) else None
+    days = (body or {}).get("days") if isinstance(body, dict) else None
+    per_node: dict[str, int] = {}
+    for day in days or []:
+        for node in (day or {}).get("nodes") or []:
+            node_uuid = str((node or {}).get("uuid") or "").strip()
+            if not node_uuid or (allowed_nodes is not None and node_uuid not in allowed_nodes):
+                continue
+            per_node[node_uuid] = per_node.get(node_uuid, 0) + _to_int_bytes(node.get("totalBytes"))
+    return per_node
+
+
+def _sum_user_series(payload: Any, allowed_nodes: set[str]) -> dict[str, int]:
+    """2.8.1/3.3.2: `{response: {series|topNodes: [{uuid, total}]}}` -> расход по нодам.
+
+    `uuid` в series/topNodes — это UUID ноды; фильтруем по нодам LTE-сквада, т.к. эндпоинт
+    отдаёт расход пользователя по ВСЕМ нодам.
+    """
+    body = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(body, dict):
+        return {}
+    per_node: dict[str, int] = {}
+    for key in ("series", "topNodes"):
+        for row in body.get(key) or []:
+            node_uuid = str((row or {}).get("uuid") or "").strip()
+            if not node_uuid or node_uuid not in allowed_nodes:
+                continue
+            value = _to_int_bytes(row.get("total"))
+            # series и topNodes описывают один и тот же период — берём максимум, а не сумму,
+            # чтобы не удвоить расход, если присутствуют оба списка.
+            per_node[node_uuid] = max(per_node.get(node_uuid, 0), value)
+    return per_node
+
+
+def _sum_legacy_rows(payload: Any, user_uuid: str, allowed_nodes: set[str]) -> dict[str, int]:
+    """2.8.1 legacy: плоский список `{userUuid, nodeUuid, total, date}` -> расход по нодам."""
+    rows = payload.get("response") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return {}
+    per_node: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_user = str(row.get("userUuid") or row.get("user_uuid") or "").strip()
+        if row_user != user_uuid:
+            continue
+        node_uuid = str(row.get("nodeUuid") or row.get("node_uuid") or "").strip()
+        if not node_uuid or node_uuid not in allowed_nodes:
+            continue
+        per_node[node_uuid] = per_node.get(node_uuid, 0) + _to_int_bytes(row.get("total"))
+    return per_node
+
+
+async def get_user_node_usage_for_squad(
+    user_uuid: str,
+    *,
+    host_name: str,
+    squad_uuid: str,
+    node_uuids: Sequence[str],
+    start_date: datetime,
+    end_date: datetime,
+    panel_user_id: int | None = None,
+    user_payload: dict[str, Any] | None = None,
+) -> NodeUsage:
+    """Расход пользователя по нодам LTE-сквада за период — с разбивкой по нодам.
+
+    Версионно-толерантная цепочка (подтверждена по контракту 2.8.1 и 3.3.2):
+
+      1. `GET /api/bandwidth-stats/internal-squads/{squadUuid}/users/{userId}/usage`
+         — 3.3.2, числовой userId, ответ `days[].nodes[]{uuid,totalBytes}`, уже
+         заскоупленный нодами сквада. В 2.8.1 секции INTERNAL_SQUADS нет -> 404.
+      2. `GET /api/bandwidth-stats/users/{userId}` — 3.3.2 (числовой id) и
+      3. `GET /api/bandwidth-stats/users/{userUuid}` — 2.8.1 (UUID): один и тот же
+         маршрут с разным типом параметра, ответ `series[]/topNodes[]{uuid,total}` по
+         всем нодам, фильтруем списком нод сквада.
+      4. `GET /api/bandwidth-stats/users/{userUuid}/legacy` — 2.8.1, плоские строки
+         `{userUuid,nodeUuid,total,date}`. В 3.3.2 секции LEGACY нет -> 404.
+      5. Исторический `get_user_lte_usage_bytes` — оставлен как последний кандидат без
+         изменения его логики выбора пути. Разбивку он дать не может (только сумму), а
+         оба его эндпоинта на 2.8.1/3.3.2 неприменимы (`/api/nodes/{uuid}/usage/range`
+         отсутствует в обеих версиях, а у `POST /bandwidth-stats/nodes/users` другое тело
+         и график вместо строк), поэтому его нулевой результат трактуется как «данных
+         нет», а не как «расход нулевой».
+
+    Ошибки: 404/400/422 -> путь/тип параметра не поддерживается версией, пробуем
+    следующего кандидата и запоминаем решение по инстансу панели. Сетевая ошибка или 5xx
+    -> строгий fail-safe: пробрасываем RemnawaveAPIError, чтобы вызывающий пропустил ключ
+    и НЕ записал нулевой расход. Если ни один путь не дал данных -> RemnawavePathUnsupportedError.
+    """
+    user_uuid_n = (user_uuid or "").strip()
+    allowed = {str(u).strip() for u in (node_uuids or []) if str(u).strip()}
+    if not user_uuid_n or not allowed:
+        return NodeUsage({}, "none")
+
+    instance_key = _panel_instance_key(host_name)
+    # Путь, который ответил корректно (пусть и без данных): отличает «расхода нет»
+    # от «панель не умеет ни одного пути».
+    answered_path: str | None = None
+    start_txt = _as_api_date(start_date)
+    # Верхнюю границу берём на сутки вперёд: эндпоинты статистики оперируют ДАТАМИ, а не
+    # моментами времени, и панель агрегирует расход по своему часовому поясу. Без запаса
+    # расход текущих суток мог не попасть в диапазон при расхождении TZ бота и панели.
+    end_txt = _as_api_date(end_date + timedelta(days=1))
+    top_limit = max(20, len(allowed) + 5)
+    squad_uuid_n = (squad_uuid or "").strip()
+
+    async def _numeric_id() -> int | None:
+        nonlocal panel_user_id
+        if panel_user_id is None:
+            panel_user_id = await resolve_panel_user_id(
+                user_uuid_n, host_name=host_name, user_payload=user_payload
+            )
+        return panel_user_id
+
+    # 1. squad-scoped (3.3.2)
+    if squad_uuid_n and not _usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED):
+        numeric_id = await _numeric_id()
+        if numeric_id is None:
+            _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
+        else:
+            response = await _request_optional_path(
+                host_name,
+                "GET",
+                f"/api/bandwidth-stats/internal-squads/{quote(squad_uuid_n)}/users/{numeric_id}/usage",
+                params={"start": start_txt, "end": end_txt},
+            )
+            if response is None:
+                _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
+            else:
+                # Ответ этого пути авторитетен и когда он пустой: эндпоинт заскоуплен
+                # нодами сквада и зануляет все дни диапазона, поэтому «нет строк» здесь
+                # означает «расхода не было», а не «путь не дал данных». Остальные
+                # кандидаты нужны только если самого пути на панели нет (404).
+                return NodeUsage(
+                    _sum_squad_scoped_days(response.json(), allowed), USAGE_PATH_SQUAD_SCOPED
+                )
+
+    # 2/3. per-user разбивка по нодам: 3.3.2 — числовой id, 2.8.1 — UUID.
+    tried_idents: set[str] = set()
+    for path_id in (USAGE_PATH_USER_BY_ID, USAGE_PATH_USER_BY_UUID):
+        if _usage_path_unsupported(instance_key, path_id):
+            continue
+        if path_id == USAGE_PATH_USER_BY_ID:
+            ident: Any = await _numeric_id()
+            if ident is None:
+                _mark_usage_path_unsupported(instance_key, path_id)
+                continue
+        else:
+            ident = quote(user_uuid_n)
+        # Когда в ключе хранится уже числовой id (3.3.2), оба кандидата дают один и тот же
+        # URL — второй запрос был бы точной копией первого.
+        if str(ident) in tried_idents:
+            continue
+        tried_idents.add(str(ident))
+        response = await _request_optional_path(
+            host_name,
+            "GET",
+            f"/api/bandwidth-stats/users/{ident}",
+            params={"start": start_txt, "end": end_txt, "topNodesLimit": top_limit},
+        )
+        if response is None:
+            _mark_usage_path_unsupported(instance_key, path_id)
+            continue
+        answered_path = answered_path or path_id
+        per_node = _sum_user_series(response.json(), allowed)
+        if per_node:
+            return NodeUsage(per_node, path_id)
+
+    # 4. legacy per-user (2.8.1)
+    if not _usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY):
+        response = await _request_optional_path(
+            host_name,
+            "GET",
+            f"/api/bandwidth-stats/users/{quote(user_uuid_n)}/legacy",
+            params={"start": start_txt, "end": end_txt},
+        )
+        if response is None:
+            _mark_usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY)
+        else:
+            answered_path = answered_path or USAGE_PATH_USER_LEGACY
+            per_node = _sum_legacy_rows(response.json(), user_uuid_n, allowed)
+            if per_node:
+                return NodeUsage(per_node, USAGE_PATH_USER_LEGACY)
+
+    # 5. исторический путь — только как сумма, без разбивки. Он неприменим ни к 2.8.1, ни к
+    # 3.3.2 (см. матрицу), поэтому после первой неудачи помечаем его неподдерживаемым, чтобы
+    # не долбить панель заведомо неверным запросом на каждом ключе и каждом проходе.
+    if not _usage_path_unsupported(instance_key, USAGE_PATH_LEGACY_WRAPPER):
+        total = await get_user_lte_usage_bytes(
+            user_uuid_n, list(allowed), start_date, end_date, host_name=host_name
+        )
+        if total > 0:
+            logger.warning(
+                "Remnawave[%s]: разбивка по нодам недоступна, использован исторический "
+                "get_user_lte_usage_bytes (сумма %s байт распределена на одну запись)",
+                host_name, total,
+            )
+            # Разбивки нет — кладём сумму на первую ноду сквада, чтобы не потерять расход.
+            return NodeUsage({sorted(allowed)[0]: total}, USAGE_PATH_LEGACY_WRAPPER)
+        _mark_usage_path_unsupported(instance_key, USAGE_PATH_LEGACY_WRAPPER)
+
+    if answered_path:
+        # Панель ответила по рабочему пути, но расхода за период нет. Это ЗНАЧИМЫЙ нуль:
+        # трактовать его как сбой нельзя, иначе ключ без трафика на LTE-нодах вечно
+        # пропускался бы с предупреждением и никогда не получал бы точку отсчёта.
+        logger.info(
+            "Remnawave[%s]: расход по нодам сквада %s за период нулевой (путь %s)",
+            host_name, squad_uuid_n or "—", answered_path,
+        )
+        return NodeUsage({}, answered_path)
+
+    raise RemnawavePathUnsupportedError(
+        f"Remnawave[{host_name}]: ни один путь статистики по нодам не поддерживается "
+        f"панелью для пользователя {user_uuid_n} (сквад {squad_uuid_n or '—'})"
+    )
+
+
+async def get_squad_node_overlap(host_name: str) -> list[dict[str, Any]]:
+    """Ноды, доступные одновременно через LTE- и base-сквад хоста.
+
+    Такое пересечение означает, что расход на этих нодах будет считаться в LTE-пул, хотя
+    они же отдаются базовым (безлимитным) сквадом. Исправить это можно только настройкой
+    inbound'ов сквадов на стороне Remnawave — код лишь обнаруживает и предупреждает.
+    """
+    lte_nodes = await get_lte_nodes_for_host(host_name)
+    if not lte_nodes:
+        return []
+    base_nodes = await get_squad_nodes_for_class(host_name, "base")
+    base_uuids = {n["uuid"] for n in base_nodes}
+    return [n for n in lte_nodes if n["uuid"] in base_uuids]
+
+
+async def refresh_host_squad_overlap(host_name: str) -> list[dict[str, Any]]:
+    """Перепроверить пересечение сквадов хоста и сохранить результат для карточек.
+
+    Вызывается при сохранении сквадов хоста. Пересечение НЕ блокирует сохранение — это
+    предупреждение: устранить его можно только правкой inbound'ов сквадов в Remnawave.
+    """
+    invalidate_squad_nodes_cache()
+    overlap = await get_squad_node_overlap(host_name)
+    if overlap:
+        logger.warning(
+            "Remnawave[%s]: ноды доступны одновременно через LTE- и base-сквад — их трафик "
+            "попадёт в LTE-пул, хотя они же отдаются безлимитным сквадом. Пересечение: %s",
+            host_name,
+            ", ".join(f"{n.get('node_name') or '—'} ({n['uuid']})" for n in overlap),
+        )
+    try:
+        rw_repo.set_host_squad_overlap(host_name, overlap)
+    except Exception as e:
+        logger.warning("Remnawave[%s]: не удалось сохранить результат проверки сквадов: %s", host_name, e)
+    return overlap
 
 
 def extract_subscription_url(user_payload: dict[str, Any] | None) -> str | None:
