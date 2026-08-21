@@ -472,3 +472,96 @@ def test_auth_error_does_not_zero_usage_or_disable_key(temp_db):
 
     with pytest.raises(api.RemnawaveAPIError):
         _usage(api, nodes=("n1",))
+
+
+# --- снятие/возврат LTE-сквада -----------------------------------------------
+
+BASE_SQUAD = "8249a32f-8bda-4d7b-9267-2b453bbad542"
+LTE_SQUAD = "9a356172-ac82-49a1-90e9-a101d514bf03"
+
+
+def _user_response(squads=(BASE_SQUAD, LTE_SQUAD), *, numeric_id=53):
+    """Форма ответа панели: activeInternalSquads — массив ОБЪЕКТОВ (2.8.1 и 3.3.2)."""
+    return {"response": {
+        "id": numeric_id,
+        "shortUuid": "eQs2-NcvuD8XHXAh",
+        "activeInternalSquads": [{"uuid": u, "name": f"squad-{u[:4]}"} for u in squads],
+    }}
+
+
+def _squad_router(api, calls):
+    async def transport(host_name, method, path, *, json_payload=None, params=None,
+                        expected_status=(200,)):
+        calls.append((method, path, json_payload))
+        return _Resp(_user_response())
+
+    api._request_for_host = transport
+
+
+def test_active_squads_parsed_from_objects(temp_db):
+    _, api = temp_db, _api()
+    payload = _user_response()["response"]
+    assert api.extract_active_squad_uuids(payload) == [BASE_SQUAD, LTE_SQUAD]
+    # Совместимость: если панель когда-нибудь отдаст массив строк — тоже понимаем.
+    assert api.extract_active_squad_uuids({"activeInternalSquads": [LTE_SQUAD]}) == [LTE_SQUAD]
+    assert api.extract_active_squad_uuids(None) == []
+
+
+def test_remove_squad_actually_patches_panel(temp_db):
+    """Регрессия: сравнение строки с объектами давало ложный «уже снят», и LTE-сквад
+    оставался в подписке при исчерпании лимита."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _squad_router(api, calls)
+
+    assert asyncio.run(api.remove_squad_from_user("53", LTE_SQUAD, host_name="H")) is True
+
+    patches = [c for c in calls if c[0] == "PATCH"]
+    assert len(patches) == 1, "PATCH обязан уйти в панель"
+    body = patches[0][2]
+    assert body["activeInternalSquads"] == [BASE_SQUAD], "LTE снят, base сохранён"
+    # 3.3.2: у пользователя нет uuid, идентификация по числовому id.
+    assert body == {"id": 53, "activeInternalSquads": [BASE_SQUAD]}
+
+
+def test_remove_squad_uses_uuid_identity_on_281(temp_db):
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _squad_router(api, calls)
+
+    uuid_ident = "c0ffee00-1111-2222-3333-444444444444"
+    asyncio.run(api.remove_squad_from_user(uuid_ident, LTE_SQUAD, host_name="H"))
+
+    body = [c for c in calls if c[0] == "PATCH"][0][2]
+    assert body == {"uuid": uuid_ident, "activeInternalSquads": [BASE_SQUAD]}
+
+
+def test_remove_absent_squad_is_idempotent_without_patch(temp_db):
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _squad_router(api, calls)
+
+    assert asyncio.run(api.remove_squad_from_user("53", "нет-такого-сквада", host_name="H")) is True
+    assert [c for c in calls if c[0] == "PATCH"] == []
+
+
+def test_add_squad_sends_uuid_strings_only(temp_db):
+    """В PATCH уходят строки-UUID, а не объекты из ответа панели."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+
+    async def transport(host_name, method, path, *, json_payload=None, params=None,
+                        expected_status=(200,)):
+        calls.append((method, path, json_payload))
+        return _Resp(_user_response(squads=(BASE_SQUAD,)))
+
+    api._request_for_host = transport
+
+    assert asyncio.run(api.add_squad_to_user("53", LTE_SQUAD, host_name="H")) is True
+    body = [c for c in calls if c[0] == "PATCH"][0][2]
+    assert body["activeInternalSquads"] == [BASE_SQUAD, LTE_SQUAD]
+    assert all(isinstance(x, str) for x in body["activeInternalSquads"])

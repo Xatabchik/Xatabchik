@@ -688,10 +688,12 @@
         const nodeRows = (data.node_usage || []).filter(r => Number(r.used_bytes || 0) > 0);
         if (nodeWrap && nodeBox) {
           nodeWrap.classList.toggle('d-none', nodeRows.length === 0);
-          nodeBox.innerHTML = nodeRows.map(r => {
-            const title = r.node_name || r.node_uuid || '—';
+          // Названия нод не показываем нигде в карточке ключа — только идентификатор.
+          nodeBox.innerHTML = nodeRows.map((r, i) => {
+            const ident = (r.node_uuid || '').slice(0, 8) || String(i + 1);
             return `<div class="d-flex justify-content-between border-bottom py-1">
-              <span>${title}</span><span class="fw-semibold">${fmtBytes(r.used_bytes)}</span></div>`;
+              <span class="text-secondary">Нода <code>${ident}</code></span>
+              <span class="fw-semibold">${fmtBytes(r.used_bytes)}</span></div>`;
           }).join('');
         }
 

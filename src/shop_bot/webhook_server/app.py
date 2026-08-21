@@ -2820,10 +2820,10 @@ def create_webhook_app(bot_controller_instance):
             "devices": devices,
             "lte_state": lte_state,
             # Разбивка расхода по нодам LTE-сквада за текущий расчётный период.
+            # Название ноды намеренно не отдаётся в карточку ключа — только идентификатор.
             "node_usage": [
                 {
                     "node_uuid": r.get('node_uuid'),
-                    "node_name": r.get('node_name'),
                     "used_bytes": r.get('used_bytes') or 0,
                     "updated_at": r.get('updated_at'),
                 }

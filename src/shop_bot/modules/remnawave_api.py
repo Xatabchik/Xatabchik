@@ -925,7 +925,12 @@ async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host
     if not user_uuid:
         return False
     try:
-        payload = {"uuid": user_uuid, "activeInternalSquads": list(dict.fromkeys(squad_uuids or []))}
+        # PATCH /api/users идентифицирует пользователя по `uuid` (2.8.1) либо по числовому
+        # `id` (3.3.2, где поля uuid у пользователя нет вовсе). Что именно хранится в
+        # vpn_keys.remnawave_user_uuid, видно по самому значению.
+        stored = str(user_uuid).strip()
+        payload: dict[str, Any] = {"id": int(stored)} if stored.isdigit() else {"uuid": stored}
+        payload["activeInternalSquads"] = list(dict.fromkeys(squad_uuids or []))
         await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200, 201))
         logger.info(
             "Remnawave[%s]: activeInternalSquads пользователя %s обновлены -> %s",
@@ -940,14 +945,42 @@ async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host
         return False
 
 
+def extract_active_squad_uuids(user_payload: dict[str, Any] | None) -> list[str]:
+    """UUID активных internal-сквадов пользователя из ответа панели.
+
+    ВАЖНО: `activeInternalSquads` в ответе — массив ОБЪЕКТОВ (`{uuid, name, ...}`), и в
+    2.8.1, и в 3.3.2, тогда как `PATCH /api/users` принимает массив строк-UUID. Сравнение
+    строки с объектами всегда давало «сквада нет», из-за чего remove_squad_from_user
+    возвращал ложный успех и LTE-сквад не снимался при исчерпании лимита.
+    """
+    raw = (user_payload or {}).get("activeInternalSquads")
+    if raw is None:
+        raw = (user_payload or {}).get("internalSquads") or []
+    result: list[str] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            uuid_value = item.strip()
+        elif isinstance(item, dict):
+            uuid_value = str(item.get("uuid") or item.get("squadUuid") or "").strip()
+        else:
+            continue
+        if uuid_value and uuid_value not in result:
+            result.append(uuid_value)
+    return result
+
+
 async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
     """Убрать конкретный сквад из activeInternalSquads пользователя, не трогая остальные сквады."""
     if not user_uuid or not squad_uuid:
         return False
     try:
         current = await get_user_by_uuid(user_uuid, host_name=host_name)
-        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        current_squads = extract_active_squad_uuids(current)
         if squad_uuid not in current_squads:
+            logger.info(
+                "Remnawave[%s]: сквад %s уже отсутствует у пользователя %s (активные: %s)",
+                host_name, squad_uuid, user_uuid, current_squads,
+            )
             return True  # уже отсутствует — идемпотентно
         new_squads = [s for s in current_squads if s != squad_uuid]
         return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
@@ -965,7 +998,7 @@ async def add_squad_to_user(user_uuid: str, squad_uuid: str, *, host_name: str) 
         return False
     try:
         current = await get_user_by_uuid(user_uuid, host_name=host_name)
-        current_squads = list((current or {}).get("activeInternalSquads") or (current or {}).get("internalSquads") or [])
+        current_squads = extract_active_squad_uuids(current)
         if squad_uuid in current_squads:
             return True  # уже присутствует — идемпотентно
         new_squads = current_squads + [squad_uuid]
