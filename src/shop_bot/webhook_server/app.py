@@ -88,7 +88,7 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
     get_squad_by_class, get_host_class,
-    get_lte_state, update_lte_state, request_lte_baseline_reset,
+    get_lte_state, add_lte_boost_bytes,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -2977,13 +2977,15 @@ def create_webhook_app(bot_controller_instance):
         user_id = key.get('user_id')
         host_name = key.get('host_name')
 
+        # Начисление строго аддитивно (+N ГБ к остатку) и атомарно; baseline расхода не
+        # сдвигаем, иначе выдача пары ГБ обнуляла бы весь накопленный расход пользователя.
         try:
-            lte_state = get_lte_state(user_id)
-            new_boost = int(lte_state.get('lte_boost_bytes') or 0) + add_bytes
-            update_lte_state(user_id, lte_boost_bytes=new_boost, premium_state='enabled')
-            request_lte_baseline_reset(user_id)
+            new_boost = add_lte_boost_bytes(user_id, add_bytes)
         except Exception as e:
             logger.error(f"Добавление LTE-трафика ключу {key_id}: ошибка обновления lte_state: {e}")
+            return jsonify({"ok": False, "error": "lte_state_failed"}), 500
+        if new_boost is None:
+            logger.error(f"Добавление LTE-трафика ключу {key_id}: не удалось начислить буст пользователю {user_id}")
             return jsonify({"ok": False, "error": "lte_state_failed"}), 500
 
         # Немедленно возвращаем доступ на premium-нодах, если ключ был отключён из-за исчерпания LTE
@@ -2993,10 +2995,28 @@ def create_webhook_app(bot_controller_instance):
             user_uuid = key.get('remnawave_user_uuid')
             state = key.get('remote_access_state')
             if user_uuid and state in ('disabled_premium', 'disabled_premium_squad') and (is_premium or lte_squad):
-                asyncio.run(remnawave_api.enable_user(user_uuid, host_name=host_name))
-                update_key_fields(key_id, remote_access_state='enabled')
+                # При точечном отключении из подписки убирался только LTE-сквад, поэтому
+                # enable_user его не вернёт — нужен add_squad_to_user (как в боте).
+                if state == 'disabled_premium_squad' and lte_squad:
+                    ok_restore = asyncio.run(
+                        remnawave_api.add_squad_to_user(
+                            user_uuid, lte_squad['squad_uuid'], host_name=host_name
+                        )
+                    )
+                else:
+                    ok_restore = asyncio.run(remnawave_api.enable_user(user_uuid, host_name=host_name))
+                if ok_restore:
+                    update_key_fields(key_id, remote_access_state='enabled')
+                else:
+                    # Буст начислен, но доступ на сервере не восстановлен — воркер
+                    # enforce_dual_traffic_limits дожмёт это на следующем проходе.
+                    logger.error(
+                        "Докупка LTE ключу %s: не удалось восстановить доступ на хосте '%s' "
+                        "(состояние %s осталось в БД)",
+                        key_id, host_name, state,
+                    )
         except Exception as e:
-            logger.warning(f"Не удалось восстановить доступ ключа {key_id} после докупки LTE: {e}")
+            logger.error(f"Не удалось восстановить доступ ключа {key_id} после докупки LTE: {e}", exc_info=True)
 
         return jsonify({"ok": True, "lte_boost_bytes": new_boost})
 
@@ -4170,10 +4190,18 @@ def create_webhook_app(bot_controller_instance):
         for host in hosts:
             host['plans'] = get_plans_for_host(host['host_name'])
             for plan in host['plans']:
+                # Пулы докупки раздельные: 'main' (основной трафик) и 'lte' (💰 premium-ноды).
+                # Раньше здесь читался только main, поэтому LTE-пакеты, созданные в
+                # Telegram-админке, были не видны, а форма добавления писала в main — и
+                # докупка LTE у пользователей отвечала «пакеты не настроены».
                 try:
-                    plan['traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'])
+                    plan['traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'], pool='main')
                 except Exception:
                     plan['traffic_packages'] = []
+                try:
+                    plan['lte_traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'], pool='lte')
+                except Exception:
+                    plan['lte_traffic_packages'] = []
 
             try:
                 host['latest_speedtest'] = get_latest_speedtest(host['host_name'])
@@ -5267,11 +5295,16 @@ def create_webhook_app(bot_controller_instance):
             flash('Не удалось обновить тариф (возможно, он не найден).', 'danger')
         return redirect(url_for('settings_page', tab='hosts'))
 
+    def _normalize_package_pool(raw) -> str:
+        """Пул пакета докупки: 'lte' (💰 premium-ноды) или 'main' (основной трафик)."""
+        return 'lte' if str(raw or '').strip().lower() == 'lte' else 'main'
+
     @flask_app.route('/admin/plans/<int:plan_id>/packages')
     @login_required
     def admin_get_traffic_packages_for_plan_json(plan_id: int):
+        pool = _normalize_package_pool(request.args.get('pool'))
         try:
-            packages = get_traffic_packages_for_plan(plan_id)
+            packages = get_traffic_packages_for_plan(plan_id, pool=pool)
             data = [
                 {
                     "package_id": p.get('package_id'),
@@ -5296,8 +5329,17 @@ def create_webhook_app(bot_controller_instance):
             flash('Проверьте поля пакета ГБ.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
 
-        create_traffic_package(plan_id, size_gb, price)
-        flash('Пакет ГБ добавлен.', 'success')
+        # Пул обязателен: без него пакет всегда уходил в 'main', и докупка LTE
+        # у пользователей отвечала «пакеты не настроены».
+        pool = _normalize_package_pool(request.form.get('pool'))
+        if pool == 'lte':
+            plan = get_plan_by_id(plan_id)
+            if not plan or int(plan.get('lte_limit_bytes') or 0) <= 0:
+                flash('Сначала задайте LTE-лимит тарифа («LTE пул, ГБ»), иначе LTE-пакеты не будут доступны.', 'danger')
+                return redirect(url_for('settings_page', tab='hosts'))
+
+        create_traffic_package(plan_id, size_gb, price, pool=pool)
+        flash('LTE-пакет ГБ добавлен.' if pool == 'lte' else 'Пакет ГБ добавлен.', 'success')
         return redirect(url_for('settings_page', tab='hosts'))
 
     @flask_app.route('/update-traffic-package/<int:package_id>', methods=['POST'])

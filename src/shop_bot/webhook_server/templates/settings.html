@@ -936,8 +936,14 @@
 													<button type="submit" class="btn btn-primary btn-sm pill"><i class="ti ti-device-floppy"></i> Сохранить</button>
 												</form>
 
+												{#
+												  Пулы докупки раздельные и не взаимозаменяемые:
+												  main — поверх основного лимита трафика тарифа,
+												  lte  — независимый LTE-пул (💰 premium-ноды).
+												  Кнопка «💰 Докупить LTE» в боте читает только пул lte.
+												#}
 												<div class="traffic-packages-section">
-													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ:</h5>
+													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — основной пул (♾):</h5>
 													{% if plan.traffic_packages %}
 													<ul class="pkg-list">
 														{% for pkg in plan.traffic_packages %}
@@ -964,15 +970,60 @@
 														{% endfor %}
 													</ul>
 													{% else %}
-													<p class="plans-empty-hint">Пакеты не добавлены.</p>
+													<p class="plans-empty-hint">Пакеты основного пула не добавлены.</p>
 													{% endif %}
 													<form action="{{ url_for('add_traffic_package_route') }}" method="post" class="form-inline">
 														<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 														<input type="hidden" name="plan_id" value="{{ plan.plan_id }}" />
+														<input type="hidden" name="pool" value="main" />
 														<input type="number" step="0.01" class="form-control pill" name="size_gb" placeholder="ГБ" required style="width:90px;" />
 														<input type="number" step="0.01" class="form-control pill" name="price" placeholder="Цена" required style="width:110px;" />
 														<button type="submit" class="btn btn-primary btn-sm pill">+ Пакет ГБ</button>
 													</form>
+												</div>
+
+												<div class="traffic-packages-section">
+													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — LTE-пул (💰 premium-ноды):</h5>
+													{% if lte_gb > 0 %}
+													{% if plan.lte_traffic_packages %}
+													<ul class="pkg-list">
+														{% for pkg in plan.lte_traffic_packages %}
+														<li class="pkg-row {{ 'is-inactive' if not pkg.is_active else '' }}">
+															<span class="pkg-label">{{ '✅' if pkg.is_active else '🚫' }} 💰 {{ pkg.size_gb }} ГБ — {{ pkg.price|round(0) }} RUB</span>
+															<form action="{{ url_for('toggle_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;">
+																<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+																<button type="submit" class="btn btn-outline-secondary btn-sm pill" title="Вкл/выкл">{{ 'Выключить' if pkg.is_active else 'Включить' }}</button>
+															</form>
+															<button type="button" class="btn btn-outline-secondary btn-sm pill plan-edit-toggle" data-target="#edit-lte-pkg-{{ pkg.package_id }}">Редактировать</button>
+															<form action="{{ url_for('delete_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;" data-confirm="Удалить LTE-пакет {{ pkg.size_gb }} ГБ?">
+																<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+																<button type="submit" class="btn btn-danger btn-sm" title="Удалить">×</button>
+															</form>
+														</li>
+														<li id="edit-lte-pkg-{{ pkg.package_id }}" class="plan-edit collapse">
+															<form action="{{ url_for('update_traffic_package_route', package_id=pkg.package_id) }}" method="post" class="form-inline">
+																<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+																<input type="number" step="0.01" class="form-control pill" name="size_gb" value="{{ pkg.size_gb }}" placeholder="ГБ" required style="width:90px;" />
+																<input type="number" step="0.01" class="form-control pill" name="price" value="{{ pkg.price }}" placeholder="Цена" required style="width:110px;" />
+																<button type="submit" class="btn btn-primary btn-sm pill">Сохранить</button>
+															</form>
+														</li>
+														{% endfor %}
+													</ul>
+													{% else %}
+													<p class="plans-empty-hint">LTE-пакеты не добавлены — кнопка «💰 Докупить LTE» в боте ответит, что пакеты не настроены.</p>
+													{% endif %}
+													<form action="{{ url_for('add_traffic_package_route') }}" method="post" class="form-inline">
+														<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+														<input type="hidden" name="plan_id" value="{{ plan.plan_id }}" />
+														<input type="hidden" name="pool" value="lte" />
+														<input type="number" step="0.01" class="form-control pill" name="size_gb" placeholder="ГБ" required style="width:90px;" />
+														<input type="number" step="0.01" class="form-control pill" name="price" placeholder="Цена" required style="width:110px;" />
+														<button type="submit" class="btn btn-warning btn-sm pill">+ LTE-пакет ГБ</button>
+													</form>
+													{% else %}
+													<p class="plans-empty-hint">Сначала задайте «LTE пул, ГБ 💰» выше — без LTE-лимита тарифа докупка LTE недоступна.</p>
+													{% endif %}
 												</div>
 											</div>
 										</div>

@@ -323,6 +323,130 @@ async def _handle_key_creation_failure(
     )
 
 
+async def _abort_topup_fulfillment(
+    bot: Bot,
+    *,
+    payment_id: str,
+    user_id: int,
+    price: float,
+    payment_method: str | None,
+    action_label: str,
+    reason: str,
+) -> bool:
+    """Компенсирующая транзакция при сбое применения оплаченной докупки трафика.
+
+    Аналог `_abort_key_fulfillment` для докупки ГБ/LTE (там сообщения про создание ключа
+    неуместны). Раньше эти ветви просто писали пользователю «не удалось применить» и
+    выходили: платёж оставался помеченным в `processed_payments`, повторная доставка
+    вебхука отбрасывалась, автовозврата не было — деньги списаны, услуга не оказана.
+
+    1) снимает idempotency-lock (чтобы ретрай вебхука мог применить докупку заново),
+    2) один раз возвращает средства (Balance / ReferralBalance / внешние → баланс),
+    3) уведомляет пользователя и админов.
+
+    Возвращает True, если refund реально зачислен (первичный вызов).
+    """
+    try:
+        rw_repo.unclaim_processed_payment(payment_id)
+        rw_repo.reset_pending_transaction(payment_id)
+    except Exception:
+        pass
+
+    did_refund = False
+    if price and float(price) > 0:
+        try:
+            did_refund = bool(
+                refund_payment_once(payment_id, int(user_id), float(price), payment_method)
+            )
+        except Exception:
+            did_refund = False
+
+    logger.error(
+        "TOPUP_ROLLBACK payment_id=%s user_id=%s amount=%s method=%s action=%s reason=%s refunded=%s",
+        payment_id,
+        user_id,
+        price,
+        payment_method,
+        action_label,
+        reason,
+        did_refund,
+    )
+
+    lines = ["⚠️ Оплата получена, но применить докупку не удалось."]
+    if did_refund:
+        lines.append("Средства возвращены на ваш баланс в боте — попробуйте ещё раз.")
+    else:
+        lines.append("Платёж не потерян: обратитесь в поддержку, мы применим докупку вручную.")
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="\n".join(lines),
+            reply_markup=keyboards.create_support_keyboard(),
+        )
+    except Exception:
+        pass
+
+    try:
+        admin_ids = list(rw_repo.get_admin_ids() or [])
+    except Exception:
+        admin_ids = []
+    admin_text = (
+        "🚨 Не удалось применить оплаченную докупку\n"
+        f"👤 ID: {user_id}\n"
+        f"📋 Действие: {action_label}\n"
+        f"🧾 payment_id: {payment_id}\n"
+        f"💰 Сумма: {price}\n"
+        f"🔢 Причина: {reason}\n"
+        f"↩️ Возврат: {'да' if did_refund else 'нет'}"
+    )
+    for aid in admin_ids:
+        try:
+            await bot.send_message(int(aid), admin_text)
+        except Exception:
+            continue
+    return did_refund
+
+
+async def _notify_admins_topup_desync(
+    bot: Bot,
+    *,
+    user_id: int,
+    action_label: str,
+    payment_id: str,
+    detail: str,
+) -> None:
+    """Докупка применена на VPN-сервере, но не сохранилась в БД бота.
+
+    Возврат средств здесь недопустим (услуга фактически оказана), но расхождение нужно
+    починить вручную: локальный `traffic_boost_bytes` используется при ежемесячном сбросе
+    лимита, и без него бот вернёт ключ к базовому лимиту тарифа.
+    """
+    logger.error(
+        "TOPUP_DB_DESYNC user_id=%s action=%s payment_id=%s detail=%s",
+        user_id,
+        action_label,
+        payment_id,
+        detail,
+    )
+    try:
+        admin_ids = list(rw_repo.get_admin_ids() or [])
+    except Exception:
+        admin_ids = []
+    text = (
+        "🚨 Докупка применена на сервере, но не записана в БД бота\n"
+        f"👤 ID: {user_id}\n"
+        f"📋 Действие: {action_label}\n"
+        f"🧾 payment_id: {payment_id}\n"
+        f"📝 Детали: {detail}\n"
+        "Требуется ручная сверка лимита ключа."
+    )
+    for aid in admin_ids:
+        try:
+            await bot.send_message(int(aid), text)
+        except Exception:
+            continue
+
+
 async def _abort_key_fulfillment(
     bot: Bot,
     *,
@@ -5431,8 +5555,48 @@ def get_user_router() -> Router:
         return devices
 
 
+    def _is_key_without_billing_plan(key_data: dict) -> bool:
+        """Триальный или подарочный ключ: биллингового тарифа у него нет.
+
+        Для таких ключей `plan_id` в description намеренно None (см. вызовы
+        `_build_key_origin_meta(source="trial"/"gift", plan_id=None)`), поэтому подставлять
+        им «первый активный тариф хоста» нельзя: это исказило бы и лимиты в карточке
+        ключа, и набор пакетов докупки.
+
+        TODO: для подарочных ключей точный тариф известен в `user_gifts.plan_id`
+        (rw_repo.get_gift_info_by_key_id) — при необходимости докупку для подарков можно
+        включить, резолвя тариф оттуда, а не эвристикой по хосту.
+        """
+        try:
+            tag = str((key_data or {}).get("tag") or "").strip().lower()
+        except Exception:
+            tag = ""
+        if tag in {"trial", "триал"} or "gift" in tag:
+            return True
+        try:
+            desc = (key_data or {}).get("description")
+            if isinstance(desc, str) and desc.strip().startswith("{"):
+                meta = json.loads(desc)
+                if isinstance(meta, dict):
+                    if meta.get("is_trial"):
+                        return True
+                    if str(meta.get("source") or "").strip().lower() in {"trial", "gift"}:
+                        return True
+        except Exception:
+            pass
+        return False
+
     def _resolve_plan_id_for_key(key_data: dict) -> int | None:
-        """Определяет plan_id, привязанный к ключу (из description JSON)."""
+        """Определяет plan_id, привязанный к ключу.
+
+        Приоритеты:
+          1) plan_id из vpn_keys.description (JSON, пишется при покупке/продлении);
+          2) fallback на первый активный тариф хоста — как в `_get_tariff_info_for_key`.
+
+        Без п.2 у ключей, выданных до появления этого поля (или с не-JSON description),
+        докупка ГБ/LTE была недоступна, хотя тариф хоста существует и карточка ключа
+        показывала его название через fallback в `_get_tariff_info_for_key`.
+        """
         try:
             desc = (key_data or {}).get("description")
             if isinstance(desc, str) and desc.strip().startswith("{"):
@@ -5441,7 +5605,23 @@ def get_user_router() -> Router:
                     return int(meta.get("plan_id"))
         except Exception:
             pass
-        return None
+
+        if _is_key_without_billing_plan(key_data):
+            return None
+
+        host_name = (key_data or {}).get("host_name")
+        if not host_name:
+            return None
+        try:
+            plans = get_active_plans_for_host(host_name) or []
+        except Exception:
+            plans = []
+        if not plans:
+            return None
+        try:
+            return int(plans[0].get("plan_id"))
+        except (TypeError, ValueError):
+            return None
 
 
     def _extract_traffic_used_bytes(payload: dict | None) -> int:
@@ -6414,10 +6594,10 @@ def get_user_router() -> Router:
                     if lte_squad_cfg:
                         show_lte_topup = True
                         lte_state = database.get_lte_state(user_id)
-                        lte_limit = int(lte_state.get('lte_limit_bytes') or 0) or plan_lte_limit_bytes
                         lte_used = int(lte_state.get('lte_used_bytes') or 0)
-                        lte_boost = int(lte_state.get('lte_boost_bytes') or 0)
-                        lte_total = lte_limit + lte_boost
+                        # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
+                        # буст) — раньше показанный лимит и проверяемый расходились.
+                        lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
                         lte_used_txt = _format_bytes_gb(lte_used)
                         lte_total_txt = _format_bytes_gb(lte_total)
                         lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
@@ -9011,7 +9191,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             package = database.get_traffic_package_by_id(package_id_tg) if package_id_tg else None
             if not key_data or not package:
                 logger.error(f"traffic_gb_topup: ключ или пакет не найден (key_id={key_id_tg}, package_id={package_id_tg})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика. Обратитесь в поддержку.")
+                await _abort_topup_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label="traffic_gb_topup",
+                    reason=f"key_or_package_not_found(key_id={key_id_tg}, package_id={package_id_tg})",
+                )
                 return
 
             size_gb = float(package.get('size_gb') or 0)
@@ -9052,13 +9240,48 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     ok_remote = False
 
             if not ok_remote:
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку трафика на сервере. Обратитесь в поддержку.")
+                # Лимит на сервере не изменён — состояние консистентно, можно вернуть деньги
+                # и позволить повторить попытку (в т.ч. ретраем вебхука).
+                await _abort_topup_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label="traffic_gb_topup",
+                    reason="remnawave_limit_update_failed" if user_uuid else "no_remote_user",
+                )
                 return
 
-            try:
-                rw_repo.update_key(key_id_tg, traffic_limit_bytes=new_limit, traffic_boost_bytes=new_boost)
-            except Exception as e:
-                logger.error(f"traffic_gb_topup: не удалось обновить локальную запись ключа {key_id_tg}: {e}", exc_info=True)
+            # Лимит на сервере уже поднят: возврат средств здесь был бы неверным (услуга
+            # оказана), поэтому локальную запись пишем с повторами, а при устойчивом сбое
+            # поднимаем алерт админам вместо тихого расхождения БД и панели.
+            local_write_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    rw_repo.update_key(key_id_tg, traffic_limit_bytes=new_limit, traffic_boost_bytes=new_boost)
+                    local_write_error = None
+                    break
+                except Exception as e:
+                    local_write_error = e
+                    logger.error(
+                        f"traffic_gb_topup: не удалось обновить локальную запись ключа {key_id_tg} "
+                        f"(попытка {attempt + 1}/3): {e}",
+                        exc_info=True,
+                    )
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+            if local_write_error is not None:
+                await _notify_admins_topup_desync(
+                    bot,
+                    user_id=user_id,
+                    action_label="traffic_gb_topup",
+                    payment_id=payment_id,
+                    detail=(
+                        f"key_id={key_id_tg} лимит на сервере={new_limit} "
+                        f"boost={new_boost} ошибка={local_write_error}"
+                    ),
+                )
 
             try:
                 log_username = (metadata.get('tg_username') or '').strip() if isinstance(metadata, dict) else ''
@@ -9107,22 +9330,42 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             package = database.get_traffic_package_by_id(package_id_lte) if package_id_lte else None
             if not key_data or not package:
                 logger.error(f"lte_gb_topup: ключ или пакет не найден (key_id={key_id_lte}, package_id={package_id_lte})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось применить докупку LTE. Обратитесь в поддержку.")
+                await _abort_topup_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label="lte_gb_topup",
+                    reason=f"key_or_package_not_found(key_id={key_id_lte}, package_id={package_id_lte})",
+                )
                 return
 
             size_gb = float(package.get('size_gb') or 0)
             add_bytes = int(size_gb * 1024 * 1024 * 1024)
 
-            lte_state = database.get_lte_state(user_id)
-            new_boost = int(lte_state.get('lte_boost_bytes') or 0) + add_bytes
-            try:
-                database.update_lte_state(user_id, lte_boost_bytes=new_boost, premium_state='enabled')
-                # Сдвигаем точку отсчёта (baseline) LTE-расхода на "сейчас": панель Remnawave хранит
-                # расход по нодам накопительно, поэтому без baseline купленный лимит будет мгновенно
-                # "съеден" уже накопленным историческим трафиком (см. SQUAD_DUAL_LIMIT_PROMPT.md, п.4).
-                database.request_lte_baseline_reset(user_id)
-            except Exception as e:
-                logger.error(f"lte_gb_topup: не удалось обновить lte_state пользователя {user_id}: {e}", exc_info=True)
+            # Докупка строго аддитивна: +N ГБ к остатку. Инкремент атомарный (одна транзакция),
+            # иначе две параллельные оплаты теряли одну из покупок (read-modify-write).
+            # Точку отсчёта расхода (baseline) здесь НЕ сдвигаем: вместе с учётом буста в
+            # энфорсинге это выдавало бы полный лимит тарифа заново за цену минимального пакета.
+            new_boost = database.add_lte_boost_bytes(user_id, add_bytes)
+            if new_boost is None:
+                # Ничего не начислено и на сервере ничего не менялось — состояние
+                # консистентно, возвращаем деньги и снимаем idempotency-lock.
+                logger.error(
+                    f"lte_gb_topup: не удалось начислить LTE-буст пользователю {user_id} "
+                    f"(add_bytes={add_bytes})"
+                )
+                await _abort_topup_fulfillment(
+                    bot,
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    price=price,
+                    payment_method=payment_method,
+                    action_label="lte_gb_topup",
+                    reason="lte_boost_update_failed",
+                )
+                return
 
             # Немедленно возвращаем доступ на premium-нодах для всех ключей пользователя
             try:

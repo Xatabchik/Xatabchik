@@ -871,6 +871,13 @@ def _ensure_subscription_lte_table(cursor: sqlite3.Cursor) -> None:
     # Миграция для уже существующих БД (CREATE TABLE IF NOT EXISTS не добавит колонки в старую таблицу).
     _ensure_table_column(cursor, "subscription_lte", "lte_used_baseline_bytes", "INTEGER DEFAULT 0")
     _ensure_table_column(cursor, "subscription_lte", "lte_baseline_reset_requested", "INTEGER DEFAULT 0")
+    # Отметка о том, что точка отсчёта (baseline) уже определена. Нужна, чтобы отличить
+    # "baseline = 0, потому что подписка новая и расход считается с нуля" от "baseline
+    # никогда не выставлялся" (строки, созданные до появления этого механизма): во втором
+    # случае накопительный расход панели мгновенно исчерпал бы LTE-лимит после обновления
+    # бота. Строки, существовавшие до миграции, остаются с NULL и получают одноразовый
+    # backfill в воркере; новые строки помечаются сразу при вставке (см. get_lte_state).
+    _ensure_table_column(cursor, "subscription_lte", "lte_baseline_initialized_at", "TIMESTAMP")
 
 
 def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
@@ -894,25 +901,66 @@ def _ensure_host_squads_table(cursor: sqlite3.Cursor) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_host_squads_host_name ON host_squads(host_name)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_host_squads_class ON host_squads(host_name, squad_class)")
 
-    # Миграция: переносим существующий xui_hosts.squad_uuid как запись класса 'base',
-    # если для этого хоста ещё нет ни одной записи в host_squads.
+    # Миграция: переносим существующий xui_hosts.squad_uuid в host_squads, если для этого
+    # хоста ещё нет ни одной записи. Класс определяем по node_class хоста: у 💰-premium ноды
+    # единственный сквад и есть LTE-сквад, и раньше он ошибочно переносился как 'base' —
+    # из-за чего вся LTE-логика (докупка, энфорсинг) считала ноду ненастроенной.
     try:
-        cursor.execute("SELECT host_name, squad_uuid FROM xui_hosts WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''")
+        cursor.execute(
+            "SELECT host_name, squad_uuid, COALESCE(node_class, 'unlim') "
+            "FROM xui_hosts WHERE squad_uuid IS NOT NULL AND TRIM(squad_uuid) <> ''"
+        )
         legacy_rows = cursor.fetchall()
-        for host_name, squad_uuid in legacy_rows:
+        for host_name, squad_uuid, node_class in legacy_rows:
             host_name_n = normalize_host_name(host_name)
             squad_uuid_n = (squad_uuid or '').strip()
             if not host_name_n or not squad_uuid_n:
                 continue
-            cursor.execute("SELECT 1 FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT 1 FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             if cursor.fetchone() is not None:
                 continue
+            is_premium = str(node_class or '').strip().lower() == 'premium'
+            squad_class_legacy = 'lte' if is_premium else 'base'
+            label_legacy = 'LTE (legacy)' if is_premium else 'Base (legacy)'
             cursor.execute(
-                "INSERT OR IGNORE INTO host_squads (host_name, squad_uuid, squad_class, label, is_active) VALUES (?, ?, 'base', 'Base (legacy)', 1)",
-                (host_name_n, squad_uuid_n),
+                "INSERT OR IGNORE INTO host_squads (host_name, squad_uuid, squad_class, label, is_active) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (host_name_n, squad_uuid_n, squad_class_legacy, label_legacy),
             )
     except sqlite3.Error as e:
         logging.warning(f"Не удалось мигрировать legacy squad_uuid хостов в host_squads: {e}")
+
+    # Доп. миграция для инсталляций, где перенос выше уже отработал в предыдущей версии и
+    # записал premium-ноду как 'base'. Переклассифицируем только автоматически созданные
+    # записи ('Base (legacy)') у premium-хостов, у которых ровно один сквад и ещё нет lte —
+    # чтобы не затронуть привязки, которые администратор задал руками.
+    try:
+        cursor.execute(
+            """
+            UPDATE host_squads
+               SET squad_class = 'lte', label = 'LTE (legacy)'
+             WHERE squad_class = 'base'
+               AND label = 'Base (legacy)'
+               AND TRIM(host_name) IN (
+                     SELECT TRIM(host_name) FROM xui_hosts
+                      WHERE LOWER(COALESCE(node_class, 'unlim')) = 'premium'
+                   )
+               AND (
+                     SELECT COUNT(*) FROM host_squads hs2
+                      WHERE TRIM(hs2.host_name) = TRIM(host_squads.host_name) COLLATE NOCASE
+                   ) = 1
+            """
+        )
+        if cursor.rowcount:
+            logging.info(
+                "host_squads: %s legacy-сквад(ов) premium-хостов переклассифицированы как 'lte'",
+                cursor.rowcount,
+            )
+    except sqlite3.Error as e:
+        logging.warning(f"Не удалось переклассифицировать legacy-сквады premium-хостов: {e}")
 
 
 def add_host_squad(host_name: str, squad_uuid: str, squad_class: str = 'base', label: str | None = None) -> int | None:
@@ -931,7 +979,8 @@ def add_host_squad(host_name: str, squad_uuid: str, squad_class: str = 'base', l
             # Не более одного активного сквада класса 'base'/'lte' на хост.
             if squad_class_n in ('base', 'lte'):
                 cursor.execute(
-                    "SELECT id FROM host_squads WHERE host_name = ? AND squad_class = ? AND is_active = 1",
+                    "SELECT id FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE "
+                    "AND squad_class = ? AND is_active = 1",
                     (host_name_n, squad_class_n),
                 )
                 existing = cursor.fetchone()
@@ -960,7 +1009,7 @@ def get_host_squads(host_name: str, *, only_active: bool = False) -> list[dict]:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            query = "SELECT * FROM host_squads WHERE host_name = ?"
+            query = "SELECT * FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE"
             params: list[Any] = [host_name_n]
             if only_active:
                 query += " AND is_active = 1"
@@ -973,7 +1022,13 @@ def get_host_squads(host_name: str, *, only_active: bool = False) -> list[dict]:
 
 
 def get_squad_by_class(host_name: str, squad_class: str) -> dict | None:
-    """Быстрый доступ к активному сквада заданного класса ('base'/'lte'/'other') хоста."""
+    """Быстрый доступ к активному сквада заданного класса ('base'/'lte'/'other') хоста.
+
+    Сравнение имени хоста — через TRIM(...) COLLATE NOCASE, как и в остальных запросах
+    к хостам (`get_host`, `get_host_class`): `vpn_keys.host_name` и `host_squads.host_name`
+    могут отличаться регистром/пробелами, а от результата этого запроса зависит доступность
+    докупки LTE — при промахе она молча пропадала из интерфейса.
+    """
     squad_class_n = str(squad_class or '').strip().lower()
     try:
         host_name_n = normalize_host_name(host_name)
@@ -981,7 +1036,8 @@ def get_squad_by_class(host_name: str, squad_class: str) -> dict | None:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM host_squads WHERE host_name = ? AND squad_class = ? AND is_active = 1 ORDER BY id LIMIT 1",
+                "SELECT * FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE "
+                "AND squad_class = ? AND is_active = 1 ORDER BY id LIMIT 1",
                 (host_name_n, squad_class_n),
             )
             row = cursor.fetchone()
@@ -1072,6 +1128,18 @@ def _ensure_remnawave_squads_catalog(cursor: sqlite3.Cursor) -> None:
                 """,
                 (uuid_n,),
             )
+        # Если legacy-сквад premium-хоста был переклассифицирован в 'lte' (см.
+        # _ensure_host_squads_table), выравниваем и каталог: иначе сохранение галочек
+        # сквадов в веб-панели (set_host_squads_from_catalog) вернуло бы класс 'base'.
+        cursor.execute(
+            """
+            UPDATE remnawave_squads
+               SET squad_class = 'lte'
+             WHERE squad_class = 'base'
+               AND label = 'Base (legacy)'
+               AND squad_uuid IN (SELECT squad_uuid FROM host_squads WHERE squad_class = 'lte')
+            """
+        )
     except sqlite3.Error as e:
         logging.warning(f"Не удалось мигрировать сквады в remnawave_squads: {e}")
 
@@ -1254,13 +1322,19 @@ def set_host_squads_from_catalog(host_name: str, catalog_ids: list[int]) -> bool
             wanted_uuids = {(sq.get("squad_uuid") or "").strip() for sq in filtered}
             wanted_uuids.discard("")
 
-            cursor.execute("SELECT id, squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT id, squad_uuid FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             existing = [(int(r["id"]), (r["squad_uuid"] or "").strip()) for r in cursor.fetchall()]
             for row_id, uuid_n in existing:
                 if uuid_n not in wanted_uuids:
                     cursor.execute("DELETE FROM host_squads WHERE id = ?", (row_id,))
 
-            cursor.execute("SELECT squad_uuid FROM host_squads WHERE host_name = ?", (host_name_n,))
+            cursor.execute(
+                "SELECT squad_uuid FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             have = {(r["squad_uuid"] or "").strip() for r in cursor.fetchall()}
             for sq in filtered:
                 uuid_n = (sq.get("squad_uuid") or "").strip()
@@ -1306,7 +1380,7 @@ def get_host_selected_squad_catalog_ids(host_name: str) -> list[int]:
                 SELECT rs.id
                 FROM remnawave_squads rs
                 INNER JOIN host_squads hs ON hs.squad_uuid = rs.squad_uuid
-                WHERE hs.host_name = ?
+                WHERE TRIM(hs.host_name) = TRIM(?) COLLATE NOCASE
                 ORDER BY rs.id
                 """,
                 (host_name_n,),
@@ -1835,7 +1909,10 @@ def get_host_class(host_name: str) -> str:
         host_name_n = normalize_host_name(host_name)
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT node_class FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name_n,))
+            cursor.execute(
+                "SELECT node_class FROM xui_hosts WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
             row = cursor.fetchone()
             return (row[0] if row and row[0] else 'unlim')
     except sqlite3.Error as e:
@@ -1877,7 +1954,7 @@ def list_hosts_by_class(node_class: str) -> list[dict]:
 
 
 def update_host_name(old_name: str, new_name: str) -> bool:
-    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys)."""
+    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys, host_squads)."""
     try:
         old_name_n = normalize_host_name(old_name)
         new_name_n = normalize_host_name(new_name)
@@ -1908,6 +1985,12 @@ def update_host_name(old_name: str, new_name: str) -> bool:
                 "UPDATE vpn_keys SET host_name = TRIM(?) WHERE TRIM(host_name) = TRIM(?)",
                 (new_name_n, old_name_n)
             )
+            # host_squads тоже привязан к имени хоста: без переименования LTE-сквад
+            # осиротеет и докупка LTE молча пропадёт у всех ключей этого хоста.
+            cursor.execute(
+                "UPDATE host_squads SET host_name = TRIM(?) WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (new_name_n, old_name_n)
+            )
             conn.commit()
             return True
     except sqlite3.Error as e:
@@ -1921,6 +2004,12 @@ def delete_host(host_name: str):
             cursor = conn.cursor()
             cursor.execute("DELETE FROM plans WHERE TRIM(host_name) = TRIM(?)", (host_name,))
             cursor.execute("DELETE FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name,))
+            # Иначе привязки сквадов остаются "мусором" и могут случайно подхватиться
+            # хостом, созданным позже с тем же именем.
+            cursor.execute(
+                "DELETE FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name,),
+            )
             conn.commit()
             logging.info(f"Хост '{host_name}' и его тарифы успешно удалены.")
     except sqlite3.Error as e:
@@ -5515,6 +5604,16 @@ def update_plan_metadata(plan_id: int, metadata: dict | None) -> bool:
 
 
 def create_traffic_package(plan_id: int, size_gb: float, price: float, pool: str = 'main') -> int | None:
+    """Пакет докупки ГБ для тарифа. `pool`: 'main' (основной трафик) или 'lte' (premium-ноды).
+
+    TODO (известное ограничение, причина F диагностики): пакеты привязаны к `plan_id`, а
+    LTE-пул расходуется на пользователя (`subscription_lte`). Поэтому при нескольких
+    активных тарифах на одном хосте пакеты одного тарифа недоступны владельцам ключей
+    другого — пакеты нужно заводить для каждого тарифа. Перевод привязки на
+    host_name/squad_uuid потребует миграции существующих строк с неоднозначным выбором
+    целевого хоста (у тарифа он один, но пакеты могли создаваться до его смены), поэтому
+    сознательно вынесен за рамки этого фикса.
+    """
     pool = 'lte' if str(pool).strip().lower() == 'lte' else 'main'
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -5637,10 +5736,14 @@ def get_lte_state(user_id: int) -> dict:
             row = cursor.fetchone()
             if row:
                 return dict(row)
+            # Новая подписка: baseline = 0 и он сразу считается определённым — расход
+            # начинаем считать с нуля. Backfill по факту расхода нужен только строкам,
+            # созданным до появления lte_baseline_initialized_at.
+            created_at = _now_str()
             cursor.execute(
-                "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, premium_state) "
-                "VALUES (?, 0, 0, 0, 'enabled')",
-                (int(user_id),)
+                "INSERT INTO subscription_lte (user_id, lte_limit_bytes, lte_used_bytes, lte_boost_bytes, "
+                "premium_state, lte_baseline_initialized_at) VALUES (?, 0, 0, 0, 'enabled', ?)",
+                (int(user_id), created_at)
             )
             conn.commit()
             return {
@@ -5650,6 +5753,7 @@ def get_lte_state(user_id: int) -> dict:
                 "lte_boost_bytes": 0,
                 "lte_used_baseline_bytes": 0,
                 "lte_baseline_reset_requested": 0,
+                "lte_baseline_initialized_at": created_at,
                 "lte_reset_at": None,
                 "premium_state": "enabled",
             }
@@ -5662,18 +5766,121 @@ def get_lte_state(user_id: int) -> dict:
             "lte_boost_bytes": 0,
             "lte_used_baseline_bytes": 0,
             "lte_baseline_reset_requested": 0,
+            "lte_baseline_initialized_at": None,
             "lte_reset_at": None,
             "premium_state": "enabled",
         }
 
 
-def request_lte_baseline_reset(user_id: int) -> bool:
-    """Помечает, что нужно сдвинуть точку отсчёта (baseline) LTE-расхода пользователя на "сейчас".
+def resolve_lte_limit_bytes(lte_state: dict | None, plan_lte_limit_bytes: int = 0) -> int:
+    """Единая формула эффективного LTE-лимита: лимит тарифа + докупленный буст.
 
-    Вызывается при докупке LTE-пакета (или ином событии, обнуляющем LTE-счётчик), чтобы
-    воркер `enforce_dual_traffic_limits` на следующем проходе зафиксировал текущее сырое
-    (накопительное) значение расхода по premium-нодам как новую точку отсчёта — иначе
-    накопленный панелью исторический трафик по нодам мгновенно "съест" свежекупленный лимит.
+    Источник истины по базовому лимиту — `plans.lte_limit_bytes`; значение в
+    `subscription_lte.lte_limit_bytes` используется только как fallback (тариф ключа
+    не определился). Функция обязана быть единственной формулой и для отображения
+    в боте, и для энфорсинга в планировщике — раньше они расходились: UI показывал
+    лимит вместе с бустом, а воркер сравнивал расход только с лимитом тарифа.
+    """
+    base = int(plan_lte_limit_bytes or 0)
+    if base <= 0:
+        try:
+            base = int((lte_state or {}).get("lte_limit_bytes") or 0)
+        except (TypeError, ValueError):
+            base = 0
+    try:
+        boost = int((lte_state or {}).get("lte_boost_bytes") or 0)
+    except (TypeError, ValueError):
+        boost = 0
+    return max(0, base) + max(0, boost)
+
+
+def add_lte_boost_bytes(user_id: int, add_bytes: int) -> int | None:
+    """Атомарно увеличить докупленный LTE-буст пользователя на `add_bytes`.
+
+    Read-modify-write через `get_lte_state()` + `update_lte_state()` терял одну из
+    покупок при двух параллельных оплатах (lost update), поэтому инкремент выполняется
+    одним UPDATE внутри BEGIN IMMEDIATE. Возвращает новое значение `lte_boost_bytes`
+    или None, если обновить не удалось.
+    """
+    try:
+        add = int(add_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if add <= 0:
+        return None
+    get_lte_state(user_id)  # ensure row exists
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "UPDATE subscription_lte "
+                "SET lte_boost_bytes = COALESCE(lte_boost_bytes, 0) + ?, "
+                "    premium_state = 'enabled', updated_at = ? "
+                "WHERE user_id = ?",
+                (add, _now_str(), int(user_id)),
+            )
+            if cursor.rowcount <= 0:
+                conn.rollback()
+                return None
+            cursor.execute("SELECT lte_boost_bytes FROM subscription_lte WHERE user_id = ?", (int(user_id),))
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row[0] or 0) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to add LTE boost for user {user_id}: {e}")
+        return None
+
+
+def commit_lte_baseline(user_id: int, baseline_bytes: int, *, expire_boost: bool) -> bool:
+    """Зафиксировать точку отсчёта (baseline) LTE-расхода одной транзакцией.
+
+    `expire_boost=True` — начало нового расчётного периода: докупленный буст сгорает
+    вместе со сбросом счётчика, симметрично основному пулу (там при ежемесячном сбросе
+    обнуляется `vpn_keys.traffic_boost_bytes`).
+    `expire_boost=False` — первичная инициализация baseline у существующей подписки:
+    счётчик расхода начинаем с текущего накопительного значения панели, но уже
+    оплаченный буст сохраняем.
+    """
+    get_lte_state(user_id)  # ensure row exists
+    try:
+        baseline = max(0, int(baseline_bytes or 0))
+    except (TypeError, ValueError):
+        baseline = 0
+    sets = [
+        "lte_used_baseline_bytes = ?",
+        "lte_baseline_reset_requested = 0",
+        "lte_baseline_initialized_at = ?",
+        "updated_at = ?",
+    ]
+    values: list[Any] = [baseline, _now_str(), _now_str()]
+    if expire_boost:
+        sets.append("lte_boost_bytes = 0")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                f"UPDATE subscription_lte SET {', '.join(sets)} WHERE user_id = ?",
+                values + [int(user_id)],
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to commit LTE baseline for user {user_id}: {e}")
+        return False
+
+
+def request_lte_baseline_reset(user_id: int) -> bool:
+    """Помечает начало нового расчётного периода LTE-пула.
+
+    Воркер `enforce_dual_traffic_limits` на следующем проходе зафиксирует текущее сырое
+    (накопительное) значение расхода по LTE-нодам как новую точку отсчёта и обнулит
+    докупленный буст (см. `commit_lte_baseline(expire_boost=True)`).
+
+    ВАЖНО: этот флаг больше не выставляется при докупке LTE-пакета — покупка обязана быть
+    строго аддитивной (+N ГБ к остатку), а не сбросом счётчика расхода. Иначе покупка
+    минимального пакета заново выдавала полный лимит тарифа.
     """
     get_lte_state(user_id)  # ensure row exists
     try:

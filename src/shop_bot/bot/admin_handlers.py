@@ -2119,6 +2119,14 @@ def get_admin_router() -> Router:
         ssh_password = host.get('ssh_password')
         ssh_pwd_mask = "✅ задан" if (ssh_password or '').strip() else "—"
 
+        # Фактическое состояние LTE-биллинга определяется host_squads, а не node_class —
+        # показываем его явно, чтобы недонастроенная premium-нода была видна сразу.
+        try:
+            lte_squad = database.get_squad_by_class(name, 'lte') if name and name != '—' else None
+        except Exception:
+            lte_squad = None
+        lte_squad_txt = "✅ настроен" if lte_squad else "— не настроен"
+
         lines = [
             f"🖥 <b>Хост:</b> <b>{_safe(name)}</b>",
             "",
@@ -2127,6 +2135,7 @@ def get_admin_router() -> Router:
             "",
             f"⚙️ Remnawave URL: {_safe(rmw_url)}",
             f"🧩 Squad UUID: {_safe(squad_uuid)}",
+            f"💰 LTE-сквад: {lte_squad_txt}",
             "",
             "🔌 <b>SSH (speedtest)</b>",
             f"Host: {_safe(ssh_host)}",
@@ -2604,7 +2613,23 @@ def get_admin_router() -> Router:
         except Exception:
             pass
         label = "Premium (LTE) 💰" if new_class == 'premium' else "Unlimited ♾"
-        await callback.answer(f"Класс ноды изменён: {label}")
+        # Источник истины для LTE-биллинга — host_squads(squad_class='lte'), а node_class
+        # остаётся признаком/значком ноды. Автоматически создать LTE-сквад нельзя (нужен
+        # squad_uuid из панели), поэтому явно предупреждаем админа о недонастройке —
+        # раньше он считал ноду настроенной, а докупка LTE у пользователей не работала.
+        try:
+            lte_squad = database.get_squad_by_class(host_name, 'lte')
+        except Exception:
+            lte_squad = None
+        note = ""
+        if new_class == 'premium' and not lte_squad:
+            note = (
+                "\n\n⚠️ У хоста нет активного сквада класса LTE — докупка и учёт LTE работать не будут. "
+                "Добавьте его в «🧬 Сквады хоста»."
+            )
+        elif new_class == 'unlim' and lte_squad:
+            note = "\n\n💰 У хоста остаётся активный LTE-сквад: учёт LTE продолжит работать."
+        await callback.answer(f"Класс ноды изменён: {label}{note}", show_alert=bool(note))
         await show_admin_host_detail(callback.message, host_name, edit_message=True)
 
 
