@@ -74,6 +74,132 @@ def compute_next_traffic_reset(from_dt: datetime | None = None) -> str:
     return add_months(base, 1).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _as_limit_bytes(value) -> int:
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
+def plan_main_limit_bytes(plan: dict | None) -> int:
+    return _as_limit_bytes((plan or {}).get("traffic_limit_bytes"))
+
+
+def plan_lte_limit_bytes(plan: dict | None) -> int:
+    return _as_limit_bytes((plan or {}).get("lte_limit_bytes"))
+
+
+def plan_has_monthly_traffic_reset(plan: dict | None) -> bool:
+    """Ежемесячный сброс нужен, если ограничен основной пул и/или LTE."""
+    return plan_main_limit_bytes(plan) > 0 or plan_lte_limit_bytes(plan) > 0
+
+
+def remnawave_traffic_limit_strategy_for_plan(plan: dict | None) -> str:
+    """Стратегия Remnawave относится только к ОСНОВНОМУ пулу.
+
+    LTE-лимит бот считает сам. Если основной пул безлимитный, панели
+    отправляем NO_RESET, даже когда LTE ограничен.
+    """
+    return "MONTH_ROLLING" if plan_main_limit_bytes(plan) > 0 else "NO_RESET"
+
+
+def parse_plan_id_from_key(key: dict | None) -> int | None:
+    desc = (key or {}).get("description")
+    if isinstance(desc, str) and desc.strip().startswith("{"):
+        try:
+            meta = json.loads(desc)
+            if isinstance(meta, dict) and meta.get("plan_id") not in (None, "", "None"):
+                return int(meta.get("plan_id"))
+        except Exception:
+            return None
+    return None
+
+
+def key_is_unbilled_trial_or_gift(key: dict | None) -> bool:
+    tag = str((key or {}).get("tag") or "").strip().lower()
+    if tag in {"trial", "user_gift", "gift"}:
+        return True
+    desc = (key or {}).get("description")
+    if isinstance(desc, str) and desc.strip().startswith("{"):
+        try:
+            meta = json.loads(desc)
+            if isinstance(meta, dict):
+                if meta.get("is_trial"):
+                    return True
+                if str(meta.get("source") or "").strip().lower() in {"trial", "gift"}:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def resolve_plan_for_key(key: dict | None, *, allow_host_fallback: bool = True) -> dict | None:
+    """Тариф ключа: plan_id из description, иначе первый активный тариф хоста.
+
+    Fallback на тариф хоста не применяется к триалам и подаркам — у них нет
+    биллинг-тарифа, даже если на хосте есть платные планы.
+    """
+    plan_id = parse_plan_id_from_key(key)
+    if plan_id is not None:
+        try:
+            return get_plan_by_id(plan_id)
+        except Exception:
+            return None
+    if not allow_host_fallback or key_is_unbilled_trial_or_gift(key):
+        return None
+    host_name = (key or {}).get("host_name")
+    if not host_name:
+        return None
+    try:
+        plans = get_active_plans_for_host(host_name) or []
+    except Exception:
+        plans = []
+    return plans[0] if plans else None
+
+
+def format_next_traffic_reset_display(raw) -> str | None:
+    """Дата ближайшего сброса для карточки ключа (`ДД.ММ.ГГГГ`) либо None."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace(" ", "T"))
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        return None
+
+
+def compute_aligned_next_traffic_reset(key: dict | None, *, now: datetime | None = None) -> str:
+    """Следующий сброс, согласованный с текущим rolling-окном ключа.
+
+    Если `next_traffic_reset_at` уже есть и в будущем — оставляем его.
+    Иначе берём начало текущего периода (`resolve_key_period_start`) плюс месяц
+    и прокручиваем вперёд, пока дата не окажется строго позже `now`.
+    """
+    now = now or datetime.now()
+    existing = (key or {}).get("next_traffic_reset_at")
+    if existing:
+        try:
+            existing_dt = datetime.fromisoformat(str(existing).replace(" ", "T"))
+            if existing_dt > now:
+                return existing_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+    period_start = resolve_key_period_start(key)
+    try:
+        start_dt = datetime.fromisoformat(str(period_start).replace(" ", "T"))
+    except Exception:
+        start_dt = now
+    nxt = add_calendar_months(start_dt, 1)
+    for _ in range(24):
+        if nxt > now:
+            break
+        nxt = add_calendar_months(nxt, 1)
+    if nxt <= now:
+        nxt = add_calendar_months(now, 1)
+    return nxt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _to_datetime_str(ts_ms: int | None) -> str | None:
     if ts_ms is None:
         return None
@@ -1921,6 +2047,11 @@ def run_migration():
             conn.commit()
     except sqlite3.Error as e:
         logging.error("Сбой миграции базы данных: %s", e)
+        return
+    try:
+        backfill_monthly_traffic_reset_for_existing_keys()
+    except Exception:
+        logging.warning("Backfill monthly traffic reset завершился с ошибкой.", exc_info=True)
 
 
 def insert_resource_metric(
@@ -7737,6 +7868,93 @@ def update_key_fields(
     if remote_access_state is not None:
         updates["remote_access_state"] = remote_access_state
     return _apply_key_updates(key_id, updates)
+
+
+def apply_key_monthly_reset_fields(
+    key_id: int,
+    plan: dict | None = None,
+    *,
+    restart_cycle: bool = False,
+    key: dict | None = None,
+    expire_main_boost: bool = False,
+) -> bool:
+    """Записать `traffic_limit_strategy` и `next_traffic_reset_at` по тарифу ключа.
+
+    - MONTH_ROLLING только при лимите основного пула (это поле уходит в Remnawave).
+    - Дата сброса ставится, если ограничен основной ИЛИ LTE-пул.
+    - `restart_cycle=True` — новая покупка/смена тарифа: окно от «сейчас».
+    - иначе не трогаем уже проставленную будущую дату; при её отсутствии
+      выравниваем по дате создания ключа.
+    """
+    if key is None:
+        try:
+            key = get_key_by_id(int(key_id))
+        except Exception:
+            key = None
+    if plan is None:
+        plan = resolve_plan_for_key(key)
+    strategy = remnawave_traffic_limit_strategy_for_plan(plan)
+    main_limit = plan_main_limit_bytes(plan)
+    if main_limit <= 0:
+        main_limit = _as_limit_bytes((key or {}).get("traffic_limit_bytes"))
+        if main_limit > 0:
+            strategy = "MONTH_ROLLING"
+    needs_date = plan_has_monthly_traffic_reset(plan) or main_limit > 0
+    next_reset: Any = None
+    if needs_date:
+        next_reset = (
+            compute_next_traffic_reset_str()
+            if restart_cycle
+            else compute_aligned_next_traffic_reset(key)
+        )
+    return update_key_fields(
+        int(key_id),
+        traffic_limit_strategy=strategy,
+        next_traffic_reset_at=next_reset,
+        traffic_boost_bytes=0 if expire_main_boost else None,
+    )
+
+
+def backfill_monthly_traffic_reset_for_existing_keys() -> int:
+    """Проставить MONTH_ROLLING и дату сброса уже выданным лимитным/LTE-ключам.
+
+    Идемпотентно: будущая дата не сдвигается, стратегия переписывается только
+    если основной пул ограничен, а в колонке ещё не MONTH_ROLLING.
+    """
+    try:
+        keys = get_all_keys()
+    except Exception:
+        logging.warning("Backfill monthly traffic reset: не удалось прочитать ключи", exc_info=True)
+        return 0
+    updated = 0
+    for key in keys:
+        try:
+            if key_is_unbilled_trial_or_gift(key) and parse_plan_id_from_key(key) is None:
+                continue
+            plan = resolve_plan_for_key(key)
+            main_limit = plan_main_limit_bytes(plan) or _as_limit_bytes((key or {}).get("traffic_limit_bytes"))
+            lte_limit = plan_lte_limit_bytes(plan)
+            if main_limit <= 0 and lte_limit <= 0:
+                continue
+            key_id = int(key.get("key_id"))
+            before_strategy = key.get("traffic_limit_strategy") or "NO_RESET"
+            before_date = key.get("next_traffic_reset_at")
+            apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False, key=key)
+            after = get_key_by_id(key_id) or {}
+            if (
+                (after.get("traffic_limit_strategy") or "NO_RESET") != before_strategy
+                or (after.get("next_traffic_reset_at") or None) != (before_date or None)
+            ):
+                updated += 1
+        except Exception:
+            logging.warning(
+                "Backfill monthly traffic reset failed for key %s",
+                (key or {}).get("key_id"),
+                exc_info=True,
+            )
+    if updated:
+        logging.info("Backfill monthly traffic reset: обновлено ключей: %s", updated)
+    return updated
 
 
 def delete_key_by_email(email: str) -> bool:

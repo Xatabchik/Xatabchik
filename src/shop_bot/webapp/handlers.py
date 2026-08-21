@@ -39,7 +39,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_referral_payout_method, get_pending_status,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
-from shop_bot.data_manager.database import get_seller_user, get_device_tiers, get_host
+from shop_bot.data_manager.database import get_seller_user, get_device_tiers, get_host, format_next_traffic_reset_display
 from shop_bot.modules import remnawave_api
 from shop_bot.config import get_purchase_success_text
 import re
@@ -753,7 +753,9 @@ def _process_key_data(key: dict) -> dict:
         "remaining_str": remaining_str,
         "created_date_str": created_date_str,
         "elapsed_str": elapsed_str,
-        "traffic_info": f"{formatted_used} / {traffic_str}", 
+        "traffic_info": f"{formatted_used} / {traffic_str}" + (
+            f" (сброс {reset_txt})" if (reset_txt := format_next_traffic_reset_display(key.get("next_traffic_reset_at"))) else ""
+        ), 
         "hwid_info": f"{hwid_str} уст.",
         "status_text": status_text,
         "status_color": status_color,

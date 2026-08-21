@@ -1396,6 +1396,7 @@
         document.getElementById('kd-plan').textContent = plan ? `${plan.plan_name} (${plan.months} мес., ${Number(plan.price||0).toFixed(0)} RUB)` : 'Не определён';
         const trafficParts = [`База: ${fmtBytes(k.traffic_limit_bytes)}`];
         if (Number(k.traffic_boost_bytes || 0) > 0) trafficParts.push(`+ буст: ${fmtBytes(k.traffic_boost_bytes)}`);
+        if (k.next_traffic_reset_display) trafficParts.push(`(сброс ${k.next_traffic_reset_display})`);
         document.getElementById('kd-traffic').textContent = trafficParts.join(' ');
 
         const subLink = document.getElementById('kd-sub-link');

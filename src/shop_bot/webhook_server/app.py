@@ -91,6 +91,8 @@ from shop_bot.data_manager.database import (
     get_squad_by_class, get_host_class,
     get_key_lte_state, add_key_lte_boost_bytes,
     get_node_usage_for_key, resolve_key_period_start,
+    apply_key_monthly_reset_fields, remnawave_traffic_limit_strategy_for_plan,
+    format_next_traffic_reset_display,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -2792,6 +2794,9 @@ def create_webhook_app(bot_controller_instance):
                 "tag": key.get('tag'),
                 "traffic_limit_bytes": key.get('traffic_limit_bytes'),
                 "traffic_boost_bytes": key.get('traffic_boost_bytes') or 0,
+                "traffic_limit_strategy": key.get('traffic_limit_strategy') or "NO_RESET",
+                "next_traffic_reset_at": key.get('next_traffic_reset_at'),
+                "next_traffic_reset_display": format_next_traffic_reset_display(key.get('next_traffic_reset_at')),
                 "hwid_device_limit": (plan or {}).get('hwid_device_limit'),
                 "subscription_url": subscription_url,
             },
@@ -2882,9 +2887,7 @@ def create_webhook_app(bot_controller_instance):
         if plan_device_limit < 0:
             plan_device_limit = 0
 
-        # Стратегия сброса трафика имеет смысл только при наличии лимита; для безлимитных
-        # тарифов её нужно явно сбросить, а не оставлять предыдущую от старого тарифа.
-        plan_traffic_strategy = 'MONTH_ROLLING' if plan_traffic_limit > 0 else 'NO_RESET'
+        plan_traffic_strategy = remnawave_traffic_limit_strategy_for_plan(plan)
 
         try:
             result = asyncio.run(remnawave_api.create_or_update_key_on_host(
@@ -2914,6 +2917,9 @@ def create_webhook_app(bot_controller_instance):
                 traffic_limit_bytes=plan_traffic_limit,
                 traffic_boost_bytes=0,
                 description=new_description,
+            )
+            apply_key_monthly_reset_fields(
+                key_id, plan, restart_cycle=True, expire_main_boost=True
             )
         except Exception as e:
             logger.warning(f"Не удалось обновить локальную запись ключа {key_id} после смены тарифа: {e}")
@@ -3244,15 +3250,33 @@ def create_webhook_app(bot_controller_instance):
 
         days_total = 0
         plan_device_limit = None
-        if plan_id:
-            plan = get_plan_by_id(plan_id)
-            if plan:
-                try:
-                    months = int(plan.get('months') or 0)
-                except Exception:
-                    months = 0
-                days_total += months * 30
-                plan_device_limit = plan.get('hwid_device_limit')
+        plan = get_plan_by_id(plan_id)
+        if not plan:
+            return jsonify({"ok": False, "error": "plan_not_found"}), 404
+        try:
+            months = int(plan.get('months') or 0)
+        except Exception:
+            months = 0
+        days_total += months * 30
+        plan_device_limit = plan.get('hwid_device_limit')
+        try:
+            plan_traffic_limit = int(plan.get('traffic_limit_bytes') or 0)
+        except Exception:
+            plan_traffic_limit = 0
+        if plan_traffic_limit < 0:
+            plan_traffic_limit = 0
+        plan_traffic_strategy = remnawave_traffic_limit_strategy_for_plan(plan)
+        try:
+            plan_id_int = int(plan_id)
+        except Exception:
+            plan_id_int = None
+        origin_desc = json.dumps({
+            "v": 1,
+            "source": "admin",
+            "plan_id": plan_id_int,
+            "plan_name": plan.get("plan_name"),
+            "months": plan.get("months"),
+        }, ensure_ascii=False)
         if custom_days_raw:
             try:
                 days_total += int(custom_days_raw)
@@ -3296,6 +3320,9 @@ def create_webhook_app(bot_controller_instance):
                     key_email,
                     expiry_timestamp_ms=expiry_ms or None,
                     hwid_device_limit=hwid_device_limit,
+                    traffic_limit_bytes=plan_traffic_limit,
+                    traffic_limit_strategy=plan_traffic_strategy,
+                    plan_id=plan_id_int,
                 ))
             except Exception as e:
                 result = None
@@ -3307,10 +3334,19 @@ def create_webhook_app(bot_controller_instance):
                 user_id=user_id,
                 payload=result,
                 host_name=host_name,
-                description=comment,
+                description=origin_desc,
             )
             if not key_id:
                 return jsonify({"ok": False, "error": "db_failed"}), 500
+            try:
+                apply_key_monthly_reset_fields(key_id, plan, restart_cycle=True)
+            except Exception:
+                logger.warning(f"Не удалось проставить политику сброса трафика для ключа {key_id}", exc_info=True)
+            if comment:
+                try:
+                    update_key_comment(key_id, comment)
+                except Exception:
+                    logger.warning(f"Не удалось сохранить комментарий ключа {key_id}", exc_info=True)
 
 
             try:
@@ -3370,6 +3406,9 @@ def create_webhook_app(bot_controller_instance):
                     description=comment or 'Gift key (created via admin panel)',
                     tag='user_gift',
                     hwid_device_limit=hwid_device_limit,
+                    traffic_limit_bytes=plan_traffic_limit,
+                    traffic_limit_strategy=plan_traffic_strategy,
+                    plan_id=plan_id_int,
                 ))
             except Exception as e:
                 logger.error(f"Создание подарочного ключа: ошибка remnawave: {e}")
@@ -3382,10 +3421,19 @@ def create_webhook_app(bot_controller_instance):
                 payload=result,
                 host_name=host_name,
                 tag='user_gift',
-                description=comment or 'Gift key (created via admin panel)',
+                description=origin_desc,
             )
             if not key_id:
                 return jsonify({"ok": False, "error": "db_failed"}), 500
+            try:
+                apply_key_monthly_reset_fields(key_id, plan, restart_cycle=True)
+            except Exception:
+                logger.warning(f"Не удалось проставить политику сброса трафика для подарочного ключа {key_id}", exc_info=True)
+            if comment:
+                try:
+                    update_key_comment(key_id, comment)
+                except Exception:
+                    logger.warning(f"Не удалось сохранить комментарий подарочного ключа {key_id}", exc_info=True)
 
             gift_result = None
             try:

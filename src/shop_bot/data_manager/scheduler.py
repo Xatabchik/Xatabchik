@@ -470,12 +470,17 @@ async def check_device_limit_violations(bot: Bot):
 
 
 async def check_traffic_boost_resets(bot: Bot):
-    """Ежемесячный сброс трафика ключа до базового лимита тарифа.
+    """Ежемесячный сброс трафика ключа до базовых значений тарифа.
 
-    Дата сброса (`next_traffic_reset_at`) отсчитывается от момента покупки/продления ключа
+    Дата сброса (`next_traffic_reset_at`) отсчитывается от дня покупки ключа
     и не зависит от использованного трафика. По достижении этой даты:
-      - сбрасывается использованный трафик на Remnawave (actions/reset-traffic);
-      - лимит трафика возвращается к базовому значению тарифа (докупленный буст обнуляется);
+      - основной пул (если тариф лимитный): сброс used traffic на Remnawave,
+        лимит возвращается к `plans.traffic_limit_bytes`, докупленный буст сгорает,
+        `traffic_limit_strategy` остаётся MONTH_ROLLING;
+      - LTE-пул (если задан `plans.lte_limit_bytes`): новый расчётный период —
+        baseline переустанавливается, докупленный LTE-буст сгорает;
+      - для безлимитного основного пула панель не трогаем — крутим только LTE
+        и дату следующего сброса;
       - дата следующего сброса сдвигается на 1 календарный месяц вперёд.
     """
     try:
@@ -496,72 +501,81 @@ async def check_traffic_boost_resets(bot: Bot):
             if not next_reset_dt or next_reset_dt > now:
                 continue
 
+            plan = database.resolve_plan_for_key(key)
+            main_limit = database.plan_main_limit_bytes(plan)
+            if main_limit <= 0:
+                main_limit = database._as_limit_bytes(key.get("traffic_limit_bytes"))
+            lte_limit = database.plan_lte_limit_bytes(plan)
+            has_main_limit = main_limit > 0
+            has_lte_limit = lte_limit > 0
+
             host_name = key.get("host_name")
             user_uuid = key.get("remnawave_user_uuid")
             email = key.get("key_email") or key.get("email")
             boost = int(key.get("traffic_boost_bytes") or 0)
 
-            if not user_uuid and email:
+            if has_main_limit:
+                if not user_uuid and email:
+                    try:
+                        remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                        if isinstance(remote_user, dict):
+                            user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid")
+                    except Exception:
+                        pass
+
+                if not user_uuid:
+                    logger.warning(
+                        f"Scheduler: не удалось определить remnawave_user_uuid для key_id={key_id}, "
+                        "сброс основного пула отложен до следующего прохода."
+                    )
+                    continue
+
                 try:
-                    remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
-                    if isinstance(remote_user, dict):
-                        user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid")
-                except Exception:
-                    pass
-
-            if not user_uuid:
-                logger.warning(f"Scheduler: не удалось определить remnawave_user_uuid для key_id={key_id}, сброс трафика пропущен.")
-                continue
-
-            plan_id = None
-            try:
-                desc = key.get("description")
-                if isinstance(desc, str) and desc.strip().startswith("{"):
-                    meta = json.loads(desc)
-                    if isinstance(meta, dict) and meta.get("plan_id") is not None:
-                        plan_id = int(meta.get("plan_id"))
-            except Exception:
-                plan_id = None
-
-            base_limit = None
-            if plan_id:
-                try:
-                    plan = database.get_plan_by_id(plan_id)
-                    if plan:
-                        base_limit = plan.get("traffic_limit_bytes")
-                except Exception:
-                    base_limit = None
-
-            try:
-                await remnawave_api.reset_user_traffic(str(user_uuid))
-            except Exception as e:
-                logger.error(f"Scheduler: не удалось сбросить трафик на сервере для key_id={key_id}: {e}", exc_info=True)
-
-            if base_limit is not None and (boost > 0 or int(base_limit) != int(key.get("traffic_limit_bytes") or 0)):
-                try:
-                    await remnawave_api.update_user_traffic_limit(str(user_uuid), int(base_limit), host_name=host_name)
+                    await remnawave_api.reset_user_traffic(str(user_uuid))
                 except Exception as e:
-                    logger.error(f"Scheduler: не удалось вернуть базовый лимит трафика для key_id={key_id}: {e}", exc_info=True)
+                    logger.error(
+                        f"Scheduler: не удалось сбросить трафик на сервере для key_id={key_id}: {e}",
+                        exc_info=True,
+                    )
+
+                if boost > 0 or int(key.get("traffic_limit_bytes") or 0) != int(main_limit):
+                    try:
+                        await remnawave_api.update_user_traffic_limit(
+                            str(user_uuid), int(main_limit), host_name=host_name
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Scheduler: не удалось вернуть базовый лимит трафика для key_id={key_id}: {e}",
+                            exc_info=True,
+                        )
 
             next_next_reset = database.compute_next_traffic_reset_str(from_dt=next_reset_dt)
             try:
-                update_kwargs = {"traffic_boost_bytes": 0, "next_traffic_reset_at": next_next_reset}
-                if base_limit is not None:
-                    update_kwargs["traffic_limit_bytes"] = int(base_limit)
+                update_kwargs = {"next_traffic_reset_at": next_next_reset}
+                if has_main_limit:
+                    update_kwargs["traffic_boost_bytes"] = 0
+                    update_kwargs["traffic_limit_bytes"] = int(main_limit)
+                    update_kwargs["traffic_limit_strategy"] = "MONTH_ROLLING"
                 database.update_key_fields(key_id, **update_kwargs)
             except Exception:
                 pass
 
-            # Сброс основного пула трафика — новый расчётный период, поэтому и LTE-пул этого
-            # КЛЮЧА обнуляет свой baseline, чтобы не наследовать расход прошлого месяца.
-            # Вместе с baseline сгорает и докупленный LTE-буст — симметрично основному пулу,
-            # где выше обнуляется traffic_boost_bytes (см. database.commit_key_lte_baseline).
-            try:
-                database.request_key_lte_baseline_reset(int(key_id))
-            except Exception as e:
-                logger.warning(f"Scheduler: не удалось запросить сброс baseline LTE при ежемесячном сбросе key_id={key_id}: {e}")
+            # Новый расчётный период: LTE-пул этого КЛЮЧА обнуляет baseline, чтобы
+            # не наследовать расход прошлого месяца. Вместе с baseline сгорает и
+            # докупленный LTE-буст — симметрично основному пулу.
+            if has_lte_limit:
+                try:
+                    database.request_key_lte_baseline_reset(int(key_id))
+                except Exception as e:
+                    logger.warning(
+                        f"Scheduler: не удалось запросить сброс baseline LTE при ежемесячном сбросе key_id={key_id}: {e}"
+                    )
 
-            logger.info(f"Scheduler: трафик ключа key_id={key_id} сброшен до базового лимита тарифа. Следующий сброс: {next_next_reset}.")
+            logger.info(
+                f"Scheduler: трафик ключа key_id={key_id} сброшен до базовых значений тарифа "
+                f"(main={'yes' if has_main_limit else 'no'}, lte={'yes' if has_lte_limit else 'no'}). "
+                f"Следующий сброс: {next_next_reset}."
+            )
 
         except Exception as e:
             logger.error(f"Scheduler: ошибка ежемесячного сброса трафика для key_id={key.get('key_id')}: {e}", exc_info=True)
@@ -1383,10 +1397,20 @@ async def check_auto_renewals(bot: Bot):
                     email=email,
                     days_to_add=days_to_add,
                     expiry_timestamp_ms=new_expiry_ms,
+                    traffic_limit_bytes=int(plan.get("traffic_limit_bytes") or 0),
+                    traffic_limit_strategy=database.remnawave_traffic_limit_strategy_for_plan(plan),
+                    plan_id=plan.get("plan_id"),
                 )
                 if result:
                     effective_ms = result.get("expiry_timestamp_ms") or new_expiry_ms
                     rw_repo.update_key_fields(key_id, expire_at_ms=int(effective_ms))
+                    try:
+                        database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False)
+                    except Exception:
+                        logger.warning(
+                            f"Auto-renew: не удалось обновить политику сброса трафика ключа {key_id}",
+                            exc_info=True,
+                        )
                     _auto_renew_attempts.pop(key_id, None)
                     logger.info(f"Auto-renew: ключ {key_id} продлён на {days_to_add} дн. (пользователь {user_id}).")
                     await _notify_auto_renew_success(bot, user_id, key_id, price, days_to_add, key_name)
