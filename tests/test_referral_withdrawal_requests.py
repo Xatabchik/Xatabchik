@@ -275,3 +275,24 @@ def test_has_open_request_flag_on_webapp_endpoints(temp_db):
     assert second.get("ok") is False
     assert "уже есть заявка" in (second.get("message") or second.get("error") or "").lower()
     assert second.get("has_open_request") is True
+
+
+def test_top_referrers_includes_paid_withdrawn_total(temp_db):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=63001, username="topref", referral_balance=200.0, referral_balance_all=500.0)
+    insert_user(database.DB_FILE, telegram_id=63002, username="invitee", referred_by=63001)
+    database.update_setting("referral_withdraw_enabled", "true")
+    database.update_setting("referral_withdraw_card_enabled", "true")
+    database.update_setting("minimum_withdrawal", "100")
+    ok, msg, method_id = database.add_referral_payout_method(63001, "card", "4111111111111111")
+    assert ok and method_id, msg
+    ok, msg, request_id = database.create_referral_withdrawal_request(63001, 150, method_id)
+    assert ok and request_id, msg
+    ok_paid, paid_msg, _ = database.update_referral_withdrawal_request_status(request_id, "paid")
+    assert ok_paid, paid_msg
+
+    rows = database.get_top_referrers(limit=10)
+    row = next((r for r in rows if int(r.get("referrer_id") or 0) == 63001), None)
+    assert row is not None
+    assert float(row.get("withdrawn_total") or 0) == 150.0

@@ -3808,7 +3808,13 @@ def get_top_referrers(limit: int = 10) -> list[dict]:
                         WHERE t.user_id = u.telegram_id AND {_SUCCESS_TX_SQL} AND {_NON_BALANCE_SQL}
                     ) THEN 1 ELSE 0 END) AS paying_count,
                     ref_owner.referral_balance_all AS bonus_total,
-                    ref_owner.referral_balance AS current_balance
+                    ref_owner.referral_balance AS current_balance,
+                    COALESCE((
+                        SELECT SUM(w.amount)
+                        FROM referral_withdrawal_requests w
+                        WHERE w.user_id = u.referred_by
+                          AND w.status = 'paid'
+                    ), 0) AS withdrawn_total
                 FROM users u
                 LEFT JOIN users ref_owner ON ref_owner.telegram_id = u.referred_by
                 WHERE u.referred_by IS NOT NULL
