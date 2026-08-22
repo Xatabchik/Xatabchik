@@ -67,7 +67,7 @@ from shop_bot.data_manager.database import (
     get_button_configs, get_button_configs_admin, create_button_config, update_button_config, 
     delete_button_config, reorder_button_configs
 )
-from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id
+from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id, SECRET_SETTING_KEYS
 from shop_bot.data_manager.database import (
     add_host_squad,
     get_host_squads,
@@ -3800,13 +3800,16 @@ def create_webhook_app(bot_controller_instance):
         ssh_host = (request.form.get('ssh_host') or '').strip() or None
         ssh_port_raw = (request.form.get('ssh_port') or '').strip()
         ssh_user = (request.form.get('ssh_user') or '').strip() or None
-        ssh_password = request.form.get('ssh_password')
+        ssh_password = (request.form.get('ssh_password') or '').strip()
         ssh_key_path = (request.form.get('ssh_key_path') or '').strip() or None
         ssh_port = None
         try:
             ssh_port = int(ssh_port_raw) if ssh_port_raw else None
         except Exception:
             ssh_port = None
+        if not ssh_password:
+            existing = get_host(host_name) or {}
+            ssh_password = existing.get('ssh_password')
         ok = update_host_ssh_settings(host_name, ssh_host=ssh_host, ssh_port=ssh_port, ssh_user=ssh_user,
                                       ssh_password=ssh_password, ssh_key_path=ssh_key_path)
         flash('SSH-параметры обновлены.' if ok else 'Не удалось обновить SSH-параметры.', 'success' if ok else 'danger')
@@ -4250,6 +4253,8 @@ def create_webhook_app(bot_controller_instance):
                     continue
                 if key == 'remnawave_api_token' and not (request.form.get(key) or '').strip():
                     continue
+                if key in SECRET_SETTING_KEYS and not (request.form.get(key) or '').strip():
+                    continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
 
@@ -4608,7 +4613,8 @@ def create_webhook_app(bot_controller_instance):
         ssh_host = (request.form.get('ssh_host') or '').strip() if 'ssh_host' in request.form else None
         ssh_port_raw = (request.form.get('ssh_port') or '').strip() if 'ssh_port' in request.form else None
         ssh_user = (request.form.get('ssh_user') or '').strip() if 'ssh_user' in request.form else None
-        ssh_password = request.form.get('ssh_password') if 'ssh_password' in request.form else None
+        raw_ssh_password = request.form.get('ssh_password') if 'ssh_password' in request.form else None
+        ssh_password = (raw_ssh_password or '').strip() or None
         ssh_key_path = (request.form.get('ssh_key_path') or '').strip() if 'ssh_key_path' in request.form else None
         description = (request.form.get('description') or '').strip() if 'description' in request.form else None
         try:
