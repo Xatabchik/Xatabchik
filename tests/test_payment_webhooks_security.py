@@ -170,6 +170,14 @@ def test_platega_webhook_wrong_secret_returns_401(temp_db):
     assert _pending_status(pid) == "pending"
 
 
+def test_platega_amount_covers_order_allows_provider_fee():
+    from shop_bot.webhook_server.app import _platega_amount_covers_order
+
+    assert _platega_amount_covers_order(Decimal("100.00"), Decimal("100.00")) is True
+    assert _platega_amount_covers_order(Decimal("107.00"), Decimal("100.00")) is True
+    assert _platega_amount_covers_order(Decimal("99.99"), Decimal("100.00")) is False
+
+
 def test_platega_webhook_rejects_amount_mismatch(temp_db):
     from shop_bot.data_manager import database
 
@@ -186,6 +194,24 @@ def test_platega_webhook_rejects_amount_mismatch(temp_db):
     )
     assert resp.status_code == 200
     assert _pending_status(pid) == "pending"
+
+
+def test_platega_webhook_completes_when_callback_amount_includes_fee(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("platega_merchant_id", "mid-1")
+    database.update_setting("platega_secret", "real-secret")
+    pid = "platega-fee-ok"
+    _pending(payment_id=pid, user_id=108, amount=100.0, method="Platega")
+    client = _flask_client(temp_db)
+
+    resp = client.post(
+        "/platega-webhook",
+        json={"status": "CONFIRMED", "payload": pid, "id": "tx-fee", "amount": 107.0},
+        headers={"X-MerchantId": "mid-1", "X-Secret": "real-secret"},
+    )
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "paid"
 
 
 def test_platega_webhook_rejects_other_provider_pending(temp_db):
