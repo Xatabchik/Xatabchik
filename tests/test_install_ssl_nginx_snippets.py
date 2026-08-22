@@ -112,6 +112,15 @@ def test_rewrite_nginx_listen_public_moves_localhost_bind(tmp_path: Path):
     assert "listen [::]:8443 ssl http2;" in text
 
 
+def test_install_sh_ansi_colors_are_real_escapes():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "GREEN=$'\\033[0;32m'" in text
+    assert "YELLOW=$'\\033[1;33m'" in text
+    assert "платёжных систем" in text
+    assert "Базовый URL для платёжных систем" in text
+    assert "вебхуков YooKassa" not in text
+
+
 def test_install_sh_uses_compose_v2_plugin():
     text = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "docker-compose-v2" in text

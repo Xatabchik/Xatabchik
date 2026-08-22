@@ -2,12 +2,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-RED='\033[0;31m'
-NC='\033[0m'
-BOLD='\033[1m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+CYAN=$'\033[0;36m'
+RED=$'\033[0;31m'
+NC=$'\033[0m'
+BOLD=$'\033[1m'
 
 log_info() { echo -e "${CYAN}$1${NC}"; }
 log_warn() { echo -e "${YELLOW}$1${NC}"; }
@@ -560,14 +560,14 @@ EOF
     log_success "✔ Сертификаты Let's Encrypt успешно получены."
 fi
 
-prompt "Какой порт использовать для вебхуков YooKassa? (443 или 8443, по умолчанию 8443): " YOOKASSA_PORT_INPUT
-YOOKASSA_PORT="${YOOKASSA_PORT_INPUT:-8443}"
-if [[ "$YOOKASSA_PORT" != "443" && "$YOOKASSA_PORT" != "8443" ]]; then
+prompt "Какой порт использовать для платёжных систем? (443 или 8443, по умолчанию 8443): " PAYMENT_PORT_INPUT
+PAYMENT_PORT="${PAYMENT_PORT_INPUT:-8443}"
+if [[ "$PAYMENT_PORT" != "443" && "$PAYMENT_PORT" != "8443" ]]; then
     log_warn "Указан неподдерживаемый порт. Будет использован 8443."
-    YOOKASSA_PORT=8443
+    PAYMENT_PORT=8443
 fi
 
-configure_nginx "$DOMAIN" "$YOOKASSA_PORT" "$NGINX_CONF" "$NGINX_LINK"
+configure_nginx "$DOMAIN" "$PAYMENT_PORT" "$NGINX_CONF" "$NGINX_LINK"
 
 log_info "\nШаг 5: сборка и запуск Docker-контейнеров"
 resolve_compose
@@ -583,7 +583,7 @@ ${GREEN}┃${NC}  🎉 ${BOLD}Установка Xatabchik завершена!${
 ${GREEN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}
 
 ${BOLD}Веб‑панель:${NC}
-  ${YELLOW}https://${DOMAIN}:${YOOKASSA_PORT}/login${NC}
+  ${YELLOW}https://${DOMAIN}:${PAYMENT_PORT}/login${NC}
 
 ${BOLD}Данные для первого входа:${NC}
   Логин:  ${CYAN}admin${NC}
@@ -591,7 +591,7 @@ ${BOLD}Данные для первого входа:${NC}
 
 ${YELLOW}⚠️  Обязательно измените пароль после первого входа.${NC}
 
-${BOLD}URL вебхука YooKassa:${NC}
-  ${YELLOW}https://${DOMAIN}:${YOOKASSA_PORT}/yookassa-webhook${NC}
+${BOLD}Базовый URL для платёжных систем:${NC}
+  ${YELLOW}https://${DOMAIN}:${PAYMENT_PORT}/${NC}
 
 SUMMARY
