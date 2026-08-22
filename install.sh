@@ -2,12 +2,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-RED='\033[0;31m'
-NC='\033[0m'
-BOLD='\033[1m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+CYAN=$'\033[0;36m'
+RED=$'\033[0;31m'
+NC=$'\033[0m'
+BOLD=$'\033[1m'
 
 log_info() { echo -e "${CYAN}$1${NC}"; }
 log_warn() { echo -e "${YELLOW}$1${NC}"; }
@@ -100,7 +100,6 @@ ensure_packages() {
     declare -A packages=(
         [git]='git'
         [docker]='docker.io'
-        [docker-compose]='docker-compose'
         [nginx]='nginx'
         [curl]='curl'
         [certbot]='certbot'
@@ -108,11 +107,6 @@ ensure_packages() {
     )
     local missing=()
     for cmd in "${!packages[@]}"; do
-        # docker-compose-plugin (v2) satisfies the docker-compose requirement
-        if [[ "$cmd" == "docker-compose" ]] && docker compose version >/dev/null 2>&1; then
-            log_success "✔ docker compose (plugin v2) уже установлен."
-            continue
-        fi
         if ! command -v "$cmd" >/dev/null 2>&1; then
             log_warn "Утилита '$cmd' не найдена. Будет установлен пакет '${packages[$cmd]}'."
             missing+=("${packages[$cmd]}")
@@ -134,6 +128,47 @@ ensure_packages() {
     else
         log_info "Все необходимые пакеты уже присутствуют."
     fi
+    ensure_docker_compose
+}
+
+# Ubuntu 24.04: пакет docker-compose 1.29 несовместим с docker.io.
+# Ставим plugin v2 и проверяем реальную команду, не command -v.
+ensure_docker_compose() {
+    if sudo docker compose version >/dev/null 2>&1; then
+        log_success "✔ docker compose (plugin v2) уже установлен."
+        return 0
+    fi
+    log_info "Устанавливаю Docker Compose v2..."
+    export DEBIAN_FRONTEND=noninteractive
+    export DEBCONF_NONINTERACTIVE_SEEN=true
+    sudo apt-get update
+    if sudo apt-get install -y --no-install-recommends docker-compose-v2 \
+        || sudo apt-get install -y --no-install-recommends docker-compose-plugin; then
+        :
+    else
+        log_warn "Не удалось поставить docker-compose-v2 / docker-compose-plugin."
+    fi
+    unset DEBIAN_FRONTEND
+    unset DEBCONF_NONINTERACTIVE_SEEN
+    if sudo docker compose version >/dev/null 2>&1; then
+        log_success "✔ docker compose (plugin v2) установлен."
+        return 0
+    fi
+    log_error "Docker Compose v2 недоступен. Установите пакет docker-compose-v2 и повторите."
+    exit 1
+}
+
+resolve_compose() {
+    if sudo docker compose version >/dev/null 2>&1; then
+        COMPOSE=(docker compose)
+        return 0
+    fi
+    if sudo docker-compose version >/dev/null 2>&1; then
+        COMPOSE=(docker-compose)
+        return 0
+    fi
+    log_error "Не найдена рабочая команда Docker Compose."
+    exit 1
 }
 
 ensure_services() {
@@ -213,6 +248,97 @@ ensure_certbot_nginx() {
     exit 1
 }
 
+_le_write_file() {
+    local dest="$1"
+    if [[ -w "$(dirname "$dest")" ]]; then
+        cat > "$dest"
+    else
+        sudo tee "$dest" >/dev/null
+    fi
+}
+
+# Certbot пишет options-ssl-nginx.conf и ssl-dhparams.pem только при --nginx.
+# Если сертификаты уже есть (standalone/webroot/копия), файлов нет и nginx -t падает.
+ensure_letsencrypt_ssl_snippets() {
+    local le_dir="${1:-/etc/letsencrypt}"
+    local options="${le_dir}/options-ssl-nginx.conf"
+    local dhparam="${le_dir}/ssl-dhparams.pem"
+    local src
+
+    mkdir -p "$le_dir" 2>/dev/null || sudo mkdir -p "$le_dir"
+
+    if [[ "$le_dir" == /etc/letsencrypt ]] && { [[ ! -s "$options" ]] || [[ ! -s "$dhparam" ]]; }; then
+        if command -v certbot >/dev/null 2>&1; then
+            sudo certbot plugins --prepare >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [[ ! -s "$options" ]]; then
+        for src in \
+            /usr/lib/python3/dist-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+            /usr/lib/python3/dist-packages/certbot_nginx/tls_configs/options-ssl-nginx.conf \
+            /snap/certbot/current/lib/python3.12/site-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+            /snap/certbot/current/lib/python3.10/site-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf
+        do
+            if [[ -s "$src" ]]; then
+                if [[ -w "$(dirname "$options")" ]]; then
+                    cp "$src" "$options"
+                else
+                    sudo cp "$src" "$options"
+                fi
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -s "$options" ]]; then
+        log_warn "Создаю ${options} (certbot --nginx не создавал TLS-сниппеты)."
+        _le_write_file "$options" <<'EOF'
+# Fallback, equivalent to certbot-nginx Mozilla intermediate defaults.
+ssl_session_cache shared:le_nginx_SSL:10m;
+ssl_session_timeout 1440m;
+ssl_session_tickets off;
+
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+
+ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+EOF
+    fi
+
+    if [[ ! -s "$dhparam" ]]; then
+        for src in \
+            /usr/lib/python3/dist-packages/certbot/ssl-dhparams.pem \
+            /usr/lib/python3/dist-packages/certbot/certbot/ssl-dhparams.pem \
+            /snap/certbot/current/lib/python3.12/site-packages/certbot/ssl-dhparams.pem \
+            /snap/certbot/current/lib/python3.10/site-packages/certbot/ssl-dhparams.pem
+        do
+            if [[ -s "$src" ]]; then
+                if [[ -w "$(dirname "$dhparam")" ]]; then
+                    cp "$src" "$dhparam"
+                else
+                    sudo cp "$src" "$dhparam"
+                fi
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -s "$dhparam" ]]; then
+        log_warn "Создаю ${dhparam} (RFC 7919 ffdhe2048)."
+        _le_write_file "$dhparam" <<'EOF'
+-----BEGIN DH PARAMETERS-----
+MIIBCAKCAQEA//////////+t+FRYortKmq/cViAnPTzx2LnFg84tNpWp4TZBFGQz
++8yTnc4kmz75fS/jY2MMddj2gbICrsRhetPfHtXV/WVhJDP1H18GbtCFY2VVPe0a
+87VXE15/V8k1mE8McODmi3fipona8+/och3xWKE2rec1MKzKT0g6eXq8CrGCsyT7
+YdEIqUuyyOP7uWrat2DX9GgdT0Kj3jlN9K5W7edjcrsZCwenyO4KbXCeAvzhzffi
+7MA0BM0oNC9hkXL+nOmFg/+OTxIy7vKBg8P+OxtMb61zO7X8vC7CIAXFjvGDfRaD
+ssbzSibBsu/6iGtCOGEoXJf//////////wIBAg==
+-----END DH PARAMETERS-----
+EOF
+    fi
+}
+
 configure_nginx() {
     local domain="$1"
     local port="$2"
@@ -220,12 +346,13 @@ configure_nginx() {
     local nginx_link="$4"
 
     log_info "\nШаг 4: настройка Nginx"
+    ensure_letsencrypt_ssl_snippets
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo tee "$nginx_conf" >/dev/null <<EOF
 limit_req_zone \$binary_remote_addr zone=xatabchik_login:10m rate=5r/m;
 
 server {
-    listen ${port} ssl http2;
+    listen 0.0.0.0:${port} ssl http2;
     listen [::]:${port} ssl http2;
     server_name ${domain};
 
@@ -262,7 +389,37 @@ EOF
     fi
     sudo nginx -t
     sudo systemctl reload nginx
-    log_success "✔ Конфигурация Nginx обновлена."
+    if ! nginx_listens_publicly "$port"; then
+        sudo systemctl restart nginx
+    fi
+    if ! nginx_listens_publicly "$port"; then
+        log_error "Nginx слушает ${port} только на 127.0.0.1 — панель недоступна снаружи."
+        ss -tlnp | grep -E ":${port}\\b" || true
+        exit 1
+    fi
+    log_success "✔ Конфигурация Nginx обновлена (0.0.0.0:${port})."
+}
+
+nginx_listens_publicly() {
+    local port="$1"
+    ss -ltn 2>/dev/null | grep -E ":${port}[[:space:]]" | grep -qvE '127\.0\.0\.1|\[::1\]'
+}
+
+# Панель должна быть на 0.0.0.0:PORT. 127.0.0.1:1488 — только Flask за Nginx.
+rewrite_nginx_listen_public() {
+    local conf="$1"
+    local port="$2"
+    if [[ ! -f "$conf" ]]; then
+        return 0
+    fi
+    local -a sed_cmd=(sed -i -E)
+    if [[ ! -w "$conf" ]]; then
+        sed_cmd=(sudo sed -i -E)
+    fi
+    "${sed_cmd[@]}" \
+        -e "s/listen([[:space:]]+)127\\.0\\.0\\.1:${port}/listen\\10.0.0.0:${port}/g" \
+        -e "s/listen([[:space:]]+)${port}([[:space:]])/listen\\10.0.0.0:${port}\\2/g" \
+        "$conf"
 }
 
 restrict_panel_firewall() {
@@ -282,12 +439,7 @@ PROJECT_DIR="xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_DIR}.conf"
 
-# Prefer standalone binary; fall back to V2 plugin
-if command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE=(docker-compose)
-else
-    COMPOSE=(docker compose)
-fi
+COMPOSE=(docker compose)
 
 log_success "--- Запуск скрипта установки/обновления Xatabchik ---"
 
@@ -303,7 +455,23 @@ if [[ -f "$NGINX_CONF" ]]; then
     git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
+    ensure_letsencrypt_ssl_snippets
+    panel_port="$(sudo sed -nE 's/.*listen[[:space:]]+(127\.0\.0\.1:|0\.0\.0\.0:)?([0-9]+).*/\2/p' "$NGINX_CONF" | head -n1 || true)"
+    panel_port="${panel_port:-8443}"
+    rewrite_nginx_listen_public "$NGINX_CONF" "$panel_port"
+    if sudo nginx -t >/dev/null 2>&1; then
+        sudo systemctl reload nginx
+        if ! nginx_listens_publicly "$panel_port"; then
+            sudo systemctl restart nginx
+        fi
+    fi
+    if ! nginx_listens_publicly "$panel_port"; then
+        log_warn "Nginx на ${panel_port} всё ещё не слушает 0.0.0.0 — проверьте ss и другие server-блоки."
+        ss -tlnp | grep -E ":${panel_port}\\b" || true
+    fi
     restrict_panel_firewall
+    ensure_docker_compose
+    resolve_compose
     sudo "${COMPOSE[@]}" down --remove-orphans
     sudo "${COMPOSE[@]}" up -d --build --force-recreate
     log_success "\n🎉 Обновление успешно завершено!"
@@ -392,16 +560,17 @@ EOF
     log_success "✔ Сертификаты Let's Encrypt успешно получены."
 fi
 
-prompt "Какой порт использовать для вебхуков YooKassa? (443 или 8443, по умолчанию 8443): " YOOKASSA_PORT_INPUT
-YOOKASSA_PORT="${YOOKASSA_PORT_INPUT:-8443}"
-if [[ "$YOOKASSA_PORT" != "443" && "$YOOKASSA_PORT" != "8443" ]]; then
+prompt "Какой порт использовать для платёжных систем? (443 или 8443, по умолчанию 8443): " PAYMENT_PORT_INPUT
+PAYMENT_PORT="${PAYMENT_PORT_INPUT:-8443}"
+if [[ "$PAYMENT_PORT" != "443" && "$PAYMENT_PORT" != "8443" ]]; then
     log_warn "Указан неподдерживаемый порт. Будет использован 8443."
-    YOOKASSA_PORT=8443
+    PAYMENT_PORT=8443
 fi
 
-configure_nginx "$DOMAIN" "$YOOKASSA_PORT" "$NGINX_CONF" "$NGINX_LINK"
+configure_nginx "$DOMAIN" "$PAYMENT_PORT" "$NGINX_CONF" "$NGINX_LINK"
 
 log_info "\nШаг 5: сборка и запуск Docker-контейнеров"
+resolve_compose
 if [[ -n "$(sudo "${COMPOSE[@]}" ps -q 2>/dev/null)" ]]; then
     sudo "${COMPOSE[@]}" down
 fi
@@ -414,7 +583,7 @@ ${GREEN}┃${NC}  🎉 ${BOLD}Установка Xatabchik завершена!${
 ${GREEN}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}
 
 ${BOLD}Веб‑панель:${NC}
-  ${YELLOW}https://${DOMAIN}:${YOOKASSA_PORT}/login${NC}
+  ${YELLOW}https://${DOMAIN}:${PAYMENT_PORT}/login${NC}
 
 ${BOLD}Данные для первого входа:${NC}
   Логин:  ${CYAN}admin${NC}
@@ -422,7 +591,7 @@ ${BOLD}Данные для первого входа:${NC}
 
 ${YELLOW}⚠️  Обязательно измените пароль после первого входа.${NC}
 
-${BOLD}URL вебхука YooKassa:${NC}
-  ${YELLOW}https://${DOMAIN}:${YOOKASSA_PORT}/yookassa-webhook${NC}
+${BOLD}Базовый URL для платёжных систем:${NC}
+  ${YELLOW}https://${DOMAIN}:${PAYMENT_PORT}/${NC}
 
 SUMMARY

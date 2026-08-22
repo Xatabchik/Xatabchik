@@ -1,0 +1,131 @@
+"""Регрессия: nginx -t падает, если сертификаты уже есть, а Certbot не писал TLS-сниппеты."""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _extract_function(name: str) -> str:
+    lines = (ROOT / "install.sh").read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}()"))
+    depth = 0
+    chunk: list[str] = []
+    for line in lines[start:]:
+        chunk.append(line)
+        depth += line.count("{") - line.count("}")
+        if chunk and depth == 0:
+            break
+    return "".join(chunk)
+
+
+def _run_ensure(le_dir: Path) -> subprocess.CompletedProcess[str]:
+    script = "\n".join(
+        (
+            "set -euo pipefail",
+            'log_info() { echo "$1"; }',
+            'log_warn() { echo "$1"; }',
+            'log_success() { echo "$1"; }',
+            'log_error() { echo "$1" >&2; }',
+            _extract_function("_le_write_file"),
+            _extract_function("ensure_letsencrypt_ssl_snippets"),
+            f'ensure_letsencrypt_ssl_snippets "{le_dir}"',
+        )
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_ensure_letsencrypt_ssl_snippets_creates_missing_files(tmp_path: Path):
+    le_dir = tmp_path / "letsencrypt"
+    _run_ensure(le_dir)
+
+    options = (le_dir / "options-ssl-nginx.conf").read_text(encoding="utf-8")
+    dhparam = (le_dir / "ssl-dhparams.pem").read_text(encoding="utf-8")
+    assert "ssl_protocols TLSv1.2 TLSv1.3" in options
+    assert "ssl_session_tickets off" in options
+    assert "BEGIN DH PARAMETERS" in dhparam
+    assert "END DH PARAMETERS" in dhparam
+
+
+def test_ensure_letsencrypt_ssl_snippets_keeps_existing_files(tmp_path: Path):
+    le_dir = tmp_path / "letsencrypt"
+    le_dir.mkdir()
+    options = le_dir / "options-ssl-nginx.conf"
+    dhparam = le_dir / "ssl-dhparams.pem"
+    options.write_text("# custom-options\n", encoding="utf-8")
+    dhparam.write_text("# custom-dh\n", encoding="utf-8")
+
+    _run_ensure(le_dir)
+
+    assert options.read_text(encoding="utf-8") == "# custom-options\n"
+    assert dhparam.read_text(encoding="utf-8") == "# custom-dh\n"
+
+
+def test_install_sh_creates_snippets_before_nginx_test():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "ensure_letsencrypt_ssl_snippets" in text
+    assert text.index("ensure_letsencrypt_ssl_snippets") < text.index("sudo nginx -t")
+    update_idx = text.index("Обнаружена существующая конфигурация")
+    assert text.find("ensure_letsencrypt_ssl_snippets", update_idx) != -1
+
+
+def test_nginx_template_listens_on_all_interfaces():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "listen 0.0.0.0:${port} ssl http2;" in text
+    assert "rewrite_nginx_listen_public" in text
+    assert "nginx_listens_publicly" in text
+    # Flask/docker stay on localhost; Nginx itself must not.
+    assert "listen 127.0.0.1:${port}" not in text
+
+
+def test_rewrite_nginx_listen_public_moves_localhost_bind(tmp_path: Path):
+    conf = tmp_path / "xatabchik.conf"
+    conf.write_text(
+        "\n".join(
+            (
+                "server {",
+                "    listen 127.0.0.1:8443 ssl http2;",
+                "    listen [::]:8443 ssl http2;",
+                "}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    script = "\n".join(
+        (
+            "set -euo pipefail",
+            _extract_function("rewrite_nginx_listen_public"),
+            f'rewrite_nginx_listen_public "{conf}" 8443',
+        )
+    )
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
+    text = conf.read_text(encoding="utf-8")
+    assert "listen 0.0.0.0:8443 ssl http2;" in text
+    assert "listen 127.0.0.1:8443" not in text
+    assert "listen [::]:8443 ssl http2;" in text
+
+
+def test_install_sh_ansi_colors_are_real_escapes():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "GREEN=$'\\033[0;32m'" in text
+    assert "YELLOW=$'\\033[1;33m'" in text
+    assert "платёжных систем" in text
+    assert "Базовый URL для платёжных систем" in text
+    assert "вебхуков YooKassa" not in text
+
+
+def test_install_sh_uses_compose_v2_plugin():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "docker-compose-v2" in text
+    assert "ensure_docker_compose" in text
+    assert "resolve_compose" in text
+    # Prefer probing the plugin, not a hyphenated binary that may be Compose v1.
+    assert "if command -v docker-compose" not in text
+    assert text.index("resolve_compose") < text.index('sudo "${COMPOSE[@]}" up -d --build')
