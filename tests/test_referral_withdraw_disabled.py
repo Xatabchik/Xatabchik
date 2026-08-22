@@ -98,4 +98,5 @@ def test_request_withdrawal_allowed_when_enabled(temp_db):
     data = resp.json()
     assert data.get("ok") is True, data
     assert data.get("request_id")
+    assert data.get("has_open_request") is True
     assert float(database.get_user(61004)["referral_balance"]) == 350.0

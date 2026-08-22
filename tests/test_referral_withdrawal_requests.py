@@ -233,3 +233,45 @@ def test_webapp_notifies_all_admin_ids(temp_db, monkeypatch):
     notified = {item[0] for item in sent}
     assert notified == {7001, 7002}
     assert all("Новая заявка на вывод" in item[1] for item in sent)
+
+
+def test_has_open_request_flag_on_webapp_endpoints(temp_db):
+    from fastapi.testclient import TestClient
+    from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    insert_user(database.DB_FILE, telegram_id=62030, username="wdopen", referral_balance=500.0)
+    database.update_setting("referral_withdraw_enabled", "true")
+    database.update_setting("referral_withdraw_card_enabled", "true")
+    database.update_setting("minimum_withdrawal", "100")
+    ok, msg, method_id = database.add_referral_payout_method(62030, "card", "4111111111111111")
+    assert ok and method_id, msg
+
+    handlers.TEMP_AUTH_TOKENS["test-ref-wd-open"] = 62030
+    client = TestClient(handlers.app)
+
+    before = client.post("/api/user/referral-info", json={"token": "test-ref-wd-open"}).json()
+    assert before.get("ok") is True
+    assert before.get("has_open_request") is False
+    listed = client.post("/api/referral/withdrawals", json={"token": "test-ref-wd-open"}).json()
+    assert listed.get("has_open_request") is False
+
+    created = client.post(
+        "/api/referral/request-withdrawal",
+        json={"token": "test-ref-wd-open", "amount": 150, "method_id": method_id},
+    ).json()
+    assert created.get("ok") is True, created
+    assert created.get("has_open_request") is True
+
+    after = client.post("/api/user/referral-info", json={"token": "test-ref-wd-open"}).json()
+    assert after.get("has_open_request") is True
+    listed2 = client.post("/api/referral/withdrawals", json={"token": "test-ref-wd-open"}).json()
+    assert listed2.get("has_open_request") is True
+
+    second = client.post(
+        "/api/referral/request-withdrawal",
+        json={"token": "test-ref-wd-open", "amount": 120, "method_id": method_id},
+    ).json()
+    assert second.get("ok") is False
+    assert "уже есть заявка" in (second.get("message") or second.get("error") or "").lower()
+    assert second.get("has_open_request") is True

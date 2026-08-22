@@ -529,7 +529,12 @@ async def api_referral_request_withdraw(request: Request):
                 await _send_telegram_message(int(admin_id), admin_text)
         except Exception:
             logger.warning("Не удалось уведомить администраторов о заявке на вывод", exc_info=True)
-    return {"ok": ok, "message": msg, "request_id": new_id}
+    return {
+        "ok": ok,
+        "message": msg,
+        "request_id": new_id,
+        "has_open_request": bool(ok) or rw_repo.has_open_referral_withdrawal_request(user.get("telegram_id")),
+    }
 
 
 # Endpoint: list referral withdrawal request history for the current user
@@ -564,7 +569,8 @@ async def api_referral_list_withdrawals(request: Request):
         }
         for r in requests_list
     ]
-    return {"ok": True, "withdrawals": withdrawals}
+    has_open_request = any((r.get("status") or "") in ("new", "processing") for r in requests_list)
+    return {"ok": True, "withdrawals": withdrawals, "has_open_request": has_open_request}
 
 
 def _format_remaining_details(remaining: timedelta) -> str:
@@ -3483,6 +3489,7 @@ async def api_user_referral_info(request: Request):
         "count": count,
         "earned": earned,
         "available": available,
+        "has_open_request": rw_repo.has_open_referral_withdrawal_request(uid),
     }
 
 # ── User sent gifts ────────────────────────────────────────────────────────
