@@ -4454,12 +4454,9 @@ async def web_referral_page(referrer_id: str, request: Request):
             )
 
         deeplink = _telegram_bot_deeplink(bot_username, f"ref_{rid}")
-        referrer = get_user(rid)
-        if not referrer:
-            return _public_fallback_response(
-                _referral_fallback_html(project_name, logo_url, deeplink)
-            )
-
+        # Не проверяем существование telegram_id здесь: разный статус/pending_token
+        # для известного и неизвестного id даёт оракул. Привязка реферера
+        # валидируется позже в complete (invalid_referrer).
         from shop_bot.data_manager import database
         token = database.create_pending_action("referral", referrer_id=rid)
         if not token:
