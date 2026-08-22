@@ -296,6 +296,11 @@ ALL_SETTINGS_KEYS = [
     "platega_base_url",
     "platega_merchant_id",
     "platega_secret",
+    "rollypay_api_key",
+    "rollypay_terminal_id",
+    "rollypay_signing_secret",
+    "rollypay_payment_method",
+    "payment_label_rollypay",
     "platega_active_methods",
     "domain",
     "referral_percentage",
@@ -5928,6 +5933,115 @@ def create_webhook_app(bot_controller_instance):
             return 'OK', 200
         except Exception as e:
             logger.error(f"Ошибка в обработчике вебхука Platega: {e}", exc_info=True)
+            return 'Error', 500
+
+
+    @csrf.exempt
+    @flask_app.route('/rollypay-webhook', methods=['POST'])
+    def rollypay_webhook_handler():
+        """RollyPay webhook.
+
+        Телу запроса не доверяем: проверяем HMAC-подпись, затем сверяем
+        сумму с ожидаемой из pending-метаданных.
+        """
+        try:
+            from shop_bot.modules.rollypay_api import RollyPayAPI
+
+            api_key = (get_setting('rollypay_api_key') or '').strip()
+            terminal_id = (get_setting('rollypay_terminal_id') or '').strip()
+            signing_secret = (get_setting('rollypay_signing_secret') or '').strip()
+
+            if not signing_secret:
+                logger.error('RollyPay webhook: signing_secret не настроен')
+                return 'Not configured', 503
+
+            raw = request.get_data()
+            timestamp = request.headers.get('X-Timestamp', '')
+            signature = request.headers.get('X-Signature', '')
+
+            rollypay = RollyPayAPI(api_key, terminal_id, signing_secret)
+            if not rollypay.verify_signature(raw, timestamp, signature):
+                logger.warning('RollyPay webhook: подпись не прошла проверку')
+                return 'Forbidden', 403
+
+            try:
+                if abs(time.time() - int(timestamp)) > 600:
+                    logger.warning(f'RollyPay webhook: устаревший timestamp {timestamp}')
+                    return 'Forbidden', 403
+            except (TypeError, ValueError):
+                return 'Bad Request', 400
+
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return 'Bad Request', 400
+
+            event_type = str(payload.get('event_type') or '').strip()
+            payment_id = str(payload.get('order_id') or '').strip()
+            provider_payment_id = str(payload.get('payment_id') or '').strip()
+
+            if not payment_id:
+                return 'OK', 200
+
+            if event_type in ('payment.chargeback', 'payment.refunded', 'refund_request.completed'):
+                logger.error(
+                    f'RollyPay: ВОЗВРАТ/ЧАРДЖБЕК payment_id={payment_id} '
+                    f'provider_id={provider_payment_id} — требуется ручная проверка'
+                )
+                return 'OK', 200
+
+            if event_type != 'payment.paid':
+                logger.info(f'RollyPay webhook: {event_type} для {payment_id} (пропущено)')
+                return 'OK', 200
+
+            pending_meta = None
+            try:
+                pending_meta = rw_repo.get_pending_metadata(payment_id)
+            except Exception as e:
+                logger.error(f"RollyPay webhook: failed to read pending for {payment_id}: {e}", exc_info=True)
+
+            if not pending_meta:
+                logger.warning(f"RollyPay webhook: no pending transaction for payment_id={payment_id}")
+                return 'OK', 200
+
+            if not _pending_method_allowed(pending_meta, "RollyPay"):
+                logger.warning(
+                    f"RollyPay webhook: payment_id={payment_id} is not a RollyPay pending "
+                    f"(payment_method={pending_meta.get('payment_method')!r})"
+                )
+                return 'OK', 200
+
+            expected_amount = _pending_expected_amount(pending_meta)
+            got_amount = _parse_decimal_amount(
+                payload.get('amount'),
+                log_prefix=f"RollyPay webhook payment_id={payment_id}",
+            )
+            if expected_amount is None or got_amount is None:
+                logger.warning(f"RollyPay webhook: amount missing/unparseable for payment_id={payment_id}")
+                return 'OK', 200
+            if got_amount != expected_amount:
+                logger.warning(
+                    f"RollyPay webhook: amount mismatch for {payment_id}: got={got_amount}, expected={expected_amount}"
+                )
+                return 'OK', 200
+
+            currency = str(payload.get('currency') or payload.get('payment_currency') or 'RUB')
+            if currency != 'RUB':
+                logger.warning(f"RollyPay webhook: currency mismatch for {payment_id}: {currency}")
+                return 'OK', 200
+
+            metadata = find_and_complete_pending_transaction(payment_id)
+            if metadata:
+                metadata.setdefault('payment_method', 'RollyPay')
+                if provider_payment_id:
+                    metadata['rollypay_payment_id'] = provider_payment_id
+                try:
+                    _handle_promo_after_payment(metadata)
+                except Exception:
+                    pass
+                _dispatch_payment_processing(metadata)
+            return 'OK', 200
+        except Exception as e:
+            logger.error(f"Ошибка в обработчике вебхука RollyPay: {e}", exc_info=True)
             return 'Error', 500
 
     @csrf.exempt

@@ -1277,6 +1277,7 @@ def create_payment_method_keyboard(
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
         "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "rollypay": bool((get_setting("rollypay_api_key") or "").strip() and (get_setting("rollypay_terminal_id") or "").strip()),
         "cryptobot": bool(get_setting("cryptobot_token") or ""),
         "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
         "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
@@ -1311,6 +1312,8 @@ def create_payment_method_keyboard(
 
     if pm.get("platega"):
         builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="pay_platega")
+    if pm.get("rollypay"):
+        builder.button(text=_label("payment_label_rollypay", "💳 СБП"), callback_data="pay_rollypay")
 
 
 
@@ -1386,6 +1389,15 @@ def create_yookassa_payment_keyboard(payment_url: str, payment_id: str) -> Inlin
     builder.adjust(1)
     return builder.as_markup()
 
+def create_rollypay_payment_keyboard(payment_url: str, payment_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 Оплатить", url=payment_url)
+    builder.button(text="🔄 Проверить оплату", callback_data=f"check_rollypay:{payment_id}")
+    builder.button(text=(get_setting("btn_back_to_menu_text") or "⬅️ Назад в меню"), callback_data="back_to_main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def create_platega_payment_keyboard(payment_url: str, payment_id: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Перейти к оплате", url=payment_url)
@@ -1417,6 +1429,7 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
         "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "rollypay": bool((get_setting("rollypay_api_key") or "").strip() and (get_setting("rollypay_terminal_id") or "").strip()),
         "cryptobot": bool(get_setting("cryptobot_token") or ""),
         "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
         "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
@@ -1430,6 +1443,8 @@ def create_topup_payment_method_keyboard(payment_methods: dict) -> InlineKeyboar
             builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="topup_pay_yookassa")
     if pm.get("platega"):
         builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="topup_pay_platega")
+    if pm.get("rollypay"):
+        builder.button(text=_label("payment_label_rollypay", "💳 СБП"), callback_data="topup_pay_rollypay")
 
 
     if pm.get("cryptobot"):
@@ -1484,6 +1499,7 @@ def create_traffic_gb_payment_method_keyboard(payment_methods: dict) -> InlineKe
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
         "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "rollypay": bool((get_setting("rollypay_api_key") or "").strip() and (get_setting("rollypay_terminal_id") or "").strip()),
         "cryptobot": bool(get_setting("cryptobot_token") or ""),
         "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
         "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
@@ -1497,6 +1513,8 @@ def create_traffic_gb_payment_method_keyboard(payment_methods: dict) -> InlineKe
             builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="trafficgb_pay_yookassa")
     if pm.get("platega"):
         builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="trafficgb_pay_platega")
+    if pm.get("rollypay"):
+        builder.button(text=_label("payment_label_rollypay", "💳 СБП"), callback_data="trafficgb_pay_rollypay")
     if pm.get("cryptobot"):
         builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="trafficgb_pay_cryptobot")
     elif pm.get("heleket"):
@@ -1554,6 +1572,7 @@ def create_lte_gb_payment_method_keyboard(payment_methods: dict) -> InlineKeyboa
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
         "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "rollypay": bool((get_setting("rollypay_api_key") or "").strip() and (get_setting("rollypay_terminal_id") or "").strip()),
         "cryptobot": bool(get_setting("cryptobot_token") or ""),
         "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
         "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),
@@ -1567,6 +1586,8 @@ def create_lte_gb_payment_method_keyboard(payment_methods: dict) -> InlineKeyboa
             builder.button(text=_label("payment_label_yookassa_card", "🏦 Банковская карта"), callback_data="ltegb_pay_yookassa")
     if pm.get("platega"):
         builder.button(text=_label("payment_label_platega", "💳 Platega"), callback_data="ltegb_pay_platega")
+    if pm.get("rollypay"):
+        builder.button(text=_label("payment_label_rollypay", "💳 СБП"), callback_data="ltegb_pay_rollypay")
     if pm.get("cryptobot"):
         builder.button(text=_label("payment_label_cryptobot", "💎 Криптовалюта"), callback_data="ltegb_pay_cryptobot")
     elif pm.get("heleket"):
@@ -1600,6 +1621,7 @@ def create_main_reset_payment_method_keyboard(payment_methods: dict) -> InlineKe
         "yookassa": bool((get_setting("yookassa_shop_id") or "") and (get_setting("yookassa_secret_key") or "")),
         "heleket": bool((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")),
         "platega": bool((get_setting("platega_merchant_id") or "") and (get_setting("platega_secret") or "")),
+        "rollypay": bool((get_setting("rollypay_api_key") or "").strip() and (get_setting("rollypay_terminal_id") or "").strip()),
         "cryptobot": bool(get_setting("cryptobot_token") or ""),
         "tonconnect": bool((get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or "")),
         "yoomoney": ((get_setting("yoomoney_enabled") or "false").strip().lower() == "true"),

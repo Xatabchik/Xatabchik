@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
 
 from conftest import temp_db  # noqa: F401
@@ -532,3 +533,136 @@ def test_cryptobot_webhook_logs_and_refuses_when_invoice_unparseable(temp_db, mo
     assert resp.status_code == 200
     assert _pending_status(pid) == "pending"
     assert any("amount verification failed" in rec.message for rec in caplog.records)
+
+
+def _rollypay_sign(raw: bytes, secret: str, timestamp: str) -> str:
+    payload = timestamp.encode("utf-8") + b"." + raw
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def _rollypay_post(client, body: dict, secret: str, *, timestamp: str | None = None, signature: str | None = None):
+    raw = json.dumps(body, separators=(",", ":")).encode()
+    ts = timestamp if timestamp is not None else str(int(time.time()))
+    sig = signature if signature is not None else _rollypay_sign(raw, secret, ts)
+    return client.post(
+        "/rollypay-webhook",
+        data=raw,
+        content_type="application/json",
+        headers={"X-Timestamp": ts, "X-Signature": sig},
+    )
+
+
+def test_rollypay_verify_signature():
+    from shop_bot.modules.rollypay_api import RollyPayAPI
+
+    raw = b'{"event_type":"payment.paid"}'
+    ts = "1710000000"
+    secret = "rp-secret"
+    api = RollyPayAPI("key", "term", secret)
+    assert api.verify_signature(raw, ts, _rollypay_sign(raw, secret, ts)) is True
+    assert api.verify_signature(raw, ts, "deadbeef") is False
+    assert api.verify_signature(raw, "", _rollypay_sign(raw, secret, ts)) is False
+    assert RollyPayAPI("key", "term", "").verify_signature(raw, ts, _rollypay_sign(raw, secret, ts)) is False
+
+
+def test_rollypay_webhook_without_secret_returns_503(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "")
+    pid = "rp-no-secret"
+    _pending(payment_id=pid, user_id=501, amount=100.0, method="RollyPay")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {"event_type": "payment.paid", "order_id": pid, "amount": "100.00", "currency": "RUB"},
+        "rp-secret",
+    )
+    assert resp.status_code == 503
+    assert _pending_status(pid) == "pending"
+
+
+def test_rollypay_webhook_wrong_signature_returns_403(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "rp-secret")
+    pid = "rp-bad-sig"
+    _pending(payment_id=pid, user_id=502, amount=100.0, method="RollyPay")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {"event_type": "payment.paid", "order_id": pid, "amount": "100.00", "currency": "RUB"},
+        "rp-secret",
+        signature="0" * 64,
+    )
+    assert resp.status_code == 403
+    assert _pending_status(pid) == "pending"
+
+
+def test_rollypay_webhook_rejects_amount_mismatch(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "rp-secret")
+    pid = "rp-underpay"
+    _pending(payment_id=pid, user_id=503, amount=500.0, method="RollyPay")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {"event_type": "payment.paid", "order_id": pid, "payment_id": "tx-1", "amount": "1.00", "currency": "RUB"},
+        "rp-secret",
+    )
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "pending"
+
+
+def test_rollypay_webhook_rejects_other_provider_pending(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "rp-secret")
+    pid = "rp-cross-provider"
+    _pending(payment_id=pid, user_id=504, amount=200.0, method="Platega")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {"event_type": "payment.paid", "order_id": pid, "amount": "200.00", "currency": "RUB"},
+        "rp-secret",
+    )
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "pending"
+
+
+def test_rollypay_webhook_completes_matching_pending(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "rp-secret")
+    pid = "rp-ok"
+    _pending(payment_id=pid, user_id=505, amount=150.0, method="RollyPay")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {
+            "event_type": "payment.paid",
+            "order_id": pid,
+            "payment_id": "tx-ok",
+            "amount": "150.00",
+            "currency": "RUB",
+        },
+        "rp-secret",
+    )
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "paid"
+
+
+def test_rollypay_webhook_ignores_non_paid_events(temp_db):
+    from shop_bot.data_manager import database
+
+    database.update_setting("rollypay_signing_secret", "rp-secret")
+    pid = "rp-refund"
+    _pending(payment_id=pid, user_id=506, amount=150.0, method="RollyPay")
+    client = _flask_client(temp_db)
+    resp = _rollypay_post(
+        client,
+        {"event_type": "payment.refunded", "order_id": pid, "amount": "150.00", "currency": "RUB"},
+        "rp-secret",
+    )
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "pending"
