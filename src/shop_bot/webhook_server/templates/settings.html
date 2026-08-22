@@ -1252,6 +1252,24 @@
 							<button type="button" class="toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 						</div>
 						<div class="mb-3">
+							<input type="hidden" name="panel_totp_enabled" value="false" />
+							<div class="form-check">
+								<input class="form-check-input" type="checkbox" id="panel_totp_enabled" name="panel_totp_enabled" value="true" {% if settings.panel_totp_enabled == 'true' %}checked{% endif %}>
+								<label class="form-check-label" for="panel_totp_enabled">Включить TOTP для входа в панель</label>
+							</div>
+							<div class="form-text">Не влияет на логин/пароль, пока выключено. При первом включении секрет создаётся автоматически.</div>
+						</div>
+						<div class="form-group">
+							<label for="panel_totp_secret">Секрет TOTP (оставьте пустым, чтобы не менять):</label>
+							<input type="text" id="panel_totp_secret" name="panel_totp_secret" value="" autocomplete="off" placeholder="{% if settings.panel_totp_secret %}секрет задан{% endif %}" />
+						</div>
+						{% if totp_provisioning_uri %}
+						<div class="form-text mb-3" style="word-break:break-all;">
+							URI для приложения-аутентификатора:<br />
+							<code>{{ totp_provisioning_uri }}</code>
+						</div>
+						{% endif %}
+						<div class="mb-3">
                             <label class="form-label" for="backup_interval_days">Автобэкап базы (каждые N дней)</label>
                             <input class="form-control pill-md" type="number" min="0" step="1" id="backup_interval_days" name="backup_interval_days" value="{{ settings.backup_interval_days or '1' }}" placeholder="1" />
                             <div class="form-text">0 — отключить автобэкап. При включении архив БД будет отправляться администраторам и сохраняться в /app/project/backups.</div>
