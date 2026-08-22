@@ -66,13 +66,20 @@ def test_ref_existing_user_still_redirects_to_pending(temp_db, app_client):
 
 
 def test_ref_unknown_numeric_id_neutral_fallback_with_telegram_deeplink(temp_db, app_client):
-    r = app_client.get("/ref/44099", follow_redirects=False)
-    assert r.status_code == 200
-    assert "pending_token=" not in (r.headers.get("location") or "")
-    assert "https://t.me/TestVpnBot?start=ref_44099" in r.text
-    assert "Открыть в Telegram" in r.text
-    assert "script-src 'self'" in r.headers.get("content-security-policy", "")
-    _assert_no_reflected_xss(r.text)
+    """Валидный numeric id — тот же ответ, что и для существующего пользователя
+    (302 + pending_token), без оракула существования."""
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=44001, username="refxss")
+    existing = app_client.get("/ref/44001", follow_redirects=False)
+    unknown = app_client.get("/ref/44099", follow_redirects=False)
+    assert unknown.status_code == existing.status_code
+    assert unknown.status_code in (302, 307)
+    assert "pending_token=" in (existing.headers.get("location") or "")
+    assert "pending_token=" in (unknown.headers.get("location") or "")
+    assert (existing.headers.get("location") or "").split("pending_token=")[0] == (
+        (unknown.headers.get("location") or "").split("pending_token=")[0]
+    )
 
 
 def test_gift_xss_payload_is_not_reflected(temp_db, app_client):

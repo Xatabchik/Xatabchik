@@ -1,7 +1,10 @@
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import re
+import socket
 from urllib.parse import urlparse
 
 import aiohttp
@@ -10,6 +13,55 @@ import paramiko
 from shop_bot.data_manager import remnawave_repository as rw_repo
 
 logger = logging.getLogger(__name__)
+
+
+class StoredHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """Принимает host key только если он совпадает с сохранённым, либо
+    (при явном подтверждении оператора) сохраняет ключ при первом подключении.
+    Несовпадающий ключ отклоняется — молчаливого AutoAdd нет.
+    """
+
+    def __init__(
+        self,
+        expected_b64: str | None,
+        *,
+        accept_new: bool = False,
+        on_save=None,
+    ):
+        self.expected_b64 = (expected_b64 or "").strip() or None
+        self.accept_new = bool(accept_new)
+        self.on_save = on_save
+
+    def missing_host_key(self, client, hostname, key):
+        presented = key.get_base64()
+        if self.expected_b64:
+            if not hmac.compare_digest(self.expected_b64, presented):
+                raise paramiko.SSHException("SSH host key mismatch")
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            return
+        if not self.accept_new:
+            raise paramiko.SSHException("unknown SSH host key")
+        if self.on_save:
+            self.on_save(key.get_name(), presented)
+        client.get_host_keys().add(hostname, key.get_name(), key)
+
+
+def _apply_ssh_host_key_policy(
+    ssh: paramiko.SSHClient,
+    ssh_host: str,
+    ssh_port: int,
+    *,
+    accept_new_host_key: bool = False,
+) -> None:
+    stored = rw_repo.get_ssh_known_host_key(ssh_host, ssh_port)
+    expected = (stored or {}).get("key_base64") if stored else None
+
+    def _save(key_type: str, key_b64: str) -> None:
+        rw_repo.save_ssh_known_host_key(ssh_host, ssh_port, key_type, key_b64)
+
+    ssh.set_missing_host_key_policy(
+        StoredHostKeyPolicy(expected, accept_new=accept_new_host_key, on_save=_save)
+    )
 
 
 def _parse_host_port_from_url(url: str) -> tuple[str | None, int | None, bool]:
@@ -23,6 +75,61 @@ def _parse_host_port_from_url(url: str) -> tuple[str | None, int | None, bool]:
         return host, port, is_https
     except Exception:
         return None, None, False
+
+
+_ALLOWED_PROBE_SCHEMES = frozenset({"http", "https"})
+
+
+def _parse_host_port_from_url(url: str) -> tuple[str | None, int | None, bool]:
+    try:
+        u = urlparse(url)
+        host = u.hostname
+        port = u.port
+        is_https = (u.scheme == 'https')
+        if port is None:
+            port = 443 if is_https else 80
+        return host, port, is_https
+    except Exception:
+        return None, None, False
+
+
+def _is_blocked_probe_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+    )
+
+
+def _probe_target_error(url: str) -> str | None:
+    """Return an error string if the probe URL must not be contacted."""
+    try:
+        scheme = (urlparse(url).scheme or "").lower()
+    except Exception:
+        return f"Invalid host_url: {url}"
+    if scheme not in _ALLOWED_PROBE_SCHEMES:
+        return "Unsupported URL scheme"
+    target_host, target_port, _ = _parse_host_port_from_url(url)
+    if not target_host or not target_port:
+        return f"Invalid host_url: {url}"
+    try:
+        infos = socket.getaddrinfo(target_host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return "DNS resolution failed"
+    if not infos:
+        return "DNS resolution failed"
+    for info in infos:
+        ip_s = info[4][0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_s)
+        except ValueError:
+            return "Invalid resolved address"
+        if _is_blocked_probe_ip(ip_obj):
+            return "Blocked destination address"
+    return None
 
 
 async def net_probe_for_host(host_row: dict) -> dict:
@@ -43,6 +150,10 @@ async def net_probe_for_host(host_row: dict) -> dict:
         'http_ms': None,
         'error': None,
     }
+    blocked = _probe_target_error(url)
+    if blocked:
+        result['error'] = blocked
+        return result
     if not target_host or not target_port:
         result['error'] = f'Invalid host_url: {url}'
         return result
@@ -155,7 +266,7 @@ def _parse_speedtest_cli_json(data: dict) -> dict:
         return {}
 
 
-async def ssh_speedtest_for_host(host_row: dict) -> dict:
+async def ssh_speedtest_for_host(host_row: dict, *, accept_new_host_key: bool = False) -> dict:
     """Run speedtest on remote host via SSH. Tries Ookla CLI first, then speedtest-cli.
     Returns dict with ok, metrics, error.
     """
@@ -182,7 +293,12 @@ async def ssh_speedtest_for_host(host_row: dict) -> dict:
 
     def _run_ssh() -> dict:
         ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        _apply_ssh_host_key_policy(
+            ssh,
+            ssh_host,
+            ssh_port,
+            accept_new_host_key=accept_new_host_key or bool(host_row.get("accept_new_host_key")),
+        )
         if ssh_key_path:
             pkey = None
             try:
@@ -246,11 +362,11 @@ async def run_and_store_net_probe(host_name: str) -> dict:
     return res
 
 
-async def run_and_store_ssh_speedtest(host_name: str) -> dict:
+async def run_and_store_ssh_speedtest(host_name: str, *, accept_new_host_key: bool = False) -> dict:
     host = rw_repo.get_host(host_name)
     if not host:
         return {'ok': False, 'error': 'host not found'}
-    res = await ssh_speedtest_for_host(host)
+    res = await ssh_speedtest_for_host(host, accept_new_host_key=accept_new_host_key)
     rw_repo.insert_host_speedtest(
         host_name=host_name,
         method='ssh',
@@ -291,7 +407,7 @@ async def run_both_for_host(host_name: str) -> dict:
     return {'ok': ok, 'details': out, 'error': '; '.join(errors) if errors else None}
 
 
-def _ssh_connect(host_row: dict) -> paramiko.SSHClient:
+def _ssh_connect(host_row: dict, *, accept_new_host_key: bool = False) -> paramiko.SSHClient:
     ssh_host = (host_row.get('ssh_host') or '').strip()
     ssh_port = int(host_row.get('ssh_port') or 22)
     ssh_user = (host_row.get('ssh_user') or '').strip()
@@ -300,7 +416,12 @@ def _ssh_connect(host_row: dict) -> paramiko.SSHClient:
     if not ssh_host or not ssh_user:
         raise RuntimeError('SSH settings are not configured for host')
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    _apply_ssh_host_key_policy(
+        ssh,
+        ssh_host,
+        ssh_port,
+        accept_new_host_key=accept_new_host_key or bool(host_row.get("accept_new_host_key")),
+    )
     pkey = None
     if ssh_key_path:
         try:
@@ -322,7 +443,7 @@ def _ssh_exec(ssh: paramiko.SSHClient, cmd: str, timeout: int = 180) -> tuple[in
     return rc, out, err
 
 
-async def auto_install_speedtest_on_host(host_name: str) -> dict:
+async def auto_install_speedtest_on_host(host_name: str, *, accept_new_host_key: bool = False) -> dict:
     """Attempt to auto-install Ookla speedtest or speedtest-cli on remote host via SSH.
     Tries package manager scripts, falls back to pip speedtest-cli. Returns {'ok', 'log'}.
     """
@@ -333,7 +454,7 @@ async def auto_install_speedtest_on_host(host_name: str) -> dict:
     def _install() -> dict:
         log_lines: list[str] = []
         try:
-            ssh = _ssh_connect(host)
+            ssh = _ssh_connect(host, accept_new_host_key=accept_new_host_key)
         except Exception as e:
             return {'ok': False, 'log': f'SSH connect failed: {e}'}
         try:
@@ -479,13 +600,13 @@ def _target_to_host_row(target: dict) -> dict:
     }
 
 
-async def run_and_store_ssh_speedtest_for_target(target_name: str) -> dict:
+async def run_and_store_ssh_speedtest_for_target(target_name: str, *, accept_new_host_key: bool = False) -> dict:
     """Выполнить SSH-спидтест для отдельной цели (speedtest_ssh_targets) и сохранить результат как host_speedtests с именем цели."""
     target = rw_repo.get_ssh_target(target_name)
     if not target:
         return {'ok': False, 'error': 'target not found'}
     host_row = _target_to_host_row(target)
-    res = await ssh_speedtest_for_host(host_row)
+    res = await ssh_speedtest_for_host(host_row, accept_new_host_key=accept_new_host_key)
     rw_repo.insert_host_speedtest(
         host_name=target_name,
         method='ssh',
@@ -501,7 +622,7 @@ async def run_and_store_ssh_speedtest_for_target(target_name: str) -> dict:
     return res
 
 
-async def auto_install_speedtest_on_target(target_name: str) -> dict:
+async def auto_install_speedtest_on_target(target_name: str, *, accept_new_host_key: bool = False) -> dict:
     """Автоустановка speedtest на отдельной SSH-цели."""
     target = rw_repo.get_ssh_target(target_name)
     if not target:
@@ -510,7 +631,7 @@ async def auto_install_speedtest_on_target(target_name: str) -> dict:
     def _install() -> dict:
         log_lines: list[str] = []
         try:
-            ssh = _ssh_connect(_target_to_host_row(target))
+            ssh = _ssh_connect(_target_to_host_row(target), accept_new_host_key=accept_new_host_key)
         except Exception as e:
             return {'ok': False, 'log': f'SSH connect failed: {e}'}
         try:
