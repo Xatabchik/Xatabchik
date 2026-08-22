@@ -2000,6 +2000,7 @@ def run_migration():
             _migrate_gift_tags(cursor)  # Обновить старые теги подарков на новый стандарт
             _ensure_key_usage_monitor_columns(cursor)
             _ensure_ssh_targets_table(cursor)
+            _ensure_ssh_known_hosts_table(cursor)
             _ensure_gift_tokens_table(cursor)
             _ensure_user_gifts_table(cursor)
             _ensure_promo_tables(cursor)
@@ -2753,6 +2754,62 @@ def _ensure_ssh_targets_table(cursor: sqlite3.Cursor) -> None:
     }
     for column, definition in extras.items():
         _ensure_table_column(cursor, "speedtest_ssh_targets", column, definition)
+
+
+def _ensure_ssh_known_hosts_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ssh_known_hosts (
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            key_type TEXT,
+            key_base64 TEXT NOT NULL,
+            PRIMARY KEY (host, port)
+        )
+        """
+    )
+
+
+def get_ssh_known_host_key(host: str, port: int) -> dict | None:
+    try:
+        host_s = (host or "").strip()
+        port_i = int(port or 22)
+        if not host_s:
+            return None
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT host, port, key_type, key_base64 FROM ssh_known_hosts WHERE host = ? AND port = ?",
+                (host_s, port_i),
+            ).fetchone()
+            return dict(row) if row else None
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logging.error("get_ssh_known_host_key failed: %s", e)
+        return None
+
+
+def save_ssh_known_host_key(host: str, port: int, key_type: str, key_base64: str) -> bool:
+    try:
+        host_s = (host or "").strip()
+        port_i = int(port or 22)
+        type_s = (key_type or "").strip()
+        b64 = (key_base64 or "").strip()
+        if not host_s or not b64:
+            return False
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute(
+                """
+                INSERT INTO ssh_known_hosts (host, port, key_type, key_base64)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(host, port) DO UPDATE SET key_type = excluded.key_type, key_base64 = excluded.key_base64
+                """,
+                (host_s, port_i, type_s, b64),
+            )
+            conn.commit()
+        return True
+    except (sqlite3.Error, TypeError, ValueError) as e:
+        logging.error("save_ssh_known_host_key failed: %s", e)
+        return False
 
 
 def _ensure_gift_tokens_table(cursor: sqlite3.Cursor) -> None:
