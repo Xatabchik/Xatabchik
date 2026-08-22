@@ -2429,7 +2429,10 @@ def list_hosts_by_class(node_class: str) -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM xui_hosts WHERE COALESCE(node_class, 'unlim') = ?", (node_class,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [
+                _decrypt_row_secrets(dict(row), "ssh_password", "remnawave_api_token")
+                for row in cursor.fetchall()
+            ]
     except sqlite3.Error as e:
         logging.error(f"Не удалось получить список хостов класса '{node_class}': {e}")
         return []

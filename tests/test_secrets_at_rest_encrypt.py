@@ -69,7 +69,11 @@ def test_ssh_password_and_host_token_encrypted_on_write(temp_db):
         ssh_password=SSH_PASSWORD,
         ssh_key_path=None,
     )
-    assert database.update_host_remnawave_settings("alpha", remnawave_api_token=REMNATOKEN)
+    assert database.update_host_remnawave_settings(
+        "alpha",
+        remnawave_base_url="https://panel.example",
+        remnawave_api_token=REMNATOKEN,
+    )
 
     with sqlite3.connect(database.DB_FILE) as conn:
         row = conn.execute(
@@ -88,6 +92,19 @@ def test_ssh_password_and_host_token_encrypted_on_write(temp_db):
     listed = next(h for h in database.get_all_hosts() if h["host_name"] == "alpha")
     assert listed["ssh_password"] == SSH_PASSWORD
     assert listed["remnawave_api_token"] == REMNATOKEN
+
+    from shop_bot.data_manager import remnawave_repository as rw_repo
+    from shop_bot.modules import remnawave_api
+
+    squad = rw_repo.get_squad("alpha")
+    assert squad["remnawave_api_token"] == REMNATOKEN
+    assert not squad["remnawave_api_token"].startswith(database.MANAGED_BOT_TOKEN_PREFIX)
+    assert any(
+        s["host_name"] == "alpha" and s["remnawave_api_token"] == REMNATOKEN
+        for s in rw_repo.list_squads()
+    )
+    cfg = remnawave_api._load_config_for_host("alpha")
+    assert cfg["token"] == REMNATOKEN
 
 
 def test_ssh_target_password_encrypted_and_legacy_reads(temp_db):
