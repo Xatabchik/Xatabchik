@@ -1206,10 +1206,18 @@
 							<div class="d-flex gap-2 flex-wrap">
 								<form action="{{ url_for('run_ssh_target_speedtest_route', target_name=t.target_name) }}" method="post">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+									<label class="form-check form-check-inline small">
+										<input class="form-check-input" type="checkbox" name="accept_new_host_key" value="1" />
+										принять новый host key
+									</label>
 									<button type="submit" class="btn btn-outline-primary btn-sm pill">Тест скорости (SSH)</button>
 								</form>
 								<form action="{{ url_for('auto_install_speedtest_on_target_route', target_name=t.target_name) }}" method="post">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+									<label class="form-check form-check-inline small">
+										<input class="form-check-input" type="checkbox" name="accept_new_host_key" value="1" />
+										принять новый host key
+									</label>
 									<button type="submit" class="btn btn-outline-secondary btn-sm pill">Автоустановка Speedtest</button>
 								</form>
 							</div>
