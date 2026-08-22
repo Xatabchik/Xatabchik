@@ -1187,7 +1187,8 @@
 									</div>
 									<div class="col-12 col-md-6">
 										<label class="form-label">Пароль</label>
-										<input type="password" class="form-control pill" name="ssh_password" value="{{ t.ssh_password or '' }}" />
+										<input type="password" class="form-control pill" name="ssh_password" value=""
+											placeholder="{{ 'пароль задан — оставьте пустым, чтобы не менять' if t.ssh_password else 'не задан' }}" />
 									</div>
 									<div class="col-12 col-md-6">
 										<label class="form-label">Путь к приватному ключу</label>
@@ -1822,7 +1823,8 @@
 						<div class="mb-3 password-wrapper">
 							<label class="form-label" for="yookassa_secret_key">YooKassa Secret Key</label>
 							<div class="d-flex gap-2">
-								<input class="form-control" type="password" id="yookassa_secret_key" name="yookassa_secret_key" value="{{ settings.yookassa_secret_key or '' }}" />
+								<input class="form-control" type="password" id="yookassa_secret_key" name="yookassa_secret_key" value=""
+									placeholder="{{ '●●●● ключ задан — оставьте пустым, чтобы не менять' if settings.yookassa_secret_key else 'Ключ не задан' }}" />
 								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
@@ -1847,7 +1849,8 @@
 						<div class="mb-3 password-wrapper">
 							<label class="form-label" for="cryptobot_token">CryptoBot Token</label>
 							<div class="d-flex gap-2">
-								<input class="form-control" type="password" id="cryptobot_token" name="cryptobot_token" value="{{ settings.cryptobot_token or '' }}" />
+								<input class="form-control" type="password" id="cryptobot_token" name="cryptobot_token" value=""
+									placeholder="{{ '●●●● токен задан — оставьте пустым, чтобы не менять' if settings.cryptobot_token else 'Токен не задан' }}" />
 								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
@@ -1869,7 +1872,8 @@
 						<div class="mb-3 password-wrapper">
 							<label class="form-label" for="heleket_api_key">Heleket API Key</label>
 							<div class="d-flex gap-2">
-								<input class="form-control" type="password" id="heleket_api_key" name="heleket_api_key" value="{{ settings.heleket_api_key or '' }}" />
+								<input class="form-control" type="password" id="heleket_api_key" name="heleket_api_key" value=""
+									placeholder="{{ '●●●● ключ задан — оставьте пустым, чтобы не менять' if settings.heleket_api_key else 'Ключ не задан' }}" />
 								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>
@@ -1930,7 +1934,8 @@
 						<div class="mb-3 password-wrapper">
 							<label class="form-label" for="tonapi_key">TonAPI Key</label>
 							<div class="d-flex gap-2">
-								<input class="form-control" type="password" id="tonapi_key" name="tonapi_key" value="{{ settings.tonapi_key or '' }}" />
+								<input class="form-control" type="password" id="tonapi_key" name="tonapi_key" value=""
+									placeholder="{{ '●●●● ключ задан — оставьте пустым, чтобы не менять' if settings.tonapi_key else 'Ключ не задан' }}" />
 								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
 							</div>
 						</div>

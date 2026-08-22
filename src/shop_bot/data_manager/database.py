@@ -855,6 +855,10 @@ def initialize_db():
             logging.info("База данных инициализирована")
     except sqlite3.Error as e:
         logging.error("Не удалось инициализировать базу данных: %s", e)
+    try:
+        _backfill_encrypt_secrets_at_rest()
+    except Exception:
+        logging.warning("Backfill encrypt secrets at rest завершился с ошибкой.", exc_info=True)
 
 
 def _ensure_users_columns(cursor: sqlite3.Cursor) -> None:
@@ -1647,7 +1651,8 @@ def seed_global_remnawave_from_hosts() -> None:
             if not base:
                 base = ((row["remnawave_base_url"] or row["host_url"] or "")).strip()
             if not token:
-                token = ((row["remnawave_api_token"] or "")).strip()
+                raw_token = ((row["remnawave_api_token"] or "")).strip()
+                token = decrypt_managed_bot_token(raw_token) if raw_token else ""
             if not sub:
                 sub = ((row["subscription_url"] or "")).strip()
             if base and token and sub:
@@ -2052,6 +2057,10 @@ def run_migration():
         backfill_monthly_traffic_reset_for_existing_keys()
     except Exception:
         logging.warning("Backfill monthly traffic reset завершился с ошибкой.", exc_info=True)
+    try:
+        _backfill_encrypt_secrets_at_rest()
+    except Exception:
+        logging.warning("Backfill encrypt secrets at rest завершился с ошибкой.", exc_info=True)
 
 
 def insert_resource_metric(
@@ -2306,6 +2315,8 @@ def update_host_remnawave_settings(
                 params.append(value)
             if remnawave_api_token is not None:
                 value = (remnawave_api_token or '').strip() or None
+                if value:
+                    value = encrypt_managed_bot_token(value)
                 sets.append("remnawave_api_token = ?")
                 params.append(value)
             if squad_uuid is not None:
@@ -2418,7 +2429,10 @@ def list_hosts_by_class(node_class: str) -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM xui_hosts WHERE COALESCE(node_class, 'unlim') = ?", (node_class,))
-            return [dict(row) for row in cursor.fetchall()]
+            return [
+                _decrypt_row_secrets(dict(row), "ssh_password", "remnawave_api_token")
+                for row in cursor.fetchall()
+            ]
     except sqlite3.Error as e:
         logging.error(f"Не удалось получить список хостов класса '{node_class}': {e}")
         return []
@@ -2486,6 +2500,17 @@ def delete_host(host_name: str):
     except sqlite3.Error as e:
         logging.error(f"Ошибка удаления хоста '{host_name}': {e}")
 
+def _decrypt_row_secrets(row: dict | None, *fields: str) -> dict | None:
+    """Расшифровать at-rest поля (enc1$ / legacy plaintext) в копии строки."""
+    if not row:
+        return row
+    data = dict(row)
+    for field in fields:
+        if data.get(field):
+            data[field] = decrypt_managed_bot_token(str(data[field]))
+    return data
+
+
 def get_host(host_name: str) -> dict | None:
     try:
         host_name = normalize_host_name(host_name)
@@ -2494,7 +2519,7 @@ def get_host(host_name: str) -> dict | None:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM xui_hosts WHERE TRIM(host_name) = TRIM(?)", (host_name,))
             result = cursor.fetchone()
-            return dict(result) if result else None
+            return _decrypt_row_secrets(dict(result) if result else None, "ssh_password", "remnawave_api_token")
     except sqlite3.Error as e:
         logging.error(f"Ошибка получения хоста '{host_name}': {e}")
         return None
@@ -2529,7 +2554,7 @@ def update_host_ssh_settings(
                     (ssh_host or None),
                     (int(ssh_port) if ssh_port is not None else None),
                     (ssh_user or None),
-                    (ssh_password if ssh_password is not None else None),
+                    (encrypt_managed_bot_token(str(ssh_password)) if ssh_password else None),
                     (ssh_key_path or None),
                     host_name_n,
                 ),
@@ -2616,7 +2641,7 @@ def get_all_hosts() -> list[dict]:
 
             result = []
             for row in hosts:
-                d = dict(row)
+                d = _decrypt_row_secrets(dict(row), "ssh_password", "remnawave_api_token")
                 d['host_name'] = normalize_host_name(d.get('host_name'))
                 result.append(d)
             return result
@@ -3145,7 +3170,7 @@ def get_all_ssh_targets() -> list[dict]:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM speedtest_ssh_targets ORDER BY sort_order ASC, target_name ASC")
             rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [_decrypt_row_secrets(dict(r), "ssh_password") for r in rows]
     except sqlite3.Error as e:
         logging.error(f"Не удалось получить список SSH-целей: {e}")
         return []
@@ -3159,7 +3184,7 @@ def get_ssh_target(target_name: str) -> dict | None:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM speedtest_ssh_targets WHERE TRIM(target_name) = TRIM(?)", (name,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return _decrypt_row_secrets(dict(row) if row else None, "ssh_password")
     except sqlite3.Error as e:
         logging.error(f"Не удалось получить SSH-цель '{target_name}': {e}")
         return None
@@ -3192,7 +3217,7 @@ def create_ssh_target(
                     (ssh_host or '').strip(),
                     int(ssh_port) if ssh_port is not None else None,
                     (ssh_user or None),
-                    (ssh_password if ssh_password is not None else None),
+                    (encrypt_managed_bot_token(str(ssh_password)) if ssh_password else None),
                     (ssh_key_path or None),
                     (description or None),
                     1 if (is_active is None or int(is_active) != 0) else 0,
@@ -3242,8 +3267,9 @@ def update_ssh_target_fields(
                 sets.append("ssh_user = ?")
                 params.append(ssh_user or None)
             if ssh_password is not None:
+                stored_pw = encrypt_managed_bot_token(str(ssh_password)) if str(ssh_password).strip() else None
                 sets.append("ssh_password = ?")
-                params.append(ssh_password)
+                params.append(stored_pw)
             if ssh_key_path is not None:
                 sets.append("ssh_key_path = ?")
                 params.append(ssh_key_path or None)
@@ -4645,13 +4671,27 @@ def create_gift_key(user_id: int, host_name: str, key_email: str, months: int, r
         logging.error(f"Failed to create gift key for user {user_id}: {e}")
         return None
 
+# Секреты в bot_settings, которые хранятся at-rest тем же enc1$ HMAC-XOR,
+# что и токены клонов (encrypt_managed_bot_token / decrypt_managed_bot_token).
+SECRET_SETTING_KEYS = frozenset({
+    "yookassa_secret_key",
+    "cryptobot_token",
+    "heleket_api_key",
+    "tonapi_key",
+    "remnawave_api_token",
+})
+
+
 def get_setting(key: str) -> str | None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
             result = cursor.fetchone()
-            return result[0] if result else None
+            value = result[0] if result else None
+            if value is not None and key in SECRET_SETTING_KEYS:
+                return decrypt_managed_bot_token(str(value))
+            return value
     except sqlite3.Error as e:
         logging.error(f"Failed to get setting '{key}': {e}")
         return None
@@ -5253,16 +5293,22 @@ def get_all_settings() -> dict:
             cursor.execute("SELECT key, value FROM bot_settings")
             rows = cursor.fetchall()
             for row in rows:
-                settings[row['key']] = row['value']
+                val = row['value']
+                if val is not None and row['key'] in SECRET_SETTING_KEYS:
+                    val = decrypt_managed_bot_token(str(val))
+                settings[row['key']] = val
     except sqlite3.Error as e:
         logging.error(f"Failed to get all settings: {e}")
     return settings
 
 def update_setting(key: str, value: str):
     try:
+        stored = value
+        if key in SECRET_SETTING_KEYS:
+            stored = encrypt_managed_bot_token("" if value is None else str(value))
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, value))
+            cursor.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, stored))
             conn.commit()
             logging.info(f"Setting '{key}' updated.")
     except sqlite3.Error as e:
@@ -9233,6 +9279,61 @@ def _managed_bot_token_pad(secret: bytes, nonce: bytes, n: int) -> bytes:
         out.extend(hmac.new(secret, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
         counter += 1
     return bytes(out[:n])
+
+
+def _backfill_encrypt_secrets_at_rest() -> None:
+    """Зашифровать уже сохранённые plaintext-секреты (settings / hosts / SSH-цели)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "SELECT key, value FROM bot_settings WHERE key IN ({})".format(
+                        ",".join("?" * len(SECRET_SETTING_KEYS))
+                    ),
+                    tuple(SECRET_SETTING_KEYS),
+                )
+                for key, value in cursor.fetchall():
+                    raw = (value or "").strip()
+                    if raw and not raw.startswith(MANAGED_BOT_TOKEN_PREFIX):
+                        cursor.execute(
+                            "UPDATE bot_settings SET value = ? WHERE key = ?",
+                            (encrypt_managed_bot_token(raw), key),
+                        )
+            except sqlite3.Error:
+                pass
+            try:
+                cursor.execute("SELECT host_name, ssh_password, remnawave_api_token FROM xui_hosts")
+                for host_name, ssh_password, api_token in cursor.fetchall():
+                    sets: list[str] = []
+                    params: list[Any] = []
+                    if ssh_password and not str(ssh_password).startswith(MANAGED_BOT_TOKEN_PREFIX):
+                        sets.append("ssh_password = ?")
+                        params.append(encrypt_managed_bot_token(str(ssh_password)))
+                    if api_token and not str(api_token).startswith(MANAGED_BOT_TOKEN_PREFIX):
+                        sets.append("remnawave_api_token = ?")
+                        params.append(encrypt_managed_bot_token(str(api_token)))
+                    if sets:
+                        params.append(host_name)
+                        cursor.execute(
+                            f"UPDATE xui_hosts SET {', '.join(sets)} WHERE host_name = ?",
+                            params,
+                        )
+            except sqlite3.Error:
+                pass
+            try:
+                cursor.execute("SELECT target_name, ssh_password FROM speedtest_ssh_targets")
+                for target_name, ssh_password in cursor.fetchall():
+                    if ssh_password and not str(ssh_password).startswith(MANAGED_BOT_TOKEN_PREFIX):
+                        cursor.execute(
+                            "UPDATE speedtest_ssh_targets SET ssh_password = ? WHERE target_name = ?",
+                            (encrypt_managed_bot_token(str(ssh_password)), target_name),
+                        )
+            except sqlite3.Error:
+                pass
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.warning("Не удалось выполнить backfill шифрования секретов: %s", e)
 
 
 def encrypt_managed_bot_token(token: str) -> str:
