@@ -67,7 +67,7 @@ from shop_bot.data_manager.database import (
     get_button_configs, get_button_configs_admin, create_button_config, update_button_config, 
     delete_button_config, reorder_button_configs
 )
-from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id
+from shop_bot.data_manager.database import update_host_remnawave_settings, get_plan_by_id, SECRET_SETTING_KEYS
 from shop_bot.data_manager.database import (
     add_host_squad,
     get_host_squads,
@@ -157,6 +157,15 @@ def _pending_expected_amount(pending_meta: dict | None) -> Decimal | None:
     if raw is None:
         raw = pending_meta.get("amount_rub")
     return _parse_decimal_amount(raw, log_prefix="pending amount")
+
+
+def _platega_amount_covers_order(got_amount: Decimal, expected_amount: Decimal) -> bool:
+    """Platega callback amount is what the customer paid.
+
+    The provider may add its own fee on top of the order we created
+    (e.g. 107.00 charged vs 100.00 pending). Underpayment is still rejected.
+    """
+    return got_amount >= expected_amount
 
 
 def _extract_platega_webhook_amount(payload: dict):
@@ -694,6 +703,17 @@ def create_webhook_app(bot_controller_instance):
         _login_attempts[ip] = attempts
         return True
 
+    _TRUSTED_PROXY_REMOTE_ADDRS = frozenset({"127.0.0.1", "::1"})
+
+    def _login_client_ip() -> str:
+        """IP for login rate-limit. Honor X-Forwarded-For only behind a local proxy."""
+        remote = (request.remote_addr or "").strip()
+        if remote in _TRUSTED_PROXY_REMOTE_ADDRS:
+            xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if xff:
+                return xff
+        return remote or "unknown"
+
     def _verify_panel_password(stored: str, provided: str) -> bool:
         """Verify panel password. Prefers bcrypt hashes; legacy plaintext uses compare_digest."""
         if not stored:
@@ -714,7 +734,7 @@ def create_webhook_app(bot_controller_instance):
         
         settings = get_all_settings()
         if request.method == 'POST':
-            ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()
+            ip = _login_client_ip()
             if not _rate_limit_login(ip):
                 flash('Слишком много попыток. Подождите несколько минут.', 'danger')
                 return render_template('login.html'), 429
@@ -3800,13 +3820,16 @@ def create_webhook_app(bot_controller_instance):
         ssh_host = (request.form.get('ssh_host') or '').strip() or None
         ssh_port_raw = (request.form.get('ssh_port') or '').strip()
         ssh_user = (request.form.get('ssh_user') or '').strip() or None
-        ssh_password = request.form.get('ssh_password')
+        ssh_password = (request.form.get('ssh_password') or '').strip()
         ssh_key_path = (request.form.get('ssh_key_path') or '').strip() or None
         ssh_port = None
         try:
             ssh_port = int(ssh_port_raw) if ssh_port_raw else None
         except Exception:
             ssh_port = None
+        if not ssh_password:
+            existing = get_host(host_name) or {}
+            ssh_password = existing.get('ssh_password')
         ok = update_host_ssh_settings(host_name, ssh_host=ssh_host, ssh_port=ssh_port, ssh_user=ssh_user,
                                       ssh_password=ssh_password, ssh_key_path=ssh_key_path)
         flash('SSH-параметры обновлены.' if ok else 'Не удалось обновить SSH-параметры.', 'success' if ok else 'danger')
@@ -3818,7 +3841,14 @@ def create_webhook_app(bot_controller_instance):
     def run_ssh_target_speedtest_route(target_name: str):
         logger.info(f"Панель: запущен спидтест для SSH-цели '{target_name}'")
         try:
-            res = asyncio.run(speedtest_runner.run_and_store_ssh_speedtest_for_target(target_name))
+            accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+                "1", "true", "on", "yes",
+            )
+            res = asyncio.run(
+                speedtest_runner.run_and_store_ssh_speedtest_for_target(
+                    target_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {"ok": False, "error": str(e)}
         if res and res.get('ok'):
@@ -3873,8 +3903,15 @@ def create_webhook_app(bot_controller_instance):
         method = (request.form.get('method') or '').strip().lower()
         logger.info(f"Панель: запущен спидтест для хоста '{host_name}', метод='{method or 'both'}'")
         try:
+            accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+                "1", "true", "on", "yes",
+            )
             if method == 'ssh':
-                res = asyncio.run(speedtest_runner.run_and_store_ssh_speedtest(host_name))
+                res = asyncio.run(
+                    speedtest_runner.run_and_store_ssh_speedtest(
+                        host_name, accept_new_host_key=accept_new
+                    )
+                )
             elif method == 'net':
                 res = asyncio.run(speedtest_runner.run_and_store_net_probe(host_name))
             else:
@@ -3946,9 +3983,15 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/hosts/<host_name>/speedtest/install', methods=['POST'])
     @login_required
     def auto_install_speedtest_route(host_name: str):
-
+        accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+            "1", "true", "on", "yes",
+        )
         try:
-            res = asyncio.run(speedtest_runner.auto_install_speedtest_on_host(host_name))
+            res = asyncio.run(
+                speedtest_runner.auto_install_speedtest_on_host(
+                    host_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {'ok': False, 'log': str(e)}
         wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
@@ -4249,6 +4292,8 @@ def create_webhook_app(bot_controller_instance):
                     # Пустое поле пароля SMTP при сохранении не должно затирать уже сохранённый пароль.
                     continue
                 if key == 'remnawave_api_token' and not (request.form.get(key) or '').strip():
+                    continue
+                if key in SECRET_SETTING_KEYS and not (request.form.get(key) or '').strip():
                     continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
@@ -4608,7 +4653,8 @@ def create_webhook_app(bot_controller_instance):
         ssh_host = (request.form.get('ssh_host') or '').strip() if 'ssh_host' in request.form else None
         ssh_port_raw = (request.form.get('ssh_port') or '').strip() if 'ssh_port' in request.form else None
         ssh_user = (request.form.get('ssh_user') or '').strip() if 'ssh_user' in request.form else None
-        ssh_password = request.form.get('ssh_password') if 'ssh_password' in request.form else None
+        raw_ssh_password = request.form.get('ssh_password') if 'ssh_password' in request.form else None
+        ssh_password = (raw_ssh_password or '').strip() or None
         ssh_key_path = (request.form.get('ssh_key_path') or '').strip() if 'ssh_key_path' in request.form else None
         description = (request.form.get('description') or '').strip() if 'description' in request.form else None
         try:
@@ -4639,8 +4685,15 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/ssh-targets/<target_name>/speedtest/install', methods=['POST'])
     @login_required
     def auto_install_speedtest_on_target_route(target_name: str):
+        accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+            "1", "true", "on", "yes",
+        )
         try:
-            res = asyncio.run(speedtest_runner.auto_install_speedtest_on_target(target_name))
+            res = asyncio.run(
+                speedtest_runner.auto_install_speedtest_on_target(
+                    target_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {'ok': False, 'log': str(e)}
         wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
@@ -5909,7 +5962,7 @@ def create_webhook_app(bot_controller_instance):
                 if expected_amount is None or got_amount is None:
                     logger.warning(f"Platega webhook: amount missing/unparseable for payment_id={payment_id}")
                     return 'OK', 200
-                if got_amount != expected_amount:
+                if not _platega_amount_covers_order(got_amount, expected_amount):
                     logger.warning(
                         f"Platega webhook: amount mismatch for {payment_id}: got={got_amount}, expected={expected_amount}"
                     )
@@ -6248,18 +6301,31 @@ def create_webhook_app(bot_controller_instance):
             return redirect(url_for('settings_page', tab='payments'))
         redirect_uri = _ym_get_redirect_uri()
         scope = 'operation-history operation-details account-info'
+        state = secrets.token_urlsafe(32)
+        session['yoomoney_oauth_state'] = state
         qs = urllib.parse.urlencode({
             'client_id': client_id,
             'response_type': 'code',
             'scope': scope,
             'redirect_uri': redirect_uri,
+            'state': state,
         })
         url = f"https://yoomoney.ru/oauth/authorize?{qs}"
         return redirect(url)
 
     @csrf.exempt
     @flask_app.route('/yoomoney/callback')
+    @login_required
     def yoomoney_callback_route():
+        expected_state = session.pop('yoomoney_oauth_state', None)
+        got_state = (request.args.get('state') or '').strip()
+        if (
+            not expected_state
+            or not got_state
+            or not compare_digest(str(expected_state), str(got_state))
+        ):
+            flash('YooMoney: неверный или отсутствующий state.', 'danger')
+            return redirect(url_for('settings_page', tab='payments'))
         code = (request.args.get('code') or '').strip()
         if not code:
             flash('YooMoney: не получен code из OAuth.', 'danger')
