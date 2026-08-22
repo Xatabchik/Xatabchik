@@ -135,13 +135,14 @@ def main():
             loop.add_signal_handler(sig, lambda sig=sig: asyncio.create_task(shutdown(sig, loop)))
         
         flask_port = int(os.getenv('SHOPBOT_FLASK_PORT', '1488'))
+        flask_host = (os.getenv('SHOPBOT_FLASK_HOST') or '127.0.0.1').strip() or '127.0.0.1'
         flask_thread = threading.Thread(
-            target=lambda: flask_app.run(host='0.0.0.0', port=flask_port, use_reloader=False, debug=False),
+            target=lambda: flask_app.run(host=flask_host, port=flask_port, use_reloader=False, debug=False),
             daemon=True
         )
         flask_thread.start()
         
-        logger.info(f"Flask-сервер запущен: http://0.0.0.0:{flask_port}")
+        logger.info(f"Flask-сервер запущен: http://{flask_host}:{flask_port}")
             
         logger.info("Приложение запущено. Бота можно стартовать из веб-панели.")
         

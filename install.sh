@@ -265,6 +265,18 @@ EOF
     log_success "✔ Конфигурация Nginx обновлена."
 }
 
+restrict_panel_firewall() {
+    if ! command -v ufw >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! sudo ufw status | grep -q 'Status: active'; then
+        return 0
+    fi
+    log_info "Панель слушает только 127.0.0.1:1488 — убираем публичный UFW 1488."
+    sudo ufw delete allow 1488/tcp >/dev/null 2>&1 || true
+    sudo ufw delete allow 1488 >/dev/null 2>&1 || true
+}
+
 REPO_URL="https://github.com/Xatabchik/Xatabchik.git"
 PROJECT_DIR="xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
@@ -291,8 +303,9 @@ if [[ -f "$NGINX_CONF" ]]; then
     git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
+    restrict_panel_firewall
     sudo "${COMPOSE[@]}" down --remove-orphans
-    sudo "${COMPOSE[@]}" up -d --build
+    sudo "${COMPOSE[@]}" up -d --build --force-recreate
     log_success "\n🎉 Обновление успешно завершено!"
     exit 0
 fi
@@ -351,11 +364,11 @@ if [[ -n "$SERVER_IP" && -n "$DOMAIN_IP" && "$SERVER_IP" != "$DOMAIN_IP" ]]; the
 fi
 
 if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q 'Status: active'; then
-    log_warn "Обнаружен активный UFW. Открываем порты 80, 443, 1488, 8443."
+    log_warn "Обнаружен активный UFW. Открываем порты 80, 443, 8443 (1488 только localhost)."
     sudo ufw allow 80/tcp
     sudo ufw allow 443/tcp
-    sudo ufw allow 1488/tcp
     sudo ufw allow 8443/tcp
+    restrict_panel_firewall
 fi
 
 if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
