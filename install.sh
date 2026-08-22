@@ -100,7 +100,6 @@ ensure_packages() {
     declare -A packages=(
         [git]='git'
         [docker]='docker.io'
-        [docker-compose]='docker-compose'
         [nginx]='nginx'
         [curl]='curl'
         [certbot]='certbot'
@@ -108,11 +107,6 @@ ensure_packages() {
     )
     local missing=()
     for cmd in "${!packages[@]}"; do
-        # docker-compose-plugin (v2) satisfies the docker-compose requirement
-        if [[ "$cmd" == "docker-compose" ]] && docker compose version >/dev/null 2>&1; then
-            log_success "✔ docker compose (plugin v2) уже установлен."
-            continue
-        fi
         if ! command -v "$cmd" >/dev/null 2>&1; then
             log_warn "Утилита '$cmd' не найдена. Будет установлен пакет '${packages[$cmd]}'."
             missing+=("${packages[$cmd]}")
@@ -134,6 +128,47 @@ ensure_packages() {
     else
         log_info "Все необходимые пакеты уже присутствуют."
     fi
+    ensure_docker_compose
+}
+
+# Ubuntu 24.04: пакет docker-compose 1.29 несовместим с docker.io.
+# Ставим plugin v2 и проверяем реальную команду, не command -v.
+ensure_docker_compose() {
+    if sudo docker compose version >/dev/null 2>&1; then
+        log_success "✔ docker compose (plugin v2) уже установлен."
+        return 0
+    fi
+    log_info "Устанавливаю Docker Compose v2..."
+    export DEBIAN_FRONTEND=noninteractive
+    export DEBCONF_NONINTERACTIVE_SEEN=true
+    sudo apt-get update
+    if sudo apt-get install -y --no-install-recommends docker-compose-v2 \
+        || sudo apt-get install -y --no-install-recommends docker-compose-plugin; then
+        :
+    else
+        log_warn "Не удалось поставить docker-compose-v2 / docker-compose-plugin."
+    fi
+    unset DEBIAN_FRONTEND
+    unset DEBCONF_NONINTERACTIVE_SEEN
+    if sudo docker compose version >/dev/null 2>&1; then
+        log_success "✔ docker compose (plugin v2) установлен."
+        return 0
+    fi
+    log_error "Docker Compose v2 недоступен. Установите пакет docker-compose-v2 и повторите."
+    exit 1
+}
+
+resolve_compose() {
+    if sudo docker compose version >/dev/null 2>&1; then
+        COMPOSE=(docker compose)
+        return 0
+    fi
+    if sudo docker-compose version >/dev/null 2>&1; then
+        COMPOSE=(docker-compose)
+        return 0
+    fi
+    log_error "Не найдена рабочая команда Docker Compose."
+    exit 1
 }
 
 ensure_services() {
@@ -404,12 +439,7 @@ PROJECT_DIR="xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_DIR}.conf"
 
-# Prefer standalone binary; fall back to V2 plugin
-if command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE=(docker-compose)
-else
-    COMPOSE=(docker compose)
-fi
+COMPOSE=(docker compose)
 
 log_success "--- Запуск скрипта установки/обновления Xatabchik ---"
 
@@ -440,6 +470,8 @@ if [[ -f "$NGINX_CONF" ]]; then
         ss -tlnp | grep -E ":${panel_port}\\b" || true
     fi
     restrict_panel_firewall
+    ensure_docker_compose
+    resolve_compose
     sudo "${COMPOSE[@]}" down --remove-orphans
     sudo "${COMPOSE[@]}" up -d --build --force-recreate
     log_success "\n🎉 Обновление успешно завершено!"
@@ -538,6 +570,7 @@ fi
 configure_nginx "$DOMAIN" "$YOOKASSA_PORT" "$NGINX_CONF" "$NGINX_LINK"
 
 log_info "\nШаг 5: сборка и запуск Docker-контейнеров"
+resolve_compose
 if [[ -n "$(sudo "${COMPOSE[@]}" ps -q 2>/dev/null)" ]]; then
     sudo "${COMPOSE[@]}" down
 fi

@@ -110,3 +110,13 @@ def test_rewrite_nginx_listen_public_moves_localhost_bind(tmp_path: Path):
     assert "listen 0.0.0.0:8443 ssl http2;" in text
     assert "listen 127.0.0.1:8443" not in text
     assert "listen [::]:8443 ssl http2;" in text
+
+
+def test_install_sh_uses_compose_v2_plugin():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "docker-compose-v2" in text
+    assert "ensure_docker_compose" in text
+    assert "resolve_compose" in text
+    # Prefer probing the plugin, not a hyphenated binary that may be Compose v1.
+    assert "if command -v docker-compose" not in text
+    assert text.index("resolve_compose") < text.index('sudo "${COMPOSE[@]}" up -d --build')
