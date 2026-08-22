@@ -694,6 +694,17 @@ def create_webhook_app(bot_controller_instance):
         _login_attempts[ip] = attempts
         return True
 
+    _TRUSTED_PROXY_REMOTE_ADDRS = frozenset({"127.0.0.1", "::1"})
+
+    def _login_client_ip() -> str:
+        """IP for login rate-limit. Honor X-Forwarded-For only behind a local proxy."""
+        remote = (request.remote_addr or "").strip()
+        if remote in _TRUSTED_PROXY_REMOTE_ADDRS:
+            xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if xff:
+                return xff
+        return remote or "unknown"
+
     def _verify_panel_password(stored: str, provided: str) -> bool:
         """Verify panel password. Prefers bcrypt hashes; legacy plaintext uses compare_digest."""
         if not stored:
@@ -714,7 +725,7 @@ def create_webhook_app(bot_controller_instance):
         
         settings = get_all_settings()
         if request.method == 'POST':
-            ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()
+            ip = _login_client_ip()
             if not _rate_limit_login(ip):
                 flash('Слишком много попыток. Подождите несколько минут.', 'danger')
                 return render_template('login.html'), 429
