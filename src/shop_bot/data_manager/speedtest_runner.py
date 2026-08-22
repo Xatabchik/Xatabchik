@@ -1,8 +1,10 @@
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
 import re
+import socket
 from urllib.parse import urlparse
 
 import aiohttp
@@ -75,6 +77,61 @@ def _parse_host_port_from_url(url: str) -> tuple[str | None, int | None, bool]:
         return None, None, False
 
 
+_ALLOWED_PROBE_SCHEMES = frozenset({"http", "https"})
+
+
+def _parse_host_port_from_url(url: str) -> tuple[str | None, int | None, bool]:
+    try:
+        u = urlparse(url)
+        host = u.hostname
+        port = u.port
+        is_https = (u.scheme == 'https')
+        if port is None:
+            port = 443 if is_https else 80
+        return host, port, is_https
+    except Exception:
+        return None, None, False
+
+
+def _is_blocked_probe_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+    )
+
+
+def _probe_target_error(url: str) -> str | None:
+    """Return an error string if the probe URL must not be contacted."""
+    try:
+        scheme = (urlparse(url).scheme or "").lower()
+    except Exception:
+        return f"Invalid host_url: {url}"
+    if scheme not in _ALLOWED_PROBE_SCHEMES:
+        return "Unsupported URL scheme"
+    target_host, target_port, _ = _parse_host_port_from_url(url)
+    if not target_host or not target_port:
+        return f"Invalid host_url: {url}"
+    try:
+        infos = socket.getaddrinfo(target_host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return "DNS resolution failed"
+    if not infos:
+        return "DNS resolution failed"
+    for info in infos:
+        ip_s = info[4][0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_s)
+        except ValueError:
+            return "Invalid resolved address"
+        if _is_blocked_probe_ip(ip_obj):
+            return "Blocked destination address"
+    return None
+
+
 async def net_probe_for_host(host_row: dict) -> dict:
     """Lightweight network probe from panel to host_url: TCP connect + HTTP GET / (HEAD).
     Returns dict with ok, ping_ms (TCP connect time), http_ms, error (if any).
@@ -93,6 +150,10 @@ async def net_probe_for_host(host_row: dict) -> dict:
         'http_ms': None,
         'error': None,
     }
+    blocked = _probe_target_error(url)
+    if blocked:
+        result['error'] = blocked
+        return result
     if not target_host or not target_port:
         result['error'] = f'Invalid host_url: {url}'
         return result
