@@ -222,6 +222,8 @@ configure_nginx() {
     log_info "\nШаг 4: настройка Nginx"
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo tee "$nginx_conf" >/dev/null <<EOF
+limit_req_zone \$binary_remote_addr zone=xatabchik_login:10m rate=5r/m;
+
 server {
     listen ${port} ssl http2;
     listen [::]:${port} ssl http2;
@@ -231,6 +233,19 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+
+    location = /login {
+        limit_req zone=xatabchik_login burst=10 nodelay;
+        proxy_pass http://127.0.0.1:1488;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:1488;
