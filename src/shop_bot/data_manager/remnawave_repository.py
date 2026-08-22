@@ -143,6 +143,13 @@ def _default_expire_at_ms() -> int:
     return int(datetime.utcnow().timestamp() * 1000)
 
 
+def _decrypt_host_secrets(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """get_squad/list_squads читают xui_hosts напрямую — расшифровать как get_host."""
+    if not row:
+        return None
+    return database._decrypt_row_secrets(dict(row), "ssh_password", "remnawave_api_token")
+
+
 def list_squads(active_only: bool = False) -> list[dict[str, Any]]:
     query = "SELECT * FROM xui_hosts"
     params: list[Any] = []
@@ -152,7 +159,7 @@ def list_squads(active_only: bool = False) -> list[dict[str, Any]]:
     with _connect() as conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
-        return [dict(row) for row in cursor.fetchall()]
+        return [_decrypt_host_secrets(dict(row)) for row in cursor.fetchall()]
 
 
 def get_squad(identifier: str) -> dict[str, Any] | None:
@@ -177,7 +184,7 @@ def get_squad(identifier: str) -> dict[str, Any] | None:
             (ident, normalized, ident, normalized),
         )
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return _decrypt_host_secrets(dict(row) if row else None)
 
 
 def get_key_by_id(key_id: int) -> dict | None:
