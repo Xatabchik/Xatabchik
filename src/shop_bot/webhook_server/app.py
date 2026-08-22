@@ -1393,6 +1393,11 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/referral-program')
     @login_required
     def referral_program_page():
+        return redirect(url_for('referral_program_requests_page'))
+
+    @flask_app.route('/referral-program/settings', methods=['GET'])
+    @login_required
+    def referral_program_settings_page():
         settings = get_all_settings()
         sbp_banks = [b.strip() for b in (settings.get('referral_withdraw_sbp_banks') or '').split(',') if b.strip()]
         common_data = get_common_template_data()
@@ -1426,7 +1431,7 @@ def create_webhook_app(bot_controller_instance):
                 update_setting(key, request.form.get(key))
 
         flash('Настройки реферальной программы сохранены.', 'success')
-        return redirect(url_for('referral_program_page'))
+        return redirect(url_for('referral_program_settings_page'))
 
     @flask_app.route('/referral-program/top')
     @login_required

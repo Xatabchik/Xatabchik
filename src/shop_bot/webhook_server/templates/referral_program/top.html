@@ -22,6 +22,7 @@
           <th class="text-end">Из них платящих</th>
           <th class="text-end">Начислено всего</th>
           <th class="text-end">Текущий баланс</th>
+          <th class="text-end">Выведено</th>
         </tr>
       </thead>
       <tbody>
@@ -34,9 +35,10 @@
           <td class="text-end">{{ row.paying_count or 0 }}</td>
           <td class="text-end">{{ "%.2f"|format(row.bonus_total or 0) }} ₽</td>
           <td class="text-end fw-bold">{{ "%.2f"|format(row.current_balance or 0) }} ₽</td>
+          <td class="text-end">{{ "%.2f"|format(row.withdrawn_total or 0) }} ₽</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="text-center text-muted py-4">Пока нет данных о рефералах.</td></tr>
+        <tr><td colspan="8" class="text-center text-muted py-4">Пока нет данных о рефералах.</td></tr>
         {% endfor %}
       </tbody>
     </table>
