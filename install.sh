@@ -317,7 +317,7 @@ configure_nginx() {
 limit_req_zone \$binary_remote_addr zone=xatabchik_login:10m rate=5r/m;
 
 server {
-    listen ${port} ssl http2;
+    listen 0.0.0.0:${port} ssl http2;
     listen [::]:${port} ssl http2;
     server_name ${domain};
 
@@ -354,7 +354,37 @@ EOF
     fi
     sudo nginx -t
     sudo systemctl reload nginx
-    log_success "✔ Конфигурация Nginx обновлена."
+    if ! nginx_listens_publicly "$port"; then
+        sudo systemctl restart nginx
+    fi
+    if ! nginx_listens_publicly "$port"; then
+        log_error "Nginx слушает ${port} только на 127.0.0.1 — панель недоступна снаружи."
+        ss -tlnp | grep -E ":${port}\\b" || true
+        exit 1
+    fi
+    log_success "✔ Конфигурация Nginx обновлена (0.0.0.0:${port})."
+}
+
+nginx_listens_publicly() {
+    local port="$1"
+    ss -ltn 2>/dev/null | grep -E ":${port}[[:space:]]" | grep -qvE '127\.0\.0\.1|\[::1\]'
+}
+
+# Панель должна быть на 0.0.0.0:PORT. 127.0.0.1:1488 — только Flask за Nginx.
+rewrite_nginx_listen_public() {
+    local conf="$1"
+    local port="$2"
+    if [[ ! -f "$conf" ]]; then
+        return 0
+    fi
+    local -a sed_cmd=(sed -i -E)
+    if [[ ! -w "$conf" ]]; then
+        sed_cmd=(sudo sed -i -E)
+    fi
+    "${sed_cmd[@]}" \
+        -e "s/listen([[:space:]]+)127\\.0\\.0\\.1:${port}/listen\\10.0.0.0:${port}/g" \
+        -e "s/listen([[:space:]]+)${port}([[:space:]])/listen\\10.0.0.0:${port}\\2/g" \
+        "$conf"
 }
 
 restrict_panel_firewall() {
@@ -396,8 +426,18 @@ if [[ -f "$NGINX_CONF" ]]; then
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
     ensure_letsencrypt_ssl_snippets
+    panel_port="$(sudo sed -nE 's/.*listen[[:space:]]+(127\.0\.0\.1:|0\.0\.0\.0:)?([0-9]+).*/\2/p' "$NGINX_CONF" | head -n1 || true)"
+    panel_port="${panel_port:-8443}"
+    rewrite_nginx_listen_public "$NGINX_CONF" "$panel_port"
     if sudo nginx -t >/dev/null 2>&1; then
         sudo systemctl reload nginx
+        if ! nginx_listens_publicly "$panel_port"; then
+            sudo systemctl restart nginx
+        fi
+    fi
+    if ! nginx_listens_publicly "$panel_port"; then
+        log_warn "Nginx на ${panel_port} всё ещё не слушает 0.0.0.0 — проверьте ss и другие server-блоки."
+        ss -tlnp | grep -E ":${panel_port}\\b" || true
     fi
     restrict_panel_firewall
     sudo "${COMPOSE[@]}" down --remove-orphans

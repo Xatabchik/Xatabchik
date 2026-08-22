@@ -73,3 +73,40 @@ def test_install_sh_creates_snippets_before_nginx_test():
     assert text.index("ensure_letsencrypt_ssl_snippets") < text.index("sudo nginx -t")
     update_idx = text.index("Обнаружена существующая конфигурация")
     assert text.find("ensure_letsencrypt_ssl_snippets", update_idx) != -1
+
+
+def test_nginx_template_listens_on_all_interfaces():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "listen 0.0.0.0:${port} ssl http2;" in text
+    assert "rewrite_nginx_listen_public" in text
+    assert "nginx_listens_publicly" in text
+    # Flask/docker stay on localhost; Nginx itself must not.
+    assert "listen 127.0.0.1:${port}" not in text
+
+
+def test_rewrite_nginx_listen_public_moves_localhost_bind(tmp_path: Path):
+    conf = tmp_path / "xatabchik.conf"
+    conf.write_text(
+        "\n".join(
+            (
+                "server {",
+                "    listen 127.0.0.1:8443 ssl http2;",
+                "    listen [::]:8443 ssl http2;",
+                "}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    script = "\n".join(
+        (
+            "set -euo pipefail",
+            _extract_function("rewrite_nginx_listen_public"),
+            f'rewrite_nginx_listen_public "{conf}" 8443',
+        )
+    )
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
+    text = conf.read_text(encoding="utf-8")
+    assert "listen 0.0.0.0:8443 ssl http2;" in text
+    assert "listen 127.0.0.1:8443" not in text
+    assert "listen [::]:8443 ssl http2;" in text
