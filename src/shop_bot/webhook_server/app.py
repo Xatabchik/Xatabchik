@@ -4243,7 +4243,6 @@ def create_webhook_app(bot_controller_instance):
                 "webapp_enabled",
                 "auto_renew_globally_enabled",
                 "smtp_use_tls",
-                "panel_totp_enabled",
             ]
             for checkbox_key in checkbox_keys:
                 values = request.form.getlist(checkbox_key) or ['off']
@@ -4257,7 +4256,7 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning(f"Не удалось применить франшизу после сохранения настроек: {e}")
 
             for key in ALL_SETTINGS_KEYS:
-                if key in checkbox_keys or key == 'panel_password':
+                if key in checkbox_keys or key == 'panel_password' or key == 'panel_totp_enabled':
                     continue
                 if key == 'smtp_password' and not (request.form.get(key) or '').strip():
                     # Пустое поле пароля SMTP при сохранении не должно затирать уже сохранённый пароль.
@@ -4265,20 +4264,34 @@ def create_webhook_app(bot_controller_instance):
                 if key == 'remnawave_api_token' and not (request.form.get(key) or '').strip():
                     continue
                 if key == 'panel_totp_secret':
-                    raw_totp = (request.form.get(key) or '').strip()
-                    if not raw_totp:
-                        continue
-                    update_setting(key, encrypt_managed_bot_token(raw_totp))
                     continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
 
-            if str(get_setting('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on'):
-                existing_totp = decrypt_managed_bot_token(get_setting('panel_totp_secret') or '')
-                if not existing_totp:
-                    generated = pyotp.random_base32()
-                    update_setting('panel_totp_secret', encrypt_managed_bot_token(generated))
-                    flash('Секрет TOTP создан. Добавьте его в приложение-аутентификатор (URI на этой странице).', 'success')
+            want_totp = False
+            totp_box = request.form.getlist('panel_totp_enabled') or ['off']
+            want_totp = str(totp_box[-1]).lower() in ('on', 'true', '1', 'yes')
+            was_totp = str(get_setting('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on')
+            totp_secret = decrypt_managed_bot_token(get_setting('panel_totp_secret') or '')
+            if want_totp:
+                if not totp_secret:
+                    totp_secret = pyotp.random_base32()
+                    update_setting('panel_totp_secret', encrypt_managed_bot_token(totp_secret))
+                confirm = (request.form.get('panel_totp_confirm') or '').strip()
+                if was_totp:
+                    update_setting('panel_totp_enabled', 'true')
+                elif totp_secret and pyotp.TOTP(totp_secret).verify(confirm, valid_window=1):
+                    update_setting('panel_totp_enabled', 'true')
+                    flash('TOTP включён. Дальше для входа нужен код из приложения.', 'success')
+                else:
+                    update_setting('panel_totp_enabled', 'false')
+                    flash(
+                        'Отсканируйте QR в приложении на телефоне (или введите секрет вручную) '
+                        'и сохраните настройки с кодом из приложения — тогда TOTP включится.',
+                        'warning',
+                    )
+            else:
+                update_setting('panel_totp_enabled', 'false')
 
             flash('Настройки сохранены.', 'success')
             next_hash = (request.form.get('next_hash') or '').strip() or '#panel'
@@ -4357,22 +4370,32 @@ def create_webhook_app(bot_controller_instance):
 
         common_data = get_common_template_data()
         common_data['hosts'] = hosts
-        totp_provisioning_uri = ""
-        if str(current_settings.get("panel_totp_enabled") or "").lower() in ("1", "true", "yes", "on"):
-            totp_plain = decrypt_managed_bot_token(current_settings.get("panel_totp_secret") or "")
-            if totp_plain:
-                issuer = (current_settings.get("panel_brand_title") or "Xatabchik").strip() or "Xatabchik"
-                account = (current_settings.get("panel_login") or "admin").strip() or "admin"
-                totp_provisioning_uri = pyotp.TOTP(totp_plain).provisioning_uri(
-                    name=account, issuer_name=issuer
-                )
+        totp_qr_data_uri = ""
+        totp_secret_display = ""
+        totp_plain = decrypt_managed_bot_token(current_settings.get("panel_totp_secret") or "")
+        if totp_plain:
+            totp_secret_display = totp_plain
+            issuer = (current_settings.get("panel_brand_title") or "Xatabchik").strip() or "Xatabchik"
+            account = (current_settings.get("panel_login") or "admin").strip() or "admin"
+            provisioning_uri = pyotp.TOTP(totp_plain).provisioning_uri(
+                name=account, issuer_name=issuer
+            )
+            try:
+                import qrcode
+                from io import BytesIO
+                buf = BytesIO()
+                qrcode.make(provisioning_uri).save(buf, format="PNG")
+                totp_qr_data_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                logger.warning(f"Не удалось сгенерировать QR для TOTP панели: {e}")
         return render_template(
             'settings.html',
             settings=current_settings,
             ssh_targets=ssh_targets,
             backups=backups,
             remnawave_squads=remnawave_squads,
-            totp_provisioning_uri=totp_provisioning_uri,
+            totp_qr_data_uri=totp_qr_data_uri,
+            totp_secret_display=totp_secret_display,
             **common_data,
         )
 

@@ -63,3 +63,51 @@ def test_login_accepts_correct_totp(temp_db):
     assert resp.status_code in (302, 303)
     with client.session_transaction() as sess:
         assert sess.get("logged_in") is True
+
+
+def _settings_client(temp_db):
+    client = _client(temp_db)
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+    return client
+
+
+def test_settings_enable_totp_without_code_stays_off_and_shows_qr(temp_db):
+    client = _settings_client(temp_db)
+    resp = client.post(
+        "/settings",
+        data={"panel_totp_enabled": "true", "next_hash": "#panel"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert (temp_db.get_setting("panel_totp_enabled") or "").lower() != "true"
+    assert temp_db.get_setting("panel_totp_secret")
+    body = resp.get_data(as_text=True)
+    assert 'src="data:image/png;base64,' in body
+    assert 'id="panel_totp_secret_display"' in body
+    assert "otpauth://" not in body
+    assert 'name="panel_totp_confirm"' in body
+
+
+def test_settings_enable_totp_with_app_code(temp_db):
+    client = _settings_client(temp_db)
+    client.post(
+        "/settings",
+        data={"panel_totp_enabled": "true", "next_hash": "#panel"},
+        follow_redirects=True,
+    )
+    secret = temp_db.decrypt_managed_bot_token(temp_db.get_setting("panel_totp_secret") or "")
+    resp = client.post(
+        "/settings",
+        data={
+            "panel_totp_enabled": "true",
+            "panel_totp_confirm": pyotp.TOTP(secret).now(),
+            "next_hash": "#panel",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert (temp_db.get_setting("panel_totp_enabled") or "").lower() == "true"
+    body = resp.get_data(as_text=True)
+    assert 'src="data:image/png;base64,' in body
+    assert 'name="panel_totp_confirm"' not in body

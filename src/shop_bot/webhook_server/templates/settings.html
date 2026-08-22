@@ -1257,18 +1257,44 @@
 								<input class="form-check-input" type="checkbox" id="panel_totp_enabled" name="panel_totp_enabled" value="true" {% if settings.panel_totp_enabled == 'true' %}checked{% endif %}>
 								<label class="form-check-label" for="panel_totp_enabled">Включить TOTP для входа в панель</label>
 							</div>
-							<div class="form-text">Не влияет на логин/пароль, пока выключено. При первом включении секрет создаётся автоматически.</div>
+							<div class="form-text">Пока выключено — вход по логину и паролю как раньше. Чтобы включить: отметьте галочку, сохраните, отсканируйте QR на телефоне и ещё раз сохраните с кодом из приложения.</div>
+							{% if totp_qr_data_uri or totp_secret_display %}
+							<div class="d-flex flex-column flex-md-row gap-3 align-items-start mt-3 p-3 border rounded">
+								{% if totp_qr_data_uri %}
+								<img src="{{ totp_qr_data_uri }}" alt="QR-код TOTP" width="180" height="180" class="bg-white p-2 rounded" style="image-rendering:pixelated;" />
+								{% endif %}
+								<div class="flex-grow-1">
+									<p class="mb-2">Наведите камеру приложения-аутентификатора на QR (телефон ↔ экран компьютера).</p>
+									<label class="form-label" for="panel_totp_secret_display">Или введите этот секрет в приложении вручную</label>
+									<div class="input-group mb-2">
+										<input type="text" class="form-control" id="panel_totp_secret_display" value="{{ totp_secret_display }}" readonly autocomplete="off" spellcheck="false" />
+										<button type="button" class="btn btn-outline-secondary" id="panel-totp-copy" title="Скопировать секрет">Копировать</button>
+									</div>
+									{% if settings.panel_totp_enabled != 'true' %}
+									<label class="form-label" for="panel_totp_confirm">Код из приложения</label>
+									<input class="form-control" type="text" id="panel_totp_confirm" name="panel_totp_confirm" inputmode="numeric" autocomplete="one-time-code" placeholder="6 цифр" />
+									<div class="form-text">После добавления аккаунта в приложении введите текущий код и нажмите «Сохранить настройки».</div>
+									{% endif %}
+								</div>
+							</div>
+							<script>
+							(function(){
+								const btn = document.getElementById('panel-totp-copy');
+								const input = document.getElementById('panel_totp_secret_display');
+								if (!btn || !input) return;
+								btn.addEventListener('click', function(){
+									const value = input.value || '';
+									if (navigator.clipboard && navigator.clipboard.writeText) {
+										navigator.clipboard.writeText(value);
+									} else {
+										input.select();
+										document.execCommand('copy');
+									}
+								});
+							})();
+							</script>
+							{% endif %}
 						</div>
-						<div class="form-group">
-							<label for="panel_totp_secret">Секрет TOTP (оставьте пустым, чтобы не менять):</label>
-							<input type="text" id="panel_totp_secret" name="panel_totp_secret" value="" autocomplete="off" placeholder="{% if settings.panel_totp_secret %}секрет задан{% endif %}" />
-						</div>
-						{% if totp_provisioning_uri %}
-						<div class="form-text mb-3" style="word-break:break-all;">
-							URI для приложения-аутентификатора:<br />
-							<code>{{ totp_provisioning_uri }}</code>
-						</div>
-						{% endif %}
 						<div class="mb-3">
                             <label class="form-label" for="backup_interval_days">Автобэкап базы (каждые N дней)</label>
                             <input class="form-control pill-md" type="number" min="0" step="1" id="backup_interval_days" name="backup_interval_days" value="{{ settings.backup_interval_days or '1' }}" placeholder="1" />
