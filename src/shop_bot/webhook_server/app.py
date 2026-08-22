@@ -159,6 +159,15 @@ def _pending_expected_amount(pending_meta: dict | None) -> Decimal | None:
     return _parse_decimal_amount(raw, log_prefix="pending amount")
 
 
+def _platega_amount_covers_order(got_amount: Decimal, expected_amount: Decimal) -> bool:
+    """Platega callback amount is what the customer paid.
+
+    The provider may add its own fee on top of the order we created
+    (e.g. 107.00 charged vs 100.00 pending). Underpayment is still rejected.
+    """
+    return got_amount >= expected_amount
+
+
 def _extract_platega_webhook_amount(payload: dict):
     """Platega callback: top-level `amount`, with paymentDetails.amount as fallback."""
     if not isinstance(payload, dict):
@@ -5909,7 +5918,7 @@ def create_webhook_app(bot_controller_instance):
                 if expected_amount is None or got_amount is None:
                     logger.warning(f"Platega webhook: amount missing/unparseable for payment_id={payment_id}")
                     return 'OK', 200
-                if got_amount != expected_amount:
+                if not _platega_amount_covers_order(got_amount, expected_amount):
                     logger.warning(
                         f"Platega webhook: amount mismatch for {payment_id}: got={got_amount}, expected={expected_amount}"
                     )
