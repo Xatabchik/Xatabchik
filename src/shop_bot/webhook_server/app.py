@@ -740,11 +740,12 @@ def create_webhook_app(bot_controller_instance):
             session['session_init'] = True
         
         settings = get_all_settings()
+        totp_enabled = str(settings.get('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on')
         if request.method == 'POST':
             ip = _login_client_ip()
             if not _rate_limit_login(ip):
                 flash('Слишком много попыток. Подождите несколько минут.', 'danger')
-                return render_template('login.html'), 429
+                return render_template('login.html', totp_enabled=totp_enabled), 429
             username = request.form.get('username') or ''
             password = request.form.get('password') or ''
             stored_user = settings.get('panel_login') or ''
@@ -752,7 +753,6 @@ def create_webhook_app(bot_controller_instance):
             # Constant-time username compare (avoids timing oracle on login name).
             user_ok = compare_digest(str(username), str(stored_user)) if stored_user else False
             pass_ok = _verify_panel_password(str(stored_pass), str(password))
-            totp_enabled = str(settings.get('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on')
             totp_ok = True
             if user_ok and pass_ok and totp_enabled:
                 secret = decrypt_managed_bot_token(settings.get('panel_totp_secret') or '')
@@ -774,7 +774,7 @@ def create_webhook_app(bot_controller_instance):
                 return redirect(url_for('dashboard_page'))
             else:
                 flash('Неверный логин или пароль', 'danger')
-        return render_template('login.html')
+        return render_template('login.html', totp_enabled=totp_enabled)
 
     @flask_app.route('/logout', methods=['POST'])
     @login_required

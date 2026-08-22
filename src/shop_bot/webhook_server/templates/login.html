@@ -161,10 +161,12 @@
 						</button>
 					</div>
 				</div>
+				{% if totp_enabled %}
 				<div class="form-group">
-					<label for="totp">Код TOTP (если включён):</label>
-					<input type="text" id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" />
+					<label for="totp">Код TOTP:</label>
+					<input type="text" id="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" required />
 				</div>
+				{% endif %}
 				<div class="form-group" style="display:flex;align-items:center;gap:10px;justify-content:space-between;margin:10px 0 16px;">
 					<label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
 						<input type="checkbox" id="remember_me" />
