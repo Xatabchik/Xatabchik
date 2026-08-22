@@ -1893,6 +1893,10 @@
                         <span>Перейти к оплате</span>
                         <span class="material-symbols-rounded text-sm">open_in_new</span>
                     </button>
+                    <button id="verify-platega-pay-btn" type="button" onclick="verifyPlategaPayment()"
+                        class="hidden w-full bg-primary text-white py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        Проверить оплату
+                    </button>
                     <button onclick="cancelPayment()"
                         class="text-[11px] text-gray-600 hover:text-gray-300 transition-colors py-1.5 font-medium">
                         Отменить
@@ -2590,6 +2594,7 @@
                             paymentUrl: activePaymentUrl,
                             paymentId: result.payment_id,
                             methodName: selectedMethod.name,
+                            methodId: selectedMethod.id,
                             timestamp: Date.now()
                         }));
 
@@ -2612,6 +2617,7 @@
                         }, 300);
 
                         activePaymentId = result.payment_id;
+                        _preparePlategaVerify(selectedMethod.id, activePaymentId);
                         startStatusPolling(activePaymentId);
                     } else if (selectedMethod.id === 'pay_stars' && result.ok) {
                         if (result.payment_url) {
@@ -2633,6 +2639,88 @@
                 showNotification('Ошибка сети: ' + e.message, 'error');
                 btn.innerHTML = originalContent;
                 btn.disabled = false;
+            }
+        }
+
+        function _isPlategaMethodId(methodId) {
+            const id = String(methodId || '').toLowerCase();
+            return id === 'pay_platega' || id === 'pay_platega_crypto';
+        }
+
+        function _setVerifyPlategaButtonVisible(show) {
+            const btn = document.getElementById('verify-platega-pay-btn');
+            if (!btn) return;
+            btn.classList.toggle('hidden', !show);
+            btn.disabled = false;
+            btn.textContent = 'Проверить оплату';
+        }
+
+        function _preparePlategaVerify(methodId, paymentId) {
+            const show = _isPlategaMethodId(methodId) && !!paymentId;
+            _setVerifyPlategaButtonVisible(show);
+            if (show && !window._plategaAutoVerifyFor) {
+                window._plategaAutoVerifyFor = String(paymentId);
+                setTimeout(() => {
+                    if (window._plategaAutoVerifyFor === String(paymentId)) {
+                        verifyPlategaPayment({ silentPending: true });
+                    }
+                }, 4000);
+            }
+        }
+
+        async function verifyPlategaPayment(opts) {
+            const options = opts || {};
+            const pid = activePaymentId;
+            const btn = document.getElementById('verify-platega-pay-btn');
+            if (!pid || (btn && btn.disabled)) return;
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-base">progress_activity</span><span>Проверяем…</span>';
+            }
+            try {
+                const response = await fetch('/api/webapp/payments/' + encodeURIComponent(String(pid)) + '/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: window.getAuthToken() || '',
+                        init_data: window.Telegram?.WebApp?.initData || ''
+                    })
+                });
+                const data = await response.json();
+                if (!data || data.ok === false) {
+                    showNotification(data && data.error ? data.error : 'Не удалось проверить оплату. Попробуйте позже.', 'error');
+                    return;
+                }
+                if (data.status === 'confirmed') {
+                    if (pollingInterval) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                    }
+                    window._plategaAutoVerifyFor = null;
+                    _setVerifyPlategaButtonVisible(false);
+                    await showSuccessScreen(data);
+                    return;
+                }
+                if (data.status === 'canceled') {
+                    if (pollingInterval) {
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                    }
+                    localStorage.removeItem('pendingPayment');
+                    _setVerifyPlategaButtonVisible(false);
+                    showNotification('Платёж отменён. Создайте новый счёт.', 'error');
+                    return;
+                }
+                if (!options.silentPending) {
+                    showNotification('Платёж пока подтверждается. Попробуйте через несколько секунд.');
+                }
+            } catch (e) {
+                showNotification('Не удалось проверить оплату. Попробуйте позже.', 'error');
+            } finally {
+                if (btn && btn.dataset.keepDisabled !== '1') {
+                    btn.disabled = false;
+                    btn.textContent = 'Проверить оплату';
+                }
             }
         }
 
@@ -2854,7 +2942,8 @@
                     }
 
                     activePaymentUrl = data.paymentUrl;
-                    selectedMethod = { name: data.methodName };
+                    selectedMethod = { name: data.methodName, id: data.methodId || '' };
+                    activePaymentId = data.paymentId;
 
                     const descEl = document.getElementById('waiting-desc');
                     if (descEl) {
@@ -2864,6 +2953,7 @@
                     }
 
                     changePaymentStep('waiting');
+                    _preparePlategaVerify(data.methodId, data.paymentId);
                     startStatusPolling(data.paymentId);
                     return true;
                 }
@@ -2898,6 +2988,8 @@
                 clearInterval(pollingInterval);
                 pollingInterval = null;
             }
+            window._plategaAutoVerifyFor = null;
+            _setVerifyPlategaButtonVisible(false);
             localStorage.removeItem('pendingPayment');
             activePaymentUrl = null;
             methodsCache = null;
@@ -4420,7 +4512,7 @@
                     return;
                 }
                 if (result.stars || methodId === 'pay_stars') {
-                    _renderTopUpWaiting(contentEl, amount, methodName || 'Telegram Stars', result.payment_id, result.payment_url, true);
+                    _renderTopUpWaiting(contentEl, amount, methodName || 'Telegram Stars', result.payment_id, result.payment_url, true, methodId);
                     if (result.payment_url) {
                         setTimeout(() => {
                             if (window.Telegram?.WebApp?.openTelegramLink) {
@@ -4433,7 +4525,7 @@
                     return;
                 }
                 if (result.payment_url) {
-                    _renderTopUpWaiting(contentEl, amount, methodName || 'оплату', result.payment_id, result.payment_url, false);
+                    _renderTopUpWaiting(contentEl, amount, methodName || 'оплату', result.payment_id, result.payment_url, false, methodId);
                     setTimeout(() => {
                         if (window.Telegram?.WebApp?.openLink) {
                             window.Telegram.WebApp.openLink(result.payment_url);
@@ -4453,8 +4545,10 @@
             }
         }
 
-        function _renderTopUpWaiting(contentEl, amount, methodName, paymentId, paymentUrl, isStars) {
+        function _renderTopUpWaiting(contentEl, amount, methodName, paymentId, paymentUrl, isStars, methodId) {
             window._topUpPaymentUrl = paymentUrl || null;
+            window._topUpPaymentId = paymentId || null;
+            const showVerify = !isStars && _isPlategaMethodId(methodId) && !!paymentId;
             contentEl.innerHTML = `
                 <div class="flex flex-col items-center gap-4 py-4 text-center">
                     <div class="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
@@ -4474,11 +4568,73 @@
                         <span class="material-symbols-rounded text-base">open_in_new</span>
                         <span>Открыть оплату</span>
                     </button>` : ''}
+                    ${showVerify ? `
+                    <button id="verify-platega-topup-btn" type="button" onclick="verifyPlategaTopUp()"
+                        class="w-full bg-primary text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                        Проверить оплату
+                    </button>` : ''}
                     <button onclick="closeActionModal()"
                         class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Закрыть</button>
                 </div>
             `;
             if (paymentId) _startTopUpPolling(paymentId);
+            if (showVerify) {
+                setTimeout(() => { verifyPlategaTopUp({ silentPending: true }); }, 4000);
+            }
+        }
+
+        async function verifyPlategaTopUp(opts) {
+            const options = opts || {};
+            const pid = window._topUpPaymentId;
+            const btn = document.getElementById('verify-platega-topup-btn');
+            if (!pid || (btn && btn.disabled)) return;
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-base">progress_activity</span><span>Проверяем…</span>';
+            }
+            try {
+                const response = await fetch('/api/webapp/payments/' + encodeURIComponent(String(pid)) + '/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: window.getAuthToken() || '',
+                        init_data: window.Telegram?.WebApp?.initData || ''
+                    })
+                });
+                const data = await response.json();
+                if (!data || data.ok === false) {
+                    showNotification(data && data.error ? data.error : 'Не удалось проверить оплату. Попробуйте позже.', 'error');
+                    return;
+                }
+                if (data.status === 'confirmed') {
+                    if (window._topUpPollingInterval) {
+                        clearInterval(window._topUpPollingInterval);
+                        window._topUpPollingInterval = null;
+                    }
+                    showNotification('Баланс пополнен!', 'success');
+                    if (window.Telegram?.WebApp?.HapticFeedback) {
+                        window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+                    }
+                    closeActionModal();
+                    if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
+                    if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
+                    return;
+                }
+                if (data.status === 'canceled') {
+                    showNotification('Платёж отменён. Создайте новый счёт.', 'error');
+                    return;
+                }
+                if (!options.silentPending) {
+                    showNotification('Платёж пока подтверждается. Попробуйте через несколько секунд.');
+                }
+            } catch (e) {
+                showNotification('Не удалось проверить оплату. Попробуйте позже.', 'error');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Проверить оплату';
+                }
+            }
         }
 
         function _reopenTopUpPaymentLink() {
