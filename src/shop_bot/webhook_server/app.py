@@ -6281,18 +6281,31 @@ def create_webhook_app(bot_controller_instance):
             return redirect(url_for('settings_page', tab='payments'))
         redirect_uri = _ym_get_redirect_uri()
         scope = 'operation-history operation-details account-info'
+        state = secrets.token_urlsafe(32)
+        session['yoomoney_oauth_state'] = state
         qs = urllib.parse.urlencode({
             'client_id': client_id,
             'response_type': 'code',
             'scope': scope,
             'redirect_uri': redirect_uri,
+            'state': state,
         })
         url = f"https://yoomoney.ru/oauth/authorize?{qs}"
         return redirect(url)
 
     @csrf.exempt
     @flask_app.route('/yoomoney/callback')
+    @login_required
     def yoomoney_callback_route():
+        expected_state = session.pop('yoomoney_oauth_state', None)
+        got_state = (request.args.get('state') or '').strip()
+        if (
+            not expected_state
+            or not got_state
+            or not compare_digest(str(expected_state), str(got_state))
+        ):
+            flash('YooMoney: неверный или отсутствующий state.', 'danger')
+            return redirect(url_for('settings_page', tab='payments'))
         code = (request.args.get('code') or '').strip()
         if not code:
             flash('YooMoney: не получен code из OAuth.', 'danger')
