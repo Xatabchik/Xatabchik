@@ -3821,7 +3821,14 @@ def create_webhook_app(bot_controller_instance):
     def run_ssh_target_speedtest_route(target_name: str):
         logger.info(f"Панель: запущен спидтест для SSH-цели '{target_name}'")
         try:
-            res = asyncio.run(speedtest_runner.run_and_store_ssh_speedtest_for_target(target_name))
+            accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+                "1", "true", "on", "yes",
+            )
+            res = asyncio.run(
+                speedtest_runner.run_and_store_ssh_speedtest_for_target(
+                    target_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {"ok": False, "error": str(e)}
         if res and res.get('ok'):
@@ -3876,8 +3883,15 @@ def create_webhook_app(bot_controller_instance):
         method = (request.form.get('method') or '').strip().lower()
         logger.info(f"Панель: запущен спидтест для хоста '{host_name}', метод='{method or 'both'}'")
         try:
+            accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+                "1", "true", "on", "yes",
+            )
             if method == 'ssh':
-                res = asyncio.run(speedtest_runner.run_and_store_ssh_speedtest(host_name))
+                res = asyncio.run(
+                    speedtest_runner.run_and_store_ssh_speedtest(
+                        host_name, accept_new_host_key=accept_new
+                    )
+                )
             elif method == 'net':
                 res = asyncio.run(speedtest_runner.run_and_store_net_probe(host_name))
             else:
@@ -3949,9 +3963,15 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/hosts/<host_name>/speedtest/install', methods=['POST'])
     @login_required
     def auto_install_speedtest_route(host_name: str):
-
+        accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+            "1", "true", "on", "yes",
+        )
         try:
-            res = asyncio.run(speedtest_runner.auto_install_speedtest_on_host(host_name))
+            res = asyncio.run(
+                speedtest_runner.auto_install_speedtest_on_host(
+                    host_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {'ok': False, 'log': str(e)}
         wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
@@ -4645,8 +4665,15 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/ssh-targets/<target_name>/speedtest/install', methods=['POST'])
     @login_required
     def auto_install_speedtest_on_target_route(target_name: str):
+        accept_new = str(request.form.get("accept_new_host_key") or "").strip().lower() in (
+            "1", "true", "on", "yes",
+        )
         try:
-            res = asyncio.run(speedtest_runner.auto_install_speedtest_on_target(target_name))
+            res = asyncio.run(
+                speedtest_runner.auto_install_speedtest_on_target(
+                    target_name, accept_new_host_key=accept_new
+                )
+            )
         except Exception as e:
             res = {'ok': False, 'log': str(e)}
         wants_json = 'application/json' in (request.headers.get('Accept') or '') or request.headers.get('X-Requested-With') == 'XMLHttpRequest'

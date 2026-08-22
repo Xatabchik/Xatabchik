@@ -661,6 +661,8 @@ _LEGACY_FORWARDERS = (
     "create_ssh_target",
     "update_ssh_target_fields",
     "delete_ssh_target",
+    "get_ssh_known_host_key",
+    "save_ssh_known_host_key",
 
     "insert_resource_metric",
     "get_latest_resource_metric",
