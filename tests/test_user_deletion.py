@@ -97,6 +97,7 @@ def test_recreated_account_with_same_telegram_id_must_pass_captcha_again(temp_db
 
 
 def test_delete_user_completely_clears_referral_payout_data(temp_db):
+    """Методы получения удаляются, заявки на вывод остаются админу."""
     from shop_bot.data_manager import database
 
     user_id = 9005
@@ -120,7 +121,7 @@ def test_delete_user_completely_clears_referral_payout_data(temp_db):
         cur.execute("SELECT COUNT(*) FROM referral_payout_methods WHERE user_id = ?", (user_id,))
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT COUNT(*) FROM referral_withdrawal_requests WHERE user_id = ?", (user_id,))
-        assert cur.fetchone()[0] == 0
+        assert cur.fetchone()[0] == 1
 
 
 def test_delete_user_completely_clears_webapp_auth_requests(temp_db):

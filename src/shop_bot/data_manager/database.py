@@ -6848,6 +6848,80 @@ def deduct_from_referral_balance(user_id: int, amount: float) -> bool:
 
 REFERRAL_PAYOUT_METHOD_TYPES = ("sbp", "card", "usdt_trc20")
 REFERRAL_WITHDRAWAL_STATUSES = ("new", "processing", "paid", "rejected")
+REFERRAL_PAYOUT_METHOD_LABELS = {"sbp": "СБП", "card": "Номер карты", "usdt_trc20": "USDT TRC20"}
+REFERRAL_WITHDRAW_METHOD_SETTINGS = {
+    "sbp": "referral_withdraw_sbp_enabled",
+    "card": "referral_withdraw_card_enabled",
+    "usdt_trc20": "referral_withdraw_usdt_enabled",
+}
+MAX_OPEN_REFERRAL_WITHDRAWAL_REQUESTS = 1
+_REFERRAL_TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+
+
+def _referral_setting_is_true(key: str, default: bool = False) -> bool:
+    raw = str(get_setting(key) or ("true" if default else "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
+def is_referral_withdraw_method_type_enabled(method_type: str) -> bool:
+    setting_key = REFERRAL_WITHDRAW_METHOD_SETTINGS.get((method_type or "").strip().lower())
+    if not setting_key:
+        return False
+    return _referral_setting_is_true(setting_key)
+
+
+def validate_referral_payout_requisite(
+    method_type: str, requisite_value: str, bank_name: str | None = None
+) -> tuple[bool, str]:
+    """Проверить реквизиты метода получения перед сохранением."""
+    method_type = (method_type or "").strip().lower()
+    value = (requisite_value or "").strip()
+    if method_type not in REFERRAL_PAYOUT_METHOD_TYPES:
+        return False, "Неизвестный тип метода получения."
+    if not value:
+        return False, "Реквизиты не могут быть пустыми."
+    if method_type == "sbp":
+        if not (bank_name or "").strip():
+            return False, "Не указан банк для СБП."
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if len(digits) < 10 or len(digits) > 15:
+            return False, "Укажите номер телефона для СБП (10–15 цифр)."
+        return True, ""
+    if method_type == "card":
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if len(digits) < 16 or len(digits) > 19:
+            return False, "Номер карты должен содержать 16–19 цифр."
+        return True, ""
+    if not _REFERRAL_TRC20_RE.fullmatch(value):
+        return False, "Укажите корректный адрес USDT TRC20 (начинается с T)."
+    return True, ""
+
+
+def format_referral_withdrawal_admin_notice(
+    *,
+    request_id: int,
+    user_id: int,
+    username: str | None,
+    amount: float,
+    method_type: str | None,
+    bank_name: str | None,
+    requisite_value: str | None,
+) -> str:
+    """Текст уведомления админам о новой заявке на вывод."""
+    from html import escape as html_escape
+
+    label = REFERRAL_PAYOUT_METHOD_LABELS.get(method_type, method_type or "—")
+    bank_line = f"{html_escape(str(bank_name))} — " if bank_name else ""
+    requisite = html_escape(str(requisite_value or ""))
+    uname = f"@{html_escape(str(username))}" if username else str(int(user_id))
+    return (
+        "💸 <b>Новая заявка на вывод (реферальная программа)</b>\n"
+        f"Заявка: #{int(request_id)}\n"
+        f"Пользователь: {uname} (<code>{int(user_id)}</code>)\n"
+        f"Сумма: <b>{float(amount):.2f} ₽</b>\n"
+        f"Способ: {html_escape(str(label))}\n"
+        f"Реквизиты: {bank_line}<code>{requisite}</code>"
+    )
 
 
 def list_referral_payout_methods(user_id: int) -> list[dict]:
@@ -6870,10 +6944,9 @@ def add_referral_payout_method(user_id: int, method_type: str, requisite_value: 
     if method_type not in REFERRAL_PAYOUT_METHOD_TYPES:
         return False, "Неизвестный тип метода получения.", None
     requisite_value = (requisite_value or "").strip()
-    if not requisite_value:
-        return False, "Реквизиты не могут быть пустыми.", None
-    if method_type == "sbp" and not (bank_name or "").strip():
-        return False, "Не указан банк для СБП.", None
+    ok, msg = validate_referral_payout_requisite(method_type, requisite_value, bank_name)
+    if not ok:
+        return False, msg, None
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cur = conn.cursor()
@@ -7014,10 +7087,24 @@ def create_referral_withdrawal_request(user_id: int, amount: float, method_id: i
     method = get_referral_payout_method(method_id, user_id)
     if not method:
         return False, "Метод получения не найден.", None
+    method_type = (method.get("method_type") or "").strip().lower()
+    if not is_referral_withdraw_method_type_enabled(method_type):
+        return False, "Этот способ получения временно недоступен.", None
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM referral_withdrawal_requests
+                WHERE user_id = ? AND status IN ('new', 'processing')
+                """,
+                (int(user_id),),
+            )
+            open_count = int((cursor.fetchone() or [0])[0] or 0)
+            if open_count >= MAX_OPEN_REFERRAL_WITHDRAWAL_REQUESTS:
+                conn.rollback()
+                return False, "У вас уже есть заявка на вывод. Дождитесь её обработки.", None
             cursor.execute("SELECT referral_balance FROM users WHERE telegram_id = ?", (int(user_id),))
             row = cursor.fetchone()
             current = float(row[0] or 0.0) if row else 0.0
@@ -8678,13 +8765,11 @@ def delete_user_completely(user_id: int) -> bool:
                 (user_id,),
             )
 
-            # Удалить реферальные методы получения и заявки на вывод
+            # Методы получения удаляем (это сохранённые реквизиты пользователя).
+            # Заявки на вывод оставляем: у админа должна остаться история выплат
+            # и незакрытые заявки, по которым сумма уже списана с реф. баланса.
             cursor.execute(
                 "DELETE FROM referral_payout_methods WHERE user_id = ?",
-                (user_id,),
-            )
-            cursor.execute(
-                "DELETE FROM referral_withdrawal_requests WHERE user_id = ?",
                 (user_id,),
             )
 

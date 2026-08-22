@@ -1475,8 +1475,14 @@ def create_webhook_app(bot_controller_instance):
                         "Спасибо, что участвуете в реферальной программе!"
                     )
                     _dispatch_bot_notification(user_id, text)
+                elif new_status == 'processing':
+                    text = (
+                        f"⏳ Ваша заявка на вывод {amount:.2f} ₽ ({method_label}) взята в обработку."
+                    )
+                    _dispatch_bot_notification(user_id, text)
                 elif new_status == 'rejected':
-                    reason_line = f"\nПричина: {reject_reason}" if reject_reason else ""
+                    reason_safe = html_escape.escape(reject_reason) if reject_reason else ""
+                    reason_line = f"\nПричина: {reason_safe}" if reason_safe else ""
                     text = (
                         f"❌ Ваша заявка на вывод {amount:.2f} ₽ ({method_label}) отклонена.{reason_line}\n"
                         "Сумма возвращена на ваш реферальный баланс."

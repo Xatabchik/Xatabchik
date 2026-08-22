@@ -370,6 +370,8 @@ async def api_referral_payout_methods_list(request: Request):
         return {"ok": False, "error": "Unauthorized"}
     try:
         methods = rw_repo.list_referral_payout_methods(user.get("telegram_id"))
+        for method in methods:
+            method["type_enabled"] = _ref_method_type_enabled(method.get("method_type"))
     except Exception as e:
         logger.error(f"Failed to list referral payout methods: {e}")
         methods = []
@@ -511,6 +513,22 @@ async def api_referral_request_withdraw(request: Request):
 
     method_id = int(data.get("method_id") or 0)
     ok, msg, new_id = rw_repo.create_referral_withdrawal_request(user.get("telegram_id"), amount, method_id)
+    if ok and new_id:
+        try:
+            method = rw_repo.get_referral_payout_method(method_id, user.get("telegram_id"))
+            admin_text = rw_repo.format_referral_withdrawal_admin_notice(
+                request_id=new_id,
+                user_id=user.get("telegram_id"),
+                username=user.get("username"),
+                amount=amount,
+                method_type=(method or {}).get("method_type"),
+                bank_name=(method or {}).get("bank_name"),
+                requisite_value=(method or {}).get("requisite_value"),
+            )
+            for admin_id in (rw_repo.get_admin_ids() or set()):
+                await _send_telegram_message(int(admin_id), admin_text)
+        except Exception:
+            logger.warning("Не удалось уведомить администраторов о заявке на вывод", exc_info=True)
     return {"ok": ok, "message": msg, "request_id": new_id}
 
 
