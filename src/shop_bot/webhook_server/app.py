@@ -9,6 +9,7 @@ import sqlite3
 import hashlib
 import hmac
 import bcrypt
+import pyotp
 import html as html_escape
 import base64
 import time
@@ -93,6 +94,10 @@ from shop_bot.data_manager.database import (
     get_node_usage_for_key, resolve_key_period_start,
     apply_key_monthly_reset_fields, remnawave_traffic_limit_strategy_for_plan,
     format_next_traffic_reset_display,
+)
+from shop_bot.data_manager.database import (
+    encrypt_managed_bot_token,
+    decrypt_managed_bot_token,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -273,6 +278,8 @@ def _dispatch_bot_notification(user_id: int, text: str) -> None:
 ALL_SETTINGS_KEYS = [
     "panel_login",
     "panel_password",
+    "panel_totp_enabled",
+    "panel_totp_secret",
     "about_text",
     "terms_url",
     "privacy_url",
@@ -725,7 +732,13 @@ def create_webhook_app(bot_controller_instance):
             # Constant-time username compare (avoids timing oracle on login name).
             user_ok = compare_digest(str(username), str(stored_user)) if stored_user else False
             pass_ok = _verify_panel_password(str(stored_pass), str(password))
-            if user_ok and pass_ok:
+            totp_enabled = str(settings.get('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on')
+            totp_ok = True
+            if user_ok and pass_ok and totp_enabled:
+                secret = decrypt_managed_bot_token(settings.get('panel_totp_secret') or '')
+                code = (request.form.get('totp') or '').strip()
+                totp_ok = bool(secret) and bool(pyotp.TOTP(secret).verify(code, valid_window=1))
+            if user_ok and pass_ok and totp_ok:
                 # migrate legacy/plaintext password to bcrypt hash (CWE-916)
                 if not str(stored_pass).startswith('$2'):
                     try:
@@ -4243,15 +4256,42 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning(f"Не удалось применить франшизу после сохранения настроек: {e}")
 
             for key in ALL_SETTINGS_KEYS:
-                if key in checkbox_keys or key == 'panel_password':
+                if key in checkbox_keys or key == 'panel_password' or key == 'panel_totp_enabled':
                     continue
                 if key == 'smtp_password' and not (request.form.get(key) or '').strip():
                     # Пустое поле пароля SMTP при сохранении не должно затирать уже сохранённый пароль.
                     continue
                 if key == 'remnawave_api_token' and not (request.form.get(key) or '').strip():
                     continue
+                if key == 'panel_totp_secret':
+                    continue
                 if key in request.form:
                     update_setting(key, request.form.get(key))
+
+            want_totp = False
+            totp_box = request.form.getlist('panel_totp_enabled') or ['off']
+            want_totp = str(totp_box[-1]).lower() in ('on', 'true', '1', 'yes')
+            was_totp = str(get_setting('panel_totp_enabled') or '').lower() in ('1', 'true', 'yes', 'on')
+            totp_secret = decrypt_managed_bot_token(get_setting('panel_totp_secret') or '')
+            if want_totp:
+                if not totp_secret:
+                    totp_secret = pyotp.random_base32()
+                    update_setting('panel_totp_secret', encrypt_managed_bot_token(totp_secret))
+                confirm = (request.form.get('panel_totp_confirm') or '').strip()
+                if was_totp:
+                    update_setting('panel_totp_enabled', 'true')
+                elif totp_secret and pyotp.TOTP(totp_secret).verify(confirm, valid_window=1):
+                    update_setting('panel_totp_enabled', 'true')
+                    flash('TOTP включён. Дальше для входа нужен код из приложения.', 'success')
+                else:
+                    update_setting('panel_totp_enabled', 'false')
+                    flash(
+                        'Отсканируйте QR в приложении на телефоне (или введите секрет вручную) '
+                        'и сохраните настройки с кодом из приложения — тогда TOTP включится.',
+                        'warning',
+                    )
+            else:
+                update_setting('panel_totp_enabled', 'false')
 
             flash('Настройки сохранены.', 'success')
             next_hash = (request.form.get('next_hash') or '').strip() or '#panel'
@@ -4330,12 +4370,32 @@ def create_webhook_app(bot_controller_instance):
 
         common_data = get_common_template_data()
         common_data['hosts'] = hosts
+        totp_qr_data_uri = ""
+        totp_secret_display = ""
+        totp_plain = decrypt_managed_bot_token(current_settings.get("panel_totp_secret") or "")
+        if totp_plain:
+            totp_secret_display = totp_plain
+            issuer = (current_settings.get("panel_brand_title") or "Xatabchik").strip() or "Xatabchik"
+            account = (current_settings.get("panel_login") or "admin").strip() or "admin"
+            provisioning_uri = pyotp.TOTP(totp_plain).provisioning_uri(
+                name=account, issuer_name=issuer
+            )
+            try:
+                import qrcode
+                from io import BytesIO
+                buf = BytesIO()
+                qrcode.make(provisioning_uri).save(buf, format="PNG")
+                totp_qr_data_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                logger.warning(f"Не удалось сгенерировать QR для TOTP панели: {e}")
         return render_template(
             'settings.html',
             settings=current_settings,
             ssh_targets=ssh_targets,
             backups=backups,
             remnawave_squads=remnawave_squads,
+            totp_qr_data_uri=totp_qr_data_uri,
+            totp_secret_display=totp_secret_display,
             **common_data,
         )
 
