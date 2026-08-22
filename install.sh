@@ -254,6 +254,64 @@ REPO_URL="https://github.com/Xatabchik/Xatabchik.git"
 PROJECT_DIR="xatabchik"
 NGINX_CONF="/etc/nginx/sites-available/${PROJECT_DIR}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${PROJECT_DIR}.conf"
+GITHUB_LATEST_RELEASE_API="https://api.github.com/repos/Xatabchik/Xatabchik/releases/latest"
+
+resolve_install_tag() {
+    if [[ -n "${XATABCHIK_INSTALL_TAG:-}" ]]; then
+        printf '%s' "$XATABCHIK_INSTALL_TAG"
+        return 0
+    fi
+    local tag
+    tag=$(curl -fsSL "$GITHUB_LATEST_RELEASE_API" \
+        | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -n1)
+    if [[ -z "$tag" ]]; then
+        log_error "Не удалось определить GitHub release tag. Задайте XATABCHIK_INSTALL_TAG."
+        exit 1
+    fi
+    printf '%s' "$tag"
+}
+
+download_and_verify_release_tarball() {
+    local tag="$1"
+    local dest="$2"
+    curl -fsSL -o "$dest" "https://github.com/Xatabchik/Xatabchik/archive/refs/tags/${tag}.tar.gz"
+    local actual
+    actual=$(sha256sum "$dest" | awk '{print $1}')
+    log_info "SHA256 tarball ${tag}: ${actual}"
+    if [[ -n "${XATABCHIK_TARBALL_SHA256:-}" ]]; then
+        if [[ "$actual" != "$XATABCHIK_TARBALL_SHA256" ]]; then
+            log_error "SHA256 tarball не совпал с XATABCHIK_TARBALL_SHA256."
+            exit 1
+        fi
+        log_success "✔ SHA256 tarball подтверждён."
+    else
+        log_warn "XATABCHIK_TARBALL_SHA256 не задан — проверка checksum пропущена. Зафиксируйте ${actual} и задайте переменную при следующей установке."
+    fi
+}
+
+extract_release_tarball() {
+    local tag="$1"
+    local dest_dir="$2"
+    local tarball
+    tarball=$(mktemp /tmp/xatabchik-XXXXXX.tar.gz)
+    download_and_verify_release_tarball "$tag" "$tarball"
+    mkdir -p "$dest_dir"
+    tar -xzf "$tarball" -C "$dest_dir" --strip-components=1
+    rm -f "$tarball"
+}
+
+update_project_from_release() {
+    local tag
+    tag=$(resolve_install_tag)
+    log_info "Релизная метка: ${tag}"
+    if [[ -d .git ]]; then
+        git fetch --tags --force
+        git checkout --force "refs/tags/${tag}"
+    else
+        extract_release_tarball "$tag" "."
+    fi
+}
 
 # Prefer standalone binary; fall back to V2 plugin
 if command -v docker-compose >/dev/null 2>&1; then
@@ -271,10 +329,9 @@ if [[ -f "$NGINX_CONF" ]]; then
         exit 1
     fi
     cd "$PROJECT_DIR"
-    log_info "\nШаг 1: обновление исходного кода"
-    git fetch --all
-    git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
-    log_success "✔ Репозиторий обновлён."
+    log_info "\nШаг 1: обновление исходного кода с release tag"
+    update_project_from_release
+    log_success "✔ Исходный код обновлён до release tag."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
     sudo "${COMPOSE[@]}" down --remove-orphans
     sudo "${COMPOSE[@]}" up -d --build
@@ -288,14 +345,16 @@ ensure_packages
 ensure_services
 ensure_certbot_nginx
 
-log_info "\nШаг 2: клонирование репозитория"
-if [[ ! -d "$PROJECT_DIR/.git" ]]; then
-    git clone "$REPO_URL" "$PROJECT_DIR"
+log_info "\nШаг 2: загрузка релизного tarball"
+if [[ ! -d "$PROJECT_DIR/.git" && ! -f "$PROJECT_DIR/docker-compose.yml" ]]; then
+    INSTALL_TAG=$(resolve_install_tag)
+    log_info "Релизная метка: ${INSTALL_TAG}"
+    extract_release_tarball "$INSTALL_TAG" "$PROJECT_DIR"
 else
     log_warn "Каталог $PROJECT_DIR уже существует. Будет использована текущая версия."
 fi
 cd "$PROJECT_DIR"
-log_success "✔ Репозиторий Xatabchik готов."
+log_success "✔ Исходный код Xatabchik готов."
 
 log_info "\nШаг 3: настройка домена и SSL"
 
