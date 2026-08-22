@@ -695,6 +695,7 @@ _LEGACY_FORWARDERS = (
     "format_referral_withdrawal_admin_notice",
     "validate_referral_payout_requisite",
     "is_referral_withdraw_method_type_enabled",
+    "has_open_referral_withdrawal_request",
     "create_webapp_auth_request",
     "confirm_webapp_auth_request",
     "get_webapp_auth_request",

@@ -7130,6 +7130,25 @@ def create_referral_withdrawal_request(user_id: int, amount: float, method_id: i
         return False, "Ошибка базы данных.", None
 
 
+def has_open_referral_withdrawal_request(user_id: int) -> bool:
+    """Есть ли у пользователя незакрытая заявка (new/processing)."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT 1 FROM referral_withdrawal_requests
+                WHERE user_id = ? AND status IN ('new', 'processing')
+                LIMIT 1
+                """,
+                (int(user_id),),
+            )
+            return cur.fetchone() is not None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to check open referral withdrawal for {user_id}: {e}")
+        return False
+
+
 def list_referral_withdrawal_requests(status: str | None = None, user_id: int | None = None) -> list[dict]:
     try:
         with sqlite3.connect(DB_FILE) as conn:

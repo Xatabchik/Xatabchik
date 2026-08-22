@@ -3647,11 +3647,69 @@
         const _M_LABELS = { sbp: 'СБП', card: 'Номер карты', usdt_trc20: 'USDT TRC20' };
         const _M_ICONS  = { sbp: 'phone_android', card: 'credit_card', usdt_trc20: 'currency_bitcoin' };
 
+        function _openReferralActionModal(titleHtml) {
+            const modal = document.getElementById('action-modal');
+            const backdrop = document.getElementById('action-backdrop');
+            const card = document.getElementById('action-card');
+            const titleEl = document.getElementById('action-modal-title');
+            const contentEl = document.getElementById('action-modal-content');
+            if (!modal || !contentEl) return null;
+            modal.classList.remove('hidden'); modal.classList.add('flex');
+            requestAnimationFrame(() => {
+                if (backdrop) backdrop.classList.remove('opacity-0', 'pointer-events-none');
+                if (card) card.classList.remove('translate-y-full');
+            });
+            if (titleEl) titleEl.innerHTML = titleHtml;
+            return contentEl;
+        }
+
+        function _renderWithdrawSubmitted(contentEl, amount, requestId) {
+            const amountText = (Number(amount) || 0).toFixed(2);
+            const idLine = requestId ? `Заявка #${requestId} принята.` : 'Заявка принята.';
+            contentEl.innerHTML =
+                '<div class="flex flex-col items-center text-center gap-3 py-2">' +
+                    '<div class="w-14 h-14 rounded-full bg-emerald-500/15 flex items-center justify-center">' +
+                        '<span class="material-symbols-rounded text-emerald-400 text-3xl">check_circle</span>' +
+                    '</div>' +
+                    '<div class="text-sm font-bold text-white">Заявка отправлена</div>' +
+                    '<div class="text-[11px] text-gray-400 leading-relaxed">' +
+                        idLine + ' Сумма <span class="text-white font-bold">' + amountText + ' ₽</span> списана с реферального баланса.<br>' +
+                        'Мы обработаем её в ближайшее время.<br>' +
+                        'Пока заявка на рассмотрении, новую отправить нельзя.' +
+                    '</div>' +
+                    '<button onclick="closeActionModal()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
+                '</div>';
+        }
+
+        function _renderWithdrawAlreadyOpen(contentEl) {
+            contentEl.innerHTML =
+                '<div class="flex flex-col items-center text-center gap-3 py-2">' +
+                    '<div class="w-14 h-14 rounded-full bg-amber-500/15 flex items-center justify-center">' +
+                        '<span class="material-symbols-rounded text-amber-400 text-3xl">hourglass_top</span>' +
+                    '</div>' +
+                    '<div class="text-sm font-bold text-white">Заявка уже на рассмотрении</div>' +
+                    '<div class="text-[11px] text-gray-400 leading-relaxed">' +
+                        'У вас есть незакрытая заявка на вывод. Дождитесь её обработки — одновременно можно подать только одну заявку.' +
+                    '</div>' +
+                    '<button onclick="closeActionModal()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
+                '</div>';
+        }
+
+        function _setReferralHasOpenWithdraw(value) {
+            window._referralHasOpenWithdraw = !!value;
+            _refreshWithdrawButtonState();
+        }
+
         async function requestReferralWithdraw() {
             const token = window.getAuthToken();
             if (!token) { showNotification('Требуется авторизация', 'error'); return; }
             if (window._referralWithdrawEnabled === false) {
                 showNotification('Вывод средств временно недоступен.', 'error');
+                return;
+            }
+            if (window._referralHasOpenWithdraw) {
+                const pendingEl = _openReferralActionModal('<span class="material-symbols-rounded text-primary text-sm mr-1">payments</span> Вывод средств');
+                if (pendingEl) _renderWithdrawAlreadyOpen(pendingEl);
                 return;
             }
             const minKnown = window._referralMinWithdraw;
@@ -3660,15 +3718,8 @@
                 showNotification(`Минимальная сумма для вывода — ${minKnown.toFixed(0)} ₽`, 'error');
                 return;
             }
-            const modal = document.getElementById('action-modal');
-            const backdrop = document.getElementById('action-backdrop');
-            const card = document.getElementById('action-card');
-            const titleEl = document.getElementById('action-modal-title');
-            const contentEl = document.getElementById('action-modal-content');
-            if (!modal) return;
-            modal.classList.remove('hidden'); modal.classList.add('flex');
-            requestAnimationFrame(() => { backdrop.classList.remove('opacity-0', 'pointer-events-none'); card.classList.remove('translate-y-full'); });
-            titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">payments</span> Вывод средств';
+            const contentEl = _openReferralActionModal('<span class="material-symbols-rounded text-primary text-sm mr-1">payments</span> Вывод средств');
+            if (!contentEl) return;
             contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
             try {
                 const resp = await fetch('/api/referral/payout-methods/list', {
@@ -3690,6 +3741,7 @@
 
         function _refreshWithdrawButtonState() {
             const btn = document.getElementById('withdraw-request-btn');
+            const labelEl = document.getElementById('withdraw-request-btn-label');
             const methodsBtn = document.getElementById('referral-methods-btn');
             const withdrawEnabled = window._referralWithdrawEnabled !== false;
             if (btn) {
@@ -3697,14 +3749,18 @@
                 if (!withdrawEnabled) {
                     btn.disabled = true;
                     btn.title = 'Вывод средств временно недоступен.';
+                    if (labelEl) labelEl.textContent = 'Запросить вывод';
+                } else if (window._referralHasOpenWithdraw) {
+                    btn.disabled = false;
+                    btn.title = 'У вас уже есть заявка на вывод. Дождитесь её обработки.';
+                    if (labelEl) labelEl.textContent = 'Заявка на рассмотрении';
                 } else {
                     const available = window._referralAvailableBalance;
                     const minWithdraw = window._referralMinWithdraw;
-                    if (available != null && minWithdraw != null) {
-                        const insufficient = available < minWithdraw;
-                        btn.disabled = insufficient;
-                        btn.title = insufficient ? `Минимальная сумма для вывода — ${minWithdraw.toFixed(0)} ₽` : '';
-                    }
+                    const insufficient = available != null && minWithdraw != null && available < minWithdraw;
+                    btn.disabled = insufficient;
+                    btn.title = insufficient ? `Минимальная сумма для вывода — ${minWithdraw.toFixed(0)} ₽` : '';
+                    if (labelEl) labelEl.textContent = 'Запросить вывод';
                 }
             }
             if (methodsBtn) {
@@ -3795,11 +3851,22 @@
                     body: JSON.stringify({ token, amount, method_id: methodId })
                 });
                 const d = await resp.json();
-                showNotification(d.ok ? (d.message || 'Заявка создана') : (d.message || d.error || 'Ошибка'), d.ok ? 'success' : 'error');
-                if (d.ok) { closeActionModal(); if (window._loadReferralPage) setTimeout(window._loadReferralPage, 600); }
+                const contentEl = document.getElementById('action-modal-content');
+                const alreadyOpen = !d.ok && /уже есть заявка/i.test(String(d.message || d.error || ''));
+                if (d.ok) {
+                    _setReferralHasOpenWithdraw(true);
+                    if (contentEl) _renderWithdrawSubmitted(contentEl, amount, d.request_id);
+                    if (window._loadReferralPage) setTimeout(window._loadReferralPage, 600);
+                } else if (alreadyOpen) {
+                    _setReferralHasOpenWithdraw(true);
+                    if (contentEl) _renderWithdrawAlreadyOpen(contentEl);
+                    else showNotification(d.message || d.error || 'Ошибка', 'error');
+                } else {
+                    showNotification(d.message || d.error || 'Ошибка', 'error');
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">send</span>Отправить заявку'; }
+                }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
-            } finally {
                 if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-rounded text-sm">send</span>Отправить заявку'; }
             }
         }
@@ -3836,6 +3903,9 @@
                 if (!d.ok || !content) return;
                 content.classList.remove('hidden');
                 window._referralAvailableBalance = parseFloat(d.available) || 0;
+                if (typeof d.has_open_request === 'boolean') {
+                    window._referralHasOpenWithdraw = d.has_open_request;
+                }
                 _refreshWithdrawButtonState();
 
                 const botLink = d.bot_link || '';
@@ -4153,6 +4223,11 @@
                     body: JSON.stringify({ token })
                 });
                 const d = await resp.json();
+                if (typeof d.has_open_request === 'boolean') {
+                    _setReferralHasOpenWithdraw(d.has_open_request);
+                } else if (d.ok && Array.isArray(d.withdrawals)) {
+                    _setReferralHasOpenWithdraw(d.withdrawals.some((w) => w && (w.status === 'new' || w.status === 'processing')));
+                }
                 if (!d.ok || !d.withdrawals || !d.withdrawals.length) {
                     el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет заявок</div>';
                     return;
