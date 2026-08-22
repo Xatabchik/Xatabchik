@@ -213,6 +213,97 @@ ensure_certbot_nginx() {
     exit 1
 }
 
+_le_write_file() {
+    local dest="$1"
+    if [[ -w "$(dirname "$dest")" ]]; then
+        cat > "$dest"
+    else
+        sudo tee "$dest" >/dev/null
+    fi
+}
+
+# Certbot пишет options-ssl-nginx.conf и ssl-dhparams.pem только при --nginx.
+# Если сертификаты уже есть (standalone/webroot/копия), файлов нет и nginx -t падает.
+ensure_letsencrypt_ssl_snippets() {
+    local le_dir="${1:-/etc/letsencrypt}"
+    local options="${le_dir}/options-ssl-nginx.conf"
+    local dhparam="${le_dir}/ssl-dhparams.pem"
+    local src
+
+    mkdir -p "$le_dir" 2>/dev/null || sudo mkdir -p "$le_dir"
+
+    if [[ "$le_dir" == /etc/letsencrypt ]] && { [[ ! -s "$options" ]] || [[ ! -s "$dhparam" ]]; }; then
+        if command -v certbot >/dev/null 2>&1; then
+            sudo certbot plugins --prepare >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [[ ! -s "$options" ]]; then
+        for src in \
+            /usr/lib/python3/dist-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+            /usr/lib/python3/dist-packages/certbot_nginx/tls_configs/options-ssl-nginx.conf \
+            /snap/certbot/current/lib/python3.12/site-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+            /snap/certbot/current/lib/python3.10/site-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf
+        do
+            if [[ -s "$src" ]]; then
+                if [[ -w "$(dirname "$options")" ]]; then
+                    cp "$src" "$options"
+                else
+                    sudo cp "$src" "$options"
+                fi
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -s "$options" ]]; then
+        log_warn "Создаю ${options} (certbot --nginx не создавал TLS-сниппеты)."
+        _le_write_file "$options" <<'EOF'
+# Fallback, equivalent to certbot-nginx Mozilla intermediate defaults.
+ssl_session_cache shared:le_nginx_SSL:10m;
+ssl_session_timeout 1440m;
+ssl_session_tickets off;
+
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+
+ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+EOF
+    fi
+
+    if [[ ! -s "$dhparam" ]]; then
+        for src in \
+            /usr/lib/python3/dist-packages/certbot/ssl-dhparams.pem \
+            /usr/lib/python3/dist-packages/certbot/certbot/ssl-dhparams.pem \
+            /snap/certbot/current/lib/python3.12/site-packages/certbot/ssl-dhparams.pem \
+            /snap/certbot/current/lib/python3.10/site-packages/certbot/ssl-dhparams.pem
+        do
+            if [[ -s "$src" ]]; then
+                if [[ -w "$(dirname "$dhparam")" ]]; then
+                    cp "$src" "$dhparam"
+                else
+                    sudo cp "$src" "$dhparam"
+                fi
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -s "$dhparam" ]]; then
+        log_warn "Создаю ${dhparam} (RFC 7919 ffdhe2048)."
+        _le_write_file "$dhparam" <<'EOF'
+-----BEGIN DH PARAMETERS-----
+MIIBCAKCAQEA//////////+t+FRYortKmq/cViAnPTzx2LnFg84tNpWp4TZBFGQz
++8yTnc4kmz75fS/jY2MMddj2gbICrsRhetPfHtXV/WVhJDP1H18GbtCFY2VVPe0a
+87VXE15/V8k1mE8McODmi3fipona8+/och3xWKE2rec1MKzKT0g6eXq8CrGCsyT7
+YdEIqUuyyOP7uWrat2DX9GgdT0Kj3jlN9K5W7edjcrsZCwenyO4KbXCeAvzhzffi
+7MA0BM0oNC9hkXL+nOmFg/+OTxIy7vKBg8P+OxtMb61zO7X8vC7CIAXFjvGDfRaD
+ssbzSibBsu/6iGtCOGEoXJf//////////wIBAg==
+-----END DH PARAMETERS-----
+EOF
+    fi
+}
+
 configure_nginx() {
     local domain="$1"
     local port="$2"
@@ -220,6 +311,7 @@ configure_nginx() {
     local nginx_link="$4"
 
     log_info "\nШаг 4: настройка Nginx"
+    ensure_letsencrypt_ssl_snippets
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo tee "$nginx_conf" >/dev/null <<EOF
 limit_req_zone \$binary_remote_addr zone=xatabchik_login:10m rate=5r/m;
@@ -303,6 +395,10 @@ if [[ -f "$NGINX_CONF" ]]; then
     git reset --hard "origin/$(git rev-parse --abbrev-ref HEAD)"
     log_success "✔ Репозиторий обновлён."
     log_info "\nШаг 2: пересборка и перезапуск контейнеров"
+    ensure_letsencrypt_ssl_snippets
+    if sudo nginx -t >/dev/null 2>&1; then
+        sudo systemctl reload nginx
+    fi
     restrict_panel_firewall
     sudo "${COMPOSE[@]}" down --remove-orphans
     sudo "${COMPOSE[@]}" up -d --build --force-recreate
