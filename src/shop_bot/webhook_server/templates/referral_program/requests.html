@@ -84,6 +84,13 @@
           <td class="text-end">
             {% if r.status in ('new', 'processing') %}
             <div class="btn-group flex-wrap justify-content-end">
+              {% if r.status == 'new' %}
+              <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+                <input type="hidden" name="status" value="processing" />
+                <button type="submit" class="btn btn-sm btn-outline-primary">В обработку</button>
+              </form>
+              {% endif %}
               <form method="post" action="{{ url_for('referral_program_request_status_route', request_id=r.id) }}" class="d-inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                 <input type="hidden" name="status" value="paid" />

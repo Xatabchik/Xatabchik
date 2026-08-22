@@ -4872,7 +4872,10 @@ def get_user_router() -> Router:
                 f"Минимальная сумма для вывода {min_withdraw:.0f} ₽. У вас {balance:.2f} ₽.", show_alert=True
             )
             return
-        items = list_referral_payout_methods(user_id) or []
+        items = [
+            m for m in (list_referral_payout_methods(user_id) or [])
+            if _ref_method_enabled((m.get("method_type") or "").strip().lower())
+        ]
         if not items:
             await cb.message.edit_text(
                 "🧾 Сначала добавьте способ получения средств.",
@@ -4948,28 +4951,24 @@ def get_user_router() -> Router:
         await message.answer(("✅ " if ok else "❌ ") + msg)
         if ok and new_id:
             method = get_referral_payout_method(int(method_id))
-            try:
-                admin_id_raw = get_setting("admin_telegram_id")
-                admin_id = int(str(admin_id_raw).strip()) if admin_id_raw else None
-            except Exception:
-                admin_id = None
-            if admin_id:
-                label = _REF_METHOD_LABELS.get((method or {}).get("method_type"), (method or {}).get("method_type"))
-                bank_line = f"{(method or {}).get('bank_name')} — " if (method or {}).get("bank_name") else ""
-                requisite = html_escape(str((method or {}).get("requisite_value") or ""))
-                uname = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-                admin_text = (
-                    "💸 <b>Новая заявка на вывод (реферальная программа)</b>\n"
-                    f"Заявка: #{new_id}\n"
-                    f"Пользователь: {uname} (<code>{message.from_user.id}</code>)\n"
-                    f"Сумма: <b>{amount:.2f} ₽</b>\n"
-                    f"Способ: {label}\n"
-                    f"Реквизиты: {bank_line}<code>{requisite}</code>"
-                )
+            admin_text = rw_repo.format_referral_withdrawal_admin_notice(
+                request_id=new_id,
+                user_id=message.from_user.id,
+                username=message.from_user.username,
+                amount=amount,
+                method_type=(method or {}).get("method_type"),
+                bank_name=(method or {}).get("bank_name"),
+                requisite_value=(method or {}).get("requisite_value"),
+            )
+            for admin_id in (rw_repo.get_admin_ids() or set()):
                 try:
-                    await message.bot.send_message(admin_id, admin_text, parse_mode="HTML")
+                    await message.bot.send_message(int(admin_id), admin_text, parse_mode="HTML")
                 except Exception:
-                    logger.warning("Не удалось уведомить администратора о заявке на вывод", exc_info=True)
+                    logger.warning(
+                        "Не удалось уведомить администратора %s о заявке на вывод",
+                        admin_id,
+                        exc_info=True,
+                    )
         try:
             await state.clear()
         except Exception:
