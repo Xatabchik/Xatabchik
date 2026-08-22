@@ -67,7 +67,7 @@ def _create_payload_pending_or_error(payment_id, user_id, amount, meta):
 TEMP_AUTH_TOKENS = {}
 
 # Max age for Telegram WebApp initData (seconds). Reject stale signed payloads.
-TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 24 * 60 * 60
+TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 10 * 60
 
 # Rate-limit auth endpoints to reduce brute-force of tokens / initData replay.
 limiter = Limiter(key_func=get_remote_address, default_limits=[])

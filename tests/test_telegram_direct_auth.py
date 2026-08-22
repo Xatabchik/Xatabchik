@@ -80,16 +80,37 @@ def test_telegram_direct_rejects_invalid_signature_and_does_not_overwrite_token(
 
 def test_telegram_direct_rejects_expired_auth_date(app_client, temp_db):
     from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
 
     victim_id = 555004
     insert_user(database.DB_FILE, telegram_id=victim_id, username="victim4")
     original = "pre-existing-token-555004"
     database.update_user_auth_token(victim_id, original)
 
-    expired = _make_init_data_with_auth_date(victim_id, int(time.time()) - (25 * 60 * 60))
+    # Старше нового порога (10 мин), но внутри старого 24-часового окна.
+    expired = _make_init_data_with_auth_date(
+        victim_id, int(time.time()) - (handlers.TELEGRAM_INIT_DATA_MAX_AGE_SECONDS + 30)
+    )
     resp = app_client.post("/api/auth/telegram-direct", json={"init_data": expired})
     assert resp.status_code == 401
     assert database.get_auth_token_by_user_id(victim_id) == original
+
+
+def test_telegram_direct_accepts_init_data_within_max_age(app_client, temp_db):
+    from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    user_id = 555005
+    insert_user(database.DB_FILE, telegram_id=user_id, username="fresh")
+    within = _make_init_data_with_auth_date(
+        user_id, int(time.time()) - (handlers.TELEGRAM_INIT_DATA_MAX_AGE_SECONDS // 2)
+    )
+    resp = app_client.post("/api/auth/telegram-direct", json={"init_data": within})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("ok") is True
+    assert data.get("token")
+    assert database.get_auth_token_by_user_id(user_id) == data["token"]
 
 
 def test_telegram_direct_accepts_valid_init_data_for_registered_user(app_client, temp_db):
