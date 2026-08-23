@@ -1,0 +1,64 @@
+{# Массовое изменение срока ключей пользователя: selected → bulk-extend, user-all → bulk-extend-user #}
+<div class="modal modal-blur fade" id="udBulkExtendModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="ud-bulk-extend-form" method="post" action="{{ url_for('bulk_extend_keys_route') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+        <input type="hidden" name="user_id" id="ud-bulk-extend-user-id" value="" />
+        <div id="ud-bulk-extend-key-ids"></div>
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="ti ti-calendar-stats me-2"></i>
+            <span id="ud-bulk-extend-modal-title">Изменить срок ключей</span>
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning d-none mb-3" id="ud-bulk-extend-all-warning" role="alert">
+            Действие применяется ко <strong>всем ключам этого пользователя</strong>, независимо от поиска и текущей страницы. Отменить будет нельзя.
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Режим изменения</label>
+            <div class="form-selectgroup form-selectgroup-boxes d-flex flex-column">
+              <label class="form-selectgroup-item flex-fill">
+                <input type="radio" name="mode" value="days" class="form-selectgroup-input" checked />
+                <div class="form-selectgroup-label d-flex align-items-center p-3">
+                  <div class="me-3"><span class="form-selectgroup-check"></span></div>
+                  <div>
+                    <div class="font-weight-medium">Продлить / сократить на N дней</div>
+                    <div class="text-secondary small">Отрицательное число сокращает срок</div>
+                  </div>
+                </div>
+              </label>
+              <label class="form-selectgroup-item flex-fill">
+                <input type="radio" name="mode" value="date" class="form-selectgroup-input" />
+                <div class="form-selectgroup-label d-flex align-items-center p-3">
+                  <div class="me-3"><span class="form-selectgroup-check"></span></div>
+                  <div>
+                    <div class="font-weight-medium">Установить точную дату истечения</div>
+                    <div class="text-secondary small">Одна и та же дата для выбранных / всех ключей пользователя</div>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div class="mb-0" id="ud-bulk-extend-days-wrap">
+            <label class="form-label" for="ud-bulk-extend-days">Количество дней</label>
+            <input type="number" class="form-control" id="ud-bulk-extend-days" name="days" step="1" placeholder="Например: 30 или -7" />
+          </div>
+          <div class="mb-0 d-none" id="ud-bulk-extend-date-wrap">
+            <label class="form-label" for="ud-bulk-extend-expire-at">Дата истечения</label>
+            <input type="text" class="form-control" id="ud-bulk-extend-expire-at" name="expire_at" placeholder="YYYY-MM-DD HH:MM" autocomplete="off" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="ud-bulk-extend-submit-btn">
+            <i class="ti ti-check me-1"></i>
+            Применить
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
