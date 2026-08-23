@@ -89,6 +89,9 @@ class PlategaAPI:
 
 
     async def get_transaction(self, transaction_id: str) -> dict | None:
-        if not transaction_id:
+        """GET /transaction/{id} — сверка статуса по provider transaction ID."""
+        txid = str(transaction_id or "").strip()
+        if not txid:
             return None
-        return await self._request("GET", f"/transaction/{transaction_id}")
+        logger.info("Platega get_transaction provider_transaction_id=%s", txid)
+        return await self._request("GET", f"/transaction/{txid}")

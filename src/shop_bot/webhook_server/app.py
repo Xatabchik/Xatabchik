@@ -31,6 +31,7 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 from shop_bot.modules import remnawave_api
 from shop_bot.modules import telegram_reachability
+from shop_bot.modules.platega_fulfillment import complete_pending_platega_payment
 from shop_bot.bot import handlers
 from shop_bot.bot import keyboards
 from aiogram import Bot
@@ -6028,11 +6029,11 @@ def create_webhook_app(bot_controller_instance):
                     )
                     return 'OK', 200
 
-                metadata = find_and_complete_pending_transaction(payment_id)
+                metadata = complete_pending_platega_payment(
+                    payment_id,
+                    provider_transaction_id=platega_transaction_id or None,
+                )
                 if metadata:
-                    metadata.setdefault('payment_method', 'Platega')
-                    if platega_transaction_id:
-                        metadata['platega_transaction_id'] = platega_transaction_id
                     try:
                         _handle_promo_after_payment(metadata)
                     except Exception:
