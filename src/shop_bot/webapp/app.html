@@ -383,17 +383,6 @@
                 </div>
                 <div id="gifts-pagination" class="hidden"></div>
             </div>
-            <button onclick="window.location.hash='setup'"
-                class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
-                <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
-                    <span class="material-symbols-rounded text-primary text-sm">download</span>
-                </div>
-                <div class="text-left flex-1">
-                    <div class="text-xs font-bold text-white">Настройка подключения</div>
-                    <div class="text-[9px] text-gray-500">Инструкции для ваших устройств</div>
-                </div>
-                <span class="material-symbols-rounded text-gray-600 text-base">chevron_right</span>
-            </button>
         </main>
     </div>
     <!-- ======== Конец КЛЮЧИ ======== -->
@@ -1948,10 +1937,10 @@
 
                 <div class="w-full flex flex-col gap-2.5">
                     <button id="success-connect-btn"
-                        onclick="window.open(document.getElementById('success-key').textContent, '_blank')"
+                        onclick="openLinkSafe((document.getElementById('success-key').textContent || '').trim())"
                         class="w-full bg-white text-black py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                        <span class="material-symbols-rounded text-base">play_arrow</span>
-                        Как подключиться
+                        <span class="material-symbols-rounded text-sm">bolt</span>
+                        <span>Подключить</span>
                     </button>
                     <button
                         onclick="closePaymentModal(); window.location.hash = '';"
