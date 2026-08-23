@@ -3818,6 +3818,45 @@ def create_webhook_app(bot_controller_instance):
         _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
         return redirect(request.referrer or url_for('admin_keys_page'))
 
+    @flask_app.route('/admin/keys/bulk-extend-user', methods=['POST'])
+    @login_required
+    def bulk_extend_user_keys_route():
+        """Изменить срок у всех ключей одного пользователя (карточка пользователя)."""
+        try:
+            user_id = int(request.form.get('user_id') or 0)
+        except (TypeError, ValueError):
+            user_id = 0
+        if user_id <= 0:
+            flash('Не указан пользователь.', 'warning')
+            return redirect(request.referrer or url_for('users_page'))
+
+        params, err = _parse_bulk_expiry_params()
+        if err:
+            flash(err, 'danger')
+            return redirect(request.referrer or url_for('users_page'))
+
+        key_ids = [
+            int(k['key_id'])
+            for k in (get_keys_for_user(user_id) or [])
+            if k.get('key_id') is not None
+        ]
+        if not key_ids:
+            flash('У пользователя нет ключей.', 'warning')
+            return redirect(request.referrer or url_for('users_page'))
+
+        admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
+        logger.info(
+            "Admin bulk-extend USER: admin=%s user_id=%s total=%s mode=%s days=%s expire_at=%s",
+            admin_who, user_id, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
+        )
+        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
+        logger.info(
+            "Admin bulk-extend USER done: admin=%s user_id=%s ok=%s fail=%s",
+            admin_who, user_id, ok_n, fail_n,
+        )
+        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
+        return redirect(request.referrer or url_for('users_page'))
+
     @flask_app.route('/admin/keys/<int:key_id>/comment', methods=['POST'])
     @login_required
     def update_key_comment_route(key_id: int):

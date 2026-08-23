@@ -184,3 +184,76 @@ def test_admin_keys_page_has_bulk_ui():
     assert "keys-select-all" in html
     assert "key-select-cb" in html
     assert "bulkExtendModal" in html
+
+
+def test_user_card_keys_tab_has_checkbox_and_bulk_ui():
+    from pathlib import Path
+
+    pane = Path("src/shop_bot/webhook_server/templates/partials/user_card_keys_pane.html").read_text(encoding="utf-8")
+    assert "uk-select-all" in pane
+    assert "Изменить срок ВСЕМ" in pane
+    assert "uk-bulk-extend-selected-btn" in pane
+    assert "ti-hash" in pane
+    assert "Пользователь" in pane
+    assert "Хост" in pane
+    assert "Email" in pane
+    assert "Истекает" in pane
+    assert "Создан" in pane
+
+    users = Path("src/shop_bot/webhook_server/templates/users.html").read_text(encoding="utf-8")
+    assert "user_card_keys_pane.html" in users
+    assert "user_card_bulk_extend_modal.html" in users
+    assert "user_card_keys_bulk_js.html" in users
+
+    shared = Path("src/shop_bot/webhook_server/templates/partials/admin_details_modals.html").read_text(encoding="utf-8")
+    assert "user_card_keys_pane.html" in shared
+    assert "user_card_bulk_extend_modal.html" in shared
+
+    rows = Path("src/shop_bot/webhook_server/templates/partials/admin_keys_table.html").read_text(encoding="utf-8")
+    assert "key-select-cb" in rows
+    assert rows.count("<td") == 7
+
+
+def test_bulk_extend_user_only_touches_that_users_keys(temp_db, monkeypatch):
+    from conftest import insert_user
+
+    insert_user(temp_db.DB_FILE, telegram_id=100, username="owner")
+    insert_user(temp_db.DB_FILE, telegram_id=200, username="other")
+    _insert_key(temp_db, 1, user_id=100)
+    _insert_key(temp_db, 2, user_id=100)
+    _insert_key(temp_db, 3, user_id=200)
+    client, wh_mod = _client(monkeypatch, temp_db)
+
+    called: list[int] = []
+
+    def fake_extend(key_id, days):
+        called.append(int(key_id))
+        return True, None
+
+    monkeypatch.setattr(wh_mod, "extend_key", fake_extend)
+
+    resp = client.post(
+        "/admin/keys/bulk-extend-user",
+        data={"mode": "days", "days": "10", "user_id": "100", "key_ids": ["3"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    assert sorted(called) == [1, 2]
+
+
+def test_bulk_extend_user_requires_user_id(temp_db, monkeypatch):
+    _insert_key(temp_db, 1, user_id=100)
+    client, wh_mod = _client(monkeypatch, temp_db)
+
+    called: list[int] = []
+    monkeypatch.setattr(wh_mod, "extend_key", lambda *a, **k: called.append(1) or (True, None))
+
+    resp = client.post(
+        "/admin/keys/bulk-extend-user",
+        data={"mode": "days", "days": "10"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert called == []
+    html = resp.data.decode("utf-8", errors="ignore")
+    assert "Не указан пользователь" in html

@@ -1,0 +1,153 @@
+<script>
+(function(){
+  const SELECTED_URL = {{ url_for('bulk_extend_keys_route')|tojson }};
+  const USER_ALL_URL = {{ url_for('bulk_extend_user_keys_route')|tojson }};
+  const ALL_CONFIRM = 'Изменить срок действия ВСЕХ ключей этого пользователя (независимо от поиска и текущей страницы)? Действие нельзя отменить.';
+
+  const tbody = document.getElementById('uk-tbody');
+  const selectAll = document.getElementById('uk-select-all');
+  const bar = document.getElementById('uk-bulk-selected-bar');
+  const countEl = document.getElementById('uk-bulk-selected-count');
+  const countBtnEl = document.getElementById('uk-bulk-selected-count-btn');
+  const selectedBtn = document.getElementById('uk-bulk-extend-selected-btn');
+  const form = document.getElementById('ud-bulk-extend-form');
+  const idsWrap = document.getElementById('ud-bulk-extend-key-ids');
+  const modalTitle = document.getElementById('ud-bulk-extend-modal-title');
+  const allWarning = document.getElementById('ud-bulk-extend-all-warning');
+  const daysWrap = document.getElementById('ud-bulk-extend-days-wrap');
+  const dateWrap = document.getElementById('ud-bulk-extend-date-wrap');
+  const daysInput = document.getElementById('ud-bulk-extend-days');
+  const dateInput = document.getElementById('ud-bulk-extend-expire-at');
+  const submitBtn = document.getElementById('ud-bulk-extend-submit-btn');
+  const userIdInput = document.getElementById('ud-bulk-extend-user-id');
+  let bulkMode = 'selected';
+  let expireFp = null;
+
+  function currentUserId(){
+    return (document.getElementById('uk-bulk-user-id') || {}).value || '';
+  }
+  function getCheckboxes(){
+    return Array.from(document.querySelectorAll('#uk-tbody .key-select-cb'));
+  }
+  function getChecked(){
+    return getCheckboxes().filter(cb => cb.checked);
+  }
+  function refreshUkBulkSelection(){
+    const boxes = getCheckboxes();
+    const checked = getChecked();
+    const n = checked.length;
+    if (countEl) countEl.textContent = String(n);
+    if (countBtnEl) countBtnEl.textContent = String(n);
+    if (bar) bar.classList.toggle('d-none', n === 0);
+    if (selectedBtn) selectedBtn.disabled = n === 0;
+    if (selectAll) {
+      selectAll.checked = boxes.length > 0 && checked.length === boxes.length;
+      selectAll.indeterminate = checked.length > 0 && checked.length < boxes.length;
+    }
+  }
+  window.refreshUkBulkSelection = refreshUkBulkSelection;
+
+  selectAll?.addEventListener('change', () => {
+    const on = !!selectAll.checked;
+    getCheckboxes().forEach(cb => { cb.checked = on; });
+    refreshUkBulkSelection();
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('key-select-cb') && e.target.closest('#uk-tbody')) {
+      refreshUkBulkSelection();
+    }
+  });
+  if (tbody && window.MutationObserver) {
+    const mo = new MutationObserver(() => {
+      if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+      refreshUkBulkSelection();
+    });
+    mo.observe(tbody, { childList: true });
+  }
+
+  function setModeFields(mode){
+    const isDays = mode !== 'date';
+    daysWrap?.classList.toggle('d-none', !isDays);
+    dateWrap?.classList.toggle('d-none', isDays);
+    if (daysInput) daysInput.required = isDays;
+    if (dateInput) dateInput.required = !isDays;
+  }
+  form?.querySelectorAll('input[name="mode"]').forEach(radio => {
+    radio.addEventListener('change', () => setModeFields(radio.value));
+  });
+  setModeFields('days');
+
+  document.getElementById('udBulkExtendModal')?.addEventListener('show.bs.modal', (ev) => {
+    const trigger = ev.relatedTarget;
+    bulkMode = (trigger && trigger.getAttribute('data-bulk-mode')) || 'selected';
+    if (form) form.action = bulkMode === 'user-all' ? USER_ALL_URL : SELECTED_URL;
+    if (modalTitle) {
+      modalTitle.textContent = bulkMode === 'user-all'
+        ? 'Изменить срок ВСЕМ ключам пользователя'
+        : 'Изменить срок выбранных ключей';
+    }
+    allWarning?.classList.toggle('d-none', bulkMode !== 'user-all');
+    if (userIdInput) userIdInput.value = currentUserId();
+    if (idsWrap) idsWrap.innerHTML = '';
+    if (bulkMode === 'selected') {
+      getChecked().forEach(cb => {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'key_ids';
+        inp.value = cb.value;
+        idsWrap.appendChild(inp);
+      });
+    }
+    if (dateInput && window.flatpickr && !expireFp) {
+      expireFp = flatpickr(dateInput, {
+        enableTime: true,
+        time_24hr: true,
+        dateFormat: 'Y-m-d H:i',
+        minuteIncrement: 5,
+        locale: (flatpickr.l10ns && flatpickr.l10ns.ru) || 'ru',
+      });
+    }
+  });
+
+  form?.addEventListener('submit', (ev) => {
+    const mode = (form.querySelector('input[name="mode"]:checked') || {}).value || 'days';
+    if (mode === 'days') {
+      const d = Number(daysInput?.value || 0);
+      if (!Number.isFinite(d) || d === 0) {
+        ev.preventDefault();
+        try { window.showToast('warning', 'Укажите ненулевое число дней'); } catch(_){}
+        return;
+      }
+    } else if (!(dateInput?.value || '').trim()) {
+      ev.preventDefault();
+      try { window.showToast('warning', 'Укажите дату истечения'); } catch(_){}
+      return;
+    }
+    if (bulkMode === 'selected') {
+      const n = idsWrap ? idsWrap.querySelectorAll('input[name="key_ids"]').length : 0;
+      if (n === 0) {
+        ev.preventDefault();
+        try { window.showToast('warning', 'Не выбрано ни одного ключа'); } catch(_){}
+        return;
+      }
+    }
+    if (bulkMode === 'user-all') {
+      if (!currentUserId()) {
+        ev.preventDefault();
+        try { window.showToast('warning', 'Не указан пользователь'); } catch(_){}
+        return;
+      }
+      if (!window.confirm(ALL_CONFIRM)) {
+        ev.preventDefault();
+        return;
+      }
+    }
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Применение…';
+    }
+  });
+
+  refreshUkBulkSelection();
+})();
+</script>

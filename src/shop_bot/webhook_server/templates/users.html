@@ -223,30 +223,7 @@
           </div>
 
           <div class="ud-tab-pane d-none" data-ud-pane="keys">
-            <div class="mb-2">
-              <input type="text" class="form-control form-control-sm" id="uk-search" placeholder="Поиск по email/ID..." />
-            </div>
-            <div class="table-responsive">
-              <table class="table table-vcenter table-hover card-table keys-table mb-2">
-                <thead>
-                  <tr>
-                    <th class="w-1"><i class="ti ti-hash"></i></th>
-                    <th><i class="ti ti-user me-1"></i> Пользователь</th>
-                    <th><i class="ti ti-server me-1"></i> Хост</th>
-                    <th><i class="ti ti-mail me-1"></i> Email</th>
-                    <th><i class="ti ti-calendar me-1"></i> Истекает</th>
-                    <th><i class="ti ti-clock me-1"></i> Создан</th>
-                  </tr>
-                </thead>
-                <tbody id="uk-tbody"></tbody>
-              </table>
-            </div>
-            <div id="uk-empty" class="text-secondary text-center py-3 d-none">Ключей нет</div>
-            <div class="d-flex justify-content-center align-items-center gap-2 mt-2" id="uk-pagination">
-              <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-prev"><i class="ti ti-chevron-left"></i></button>
-              <span class="text-secondary small" id="uk-page-info">1 / 1</span>
-              <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-next"><i class="ti ti-chevron-right"></i></button>
-            </div>
+            {% include 'partials/user_card_keys_pane.html' %}
           </div>
 
           <div class="ud-tab-pane d-none" data-ud-pane="transactions">
@@ -287,6 +264,8 @@
     </div>
   </div>
 </div>
+
+{% include 'partials/user_card_bulk_extend_modal.html' %}
 
 <div class="modal modal-blur fade" id="udConfirmModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -1172,6 +1151,7 @@
         const data = await resp.json();
         if (!data || !data.ok) throw new Error('bad response');
         tbody.innerHTML = data.html || '';
+        if (typeof window.refreshUkBulkSelection === 'function') window.refreshUkBulkSelection();
         ukPage = data.current_page || 1;
         ukTotalPages = data.total_pages || 1;
         empty.classList.toggle('d-none', !!(data.total && data.total > 0));
@@ -1349,6 +1329,8 @@
       currentUserId = uid;
       keysLoaded = false;
       txLoaded = false;
+      const ukUserId = document.getElementById('uk-bulk-user-id');
+      if (ukUserId) ukUserId.value = String(uid);
       document.getElementById('ud-user-id').textContent = '#' + uid;
       loadingEl.classList.remove('d-none');
       contentEl.classList.add('d-none');
@@ -1887,6 +1869,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/flatpickr/dark.css') }}">
 <script src="{{ url_for('static', filename='vendor/flatpickr/flatpickr.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/flatpickr/ru.js') }}"></script>
+{% include 'partials/user_card_keys_bulk_js.html' %}
 
 {% endblock %}
 

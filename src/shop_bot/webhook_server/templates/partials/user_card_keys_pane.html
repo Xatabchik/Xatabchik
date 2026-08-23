@@ -1,0 +1,60 @@
+<div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+  <div class="flex-grow-1">
+    <input type="text" class="form-control form-control-sm" id="uk-search" placeholder="Поиск по email/ID..." />
+  </div>
+  <button
+    type="button"
+    class="btn btn-outline-warning btn-sm"
+    id="uk-bulk-extend-all-btn"
+    data-bs-toggle="modal"
+    data-bs-target="#udBulkExtendModal"
+    data-bulk-mode="user-all"
+    title="Ко всем ключам этого пользователя, не только к отображаемым на странице"
+  >
+    <i class="ti ti-calendar-stats me-1"></i>
+    <span>Изменить срок ВСЕМ</span>
+  </button>
+</div>
+<input type="hidden" id="uk-bulk-user-id" value="" />
+<div id="uk-bulk-selected-bar" class="d-none alert alert-primary d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2 py-2">
+  <div class="small mb-0">
+    <i class="ti ti-checkbox me-1"></i>
+    Выбрано ключей на этой странице: <strong id="uk-bulk-selected-count">0</strong>
+  </div>
+  <button
+    type="button"
+    class="btn btn-primary btn-sm"
+    id="uk-bulk-extend-selected-btn"
+    data-bs-toggle="modal"
+    data-bs-target="#udBulkExtendModal"
+    data-bulk-mode="selected"
+    disabled
+  >
+    <i class="ti ti-calendar-plus me-1"></i>
+    Изменить срок выбранных (<span id="uk-bulk-selected-count-btn">0</span>)
+  </button>
+</div>
+<div class="table-responsive">
+  <table class="table table-vcenter table-hover card-table keys-table mb-2">
+    <thead>
+      <tr>
+        <th class="w-1" onclick="event.stopPropagation()">
+          <input type="checkbox" class="form-check-input" id="uk-select-all" title="Выбрать все на странице" aria-label="Выбрать все на странице" />
+        </th>
+        <th class="w-1"><i class="ti ti-hash"></i></th>
+        <th><i class="ti ti-user me-1"></i> Пользователь</th>
+        <th><i class="ti ti-server me-1"></i> Хост</th>
+        <th><i class="ti ti-mail me-1"></i> Email</th>
+        <th><i class="ti ti-calendar me-1"></i> Истекает</th>
+        <th><i class="ti ti-clock me-1"></i> Создан</th>
+      </tr>
+    </thead>
+    <tbody id="uk-tbody"></tbody>
+  </table>
+</div>
+<div id="uk-empty" class="text-secondary text-center py-3 d-none">Ключей нет</div>
+<div class="d-flex justify-content-center align-items-center gap-2 mt-2" id="uk-pagination">
+  <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-prev"><i class="ti ti-chevron-left"></i></button>
+  <span class="text-secondary small" id="uk-page-info">1 / 1</span>
+  <button type="button" class="btn btn-sm btn-outline-secondary" id="uk-next"><i class="ti ti-chevron-right"></i></button>
+</div>
