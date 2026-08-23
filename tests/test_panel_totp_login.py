@@ -23,6 +23,23 @@ def _client(temp_db):
     return flask_app.test_client()
 
 
+def test_login_page_hides_totp_when_disabled(temp_db):
+    client = _client(temp_db)
+    body = client.get("/login").get_data(as_text=True)
+    assert 'name="totp"' not in body
+    assert "Код TOTP" not in body
+
+
+def test_login_page_shows_totp_when_enabled(temp_db):
+    secret = pyotp.random_base32()
+    temp_db.update_setting("panel_totp_enabled", "true")
+    temp_db.update_setting("panel_totp_secret", temp_db.encrypt_managed_bot_token(secret))
+    client = _client(temp_db)
+    body = client.get("/login").get_data(as_text=True)
+    assert 'name="totp"' in body
+    assert "Код TOTP" in body
+
+
 def test_login_succeeds_without_totp_when_disabled(temp_db):
     client = _client(temp_db)
     resp = client.post(
