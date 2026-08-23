@@ -2054,6 +2054,16 @@
         let selectedMethod = null;
         let activePaymentUrl = null;
         let pollingInterval = null;
+        let _paymentPollTimer = null;
+        let _paymentPollInFlight = false;
+        let _paymentPollStopped = true;
+        let _paymentPollDelayMs = 8000;
+        let _paymentPollStartedAt = 0;
+        let _paymentPollPid = null;
+        let _paymentPollOnPaid = null;
+        const PAYMENT_POLL_MIN_MS = 8000;
+        const PAYMENT_POLL_MAX_MS = 20000;
+        const PAYMENT_POLL_MAX_WAIT_MS = 40 * 60 * 1000;
         let activePaymentId = null;
         const RENDERED_USER_ID = parseInt("{{ user_id }}") || 0;
         window._currentUserId = RENDERED_USER_ID || null;
@@ -2769,20 +2779,14 @@
                     return;
                 }
                 if (data.status === 'confirmed') {
-                    if (pollingInterval) {
-                        clearInterval(pollingInterval);
-                        pollingInterval = null;
-                    }
+                    _stopStatusPolling();
                     window._plategaAutoVerifyFor = null;
                     _setVerifyPlategaButtonVisible(false);
                     await showSuccessScreen(data);
                     return;
                 }
                 if (data.status === 'canceled') {
-                    if (pollingInterval) {
-                        clearInterval(pollingInterval);
-                        pollingInterval = null;
-                    }
+                    _stopStatusPolling();
                     localStorage.removeItem('pendingPayment');
                     _setVerifyPlategaButtonVisible(false);
                     showNotification('Платёж отменён. Создайте новый счёт.', 'error');
@@ -2811,32 +2815,71 @@
             }
         }
 
-        function startStatusPolling(pid) {
-            if (!pid) return;
-            if (pollingInterval) clearInterval(pollingInterval);
-            pollingInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('/api/check-payment', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            payment_id: String(pid),
-                            token: window.getAuthToken() || ''
-                        })
-                    });
-                    const data = await response.json();
-                    if (data.ok && data.paid) {
-                        clearInterval(pollingInterval);
-                        pollingInterval = null;
+        function _stopStatusPolling() {
+            _paymentPollStopped = true;
+            _paymentPollInFlight = false;
+            _paymentPollPid = null;
+            _paymentPollOnPaid = null;
+            if (_paymentPollTimer) {
+                clearTimeout(_paymentPollTimer);
+                _paymentPollTimer = null;
+            }
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            if (window._topUpPollingInterval) {
+                clearInterval(window._topUpPollingInterval);
+                window._topUpPollingInterval = null;
+            }
+        }
 
-                        // Получаем актуальные данные пользователя для заполнения экрана успеха
-                        // (В реальном сценарии данные можно вернуть сразу в api/check-payment)
-                        showSuccessScreen(data);
-                    }
-                } catch (e) {
-                    console.error("Polling error:", e);
+        async function _tickPaymentPoll() {
+            if (_paymentPollStopped || !_paymentPollPid) return;
+            if (Date.now() - _paymentPollStartedAt > PAYMENT_POLL_MAX_WAIT_MS) {
+                _stopStatusPolling();
+                return;
+            }
+            if (document.hidden || _paymentPollInFlight) {
+                _paymentPollTimer = setTimeout(_tickPaymentPoll, PAYMENT_POLL_MIN_MS);
+                return;
+            }
+            _paymentPollInFlight = true;
+            try {
+                const response = await fetch('/api/check-payment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        payment_id: String(_paymentPollPid),
+                        token: window.getAuthToken() || ''
+                    })
+                });
+                const data = await response.json();
+                if (data.ok && data.paid) {
+                    const onPaid = _paymentPollOnPaid;
+                    _stopStatusPolling();
+                    if (onPaid) await onPaid(data);
+                    return;
                 }
-            }, 3000);
+            } catch (e) {
+                console.error('Polling error:', e);
+            } finally {
+                _paymentPollInFlight = false;
+            }
+            if (_paymentPollStopped) return;
+            _paymentPollDelayMs = Math.min(PAYMENT_POLL_MAX_MS, Math.round(_paymentPollDelayMs * 1.25));
+            _paymentPollTimer = setTimeout(_tickPaymentPoll, _paymentPollDelayMs);
+        }
+
+        function startStatusPolling(pid, onPaid) {
+            if (!pid) return;
+            _stopStatusPolling();
+            _paymentPollStopped = false;
+            _paymentPollPid = pid;
+            _paymentPollOnPaid = onPaid || (async (data) => { showSuccessScreen(data); });
+            _paymentPollDelayMs = PAYMENT_POLL_MIN_MS;
+            _paymentPollStartedAt = Date.now();
+            _paymentPollTimer = setTimeout(_tickPaymentPoll, PAYMENT_POLL_MIN_MS);
         }
 
         async function refreshAppData() {
@@ -2990,6 +3033,8 @@
         }
 
         function closePaymentModal() {
+            _stopStatusPolling();
+            window._plategaAutoVerifyFor = null;
             const backdrop = document.getElementById('payment-backdrop');
             const card = document.getElementById('payment-card');
             const modal = document.getElementById('payment-modal');
@@ -3061,10 +3106,7 @@
         }
 
         function cancelPayment() {
-            if (pollingInterval) {
-                clearInterval(pollingInterval);
-                pollingInterval = null;
-            }
+            _stopStatusPolling();
             window._plategaAutoVerifyFor = null;
             _setVerifyPlategaButtonVisible(false);
             localStorage.removeItem('pendingPayment');
@@ -3088,9 +3130,8 @@
             const backdrop = document.getElementById('action-backdrop');
             const card = document.getElementById('action-card');
             const modal = document.getElementById('action-modal');
-            if (window._topUpPollingInterval) {
-                clearInterval(window._topUpPollingInterval);
-                window._topUpPollingInterval = null;
+            if (_paymentPollPid && window._topUpPaymentId && String(_paymentPollPid) === String(window._topUpPaymentId)) {
+                _stopStatusPolling();
             }
             if (backdrop) backdrop.classList.add('opacity-0', 'pointer-events-none');
             if (card) card.classList.add('translate-y-full');
@@ -4430,10 +4471,7 @@
             const contentEl = document.getElementById('action-modal-content');
             if (!modal) return;
 
-            if (window._topUpPollingInterval) {
-                clearInterval(window._topUpPollingInterval);
-                window._topUpPollingInterval = null;
-            }
+            _stopStatusPolling();
 
             modal.classList.remove('hidden');
             modal.classList.add('flex');
@@ -4684,10 +4722,7 @@
                     return;
                 }
                 if (data.status === 'confirmed') {
-                    if (window._topUpPollingInterval) {
-                        clearInterval(window._topUpPollingInterval);
-                        window._topUpPollingInterval = null;
-                    }
+                    _stopStatusPolling();
                     showNotification('Баланс пополнен!', 'success');
                     if (window.Telegram?.WebApp?.HapticFeedback) {
                         window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
@@ -4723,46 +4758,26 @@
         }
 
         function _startTopUpPolling(paymentId) {
-            if (!paymentId) return;
-            if (window._topUpPollingInterval) clearInterval(window._topUpPollingInterval);
-            window._topUpPollingInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('/api/check-payment', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            payment_id: String(paymentId),
-                            token: window.getAuthToken() || ''
-                        })
-                    });
-                    const data = await response.json();
-                    if (data.ok && data.paid) {
-                        clearInterval(window._topUpPollingInterval);
-                        window._topUpPollingInterval = null;
-                        showNotification(data.message || 'Баланс пополнен!', 'success');
-                        if (window.Telegram?.WebApp?.HapticFeedback) {
-                            window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-                        }
-                        closeActionModal();
-                        if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
-                        if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
-                        try {
-                            const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                            const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
-                            const status = await resp.json();
-                            if (status.ok && status.balance != null) {
-                                const balStr = Number(status.balance).toFixed(2) + ' ₽';
-                                const financeBal = document.getElementById('finance-balance');
-                                const homeBal = document.getElementById('home-balance');
-                                if (financeBal) financeBal.textContent = balStr;
-                                if (homeBal) homeBal.textContent = balStr;
-                            }
-                        } catch (e) { /* silent */ }
-                    }
-                } catch (e) {
-                    console.error('Top-up polling error:', e);
+            startStatusPolling(paymentId, async (data) => {
+                showNotification(data.message || 'Баланс пополнен!', 'success');
+                if (window.Telegram?.WebApp?.HapticFeedback) {
+                    window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
                 }
-            }, 3000);
+                closeActionModal();
+                if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
+                if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
+                try {
+                    const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                    const status = await resp.json();
+                    if (status.ok && status.balance != null) {
+                        const balStr = Number(status.balance).toFixed(2) + ' ₽';
+                        const financeBal = document.getElementById('finance-balance');
+                        const homeBal = document.getElementById('home-balance');
+                        if (financeBal) financeBal.textContent = balStr;
+                        if (homeBal) homeBal.textContent = balStr;
+                    }
+                } catch (e) { /* silent */ }
+            });
         }
 
         function openReferralMethodsModal() {
