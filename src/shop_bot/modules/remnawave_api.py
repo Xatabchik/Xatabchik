@@ -24,6 +24,29 @@ class RemnawaveAPIError(RuntimeError):
     """Base error for Remnawave API interactions."""
 
 
+# Remnawave backend-contract: enable/disable уже в нужном состоянии — HTTP 400.
+# A030 User already enabled, A029 User already disabled.
+_ALREADY_ENABLED = ("A030", "already enabled")
+_ALREADY_DISABLED = ("A029", "already disabled")
+
+
+def _detail_is_already_in_desired_state(detail, *, want_enabled: bool) -> bool:
+    """True, если панель ответила, что пользователь уже enable/disable — это успех."""
+    code, phrase = _ALREADY_ENABLED if want_enabled else _ALREADY_DISABLED
+    if isinstance(detail, dict):
+        err = str(detail.get("errorCode") or "").strip().upper()
+        if err == code:
+            return True
+        text = str(detail.get("message") or "")
+    else:
+        text = str(detail or "")
+    return code in text or phrase in text.lower()
+
+
+def _is_already_in_desired_state(exc: BaseException, *, want_enabled: bool) -> bool:
+    return _detail_is_already_in_desired_state(str(exc or ""), want_enabled=want_enabled)
+
+
 # Shared HTTPX clients (connection pooling) to avoid creating a new TCP/TLS connection
 # for each Remnawave request. This noticeably reduces latency and eliminates a source
 # of "bot подвисает" on slow networks.
@@ -870,8 +893,26 @@ async def set_user_status(user_uuid: str, active: bool) -> bool:
         return False
     encoded_uuid = quote(user_uuid.strip())
     action = "enable" if active else "disable"
-    await _request("POST", f"/api/users/{encoded_uuid}/actions/{action}", expected_status=(200, 204))
-    return True
+    try:
+        resp = await _request(
+            "POST", f"/api/users/{encoded_uuid}/actions/{action}",
+            expected_status=(200, 204, 400),
+        )
+        if getattr(resp, "status_code", 200) == 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = getattr(resp, "text", "") or ""
+            if _detail_is_already_in_desired_state(detail, want_enabled=active):
+                logger.info("Remnawave: пользователь %s уже %s — пропускаем", user_uuid, action)
+                return True
+            raise RemnawaveAPIError(f"Remnawave API request failed: 400 {detail}")
+        return True
+    except RemnawaveAPIError as e:
+        if _is_already_in_desired_state(e, want_enabled=active):
+            logger.info("Remnawave: пользователь %s уже %s — пропускаем", user_uuid, action)
+            return True
+        raise
 
 
 def _extract_used_traffic_bytes(payload: dict[str, Any] | None) -> int:
@@ -893,10 +934,26 @@ async def disable_user(user_uuid: str, *, host_name: str) -> bool:
         return False
     try:
         encoded_uuid = quote(user_uuid.strip())
-        await _request_for_host(host_name, "POST", f"/api/users/{encoded_uuid}/actions/disable", expected_status=(200, 204))
+        resp = await _request_for_host(
+            host_name, "POST", f"/api/users/{encoded_uuid}/actions/disable",
+            expected_status=(200, 204, 400),
+        )
+        if getattr(resp, "status_code", 200) == 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = getattr(resp, "text", "") or ""
+            if _detail_is_already_in_desired_state(detail, want_enabled=False):
+                logger.info("Remnawave[%s]: пользователь %s уже отключён — пропускаем", host_name, user_uuid)
+                return True
+            logger.error("Remnawave[%s]: не удалось отключить пользователя %s: %s", host_name, user_uuid, detail)
+            return False
         logger.info("Remnawave[%s]: пользователь %s отключён (disable)", host_name, user_uuid)
         return True
     except Exception as e:
+        if _is_already_in_desired_state(e, want_enabled=False):
+            logger.info("Remnawave[%s]: пользователь %s уже отключён — пропускаем", host_name, user_uuid)
+            return True
         logger.error("Remnawave[%s]: не удалось отключить пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
         return False
 
@@ -907,10 +964,26 @@ async def enable_user(user_uuid: str, *, host_name: str) -> bool:
         return False
     try:
         encoded_uuid = quote(user_uuid.strip())
-        await _request_for_host(host_name, "POST", f"/api/users/{encoded_uuid}/actions/enable", expected_status=(200, 204))
+        resp = await _request_for_host(
+            host_name, "POST", f"/api/users/{encoded_uuid}/actions/enable",
+            expected_status=(200, 204, 400),
+        )
+        if getattr(resp, "status_code", 200) == 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = getattr(resp, "text", "") or ""
+            if _detail_is_already_in_desired_state(detail, want_enabled=True):
+                logger.info("Remnawave[%s]: пользователь %s уже включён — пропускаем", host_name, user_uuid)
+                return True
+            logger.error("Remnawave[%s]: не удалось включить пользователя %s: %s", host_name, user_uuid, detail)
+            return False
         logger.info("Remnawave[%s]: пользователь %s включён (enable)", host_name, user_uuid)
         return True
     except Exception as e:
+        if _is_already_in_desired_state(e, want_enabled=True):
+            logger.info("Remnawave[%s]: пользователь %s уже включён — пропускаем", host_name, user_uuid)
+            return True
         logger.error("Remnawave[%s]: не удалось включить пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
         return False
 
