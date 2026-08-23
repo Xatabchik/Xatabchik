@@ -2744,16 +2744,7 @@ def get_user_router() -> Router:
         if not plan_id:
             return None, None
         plan = get_plan_by_id(plan_id)
-        if not plan or int(plan.get('lte_limit_bytes') or 0) <= 0:
-            return None, None
-        # LTE-докупка доступна только если у хоста ключа реально настроен активный сквад класса 'lte'
-        # (двухпуловая схема host_squads) — иначе покупка не будет иметь эффекта на стороне Remnawave.
-        host_name_for_key = key_data.get('host_name')
-        try:
-            lte_squad_cfg = database.get_squad_by_class(host_name_for_key, 'lte') if host_name_for_key else None
-        except Exception:
-            lte_squad_cfg = None
-        if not lte_squad_cfg:
+        if not database.should_account_lte_traffic(plan, key_data.get('host_name')):
             return None, None
         return key_data, plan
 
@@ -6550,6 +6541,7 @@ def get_user_router() -> Router:
             plan_traffic_limit_bytes = 0
             plan_lte_limit_bytes = 0
             plan_main_reset_price = 0.0
+            plan_for_key = None
             try:
                 plan_id_for_key = _resolve_plan_id_for_key(key_data)
                 if plan_id_for_key:
@@ -6589,28 +6581,27 @@ def get_user_router() -> Router:
             # Сброс основного трафика доступен только тарифам с лимитом основного трафика и заданной ценой
             show_main_reset = show_traffic_topup and plan_main_reset_price > 0
             try:
-                if plan_lte_limit_bytes > 0:
-                    host_name_for_lte = key_data.get('host_name')
-                    lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte') if host_name_for_lte else None
-                    if lte_squad_cfg:
-                        show_lte_topup = True
-                        lte_display_label = database.squad_display_label(lte_squad_cfg)
-                        # LTE-пул принадлежит КЛЮЧУ: докупка на одном ключе не расходуется
-                        # на других ключах того же пользователя.
-                        lte_state = database.get_key_lte_state(key_id_to_show)
-                        lte_used = int(lte_state.get('lte_used_bytes') or 0)
-                        # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
-                        # буст) — раньше показанный лимит и проверяемый расходились.
-                        lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
-                        lte_used_txt = _format_bytes_gb(lte_used)
-                        lte_total_txt = _format_bytes_gb(lte_total)
-                        # Названия хостов/нод в карточке ключа не показываем: пользователю
-                        # достаточно суммарного LTE-лимита, а разбивка по нодам доступна
-                        # администратору в веб-панели (key_node_usage_snapshots).
-                        lte_line = f"💰 {html_escape(lte_display_label)}: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
-                        if next_reset_display:
-                            lte_line += f" (сброс {next_reset_display})"
-                        traffic_info_text = f"{traffic_info_text}\n{lte_line}" if traffic_info_text else lte_line
+                host_name_for_lte = key_data.get('host_name')
+                if database.should_account_lte_traffic(plan_for_key, host_name_for_lte):
+                    lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte')
+                    show_lte_topup = True
+                    lte_display_label = database.squad_display_label(lte_squad_cfg)
+                    # LTE-пул принадлежит КЛЮЧУ: докупка на одном ключе не расходуется
+                    # на других ключах того же пользователя.
+                    lte_state = database.get_key_lte_state(key_id_to_show)
+                    lte_used = int(lte_state.get('lte_used_bytes') or 0)
+                    # Та же формула, что энфорсит планировщик (лимит тарифа + докупленный
+                    # буст) — раньше показанный лимит и проверяемый расходились.
+                    lte_total = database.resolve_lte_limit_bytes(lte_state, plan_lte_limit_bytes)
+                    lte_used_txt = _format_bytes_gb(lte_used)
+                    lte_total_txt = _format_bytes_gb(lte_total)
+                    # Названия хостов/нод в карточке ключа не показываем: пользователю
+                    # достаточно суммарного LTE-лимита, а разбивка по нодам доступна
+                    # администратору в веб-панели (key_node_usage_snapshots).
+                    lte_line = f"💰 {html_escape(lte_display_label)}: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
+                    if next_reset_display:
+                        lte_line += f" (сброс {next_reset_display})"
+                    traffic_info_text = f"{traffic_info_text}\n{lte_line}" if traffic_info_text else lte_line
             except Exception:
                 pass
 

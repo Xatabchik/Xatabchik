@@ -315,6 +315,40 @@ def test_base_only_host_usage_not_billed_to_lte(temp_db):
 
     assert database.get_key_lte_state(key_id)["lte_used_bytes"] == 0
     assert fake.removed_squads == []
+    assert fake.node_usage_calls == []
+
+
+def test_unlimited_lte_is_not_accounted(temp_db):
+    """Безлимитный LTE (лимит 0) не ходит в статистику нод и не пишет расход, даже если сквад есть."""
+    database = temp_db
+    plan_id = _setup_lte_host(database, lte_gb=0)
+    key_id = _insert_key(database, user_id=61, host_name="Lte", user_uuid="u-61", plan_id=plan_id, observed=False)
+
+    fake = _FakeRemnawave(
+        {"u-61": 80 * GB},
+        usage_by_node={"node-lte": 80 * GB},
+        nodes_by_host={"Lte": ["node-lte"]},
+    )
+    _run_worker(database, fake)
+
+    assert fake.node_usage_calls == []
+    assert database.get_node_usage_for_key(key_id) == []
+    assert fake.removed_squads == []
+    assert (database.get_key_by_id(key_id).get("remote_access_state") or "enabled") == "enabled"
+
+
+def test_should_account_lte_requires_limit_and_squad(temp_db):
+    database = temp_db
+    limited = _setup_lte_host(database, host_name="AccLte", lte_gb=20)
+    unlimited = _setup_lte_host(database, host_name="AccUnlim", lte_gb=0)
+    database.create_host("NoSquad", "https://panel.example", "", "", 0)
+    database.create_plan("NoSquad", "plan-NoSquad", 1, 100.0, lte_limit_bytes=20 * GB)
+    plans_ns = {p["plan_name"]: p["plan_id"] for p in database.get_plans_for_host("NoSquad")}
+
+    assert database.should_account_lte_traffic(database.get_plan_by_id(limited), "AccLte")
+    assert not database.should_account_lte_traffic(database.get_plan_by_id(unlimited), "AccUnlim")
+    assert not database.should_account_lte_traffic(database.get_plan_by_id(plans_ns["plan-NoSquad"]), "NoSquad")
+    assert not database.should_account_lte_traffic(None, "AccLte")
 
 
 def test_existing_key_gets_baseline_initialized(temp_db):

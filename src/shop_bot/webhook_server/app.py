@@ -95,6 +95,7 @@ from shop_bot.data_manager.database import (
     get_squad_by_class, get_host_class,
     get_key_lte_state, add_key_lte_boost_bytes,
     get_node_usage_for_key, resolve_key_period_start,
+    should_account_lte_traffic,
     apply_key_monthly_reset_fields, remnawave_traffic_limit_strategy_for_plan,
     format_next_traffic_reset_display,
 )
@@ -2811,21 +2812,20 @@ def create_webhook_app(bot_controller_instance):
             devices = []
 
         lte_state = None
-        lte_limit_bytes = int((plan or {}).get('lte_limit_bytes') or 0)
-        if lte_limit_bytes > 0:
+        node_usage_rows = []
+        node_usage_period_start = None
+        account_lte = should_account_lte_traffic(plan, host_name)
+        if account_lte:
             try:
                 # LTE-пул принадлежит ключу, а не пользователю.
                 lte_state = get_key_lte_state(key_id)
             except Exception:
                 lte_state = None
-
-        node_usage_rows = []
-        node_usage_period_start = None
-        try:
-            node_usage_period_start = resolve_key_period_start(key)
-            node_usage_rows = get_node_usage_for_key(key_id, node_usage_period_start)
-        except Exception as e:
-            logger.warning(f"Не удалось получить расход по нодам для ключа {key_id}: {e}")
+            try:
+                node_usage_period_start = resolve_key_period_start(key)
+                node_usage_rows = get_node_usage_for_key(key_id, node_usage_period_start)
+            except Exception as e:
+                logger.warning(f"Не удалось получить расход по нодам для ключа {key_id}: {e}")
 
         return jsonify({
             "ok": True,
@@ -2871,6 +2871,7 @@ def create_webhook_app(bot_controller_instance):
             ],
             "qr_data_url": qr_data_url,
             "devices": devices,
+            "account_lte": account_lte,
             "lte_state": lte_state,
             # Разбивка расхода по нодам LTE-сквада за текущий расчётный период.
             # Название ноды намеренно не отдаётся в карточку ключа — только идентификатор.

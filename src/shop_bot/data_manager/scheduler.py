@@ -505,9 +505,8 @@ async def check_traffic_boost_resets(bot: Bot):
             main_limit = database.plan_main_limit_bytes(plan)
             if main_limit <= 0:
                 main_limit = database._as_limit_bytes(key.get("traffic_limit_bytes"))
-            lte_limit = database.plan_lte_limit_bytes(plan)
             has_main_limit = main_limit > 0
-            has_lte_limit = lte_limit > 0
+            has_lte_limit = database.should_account_lte_traffic(plan, key.get("host_name"))
 
             host_name = key.get("host_name")
             user_uuid = key.get("remnawave_user_uuid")
@@ -669,15 +668,15 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 except Exception:
                     plan_lte_limit = 0
 
-                # В LTE-пул попадают только ключи, у которых LTE-сквад подтверждён через
-                # host_squads: node_class='premium' без сквада — это недонастроенный хост,
-                # его расход не начисляем (fail-open), но предупреждаем в логах.
+                # LTE-учёт только если у тарифа задан лимит И на хосте есть активный
+                # сквад класса 'lte'. Безлимит и хост без сквада — не ходим в панель
+                # за статистикой нод и не пишем key_lte_state / snapshots.
                 try:
                     lte_squad = database.get_squad_by_class(host_name, "lte")
                 except Exception:
                     lte_squad = None
-                if not lte_squad:
-                    if database.get_host_class(host_name) == "premium":
+                if not database.should_account_lte_traffic(plan, host_name, lte_squad=lte_squad):
+                    if plan_lte_limit > 0 and not lte_squad and database.get_host_class(host_name) == "premium":
                         logger.warning(
                             "Scheduler[dual-limits]: хост '%s' помечен как premium, но активного сквада "
                             "класса 'lte' нет — расход по нему не учитывается в LTE-пуле.",

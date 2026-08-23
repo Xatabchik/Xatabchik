@@ -377,7 +377,7 @@ document.addEventListener('click', (e) => {
       const ps=document.getElementById('kd-plan-select'); const plans=data.plans_for_host||[];
       ps.innerHTML=plans.map(p=>`<option value="${p.plan_id}" ${plan&&plan.plan_id===p.plan_id?'selected':''}>${p.plan_name} (${p.months} мес., ${Number(p.price||0).toFixed(0)} RUB)</option>`).join('')||'<option value="">Нет тарифов</option>';
       const gbWrap=document.getElementById('kd-gb-wrap'); if (gbWrap) gbWrap.classList.toggle('d-none',!(plan&&Number(plan.traffic_limit_bytes||0)>0));
-      const lteWrap=document.getElementById('kd-lte-wrap'); lteWrap.classList.toggle('d-none',!(plan&&Number(plan.lte_limit_bytes||0)>0));
+      const lteWrap=document.getElementById('kd-lte-wrap'); lteWrap.classList.toggle('d-none',!data.account_lte);
       kdDevicesCache=data.devices||[]; kdDevicesPage=1; renderDevices(kdDevicesCache);
       switchKdTab('info');
       loadingEl.classList.add('d-none'); contentEl.classList.remove('d-none');
