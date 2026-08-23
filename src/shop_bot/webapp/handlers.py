@@ -39,7 +39,17 @@ from shop_bot.data_manager.remnawave_repository import (
     get_referral_payout_method, get_pending_status,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
-from shop_bot.data_manager.database import get_seller_user, get_device_tiers, get_host, format_next_traffic_reset_display
+from shop_bot.data_manager.database import (
+    get_seller_user,
+    get_device_tiers,
+    get_host,
+    format_next_traffic_reset_display,
+    get_squad_by_class,
+    get_key_lte_state,
+    resolve_lte_limit_bytes,
+    get_traffic_packages_for_plan,
+    get_traffic_package_by_id,
+)
 from shop_bot.modules import remnawave_api
 from shop_bot.config import get_purchase_success_text
 import re
@@ -709,6 +719,137 @@ def _process_template_placeholders(html: str, user_id: int, webapp_settings: dic
     
     return html
 
+def _format_bytes_gb(num_bytes) -> str:
+    """Тот же формат ГБ, что в карточке ключа бота."""
+    try:
+        gb = int(num_bytes or 0) / (1024 ** 3)
+        txt = f"{gb:.2f}"
+        return txt.rstrip("0").rstrip(".") if "." in txt else txt
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _format_gb_amount(size_gb) -> str:
+    try:
+        val = float(size_gb or 0)
+    except (TypeError, ValueError):
+        val = 0.0
+    return f"{val:.0f}" if val == int(val) else f"{val:g}"
+
+
+def _is_key_without_billing_plan(key_data: dict) -> bool:
+    """Триал/подарок: биллингового тарифа нет — докупка LTE недоступна (как в боте)."""
+    try:
+        tag = str((key_data or {}).get("tag") or "").strip().lower()
+    except Exception:
+        tag = ""
+    if tag in {"trial", "триал"} or "gift" in tag:
+        return True
+    try:
+        desc = (key_data or {}).get("description")
+        if isinstance(desc, str) and desc.strip().startswith("{"):
+            meta = json.loads(desc)
+            if isinstance(meta, dict):
+                if meta.get("is_trial"):
+                    return True
+                if str(meta.get("source") or "").strip().lower() in {"trial", "gift"}:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_plan_id_for_key(key_data: dict) -> int | None:
+    """plan_id из description JSON, иначе первый активный тариф хоста (как в боте)."""
+    try:
+        desc = (key_data or {}).get("description")
+        if isinstance(desc, str) and desc.strip().startswith("{"):
+            meta = json.loads(desc)
+            if isinstance(meta, dict) and meta.get("plan_id") is not None:
+                return int(meta.get("plan_id"))
+    except Exception:
+        pass
+    if _is_key_without_billing_plan(key_data):
+        return None
+    host_name = (key_data or {}).get("host_name")
+    if not host_name:
+        return None
+    try:
+        plans = rw_repo.get_active_plans_for_host(host_name) or []
+    except Exception:
+        plans = []
+    if not plans:
+        return None
+    try:
+        return int(plans[0].get("plan_id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _lte_card_state(key: dict) -> dict:
+    """Условия и цифры LTE-пула — те же, что в карточке ключа бота.
+
+    Показываем блок и кнопку докупки только если:
+      1) у тарифа ключа задан lte_limit_bytes > 0;
+      2) на хосте ключа есть активный сквад класса lte.
+    Лимит = plans.lte_limit_bytes + докупленный буст (resolve_lte_limit_bytes).
+    """
+    empty = {
+        "show_lte": False,
+        "show_lte_topup": False,
+        "lte_info": "",
+        "lte_used_bytes": 0,
+        "lte_total_bytes": 0,
+        "plan": None,
+    }
+    try:
+        plan_id = _resolve_plan_id_for_key(key)
+        if not plan_id:
+            return empty
+        plan = get_plan_by_id(plan_id)
+        plan_lte_limit = int((plan or {}).get("lte_limit_bytes") or 0)
+        if not plan or plan_lte_limit <= 0:
+            return empty
+        host_name = key.get("host_name")
+        lte_squad = get_squad_by_class(host_name, "lte") if host_name else None
+        if not lte_squad:
+            return empty
+        key_id = int(key.get("key_id") or 0)
+        lte_state = get_key_lte_state(key_id) if key_id else {}
+        lte_used = int((lte_state or {}).get("lte_used_bytes") or 0)
+        lte_total = resolve_lte_limit_bytes(lte_state, plan_lte_limit)
+        used_txt = _format_bytes_gb(lte_used)
+        total_txt = _format_bytes_gb(lte_total)
+        line = f"{used_txt} ГБ / {total_txt} ГБ"
+        reset_txt = format_next_traffic_reset_display(key.get("next_traffic_reset_at"))
+        if reset_txt:
+            line += f" (сброс {reset_txt})"
+        return {
+            "show_lte": True,
+            "show_lte_topup": True,
+            "lte_info": line,
+            "lte_used_bytes": lte_used,
+            "lte_total_bytes": lte_total,
+            "plan": plan,
+        }
+    except Exception:
+        return empty
+
+
+def _owned_lte_key_and_plan(user_id: int, key_id: int):
+    """Ключ принадлежит user_id и доступен для LTE-докупки. Иначе (None, None)."""
+    try:
+        key = get_key_by_id(int(key_id))
+    except Exception:
+        key = None
+    if not key or int(key.get("user_id") or 0) != int(user_id):
+        return None, None
+    state = _lte_card_state(key)
+    if not state.get("show_lte_topup") or not state.get("plan"):
+        return None, None
+    return key, state["plan"]
+
+
 def _process_key_data(key: dict) -> dict:
     # 1. Calculate expiry
     try:
@@ -811,6 +952,8 @@ def _process_key_data(key: dict) -> dict:
         status_color = "text-red-500"
         status_bg = "bg-red-500/10"
 
+    lte_state = _lte_card_state(key)
+
     return {
         "key_id": key.get('key_id'),
         "name": key_name,
@@ -833,6 +976,9 @@ def _process_key_data(key: dict) -> dict:
         "host_name": key.get('host_name') or "",
         "user_key_name": key.get('user_key_name') or "",
         "auto_renew": bool(int(key.get('auto_renew') or 0)),
+        "lte_info": lte_state.get("lte_info") or "",
+        "show_lte": bool(lte_state.get("show_lte")),
+        "show_lte_topup": bool(lte_state.get("show_lte_topup")),
     }
 
 def _get_key_html(key: dict) -> str:
@@ -1075,6 +1221,10 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                                 <span class="text-gray-300 font-mono whitespace-nowrap">{data['hwid_info']}</span>
                             </div>
                         </div>
+                        {f'''<div class="flex items-center gap-1.5 pt-1 opacity-90">
+                            <span class="text-amber-400/80 whitespace-nowrap">💰 LTE:</span>
+                            <span class="text-gray-300 font-mono whitespace-nowrap">{data["lte_info"]}</span>
+                        </div>''' if data.get('show_lte') and data.get('lte_info') else ''}
                      </div>
                  
                      <!-- COMMENTS BLOCK -->
@@ -1129,6 +1279,11 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                              <span class="auto-renew-label">{'Авто: ВКЛ' if data['auto_renew'] else 'Авто: ВЫКЛ'}</span>
                          </button>
                      </div>
+                     {f'''<button onclick="openLteTopup({data["key_id"]})"
+                        class="w-full bg-amber-500/10 border border-amber-500/20 text-amber-300 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1 mt-1">
+                         <span class="material-symbols-rounded text-sm">bolt</span>
+                         <span>Докупить LTE</span>
+                     </button>''' if data.get('show_lte_topup') else ''}
                      {extra_content_html}
                 </div>
             </div>
@@ -1891,6 +2046,14 @@ class CreatePaymentRequest(BaseModel):
 class CreateTopUpPaymentRequest(BaseModel):
     payment_method: str
     amount: float
+    token: str | None = None
+    user_id: int | None = None  # ignored; identity from token only
+    init_data: str | None = None
+
+class CreateLteTopUpPaymentRequest(BaseModel):
+    payment_method: str
+    key_id: int
+    package_id: int
     token: str | None = None
     user_id: int | None = None  # ignored; identity from token only
     init_data: str | None = None
@@ -3383,6 +3546,314 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
     except Exception as e:
         logger.error(f"API Create TopUp Payment Error: {e}")
         return {"ok": False, "error": str(e), "details": traceback.format_exc()}
+
+
+def _lte_topup_metadata(user_id: int, key_id: int, package: dict, payment_method: str, payment_id: str, host_name: str | None) -> dict:
+    """Метаданные те же, что бот кладёт в pending для process_successful_payment."""
+    return {
+        "user_id": int(user_id),
+        "price": float(package.get("price") or 0),
+        "action": "lte_gb_topup",
+        "key_id": int(key_id),
+        "package_id": int(package.get("package_id") or 0),
+        "size_gb": float(package.get("size_gb") or 0),
+        "payment_method": payment_method,
+        "payment_id": payment_id,
+        "host_name": host_name,
+        "plan_id": int(package.get("plan_id") or 0),
+    }
+
+
+@app.get("/api/lte-packages")
+async def api_lte_packages(request: Request, key_id: int, token: str | None = None):
+    """Пакеты докупки LTE для ключа владельца. Цена/размер только с сервера."""
+    user = _require_authenticated_user(request, token=token)
+    if not user:
+        return _unauthorized()
+    user_id = int(user["telegram_id"])
+    key, plan = _owned_lte_key_and_plan(user_id, key_id)
+    if not key or not plan:
+        return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}
+
+    packages = get_traffic_packages_for_plan(int(plan["plan_id"]), only_active=True, pool="lte")
+    if not packages:
+        return {"ok": False, "error": "Пакеты докупки LTE для этого тарифа пока не настроены. Обратитесь к администратору."}
+
+    lte = _lte_card_state(key)
+    items = []
+    for pkg in packages:
+        size_gb = float(pkg.get("size_gb") or 0)
+        price = float(pkg.get("price") or 0)
+        items.append({
+            "package_id": int(pkg["package_id"]),
+            "size_gb": size_gb,
+            "size_txt": _format_gb_amount(size_gb),
+            "price": price,
+        })
+    return {
+        "ok": True,
+        "key_id": int(key["key_id"]),
+        "lte_info": lte.get("lte_info") or "",
+        "packages": items,
+    }
+
+
+@app.post("/api/create-lte-topup-payment")
+async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, request: Request):
+    """Оплата докупки LTE: те же методы, что в боте; цена берётся из пакета в БД."""
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
+        key, plan = _owned_lte_key_and_plan(user_id, req.key_id)
+        if not key or not plan:
+            return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}
+
+        package = get_traffic_package_by_id(int(req.package_id))
+        if (
+            not package
+            or int(package.get("plan_id") or 0) != int(plan["plan_id"])
+            or str(package.get("pool") or "main").strip().lower() != "lte"
+            or int(package.get("is_active") if package.get("is_active") is not None else 1) != 1
+        ):
+            return {"ok": False, "error": "Пакет не найден"}
+
+        try:
+            price = float(package.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            return {"ok": False, "error": "Некорректная цена пакета."}
+
+        size_gb = float(package.get("size_gb") or 0)
+        size_txt = _format_gb_amount(size_gb)
+        description = f"Докупка {size_txt} ГБ LTE-трафика"
+        method_id = (req.payment_method or "").strip()
+        host_name = key.get("host_name")
+        bot_username = get_setting("telegram_bot_username") or ""
+        return_url = f"https://t.me/{bot_username}" if bot_username else "https://t.me"
+
+        if method_id == "pay_balance":
+            if not deduct_from_balance(user_id, price):
+                return {"ok": False, "error": "Недостаточно средств"}
+            pid = f"balance:{user_id}:{uuid.uuid4()}"
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Balance", pid, host_name)
+            token = get_setting("telegram_bot_token")
+            if not token:
+                _rollback_internal_payment(
+                    payment_id=pid, user_id=user_id, amount=price,
+                    payment_method="Balance", reason="telegram_bot_token missing after deduct",
+                )
+                return {"ok": False, "error": "Бот не настроен (нет токена)"}
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                await process_successful_payment(bot, meta)
+            except Exception as e:
+                _rollback_internal_payment(
+                    payment_id=pid, user_id=user_id, amount=price,
+                    payment_method="Balance", reason=e,
+                )
+                return {"ok": False, "error": "Не удалось применить докупку, средства возвращены на баланс"}
+            finally:
+                await bot.session.close()
+            return {"ok": True, "message": "Оплачено с баланса!", "paid": True}
+
+        if method_id == "pay_referral_balance":
+            if not deduct_from_referral_balance(user_id, price):
+                return {"ok": False, "error": "Недостаточно средств на реферальном балансе"}
+            pid = f"referral_balance:{user_id}:{uuid.uuid4()}"
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "ReferralBalance", pid, host_name)
+            token = get_setting("telegram_bot_token")
+            if not token:
+                _rollback_internal_payment(
+                    payment_id=pid, user_id=user_id, amount=price,
+                    payment_method="ReferralBalance", reason="telegram_bot_token missing after deduct",
+                )
+                return {"ok": False, "error": "Бот не настроен (нет токена)"}
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            try:
+                await process_successful_payment(bot, meta)
+            except Exception as e:
+                _rollback_internal_payment(
+                    payment_id=pid, user_id=user_id, amount=price,
+                    payment_method="ReferralBalance", reason=e,
+                )
+                return {"ok": False, "error": "Не удалось применить докупку, средства возвращены на реферальный баланс"}
+            finally:
+                await bot.session.close()
+            return {"ok": True, "message": "Оплачено с реферального баланса!", "paid": True}
+
+        if method_id == "pay_yookassa":
+            shop_id, secret = get_setting("yookassa_shop_id"), get_setting("yookassa_secret_key")
+            if not shop_id or not secret:
+                return {"ok": False, "error": "YooKassa не настроена"}
+            YookassaConfiguration.account_id = shop_id
+            YookassaConfiguration.secret_key = secret
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooKassa", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            payload = {
+                "amount": {"value": f"{price:.2f}", "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": return_url},
+                "capture": True,
+                "description": description,
+                "metadata": {"payment_id": pid},
+            }
+            try:
+                pay_obj = YookassaPayment.create(payload, pid)
+                pay_url = pay_obj.confirmation.confirmation_url
+                try:
+                    provider_payment_id = getattr(pay_obj, "id", None)
+                    if provider_payment_id:
+                        meta2 = dict(meta)
+                        meta2["yookassa_payment_id"] = str(provider_payment_id)
+                        create_payload_pending(pid, user_id, price, meta2)
+                except Exception as e:
+                    logger.warning("YooKassa lte-gb: failed to store provider id for %s: %s", pid, e)
+                kb = create_payment_keyboard(pay_url)
+                await _send_telegram_message(
+                    user_id,
+                    f"<b>Докупка LTE через ЮKassa</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                    kb,
+                )
+                return {"ok": True, "payment_url": pay_url, "payment_id": pid, "message": "Счёт создан"}
+            except Exception as e:
+                logger.error(f"YooKassa lte-gb error: {e}")
+                return {"ok": False, "error": f"Ошибка YooKassa: {e}"}
+
+        if method_id == "pay_platega":
+            mid, key_secret = get_setting("platega_merchant_id"), get_setting("platega_secret")
+            if not mid or not key_secret:
+                return {"ok": False, "error": "Platega не настроена"}
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Platega", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            try:
+                platega = _platega_api() or PlategaAPI(mid, key_secret)
+                url, txid = await platega.create_payment(
+                    price, description, pid, return_url, return_url, _platega_method_code_from_settings(),
+                )
+                if url:
+                    _store_platega_transaction_id(pid, user_id, price, meta, txid)
+                    kb = create_payment_keyboard(url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Докупка LTE через Platega</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка получения ссылки Platega"}
+            except Exception as e:
+                return {"ok": False, "error": f"Ошибка Platega: {e}"}
+
+        if method_id == "pay_cryptobot":
+            if not get_setting("cryptobot_token"):
+                return {"ok": False, "error": "CryptoBot не настроен"}
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "CryptoBot", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            try:
+                res = await create_cryptobot_api_invoice(amount=price, payload_str=pid)
+                if res:
+                    kb = create_cryptobot_payment_keyboard(res[0], res[1])
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Докупка LTE через CryptoBot</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": res[0], "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка API CryptoBot"}
+            except Exception as e:
+                return {"ok": False, "error": f"Ошибка CryptoBot: {e}"}
+
+        if method_id == "pay_heleket":
+            if not ((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")):
+                return {"ok": False, "error": "Heleket не настроен"}
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Heleket", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            try:
+                result = await create_heleket_payment_request(
+                    amount=price, currency="RUB", description=description, order_id=pid,
+                    return_url=return_url, user_id=user_id, email=user.get("email") or "no-email",
+                )
+                if result and result.get("payment_url"):
+                    pay_url = result["payment_url"]
+                    kb = create_payment_keyboard(pay_url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Докупка LTE через Crypto (Heleket)</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": pay_url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка создания платежа Heleket"}
+            except Exception as e:
+                logger.error(f"Heleket lte-gb error: {e}")
+                return {"ok": False, "error": f"Ошибка Heleket: {e}"}
+
+        if method_id == "pay_yoomoney":
+            if (get_setting("yoomoney_enabled") or "false").strip().lower() != "true":
+                return {"ok": False, "error": "YooMoney недоступен"}
+            wallet = (get_setting("yoomoney_wallet") or "").strip()
+            secret = (get_setting("yoomoney_secret") or "").strip()
+            if not wallet or not secret:
+                return {"ok": False, "error": "YooMoney не настроен"}
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooMoney", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            link = _build_yoomoney_link(wallet, Decimal(str(price)), pid, description)
+            kb = create_yoomoney_payment_keyboard(link, pid)
+            await _send_telegram_message(
+                user_id,
+                f"<b>Докупка LTE через YooMoney</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                kb,
+            )
+            return {"ok": True, "payment_url": link, "payment_id": pid, "message": "Счёт создан"}
+
+        if method_id == "pay_tonconnect":
+            return {"ok": False, "error": "TON Connect пока недоступен через WebApp"}
+
+        if method_id == "pay_stars":
+            try:
+                stars_ratio = Decimal(str(get_setting("stars_per_rub") or "0"))
+            except Exception:
+                stars_ratio = Decimal("0")
+            if (get_setting("stars_enabled") or "false").strip().lower() != "true" or stars_ratio <= 0:
+                return {"ok": False, "error": "Stars отключены"}
+            stars_amount = int((Decimal(str(price)) * stars_ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if stars_amount <= 0:
+                stars_amount = 1
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Telegram Stars", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            await _send_invoice_stars(user_id, "Докупка LTE", description, pid, stars_amount)
+            return {
+                "ok": True,
+                "message": "Счёт Stars отправлен в бот",
+                "payment_id": pid,
+                "payment_url": f"tg://resolve?domain={bot_username}" if bot_username else None,
+                "stars": True,
+            }
+
+        return {"ok": False, "error": "Метод не поддерживается"}
+    except Exception as e:
+        logger.error(f"API Create LTE topup Error: {e}")
+        return {"ok": False, "error": str(e)}
 
 @app.post("/api/apply-promo")
 async def api_apply_promo(req: ApplyPromoRequest, request: Request):
