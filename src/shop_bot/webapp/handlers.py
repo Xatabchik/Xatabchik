@@ -45,6 +45,7 @@ from shop_bot.data_manager.database import (
     get_host,
     format_next_traffic_reset_display,
     get_squad_by_class,
+    should_account_lte_traffic,
     get_key_lte_state,
     resolve_lte_limit_bytes,
     get_traffic_packages_for_plan,
@@ -810,9 +811,9 @@ def _lte_card_state(key: dict) -> dict:
             return empty
         plan = get_plan_by_id(plan_id)
         plan_lte_limit = int((plan or {}).get("lte_limit_bytes") or 0)
-        if not plan or plan_lte_limit <= 0:
-            return empty
         host_name = key.get("host_name")
+        if not should_account_lte_traffic(plan, host_name):
+            return empty
         lte_squad = get_squad_by_class(host_name, "lte") if host_name else None
         if not lte_squad:
             return empty

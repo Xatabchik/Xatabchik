@@ -1425,7 +1425,7 @@
 
         // LTE-блок показываем только если у тарифа есть LTE-лимит
         const lteWrap = document.getElementById('kd-lte-wrap');
-        lteWrap.classList.toggle('d-none', !(plan && Number(plan.lte_limit_bytes || 0) > 0));
+        lteWrap.classList.toggle('d-none', !data.account_lte);
 
         // Разбивка расхода по нодам за текущий расчётный период (key_node_usage_snapshots).
         const nodeWrap = document.getElementById('kd-node-usage-wrap');

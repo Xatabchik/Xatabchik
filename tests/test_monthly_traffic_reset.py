@@ -19,6 +19,8 @@ GB = 1024 ** 3
 
 def _create_host_and_plan(database, host_name, *, traffic_gb=0, lte_gb=0):
     database.create_host(host_name, "https://panel.example", "", "", 0)
+    if lte_gb > 0:
+        database.add_host_squad(host_name, f"squad-{host_name}", "lte", "LTE")
     database.create_plan(
         host_name,
         f"plan-{host_name}",

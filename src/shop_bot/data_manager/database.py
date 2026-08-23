@@ -90,6 +90,30 @@ def plan_lte_limit_bytes(plan: dict | None) -> int:
     return _as_limit_bytes((plan or {}).get("lte_limit_bytes"))
 
 
+def should_account_lte_traffic(
+    plan: dict | None,
+    host_name: str | None,
+    *,
+    lte_squad: Any = _UNSET,
+) -> bool:
+    """LTE-учёт (снапшоты, baseline, энфорс) только при лимите и живом скваде.
+
+    Безлимитный LTE (`lte_limit_bytes` 0/NULL) и хост без активного сквада класса
+    `lte` не должны порождать запросы статистики на панель и строки в
+    `key_lte_state` / `key_node_usage_snapshots`.
+    """
+    if plan_lte_limit_bytes(plan) <= 0:
+        return False
+    if not host_name:
+        return False
+    if lte_squad is not _UNSET:
+        return bool(lte_squad)
+    try:
+        return bool(get_squad_by_class(host_name, "lte"))
+    except Exception:
+        return False
+
+
 def plan_has_monthly_traffic_reset(plan: dict | None) -> bool:
     """Ежемесячный сброс нужен, если ограничен основной пул и/или LTE."""
     return plan_main_limit_bytes(plan) > 0 or plan_lte_limit_bytes(plan) > 0
