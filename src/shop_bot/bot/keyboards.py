@@ -1515,8 +1515,9 @@ def create_traffic_gb_payment_method_keyboard(payment_methods: dict) -> InlineKe
     return builder.as_markup()
 
 
-def create_lte_packages_keyboard(key_id: int, packages: list[dict]) -> InlineKeyboardMarkup:
+def create_lte_packages_keyboard(key_id: int, packages: list[dict], lte_label: str = "LTE") -> InlineKeyboardMarkup:
     """Пакеты докупки независимого LTE-пула (premium-ноды 💰)."""
+    pool_name = (lte_label or "LTE").strip() or "LTE"
     builder = InlineKeyboardBuilder()
     for pkg in packages:
         pkg_id = pkg.get("package_id")
@@ -1530,7 +1531,7 @@ def create_lte_packages_keyboard(key_id: int, packages: list[dict]) -> InlineKey
             price = 0.0
         size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
         builder.button(
-            text=f"💰 {size_txt} ГБ LTE — {price:.0f} RUB",
+            text=f"💰 {size_txt} ГБ {pool_name} — {price:.0f} RUB",
             callback_data=f"lte_gb_pick_{key_id}_{pkg_id}"
         )
     builder.button(text="⬅️ Назад", callback_data=f"show_key_{key_id}")
@@ -1824,7 +1825,7 @@ def create_gift_info_keyboard(gift_id: int, key_id: int, is_activated: bool = Fa
     builder.adjust(1)
     return builder.as_markup()
 
-def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False, auto_renew: bool = False) -> InlineKeyboardMarkup:
+def create_key_info_keyboard(key_id: int, connection_string: str | None = None, devices_list: list | None = None, gift_code: str | None = None, gift_id: int | None = None, show_traffic_topup: bool = False, show_lte_topup: bool = False, show_main_reset: bool = False, auto_renew: bool = False, lte_label: str = "LTE") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
     builder.button(text="➕ Продлить этот ключ", callback_data=f"extend_key_{key_id}")
@@ -1833,7 +1834,8 @@ def create_key_info_keyboard(key_id: int, connection_string: str | None = None, 
         builder.button(text="📶 Докупить ГБ", callback_data=f"traffic_gb_start_{key_id}")
 
     if show_lte_topup:
-        builder.button(text="💰 Докупить LTE", callback_data=f"lte_gb_start_{key_id}")
+        pool_name = (lte_label or "LTE").strip() or "LTE"
+        builder.button(text=f"💰 Докупить {pool_name}", callback_data=f"lte_gb_start_{key_id}")
 
     if show_main_reset:
         builder.button(text="♻️ Сбросить основной", callback_data=f"main_reset_start_{key_id}")

@@ -1463,6 +1463,41 @@ def get_squad_by_class(host_name: str, squad_class: str) -> dict | None:
         return None
 
 
+DEFAULT_LTE_SQUAD_LABEL = "LTE"
+_SQUAD_LABEL_MAX_LEN = 48
+
+
+def squad_display_label(squad: dict | None, *, fallback: str | None = None) -> str:
+    """Публичная метка сквада: поле `label`, если заполнено, иначе fallback.
+
+    Для LTE-пула fallback по умолчанию — «LTE». Класс сквада (`squad_class`)
+    остаётся внутренним идентификатором и в UI не подменяется.
+    """
+    raw = str((squad or {}).get("label") or "").strip()
+    raw = " ".join(raw.split())
+    if raw:
+        return raw[:_SQUAD_LABEL_MAX_LEN]
+    if fallback is not None:
+        return str(fallback)
+    cls = str((squad or {}).get("squad_class") or "").strip().lower()
+    if cls == "base":
+        return "BASE"
+    if cls == "other":
+        return "OTHER"
+    return DEFAULT_LTE_SQUAD_LABEL
+
+
+def get_lte_squad_display_label(host_name: str | None, *, fallback: str = DEFAULT_LTE_SQUAD_LABEL) -> str:
+    """Метка активного LTE-сквада хоста — то, что видит пользователь вместо «LTE»."""
+    if not host_name:
+        return fallback
+    try:
+        squad = get_squad_by_class(host_name, "lte")
+    except Exception:
+        squad = None
+    return squad_display_label(squad, fallback=fallback)
+
+
 def set_host_squad_active(squad_id: int, is_active: bool) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:

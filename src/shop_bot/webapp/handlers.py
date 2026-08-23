@@ -49,6 +49,7 @@ from shop_bot.data_manager.database import (
     resolve_lte_limit_bytes,
     get_traffic_packages_for_plan,
     get_traffic_package_by_id,
+    squad_display_label,
 )
 from shop_bot.modules import remnawave_api
 from shop_bot.config import get_purchase_success_text
@@ -798,6 +799,7 @@ def _lte_card_state(key: dict) -> dict:
         "show_lte": False,
         "show_lte_topup": False,
         "lte_info": "",
+        "lte_label": "LTE",
         "lte_used_bytes": 0,
         "lte_total_bytes": 0,
         "plan": None,
@@ -820,6 +822,7 @@ def _lte_card_state(key: dict) -> dict:
         lte_total = resolve_lte_limit_bytes(lte_state, plan_lte_limit)
         used_txt = _format_bytes_gb(lte_used)
         total_txt = _format_bytes_gb(lte_total)
+        lte_label = squad_display_label(lte_squad)
         line = f"{used_txt} ГБ / {total_txt} ГБ"
         reset_txt = format_next_traffic_reset_display(key.get("next_traffic_reset_at"))
         if reset_txt:
@@ -828,6 +831,7 @@ def _lte_card_state(key: dict) -> dict:
             "show_lte": True,
             "show_lte_topup": True,
             "lte_info": line,
+            "lte_label": lte_label,
             "lte_used_bytes": lte_used,
             "lte_total_bytes": lte_total,
             "plan": plan,
@@ -977,6 +981,7 @@ def _process_key_data(key: dict) -> dict:
         "user_key_name": key.get('user_key_name') or "",
         "auto_renew": bool(int(key.get('auto_renew') or 0)),
         "lte_info": lte_state.get("lte_info") or "",
+        "lte_label": lte_state.get("lte_label") or "LTE",
         "show_lte": bool(lte_state.get("show_lte")),
         "show_lte_topup": bool(lte_state.get("show_lte_topup")),
     }
@@ -1222,7 +1227,7 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                             </div>
                         </div>
                         {f'''<div class="flex items-center gap-1.5 pt-1 opacity-90">
-                            <span class="text-amber-400/80 whitespace-nowrap">💰 LTE:</span>
+                            <span class="text-amber-400/80 whitespace-nowrap">💰 {_html_esc(data.get("lte_label") or "LTE")}:</span>
                             <span class="text-gray-300 font-mono whitespace-nowrap">{data["lte_info"]}</span>
                         </div>''' if data.get('show_lte') and data.get('lte_info') else ''}
                      </div>
@@ -1282,7 +1287,7 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                      {f'''<button onclick="openLteTopup({data["key_id"]})"
                         class="w-full bg-amber-500/10 border border-amber-500/20 text-amber-300 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1 mt-1">
                          <span class="material-symbols-rounded text-sm">bolt</span>
-                         <span>Докупить LTE</span>
+                         <span>Докупить {_html_esc(data.get("lte_label") or "LTE")}</span>
                      </button>''' if data.get('show_lte_topup') else ''}
                      {extra_content_html}
                 </div>
@@ -3594,6 +3599,7 @@ async def api_lte_packages(request: Request, key_id: int, token: str | None = No
         "ok": True,
         "key_id": int(key["key_id"]),
         "lte_info": lte.get("lte_info") or "",
+        "lte_label": lte.get("lte_label") or "LTE",
         "packages": items,
     }
 
@@ -3630,7 +3636,8 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
 
         size_gb = float(package.get("size_gb") or 0)
         size_txt = _format_gb_amount(size_gb)
-        description = f"Докупка {size_txt} ГБ LTE-трафика"
+        lte_label = (_lte_card_state(key).get("lte_label") or "LTE")
+        description = f"Докупка {size_txt} ГБ {lte_label}-трафика"
         method_id = (req.payment_method or "").strip()
         host_name = key.get("host_name")
         bot_username = get_setting("telegram_bot_username") or ""

@@ -686,10 +686,10 @@
 						<li class="squad-row">
 							<div class="squad-row-main">
 								<span class="badge {{ 'bg-primary' if sq.squad_class == 'base' else ('bg-warning text-dark' if sq.squad_class == 'lte' else 'bg-secondary') }}">
-									{{ 'BASE ∞' if sq.squad_class == 'base' else ('LTE 💰' if sq.squad_class == 'lte' else 'OTHER') }}
+									{{ sq.class_badge or ('BASE ∞' if sq.squad_class == 'base' else ('LTE 💰' if sq.squad_class == 'lte' else 'OTHER')) }}
 								</span>
 								<code class="squad-uuid" title="{{ sq.squad_uuid }}">{{ sq.squad_uuid }}</code>
-								{% if sq.label %}<span class="text-secondary small squad-label">{{ sq.label }}</span>{% endif %}
+								{% if sq.label and sq.squad_class != 'lte' %}<span class="text-secondary small squad-label">{{ sq.label }}</span>{% endif %}
 							</div>
 							<div class="squad-row-actions">
 								<form action="{{ url_for('delete_remnawave_squad_route', squad_id=sq.id) }}" method="post" data-confirm="Удалить сквад из каталога и со всех хостов?">
@@ -761,7 +761,7 @@
 									<input class="form-check-input" type="checkbox" name="squad_ids" value="{{ sq.id }}" />
 									<span class="form-check-label">
 										<span class="badge {{ 'bg-primary' if sq.squad_class == 'base' else ('bg-warning text-dark' if sq.squad_class == 'lte' else 'bg-secondary') }}">
-											{{ 'BASE' if sq.squad_class == 'base' else ('LTE' if sq.squad_class == 'lte' else 'OTHER') }}
+											{{ sq.class_badge_compact or ('BASE' if sq.squad_class == 'base' else ('LTE' if sq.squad_class == 'lte' else 'OTHER')) }}
 										</span>
 										{{ sq.label or sq.squad_uuid }}
 									</span>
@@ -821,7 +821,7 @@
 										<input class="form-check-input" type="checkbox" name="squad_ids" value="{{ sq.id }}" {% if sq.id in host.selected_squad_ids %}checked{% endif %} />
 										<span class="form-check-label">
 											<span class="badge {{ 'bg-primary' if sq.squad_class == 'base' else ('bg-warning text-dark' if sq.squad_class == 'lte' else 'bg-secondary') }}">
-												{{ 'BASE' if sq.squad_class == 'base' else ('LTE' if sq.squad_class == 'lte' else 'OTHER') }}
+												{{ sq.class_badge_compact or ('BASE' if sq.squad_class == 'base' else ('LTE' if sq.squad_class == 'lte' else 'OTHER')) }}
 											</span>
 											{{ sq.label or sq.squad_uuid }}
 										</span>
@@ -840,8 +840,8 @@
 								   правкой inbound'ов сквадов на стороне Remnawave. #}
 								<div class="alert alert-warning mt-2 mb-0 p-2 small">
 									<i class="ti ti-alert-triangle me-1"></i>
-									<b>Ноды доступны и через LTE-, и через base-сквад</b> — их трафик будет
-									засчитываться в LTE-пул, хотя те же ноды отдаёт безлимитный сквад:
+									<b>Ноды доступны и через {{ host.lte_label or 'LTE' }}-, и через base-сквад</b> — их трафик будет
+									засчитываться в пул {{ host.lte_label or 'LTE' }}, хотя те же ноды отдаёт безлимитный сквад:
 									<ul class="mb-0 mt-1">
 										{% for n in host.squad_node_overlap %}
 										<li>{{ n.node_name or '—' }} <code>{{ n.uuid }}</code></li>
@@ -899,7 +899,7 @@
 											<span class="plan-badge badge-devices"><i class="ti ti-devices"></i> {{ plan.hwid_device_limit }} устр.</span>
 											{% endif %}
 											{% if lte_gb > 0 %}
-											<span class="plan-badge badge-lte">💰 LTE {{ lte_gb|round(1) }} ГБ</span>
+											<span class="plan-badge badge-lte">💰 {{ host.lte_label or 'LTE' }} {{ lte_gb|round(1) }} ГБ</span>
 											{% endif %}
 											{% if plan.main_reset_price_rub and plan.main_reset_price_rub > 0 %}
 											<span class="plan-badge badge-reset"><i class="ti ti-refresh"></i> Сброс: {{ plan.main_reset_price_rub|round(0) }} RUB</span>
@@ -939,8 +939,8 @@
 															<input type="number" class="form-control pill" name="hwid_device_limit" value="{{ plan.hwid_device_limit or '' }}" placeholder="Без лимита" />
 														</div>
 														<div>
-															<label>LTE пул, ГБ 💰</label>
-															<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" value="{{ lte_gb|round(2) if lte_gb > 0 else '' }}" placeholder="0 = нет LTE" />
+															<label>{{ host.lte_label or 'LTE' }} пул, ГБ 💰</label>
+															<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" value="{{ lte_gb|round(2) if lte_gb > 0 else '' }}" placeholder="0 = нет {{ host.lte_label or 'LTE' }}" />
 														</div>
 														<div>
 															<label>Цена сброса, RUB</label>
@@ -954,7 +954,7 @@
 												  Пулы докупки раздельные и не взаимозаменяемые:
 												  main — поверх основного лимита трафика тарифа,
 												  lte  — независимый LTE-пул (💰 premium-ноды).
-												  Кнопка «💰 Докупить LTE» в боте читает только пул lte.
+												  Кнопка докупки в боте читает только пул lte (метка сквада, если задана).
 												#}
 												<div class="traffic-packages-section">
 													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — основной пул (♾):</h5>
@@ -997,7 +997,7 @@
 												</div>
 
 												<div class="traffic-packages-section">
-													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — LTE-пул (💰 premium-ноды):</h5>
+													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — пул {{ host.lte_label or 'LTE' }} (💰 premium-ноды):</h5>
 													{% if lte_gb > 0 %}
 													{% if plan.lte_traffic_packages %}
 													<ul class="pkg-list">
@@ -1009,7 +1009,7 @@
 																<button type="submit" class="btn btn-outline-secondary btn-sm pill" title="Вкл/выкл">{{ 'Выключить' if pkg.is_active else 'Включить' }}</button>
 															</form>
 															<button type="button" class="btn btn-outline-secondary btn-sm pill plan-edit-toggle" data-target="#edit-lte-pkg-{{ pkg.package_id }}">Редактировать</button>
-															<form action="{{ url_for('delete_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;" data-confirm="Удалить LTE-пакет {{ pkg.size_gb }} ГБ?">
+															<form action="{{ url_for('delete_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;" data-confirm="Удалить пакет {{ host.lte_label or 'LTE' }} {{ pkg.size_gb }} ГБ?">
 																<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 																<button type="submit" class="btn btn-danger btn-sm" title="Удалить">×</button>
 															</form>
@@ -1025,7 +1025,7 @@
 														{% endfor %}
 													</ul>
 													{% else %}
-													<p class="plans-empty-hint">LTE-пакеты не добавлены — кнопка «💰 Докупить LTE» в боте ответит, что пакеты не настроены.</p>
+													<p class="plans-empty-hint">Пакеты {{ host.lte_label or 'LTE' }} не добавлены — кнопка «💰 Докупить {{ host.lte_label or 'LTE' }}» в боте ответит, что пакеты не настроены.</p>
 													{% endif %}
 													<form action="{{ url_for('add_traffic_package_route') }}" method="post" class="form-inline">
 														<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
@@ -1033,10 +1033,10 @@
 														<input type="hidden" name="pool" value="lte" />
 														<input type="number" step="0.01" class="form-control pill" name="size_gb" placeholder="ГБ" required style="width:90px;" />
 														<input type="number" step="0.01" class="form-control pill" name="price" placeholder="Цена" required style="width:110px;" />
-														<button type="submit" class="btn btn-warning btn-sm pill">+ LTE-пакет ГБ</button>
+														<button type="submit" class="btn btn-warning btn-sm pill">+ пакет {{ host.lte_label or 'LTE' }} ГБ</button>
 													</form>
 													{% else %}
-													<p class="plans-empty-hint">Сначала задайте «LTE пул, ГБ 💰» выше — без LTE-лимита тарифа докупка LTE недоступна.</p>
+													<p class="plans-empty-hint">Сначала задайте «{{ host.lte_label or 'LTE' }} пул, ГБ 💰» выше — без лимита тарифа докупка {{ host.lte_label or 'LTE' }} недоступна.</p>
 													{% endif %}
 												</div>
 											</div>
@@ -1075,8 +1075,8 @@
 												<input type="number" class="form-control pill" name="hwid_device_limit" placeholder="Без лимита" />
 											</div>
 											<div>
-												<label>LTE пул, ГБ 💰</label>
-												<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" placeholder="0 = нет LTE" />
+												<label>{{ host.lte_label or 'LTE' }} пул, ГБ 💰</label>
+												<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" placeholder="0 = нет {{ host.lte_label or 'LTE' }}" />
 											</div>
 											<div>
 												<label>Цена сброса, RUB</label>

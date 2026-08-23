@@ -83,6 +83,8 @@ from shop_bot.data_manager.database import (
     set_host_squads_from_catalog,
     get_host_selected_squad_catalog_ids,
     get_host_squad_overlap,
+    squad_display_label,
+    get_lte_squad_display_label,
 )
 from shop_bot.data_manager.database import (
     create_traffic_package, get_traffic_packages_for_plan, get_traffic_package_by_id,
@@ -4394,6 +4396,18 @@ def create_webhook_app(bot_controller_instance):
             remnawave_squads = get_remnawave_squads()
         except Exception:
             remnawave_squads = []
+        for sq in remnawave_squads:
+            cls = str(sq.get("squad_class") or "").strip().lower()
+            if cls == "lte":
+                name = squad_display_label(sq)
+                sq["class_badge"] = f"{name} 💰"
+                sq["class_badge_compact"] = name
+            elif cls == "base":
+                sq["class_badge"] = "BASE ∞"
+                sq["class_badge_compact"] = "BASE"
+            else:
+                sq["class_badge"] = "OTHER"
+                sq["class_badge_compact"] = "OTHER"
         for host in hosts:
             host['plans'] = get_plans_for_host(host['host_name'])
             for plan in host['plans']:
@@ -4419,6 +4433,7 @@ def create_webhook_app(bot_controller_instance):
                 host['squads'] = get_host_squads(host['host_name'])
             except Exception:
                 host['squads'] = []
+            host['lte_label'] = get_lte_squad_display_label(host.get('host_name'))
             try:
                 host['selected_squad_ids'] = set(get_host_selected_squad_catalog_ids(host['host_name']))
             except Exception:
