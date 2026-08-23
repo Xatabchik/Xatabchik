@@ -2777,17 +2777,19 @@ def get_user_router() -> Router:
             return
 
         packages = database.get_traffic_packages_for_plan(plan['plan_id'], only_active=True, pool='lte')
+        lte_label = database.get_lte_squad_display_label(key_data.get("host_name"))
+        lte_label_html = html_escape(lte_label)
         if not packages:
             await callback.message.edit_text(
-                "❌ Пакеты докупки LTE для этого тарифа пока не настроены. Обратитесь к администратору.",
+                f"❌ Пакеты докупки {lte_label_html} для этого тарифа пока не настроены. Обратитесь к администратору.",
                 reply_markup=keyboards.create_back_to_menu_keyboard()
             )
             return
 
         await state.update_data(lte_key_id=key_id)
         await callback.message.edit_text(
-            "Выберите объём докупаемого LTE-трафика (💰 premium-ноды):",
-            reply_markup=keyboards.create_lte_packages_keyboard(key_id, packages)
+            f"Выберите объём докупаемого {lte_label_html}-трафика (💰 premium-ноды):",
+            reply_markup=keyboards.create_lte_packages_keyboard(key_id, packages, lte_label=lte_label)
         )
 
     @user_router.callback_query(F.data.startswith("lte_gb_pick_"))
@@ -2828,9 +2830,10 @@ def get_user_router() -> Router:
         size_gb = float(package.get('size_gb') or 0)
         price = float(package.get('price') or 0)
         size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+        lte_label_html = html_escape(database.get_lte_squad_display_label(key_data.get("host_name")))
 
         await callback.message.edit_text(
-            f"💰 Докупка {size_txt} ГБ LTE — {price:.0f} RUB\n"
+            f"💰 Докупка {size_txt} ГБ {lte_label_html} — {price:.0f} RUB\n"
             f"Ваш баланс: {main_balance:.0f} RUB\n\n"
             "Выберите способ оплаты:",
             reply_markup=keyboards.create_lte_gb_payment_method_keyboard(PAYMENT_METHODS)
@@ -6582,6 +6585,7 @@ def get_user_router() -> Router:
             # Показываем блок LTE-пула (💰 premium-ноды), если у тарифа есть отдельный LTE-лимит
             # И у хоста ключа реально настроен активный сквад класса 'lte' (host_squads).
             show_lte_topup = False
+            lte_display_label = "LTE"
             # Сброс основного трафика доступен только тарифам с лимитом основного трафика и заданной ценой
             show_main_reset = show_traffic_topup and plan_main_reset_price > 0
             try:
@@ -6590,6 +6594,7 @@ def get_user_router() -> Router:
                     lte_squad_cfg = database.get_squad_by_class(host_name_for_lte, 'lte') if host_name_for_lte else None
                     if lte_squad_cfg:
                         show_lte_topup = True
+                        lte_display_label = database.squad_display_label(lte_squad_cfg)
                         # LTE-пул принадлежит КЛЮЧУ: докупка на одном ключе не расходуется
                         # на других ключах того же пользователя.
                         lte_state = database.get_key_lte_state(key_id_to_show)
@@ -6602,7 +6607,7 @@ def get_user_router() -> Router:
                         # Названия хостов/нод в карточке ключа не показываем: пользователю
                         # достаточно суммарного LTE-лимита, а разбивка по нодам доступна
                         # администратору в веб-панели (key_node_usage_snapshots).
-                        lte_line = f"💰 LTE: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
+                        lte_line = f"💰 {html_escape(lte_display_label)}: {lte_used_txt} ГБ / {lte_total_txt} ГБ"
                         if next_reset_display:
                             lte_line += f" (сброс {next_reset_display})"
                         traffic_info_text = f"{traffic_info_text}\n{lte_line}" if traffic_info_text else lte_line
@@ -6630,6 +6635,7 @@ def get_user_router() -> Router:
                     show_lte_topup=show_lte_topup,
                     show_main_reset=show_main_reset,
                     auto_renew=bool(int(key_data.get("auto_renew") or 0)),
+                    lte_label=lte_display_label,
                 )
             )
         except Exception as e:
@@ -9436,10 +9442,11 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 pass
 
             size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
+            lte_label_html = html_escape(database.get_lte_squad_display_label(key_data.get("host_name")))
             try:
                 await bot.send_message(
                     user_id,
-                    f"✅ Оплата получена! К вашему LTE-пулу (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
+                    f"✅ Оплата получена! К вашему пулу {lte_label_html} (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
                     f"Доступ на premium-нодах восстановлен."
                 )
             except Exception:

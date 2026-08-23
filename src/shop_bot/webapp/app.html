@@ -2417,19 +2417,20 @@
                     if (list) list.innerHTML = `<div class="text-center text-red-400 py-4 text-xs font-bold">${data.error || 'Недоступно'}</div>`;
                     return;
                 }
-                if (info) info.textContent = data.lte_info ? ('Сейчас: ' + data.lte_info) : '💰 premium-ноды';
+                const lteLabel = (data.lte_label || 'LTE').toString();
+                if (info) info.textContent = data.lte_info ? ('Сейчас: ' + data.lte_info) : ('💰 ' + lteLabel);
                 if (!data.packages?.length) {
                     if (list) list.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Пакеты не настроены</div>';
                     return;
                 }
                 list.innerHTML = data.packages.map(p => `
-                    <button type="button" onclick='pickLtePackage(${JSON.stringify(p)}, ${parseInt(keyId, 10)})'
+                    <button type="button" onclick='pickLtePackage(${JSON.stringify(p)}, ${parseInt(keyId, 10)}, ${JSON.stringify(lteLabel)})'
                         class="w-full p-3 flex items-center gap-3 bg-[#141414] hover:bg-[#1A1A1A] active:scale-[0.99] transition-all rounded-xl border border-white/[0.04] hover:border-amber-500/30 group">
                         <div class="w-8 h-8 rounded-lg flex items-center justify-center bg-amber-500/10 border border-amber-500/20 text-amber-300">
                             <span class="material-symbols-rounded text-sm">bolt</span>
                         </div>
                         <div class="text-left flex-1">
-                            <div class="text-[12px] font-bold text-gray-200 group-hover:text-white">💰 ${p.size_txt} ГБ LTE</div>
+                            <div class="text-[12px] font-bold text-gray-200 group-hover:text-white">💰 ${p.size_txt} ГБ ${lteLabel.replace(/[<>&]/g, '')}</div>
                             <div class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.12em]">premium-ноды</div>
                         </div>
                         <div class="text-[13px] font-bold text-amber-300">${Number(p.price).toFixed(0)} ₽</div>
@@ -2440,8 +2441,9 @@
             }
         }
 
-        async function pickLtePackage(pkg, keyId) {
-            await openPaymentModal(null, null, 'lte_gb_topup', keyId, pkg.price, '💰 ' + pkg.size_txt + ' ГБ LTE', 1, 0, '0', '0');
+        async function pickLtePackage(pkg, keyId, lteLabel) {
+            const label = (lteLabel || 'LTE').toString();
+            await openPaymentModal(null, null, 'lte_gb_topup', keyId, pkg.price, '💰 ' + pkg.size_txt + ' ГБ ' + label, 1, 0, '0', '0');
             if (currentPaymentData) {
                 currentPaymentData.packageId = pkg.package_id;
                 currentPaymentData.sizeTxt = pkg.size_txt;

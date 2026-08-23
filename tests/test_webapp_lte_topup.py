@@ -75,6 +75,31 @@ def test_lte_card_shows_used_over_limit_and_topup_button(temp_db):
     assert f"openLteTopup({key_id})" in html
 
 
+def test_lte_card_uses_squad_label_instead_of_lte(temp_db):
+    from shop_bot.data_manager import database
+    from shop_bot.webapp.handlers import _get_profile_keys_html, _lte_card_state
+
+    insert_user(database.DB_FILE, telegram_id=OWNER_ID, username="u-label", balance=10.0)
+    database.create_host(HOST, "https://panel.example", "", "", 0)
+    database.create_plan(HOST, "LTE-план", 1, 100.0, traffic_limit_bytes=50 * GB, lte_limit_bytes=20 * GB)
+    plan_id = database.get_plans_for_host(HOST)[0]["plan_id"]
+    database.add_host_squad(HOST, "squad-lte-1", "lte", "5G Premium")
+    key_id = database.add_new_key(
+        OWNER_ID, HOST, "uuid-label", "label@bot.local",
+        int((time.time() + 30 * 86400) * 1000),
+        description=json.dumps({"plan_id": plan_id}),
+        subscription_url="https://sub.example/label",
+    )
+    key = database.get_key_by_id(key_id)
+    state = _lte_card_state(key)
+    assert state["lte_label"] == "5G Premium"
+    html = _get_profile_keys_html([key])
+    assert "💰 5G Premium:" in html
+    assert "Докупить 5G Premium" in html
+    assert "💰 LTE:" not in html
+    assert "Докупить LTE" not in html
+
+
 def test_lte_hidden_without_squad_or_limit(temp_db):
     from shop_bot.data_manager import database
     from shop_bot.webapp.handlers import _get_profile_keys_html, _lte_card_state
