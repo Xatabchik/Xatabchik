@@ -1135,6 +1135,24 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
         </div>
         """
 
+def _key_created_sort_tuple(key: dict) -> tuple:
+    """Sort key for newest-purchased-first: created_at desc, then key_id desc."""
+    raw = key.get("created_at") or key.get("created_date") or ""
+    try:
+        created = datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        created = datetime.min
+    try:
+        key_id = int(key.get("key_id") or 0)
+    except (ValueError, TypeError):
+        key_id = 0
+    return (created, key_id)
+
+
+def _sort_keys_newest_first(keys: list) -> list:
+    return sorted(keys, key=_key_created_sort_tuple, reverse=True)
+
+
 def _get_profile_keys_html(keys: list) -> str:
     if not keys:
         return _get_no_key_html()
@@ -1558,17 +1576,19 @@ async def _render_main_page(user_id: int):
     
     if user_id:
         keys = get_user_keys(user_id)
-        # Sort all keys by expiry, soonest first
+        keys_newest_first = _sort_keys_newest_first(list(keys))
+        # Home / renew / setup: soonest expiry first. Keys page: newest purchase first.
+        keys_by_expiry = list(keys)
         try:
-            keys.sort(key=lambda k: datetime.strptime(k['expiry_date'], "%Y-%m-%d %H:%M:%S"))
-        except:
+            keys_by_expiry.sort(key=lambda k: datetime.strptime(k['expiry_date'], "%Y-%m-%d %H:%M:%S"))
+        except Exception:
             pass
             
         now = get_msk_time().replace(tzinfo=None)
         
         # --- FETCH LIVE DATA ONLY FOR ACTIVE KEYS ---
         active_keys = []
-        for k in keys:
+        for k in keys_by_expiry:
             try:
                 exp = datetime.strptime(k['expiry_date'], "%Y-%m-%d %H:%M:%S")
                 if exp > now:
@@ -1697,11 +1717,11 @@ async def _render_main_page(user_id: int):
             
             # Renew, Profile and Setup sections get the full list of keys
             # (Setup will filter internally, Profile shows all, Renew now shows all)
-            renew_keys_options, renew_selected_key, renew_plans_html_data = _get_renew_keys_html(keys, user_id)
+            renew_keys_options, renew_selected_key, renew_plans_html_data = _get_renew_keys_html(keys_by_expiry, user_id)
             renew_selected_display = renew_selected_key
             
-            profile_keys_list = _get_profile_keys_html(keys)
-            setup_keys_list = _get_setup_keys_html(keys)
+            profile_keys_list = _get_profile_keys_html(keys_newest_first)
+            setup_keys_list = _get_setup_keys_html(keys_by_expiry)
             
         # Profile Stats
         user = get_user(user_id)
@@ -4456,10 +4476,9 @@ async def api_user_status(request: Request, token: str | None = None):
         user_id = int(user["telegram_id"])
             
         keys = get_user_keys(user_id)
-        # Sort keys by key_id descending to get the latest one first
         formatted_keys = []
         if keys:
-            keys.sort(key=lambda k: k.get('key_id', 0), reverse=True)
+            keys = _sort_keys_newest_first(keys)
             formatted_keys = [_process_key_data(k) for k in keys]
         
         return {"ok": True, "keys": formatted_keys, "balance": float(user.get("balance") or 0.0)}
