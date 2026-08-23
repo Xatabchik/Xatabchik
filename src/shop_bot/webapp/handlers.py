@@ -1762,7 +1762,7 @@ async def _render_main_page(user_id: int):
                 for k in active_keys:
                     details_tasks.append(remnawave_api.get_key_details_from_host(k))
                 
-                details_results = await asyncio.gather(*details_tasks, return_exceptions=True)
+                details_results = await remnawave_api.gather_limited(details_tasks)
                 
                 # --- 2. Fetch Subscription Info (Traffic Stats) using UUID from Details ---
                 sub_tasks = []
@@ -1799,7 +1799,7 @@ async def _render_main_page(user_id: int):
                     else:
                         sub_tasks.append(asyncio.sleep(0, None))
 
-                sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
+                sub_results = await remnawave_api.gather_limited(sub_tasks)
                 
                 # --- 3. Process Subscription Results ---
                 for k, sub_res in zip(active_keys, sub_results):

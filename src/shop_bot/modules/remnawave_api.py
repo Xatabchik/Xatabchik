@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+import weakref
 from datetime import datetime, timezone, timedelta
 from typing import Any, NamedTuple, Sequence
 from urllib.parse import quote
@@ -66,6 +67,52 @@ _CLIENTS_LOCK = threading.Lock()
 # Reasonable defaults: do not let handlers hang too long on network hiccups.
 _DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=10.0, read=20.0, write=20.0, pool=20.0)
 _DEFAULT_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+# WebApp грузит детали всех ключей через gather — без лимита это исчерпывает
+# пул httpx (PoolTimeout). Держим in-flight ниже max_connections.
+_MAX_INFLIGHT = 16
+_REQUEST_SEMS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
+
+
+def _inflight_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _CLIENTS_LOCK:
+        sem = _REQUEST_SEMS.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(_MAX_INFLIGHT)
+            _REQUEST_SEMS[loop] = sem
+        return sem
+
+
+async def _client_request(client: httpx.AsyncClient, **kwargs) -> httpx.Response:
+    """Один HTTP-запрос к панели с лимитом параллелизма.
+
+    PoolTimeout = в пуле не осталось свободных соединений. Семафор не даёт
+    набрать больше запросов, чем пул может обслужить; таймаут всё равно
+    превращаем в RemnawaveAPIError без сырого traceback httpx.
+    """
+    sem = _inflight_semaphore()
+    try:
+        async with sem:
+            return await client.request(**kwargs)
+    except httpx.TimeoutException as e:
+        raise RemnawaveAPIError(f"Remnawave API timeout: {e}") from e
+    except httpx.TransportError as e:
+        raise RemnawaveAPIError(f"Remnawave API transport error: {e}") from e
+
+
+async def gather_limited(coros, *, limit: int | None = None, return_exceptions: bool = True):
+    """asyncio.gather с потолком параллелизма — для списка ключей в WebApp."""
+    items = list(coros)
+    if not items:
+        return []
+    cap = max(1, int(limit or _MAX_INFLIGHT))
+    sem = asyncio.Semaphore(cap)
+
+    async def _run(coro):
+        async with sem:
+            return await coro
+
+    return await asyncio.gather(*(_run(c) for c in items), return_exceptions=return_exceptions)
 
 
 async def _get_shared_client(config: dict[str, Any]) -> httpx.AsyncClient:
@@ -219,7 +266,8 @@ async def _request(
     except Exception:
         pass
     t0 = time.perf_counter()
-    response = await client.request(
+    response = await _client_request(
+        client,
         method=method,
         url=url,
         headers=headers,
@@ -266,7 +314,8 @@ async def _request_for_host(
     except Exception:
         pass
     t0 = time.perf_counter()
-    response = await client.request(
+    response = await _client_request(
+        client,
         method=method,
         url=url,
         headers=headers,
@@ -1994,7 +2043,7 @@ async def get_key_details_from_host(key_data: dict) -> dict | None:
             'user': user_payload,
         }
     except RemnawaveAPIError as exc:
-        logger.error("Remnawave: ошибка получения деталей ключа %s: %s", key_data.get('key_id'), exc)
+        logger.warning("Remnawave: ошибка получения деталей ключа %s: %s", key_data.get('key_id'), exc)
     except Exception:
         logger.exception("Remnawave: непредвиденная ошибка получения деталей ключа %s", key_data.get('key_id'))
     return None
