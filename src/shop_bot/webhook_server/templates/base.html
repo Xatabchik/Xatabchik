@@ -324,7 +324,10 @@
 								// Если bootstrap уже загружен — показываем сразу, иначе дождёмся события load
 								function showNow(){
 									try {
-										cont.querySelectorAll('.toast').forEach(el => new bootstrap.Toast(el, { delay: 4000, autohide: true }).show());
+										cont.querySelectorAll('.toast').forEach(el => {
+											const isWarning = el.classList.contains('text-bg-warning');
+											new bootstrap.Toast(el, { delay: isWarning ? 10000 : 4000, autohide: true }).show();
+										});
 									} catch(_) {}
 								}
 								if (window.bootstrap && window.bootstrap.Toast) {
