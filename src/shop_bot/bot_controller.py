@@ -250,6 +250,7 @@ class BotController:
                 "tonconnect": tonconnect_enabled,
                 "yoomoney": yoomoney_enabled,
                 "stars": stars_enabled,
+                "rollypay": bool((rw_repo.get_setting("rollypay_api_key") or "").strip() and (rw_repo.get_setting("rollypay_terminal_id") or "").strip()),
             }
             handlers.TELEGRAM_BOT_USERNAME = bot_username
             handlers.ADMIN_ID = admin_id
