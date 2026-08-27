@@ -43,7 +43,7 @@ class _FakeRemnawave:
         self.disabled: list[str] = []
         self.enabled: list[str] = []
 
-    async def get_user_used_traffic(self, user_uuid, *, host_name):
+    async def get_user_used_traffic(self, user_uuid, *, host_name, email=None):
         self.usage_calls.append(str(user_uuid))
         return int(self.usage_by_uuid.get(str(user_uuid), 0))
 

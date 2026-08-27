@@ -389,18 +389,49 @@ async def get_user_by_username(username: str, *, host_name: str | None = None) -
     return _extract_user_from_api_payload(response.json())
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _classify_panel_user_ref(user_ref: str) -> str:
+    """id — числовой userId 3.x; uuid — старый идентификатор 2.x; short — shortUuid."""
+    stored = (user_ref or "").strip()
+    if not stored:
+        return ""
+    if stored.isdigit():
+        return "id"
+    if _UUID_RE.fullmatch(stored):
+        return "uuid"
+    return "short"
+
+
+def _panel_user_get_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
+    """Путь GET пользователя и допустимые статусы (3.x ждёт число, UUID даёт 400 NaN)."""
+    stored = (user_ref or "").strip()
+    kind = _classify_panel_user_ref(stored)
+    encoded = quote(stored)
+    if kind == "id":
+        return f"/api/users/{stored}", (200, 404)
+    if kind == "uuid":
+        # 2.x: GET /api/users/{uuid}. 3.x: тот же путь ждёт number userId → 400 NaN.
+        return f"/api/users/{encoded}", (200, 400, 404)
+    return f"/api/users/by-short-uuid/{encoded}", (200, 404)
+
+
 async def get_user_by_uuid(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
-    if not user_uuid:
+    stored = (user_uuid or "").strip()
+    if not stored:
         return None
-    encoded_uuid = quote(user_uuid.strip())
+    path, expected = _panel_user_get_path(stored)
     if host_name:
-        response = await _request_for_host(host_name, "GET", f"/api/users/{encoded_uuid}", expected_status=(200, 404))
+        response = await _request_for_host(host_name, "GET", path, expected_status=expected)
     else:
-        response = await _request("GET", f"/api/users/{encoded_uuid}", expected_status=(200, 404))
-    if response.status_code == 404:
+        response = await _request("GET", path, expected_status=expected)
+    if response.status_code != 200:
         return None
-    payload = response.json()
-    return payload.get("response") if isinstance(payload, dict) else None
+    return _extract_user_from_api_payload(response.json())
 
 
 async def get_hwid_devices_for_user(user_uuid: str, *, host_name: str | None = None) -> Any | None:
@@ -1139,15 +1170,30 @@ async def add_squad_to_user(user_uuid: str, squad_uuid: str, *, host_name: str) 
         return False
 
 
-async def get_user_used_traffic(user_uuid: str, *, host_name: str) -> int:
+async def get_user_used_traffic(
+    user_uuid: str,
+    *,
+    host_name: str,
+    email: str | None = None,
+) -> int:
     """Использованный трафик (в байтах) пользователя на конкретном инстансе Remnawave. 0, если данных нет."""
-    if not user_uuid:
+    if not user_uuid and not email:
         return 0
     try:
-        payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+        payload = await get_user_by_uuid(user_uuid, host_name=host_name) if user_uuid else None
+        if not payload and email:
+            payload = await get_user_by_email(email, host_name=host_name)
+            if not payload:
+                local = (email.split("@", 1)[0] if "@" in email else email)
+                uname = _normalize_username_for_remnawave(local)
+                payload = await get_user_by_username(uname, host_name=host_name)
         return _extract_used_traffic_bytes(payload)
     except Exception as e:
-        logger.error("Remnawave[%s]: не удалось получить использованный трафик пользователя %s: %s", host_name, user_uuid, e, exc_info=True)
+        logger.error(
+            "Remnawave[%s]: не удалось получить использованный трафик пользователя: %s",
+            host_name,
+            e,
+        )
         return 0
 
 
