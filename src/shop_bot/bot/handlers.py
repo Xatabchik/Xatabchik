@@ -6906,7 +6906,10 @@ def get_user_router() -> Router:
             
             # Пытаемся удалить устройство через API
             host_name = key_data.get('host_name')
-            success = await remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name, user_id=user_id)
+            email = key_data.get('key_email') or key_data.get('email')
+            success = await remnawave_api.delete_hwid_device(
+                user_uuid, hwid, host_name=host_name, user_id=user_id, email=email
+            )
             
             if success:
                 await callback.answer("✅ Устройство успешно удалено!", show_alert=True)

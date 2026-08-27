@@ -4742,7 +4742,10 @@ async def api_key_device_delete(req: DeleteDeviceRequest, request: Request):
             return {"ok": False, "error": "Ключ не имеет привязки"}
             
         host = req.host_name or key.get("host_name")
-        success = await remnawave_api.delete_user_device(uuid_val, req.device_id, host_name=host)
+        email = key.get("key_email") or key.get("email")
+        success = await remnawave_api.delete_user_device(
+            uuid_val, req.device_id, host_name=host, email=email
+        )
         if success:
             return {"ok": True}
         return {"ok": False, "error": "Не удалось удалить устройство"}
@@ -5027,7 +5030,9 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
         for d in devices:
             device_id = d.get("hwid") if isinstance(d, dict) else str(d)
             if device_id:
-                success = await remnawave_api.delete_user_device(uuid_val, device_id, host_name=host)
+                success = await remnawave_api.delete_user_device(
+                    uuid_val, device_id, host_name=host, email=email
+                )
                 if success:
                     deleted += 1
 

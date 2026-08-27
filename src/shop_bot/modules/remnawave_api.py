@@ -613,25 +613,60 @@ async def get_hwid_devices_for_user(
         return None
 
 
+async def _resolve_hwid_owner(
+    user_uuid: str | None,
+    *,
+    host_name: str | None = None,
+    user_id: int | None = None,
+    email: str | None = None,
+) -> tuple[int | None, str | None]:
+    """Числовой userId 3.x и/или uuid 2.x для HWID API."""
+    stored = (user_uuid or "").strip()
+    kind = _classify_panel_user_ref(stored)
+    numeric = int(user_id) if user_id is not None else None
+    uuid_val = stored if kind == "uuid" else None
+    if numeric is None and kind == "id":
+        numeric = int(stored)
+    if numeric is None:
+        user = await lookup_panel_user(stored or None, email=email, host_name=host_name)
+        nid = _panel_numeric_user_id(user)
+        if nid:
+            numeric = int(nid)
+        if not uuid_val and isinstance(user, dict):
+            uuid_val = str(user.get("uuid") or "").strip() or None
+    return numeric, uuid_val
+
+
 async def delete_hwid_device(
     user_uuid: str | None,
     hwid: str,
     *,
     host_name: str | None = None,
     user_id: int | None = None,
+    email: str | None = None,
 ) -> bool:
-    """Удалить одно HWID-устройство пользователя через API."""
+    """Удалить одно HWID-устройство пользователя через API.
+
+    Remnawave 3.x требует числовой `userId`; `userUuid` игнорируется → 400
+    `expected number, received undefined`. Резолвим id из хранимого ref / lookup.
+    """
     if (not user_uuid and user_id is None) or not hwid:
         return False
 
     try:
+        numeric_id, uuid_val = await _resolve_hwid_owner(
+            user_uuid, host_name=host_name, user_id=user_id, email=email
+        )
         payload: dict[str, Any] = {"hwid": str(hwid).strip()}
-        # New Remnawave: userId (int); old Remnawave: userUuid (str)
-        if user_id is not None:
-            payload["userId"] = int(user_id)
-        if user_uuid:
-            payload["userUuid"] = str(user_uuid).strip()
-        
+        # 3.x: userId (int); 2.x: userUuid (str). Шлём оба, если есть.
+        if numeric_id is not None:
+            payload["userId"] = int(numeric_id)
+        if uuid_val:
+            payload["userUuid"] = uuid_val
+        if "userId" not in payload and "userUuid" not in payload:
+            logger.warning("Remnawave: нет userId/userUuid для удаления устройства %s", hwid)
+            return False
+
         if host_name:
             response = await _request_for_host(
                 host_name,
@@ -689,9 +724,18 @@ async def get_connected_devices_count(
     return {"devices": []}
 
 
-async def delete_user_device(user_uuid: str, device_id: str, *, host_name: str | None = None) -> bool:
+async def delete_user_device(
+    user_uuid: str,
+    device_id: str,
+    *,
+    host_name: str | None = None,
+    email: str | None = None,
+    user_id: int | None = None,
+) -> bool:
     """Алиас delete_hwid_device с именем, ожидаемым webapp/handlers.py."""
-    return await delete_hwid_device(user_uuid, device_id, host_name=host_name)
+    return await delete_hwid_device(
+        user_uuid, device_id, host_name=host_name, email=email, user_id=user_id
+    )
 
 
 async def ensure_user(

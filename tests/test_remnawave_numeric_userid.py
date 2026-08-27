@@ -223,3 +223,48 @@ def test_panel_user_exists_uncertain_when_uuid_nan_without_email(monkeypatch):
         api.panel_user_exists(user_ref=PANEL_UUID, email=None, host_name="test-host")
     )
     assert exists is None
+
+
+DEVICE_HWID = "00000000-0000-4000-8000-000000000002"
+
+
+def test_delete_hwid_sends_numeric_userid_when_uuid_stored(monkeypatch):
+    posted: list[dict] = []
+
+    async def transport(host_name, method, path, **kw):
+        if path == "/api/hwid/devices/delete":
+            posted.append(kw.get("json_payload") or {})
+            return _Resp({"response": {"ok": True}}, 200)
+        if path == f"/api/users/{PANEL_UUID}":
+            return _Resp(V3_NAN, 400)
+        if "/by-email/" in path:
+            return _Resp({}, 404)
+        if "/by-username/" in path:
+            return _Resp({"response": {"id": 42, "username": USERNAME}}, 200)
+        raise AssertionError(path)
+
+    monkeypatch.setattr(api, "_request_for_host", transport)
+    ok = asyncio.run(
+        api.delete_hwid_device(PANEL_UUID, DEVICE_HWID, host_name="test-host", email=EMAIL)
+    )
+    assert ok is True
+    assert posted == [
+        {"hwid": DEVICE_HWID, "userId": 42, "userUuid": PANEL_UUID}
+    ]
+
+
+def test_delete_hwid_numeric_ref_sends_userid_without_lookup(monkeypatch):
+    posted: list[dict] = []
+
+    async def transport(host_name, method, path, **kw):
+        if path == "/api/hwid/devices/delete":
+            posted.append(kw.get("json_payload") or {})
+            return _Resp({}, 200)
+        raise AssertionError(path)
+
+    monkeypatch.setattr(api, "_request_for_host", transport)
+    ok = asyncio.run(
+        api.delete_hwid_device(PANEL_USER_ID, DEVICE_HWID, host_name="test-host")
+    )
+    assert ok is True
+    assert posted == [{"hwid": DEVICE_HWID, "userId": 42}]

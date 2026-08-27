@@ -3115,11 +3115,16 @@ def create_webhook_app(bot_controller_instance):
 
         user_uuid = key.get('remnawave_user_uuid')
         host_name = key.get('host_name')
+        key_email = key.get('key_email') or key.get('email')
         if not user_uuid:
             return jsonify({"ok": False, "error": "no_remote_user"}), 400
 
         try:
-            ok_remote = asyncio.run(remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name))
+            ok_remote = asyncio.run(
+                remnawave_api.delete_hwid_device(
+                    user_uuid, hwid, host_name=host_name, email=key_email
+                )
+            )
         except Exception as e:
             logger.error(f"Удаление устройства {hwid} ключа {key_id}: ошибка Remnawave: {e}")
             ok_remote = False
@@ -3167,7 +3172,11 @@ def create_webhook_app(bot_controller_instance):
             if not hwid:
                 continue
             try:
-                ok_remote = asyncio.run(remnawave_api.delete_hwid_device(user_uuid, hwid, host_name=host_name))
+                ok_remote = asyncio.run(
+                    remnawave_api.delete_hwid_device(
+                        user_uuid, hwid, host_name=host_name, email=key_email
+                    )
+                )
             except Exception:
                 ok_remote = False
             if ok_remote:
