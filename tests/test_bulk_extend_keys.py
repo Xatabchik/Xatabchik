@@ -1,4 +1,6 @@
 """Массовое изменение срока ключей: selected (bulk-extend) и all (bulk-extend-all)."""
+import threading
+import time
 from datetime import datetime, timedelta
 
 from conftest import temp_db  # noqa: F401
@@ -47,6 +49,9 @@ def _client(monkeypatch, temp_db):
 
     flask_app = wh_mod.create_webhook_app(_FakeBot())
     flask_app.config["WTF_CSRF_ENABLED"] = False
+    # Существующие тесты проверяют итоговый flash; в проде job уходит в фон,
+    # чтобы nginx не отдал 504, пока Remnawave обновляет все ключи.
+    flask_app.config["BULK_EXTEND_SYNC"] = True
     client = flask_app.test_client()
     with client.session_transaction() as sess:
         sess["logged_in"] = True
@@ -257,3 +262,122 @@ def test_bulk_extend_user_requires_user_id(temp_db, monkeypatch):
     assert called == []
     html = resp.data.decode("utf-8", errors="ignore")
     assert "Не указан пользователь" in html
+
+
+def _wait_until(predicate, timeout: float = 2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_bulk_extend_all_background_returns_before_work_finishes(temp_db, monkeypatch):
+    """Ответ 302 должен уйти до завершения Remnawave-обновлений — иначе nginx 504."""
+    _insert_key(temp_db, 10)
+    _insert_key(temp_db, 11)
+    _insert_key(temp_db, 12)
+    client, wh_mod = _client(monkeypatch, temp_db)
+    client.application.config["BULK_EXTEND_SYNC"] = False
+
+    started = threading.Event()
+    release = threading.Event()
+    called: list[int] = []
+
+    def fake_extend(key_id, days):
+        started.set()
+        assert release.wait(timeout=2)
+        called.append(int(key_id))
+        return True, None
+
+    monkeypatch.setattr(wh_mod, "extend_key", fake_extend)
+
+    resp = client.post(
+        "/admin/keys/bulk-extend-all",
+        data={"mode": "days", "days": "5"},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    assert called == []
+    with client.session_transaction() as sess:
+        flashes = sess.get("_flashes") or []
+    joined = " ".join(msg for _cat, msg in flashes)
+    assert "Запущено изменение срока для 3 ключей" in joined
+
+    assert started.wait(timeout=2)
+    release.set()
+    assert _wait_until(lambda: sorted(called) == [10, 11, 12])
+    assert sorted(called) == [10, 11, 12]
+
+
+def test_bulk_extend_user_background_returns_before_work_finishes(temp_db, monkeypatch):
+    from conftest import insert_user
+
+    insert_user(temp_db.DB_FILE, telegram_id=100, username="owner")
+    _insert_key(temp_db, 1, user_id=100)
+    _insert_key(temp_db, 2, user_id=100)
+    client, wh_mod = _client(monkeypatch, temp_db)
+    client.application.config["BULK_EXTEND_SYNC"] = False
+
+    release = threading.Event()
+    called: list[int] = []
+
+    def fake_extend(key_id, days):
+        assert release.wait(timeout=2)
+        called.append(int(key_id))
+        return True, None
+
+    monkeypatch.setattr(wh_mod, "extend_key", fake_extend)
+
+    resp = client.post(
+        "/admin/keys/bulk-extend-user",
+        data={"mode": "days", "days": "10", "user_id": "100"},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    assert called == []
+    release.set()
+    assert _wait_until(lambda: sorted(called) == [1, 2])
+
+
+def test_bulk_extend_rejects_second_job_while_running(temp_db, monkeypatch):
+    _insert_key(temp_db, 10)
+    _insert_key(temp_db, 11)
+    client, wh_mod = _client(monkeypatch, temp_db)
+    client.application.config["BULK_EXTEND_SYNC"] = False
+
+    release = threading.Event()
+    in_first = threading.Event()
+    called: list[int] = []
+
+    def fake_extend(key_id, days):
+        in_first.set()
+        assert release.wait(timeout=2)
+        called.append(int(key_id))
+        return True, None
+
+    monkeypatch.setattr(wh_mod, "extend_key", fake_extend)
+
+    first = client.post(
+        "/admin/keys/bulk-extend-all",
+        data={"mode": "days", "days": "1"},
+        follow_redirects=False,
+    )
+    assert first.status_code in (302, 303)
+    assert in_first.wait(timeout=2)
+
+    second = client.post(
+        "/admin/keys/bulk-extend-all",
+        data={"mode": "days", "days": "1"},
+        follow_redirects=False,
+    )
+    assert second.status_code in (302, 303)
+    with client.session_transaction() as sess:
+        flashes = sess.get("_flashes") or []
+    joined = " ".join(msg for _cat, msg in flashes)
+    assert "уже выполняется" in joined
+
+    release.set()
+    assert _wait_until(lambda: sorted(called) == [10, 11])
+

@@ -3757,6 +3757,97 @@ def create_webhook_app(bot_controller_instance):
             msg += f" Ошибки по ключам: {preview}{more}."
         flash(msg, 'success' if fail_n == 0 else 'warning')
 
+    # Массовое изменение срока держит HTTP дольше nginx proxy_read_timeout (~60с):
+    # каждый ключ — отдельный Remnawave-запрос. Ключи успевают обновиться, браузер
+    # получает 504. Поэтому в проде работа уходит в фон, а ответ отдаём сразу.
+    _bulk_expiry_lock = threading.Lock()
+    _bulk_expiry_running = False
+
+    def _dispatch_bulk_expiry(
+        *,
+        key_ids: list[int],
+        params: dict,
+        admin_who: str,
+        label: str,
+        log_extra: str = "",
+        fallback_endpoint: str = "admin_keys_page",
+    ):
+        nonlocal _bulk_expiry_running
+        ids_copy = list(key_ids)
+        params_copy = dict(params)
+        dest = request.referrer or url_for(fallback_endpoint)
+
+        def _run():
+            logger.info(
+                "Admin bulk-extend %s: admin=%s total=%s mode=%s days=%s expire_at=%s%s",
+                label,
+                admin_who,
+                len(ids_copy),
+                params_copy["mode"],
+                params_copy.get("days"),
+                params_copy.get("expire_at"),
+                log_extra,
+            )
+            ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(ids_copy, params_copy)
+            logger.info(
+                "Admin bulk-extend %s done: admin=%s ok=%s fail=%s%s",
+                label,
+                admin_who,
+                ok_n,
+                fail_n,
+                log_extra,
+            )
+            if fail_n and failed_ids:
+                preview = ", ".join(f"#{i}" for i in failed_ids[:30])
+                more = f" … (+{len(failed_ids) - 30})" if len(failed_ids) > 30 else ""
+                logger.warning(
+                    "Admin bulk-extend %s failed ids: %s%s", label, preview, more
+                )
+            return ok_n, fail_n, failed_ids
+
+        if current_app.config.get("BULK_EXTEND_SYNC"):
+            ok_n, fail_n, failed_ids = _run()
+            _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
+            return redirect(dest)
+
+        with _bulk_expiry_lock:
+            if _bulk_expiry_running:
+                flash(
+                    "Массовое изменение срока уже выполняется. Дождитесь окончания и повторите.",
+                    "warning",
+                )
+                return redirect(dest)
+            _bulk_expiry_running = True
+
+        def _job():
+            nonlocal _bulk_expiry_running
+            try:
+                _run()
+            except Exception:
+                logger.exception(
+                    "Admin bulk-extend %s crashed: admin=%s", label, admin_who
+                )
+            finally:
+                with _bulk_expiry_lock:
+                    _bulk_expiry_running = False
+
+        try:
+            threading.Thread(
+                target=_job, name="shopbot-bulk-expiry", daemon=True
+            ).start()
+        except Exception:
+            with _bulk_expiry_lock:
+                _bulk_expiry_running = False
+            raise
+
+        flash(
+            f"Запущено изменение срока для {len(ids_copy)} ключей. "
+            "Обработка идёт в фоне и может занять несколько минут — страница не ждёт "
+            "окончания. Итог пишется в логи панели.",
+            "warning",
+        )
+        return redirect(dest)
+
     @flask_app.route('/admin/keys/bulk-extend', methods=['POST'])
     @login_required
     def bulk_extend_keys_route():
@@ -3780,18 +3871,14 @@ def create_webhook_app(bot_controller_instance):
             return redirect(request.referrer or url_for('admin_keys_page'))
 
         admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
-        logger.info(
-            "Admin bulk-extend SELECTED: admin=%s count=%s mode=%s days=%s expire_at=%s ids_sample=%s",
-            admin_who, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
-            key_ids[:20],
+        return _dispatch_bulk_expiry(
+            key_ids=key_ids,
+            params=params,
+            admin_who=admin_who,
+            label="SELECTED",
+            log_extra=f" ids_sample={key_ids[:20]}",
+            fallback_endpoint="admin_keys_page",
         )
-        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
-        logger.info(
-            "Admin bulk-extend SELECTED done: admin=%s ok=%s fail=%s",
-            admin_who, ok_n, fail_n,
-        )
-        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
-        return redirect(request.referrer or url_for('admin_keys_page'))
 
     @flask_app.route('/admin/keys/bulk-extend-all', methods=['POST'])
     @login_required
@@ -3809,17 +3896,13 @@ def create_webhook_app(bot_controller_instance):
             return redirect(request.referrer or url_for('admin_keys_page'))
 
         admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
-        logger.info(
-            "Admin bulk-extend-all ALL: admin=%s total=%s mode=%s days=%s expire_at=%s",
-            admin_who, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
+        return _dispatch_bulk_expiry(
+            key_ids=key_ids,
+            params=params,
+            admin_who=admin_who,
+            label="ALL",
+            fallback_endpoint="admin_keys_page",
         )
-        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
-        logger.info(
-            "Admin bulk-extend-all ALL done: admin=%s ok=%s fail=%s",
-            admin_who, ok_n, fail_n,
-        )
-        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
-        return redirect(request.referrer or url_for('admin_keys_page'))
 
     @flask_app.route('/admin/keys/bulk-extend-user', methods=['POST'])
     @login_required
@@ -3848,17 +3931,14 @@ def create_webhook_app(bot_controller_instance):
             return redirect(request.referrer or url_for('users_page'))
 
         admin_who = (session.get('username') or get_setting('panel_login') or 'admin')
-        logger.info(
-            "Admin bulk-extend USER: admin=%s user_id=%s total=%s mode=%s days=%s expire_at=%s",
-            admin_who, user_id, len(key_ids), params['mode'], params.get('days'), params.get('expire_at'),
+        return _dispatch_bulk_expiry(
+            key_ids=key_ids,
+            params=params,
+            admin_who=admin_who,
+            label="USER",
+            log_extra=f" user_id={user_id}",
+            fallback_endpoint="users_page",
         )
-        ok_n, fail_n, failed_ids = _apply_bulk_expiry_to_ids(key_ids, params)
-        logger.info(
-            "Admin bulk-extend USER done: admin=%s user_id=%s ok=%s fail=%s",
-            admin_who, user_id, ok_n, fail_n,
-        )
-        _flash_bulk_expiry_result(ok_n, fail_n, failed_ids)
-        return redirect(request.referrer or url_for('users_page'))
 
     @flask_app.route('/admin/keys/<int:key_id>/comment', methods=['POST'])
     @login_required
