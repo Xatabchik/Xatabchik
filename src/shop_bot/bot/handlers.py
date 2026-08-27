@@ -5267,21 +5267,18 @@ def get_user_router() -> Router:
 
         Возвращает:
         - True  — ключ найден
-        - False — ключ точно удалён (404)
-        - None  — не удалось проверить (ошибка API/сети)
+        - False — ключ точно удалён (404 на поддерживаемом lookup)
+        - None  — не удалось проверить (ошибка API/сети или UUID на 3.x без username)
         """
         try:
             host_name = key_data.get('host_name')
             email = key_data.get('key_email') or key_data.get('email')
             user_uuid = key_data.get('remnawave_user_uuid') or key_data.get('xui_client_uuid')
-
-            user_payload = None
-            if email:
-                user_payload = await remnawave_api.get_user_by_email(email, host_name=host_name)
-            if not user_payload and user_uuid:
-                user_payload = await remnawave_api.get_user_by_uuid(user_uuid, host_name=host_name)
-
-            return bool(user_payload)
+            return await remnawave_api.panel_user_exists(
+                user_ref=user_uuid,
+                email=email,
+                host_name=host_name,
+            )
         except remnawave_api.RemnawaveAPIError:
             return None
         except Exception:
@@ -5431,17 +5428,17 @@ def get_user_router() -> Router:
         if not isinstance(user_payload, dict):
             return 0
 
-        user_uuid = (
-            user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
-            or user_payload.get("id")
-        )
+        user_uuid = remnawave_api.panel_user_ref_from_payload(user_payload)
         host_name = (key_data or {}).get("host_name")
+        email = (key_data or {}).get("key_email") or (key_data or {}).get("email")
         if not user_uuid:
             return 0
 
         hwid_payload = None
         try:
-            hwid_payload = await remnawave_api.get_hwid_devices_for_user(user_uuid, host_name=host_name)
+            hwid_payload = await remnawave_api.get_hwid_devices_for_user(
+                user_uuid, host_name=host_name, email=email
+            )
         except Exception:
             hwid_payload = None
 
@@ -5509,17 +5506,17 @@ def get_user_router() -> Router:
         if not isinstance(user_payload, dict):
             return []
         
-        user_uuid = (
-            user_payload.get("uuid") or user_payload.get("userUuid") or user_payload.get("user_uuid")
-            or user_payload.get("id")
-        )
+        user_uuid = remnawave_api.panel_user_ref_from_payload(user_payload)
         host_name = (key_data or {}).get("host_name")
+        email = (key_data or {}).get("key_email") or (key_data or {}).get("email")
         
         if not user_uuid:
             return []
         
         try:
-            hwid_payload = await remnawave_api.get_hwid_devices_for_user(user_uuid, host_name=host_name)
+            hwid_payload = await remnawave_api.get_hwid_devices_for_user(
+                user_uuid, host_name=host_name, email=email
+            )
         except Exception:
             return []
         

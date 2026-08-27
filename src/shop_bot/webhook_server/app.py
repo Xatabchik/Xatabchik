@@ -2797,8 +2797,13 @@ def create_webhook_app(bot_controller_instance):
         devices = []
         try:
             user_uuid = key.get('remnawave_user_uuid')
+            key_email = key.get('key_email') or key.get('email')
             if user_uuid:
-                hwid_payload = asyncio.run(remnawave_api.get_hwid_devices_for_user(user_uuid, host_name=host_name))
+                hwid_payload = asyncio.run(
+                    remnawave_api.get_hwid_devices_for_user(
+                        user_uuid, host_name=host_name, email=key_email
+                    )
+                )
                 if isinstance(hwid_payload, dict):
                     for container_key in ('devices', 'response', 'data', 'items'):
                         container = hwid_payload.get(container_key)
@@ -2999,12 +3004,13 @@ def create_webhook_app(bot_controller_instance):
 
         user_payload = None
         try:
-            if user_uuid:
-                user_payload = asyncio.run(remnawave_api.get_user_by_uuid(user_uuid, host_name=host_name))
-            if not user_payload and email:
-                user_payload = asyncio.run(remnawave_api.get_user_by_email(email, host_name=host_name))
-                if user_payload and not user_uuid:
-                    user_uuid = user_payload.get('uuid')
+            user_payload = asyncio.run(
+                remnawave_api.lookup_panel_user(user_uuid, email=email, host_name=host_name)
+            )
+            if user_payload:
+                resolved = remnawave_api.panel_user_ref_from_payload(user_payload)
+                if resolved:
+                    user_uuid = resolved
         except Exception as e:
             logger.error(f"Добавление трафика ключу {key_id}: ошибка получения пользователя Remnawave: {e}")
 
@@ -3131,12 +3137,17 @@ def create_webhook_app(bot_controller_instance):
 
         user_uuid = key.get('remnawave_user_uuid')
         host_name = key.get('host_name')
+        key_email = key.get('key_email') or key.get('email')
         if not user_uuid:
             return jsonify({"ok": False, "error": "no_remote_user"}), 400
 
         devices = []
         try:
-            hwid_payload = asyncio.run(remnawave_api.get_hwid_devices_for_user(user_uuid, host_name=host_name))
+            hwid_payload = asyncio.run(
+                remnawave_api.get_hwid_devices_for_user(
+                    user_uuid, host_name=host_name, email=key_email
+                )
+            )
             if isinstance(hwid_payload, dict):
                 for container_key in ('devices', 'response', 'data', 'items'):
                     container = hwid_payload.get(container_key)
