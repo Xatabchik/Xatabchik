@@ -380,7 +380,11 @@ async def check_device_limit_violations(bot: Bot):
 
             remote_user = None
             try:
-                remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                remote_user = await remnawave_api.lookup_panel_user(
+                    key.get("remnawave_user_uuid") or key.get("xui_client_uuid"),
+                    email=email,
+                    host_name=host_name,
+                )
             except Exception:
                 remote_user = None
 
@@ -388,15 +392,17 @@ async def check_device_limit_violations(bot: Bot):
             if not limit or limit <= 0:
                 continue
 
-            user_uuid = (key.get("remnawave_user_uuid") or key.get("xui_client_uuid") or "").strip()
-            if (not user_uuid) and isinstance(remote_user, dict):
-                user_uuid = str(remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid") or "").strip()
+            user_uuid = remnawave_api.panel_user_ref_from_payload(remote_user) or (
+                key.get("remnawave_user_uuid") or key.get("xui_client_uuid") or ""
+            ).strip()
             if not user_uuid:
                 continue
 
             devices_payload = None
             try:
-                devices_payload = await remnawave_api.get_hwid_devices_for_user(str(user_uuid), host_name=host_name)
+                devices_payload = await remnawave_api.get_hwid_devices_for_user(
+                    str(user_uuid), host_name=host_name, email=email
+                )
             except Exception:
                 devices_payload = None
 
@@ -516,9 +522,11 @@ async def check_traffic_boost_resets(bot: Bot):
             if has_main_limit:
                 if not user_uuid and email:
                     try:
-                        remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                        remote_user = await remnawave_api.lookup_panel_user(
+                            email=email, host_name=host_name
+                        )
                         if isinstance(remote_user, dict):
-                            user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid")
+                            user_uuid = remnawave_api.panel_user_ref_from_payload(remote_user)
                     except Exception:
                         pass
 
@@ -928,10 +936,9 @@ async def _legacy_check_traffic_boost_resets(bot: Bot):
 
             remote_user = None
             try:
-                if user_uuid:
-                    remote_user = await remnawave_api.get_user_by_uuid(user_uuid, host_name=host_name)
-                if not remote_user and email:
-                    remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
+                remote_user = await remnawave_api.lookup_panel_user(
+                    user_uuid, email=email, host_name=host_name
+                )
             except Exception:
                 remote_user = None
 
@@ -1034,19 +1041,22 @@ async def check_inactive_usage_reminders(bot: Bot):
             user_uuid = key.get("remnawave_user_uuid") or key.get("xui_client_uuid")
 
             remote_user = None
-            if email and host_name:
-                try:
-                    remote_user = await remnawave_api.get_user_by_email(email, host_name=host_name)
-                except Exception:
-                    remote_user = None
+            try:
+                remote_user = await remnawave_api.lookup_panel_user(
+                    user_uuid, email=email, host_name=host_name
+                )
+            except Exception:
+                remote_user = None
 
-            if remote_user and not user_uuid:
-                user_uuid = remote_user.get("uuid") or remote_user.get("id") or remote_user.get("userUuid") or remote_user.get("user_uuid")
+            if remote_user:
+                user_uuid = remnawave_api.panel_user_ref_from_payload(remote_user) or user_uuid
 
             devices_count = 0
             if user_uuid and host_name:
                 try:
-                    devices = await remnawave_api.get_hwid_devices_for_user(str(user_uuid), host_name=host_name)
+                    devices = await remnawave_api.get_hwid_devices_for_user(
+                        str(user_uuid), host_name=host_name, email=email
+                    )
                     if isinstance(devices, list):
                         devices_count = len(devices)
                 except Exception:

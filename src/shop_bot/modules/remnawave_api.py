@@ -407,6 +407,40 @@ def _classify_panel_user_ref(user_ref: str) -> str:
     return "short"
 
 
+def _username_from_email(email: str | None) -> str:
+    """Локальная часть email → username, как при создании пользователя в панели."""
+    raw = (email or "").strip()
+    if not raw:
+        return ""
+    local = raw.split("@", 1)[0].strip()
+    return _normalize_username_for_remnawave(local) if local else ""
+
+
+def _panel_numeric_user_id(user: dict[str, Any] | None) -> str:
+    """Числовой userId 3.x из payload пользователя, если он есть."""
+    if not isinstance(user, dict):
+        return ""
+    raw = user.get("id")
+    if raw is None or isinstance(raw, bool):
+        return ""
+    if isinstance(raw, int):
+        return str(raw) if raw >= 0 else ""
+    stored = str(raw).strip()
+    return stored if stored.isdigit() else ""
+
+
+def panel_user_ref_from_payload(user: dict[str, Any] | None) -> str:
+    """Идентификатор для путей `{userId}`: на 3.x это числовой id, на 2.x — uuid."""
+    numeric = _panel_numeric_user_id(user)
+    if numeric:
+        return numeric
+    if not isinstance(user, dict):
+        return ""
+    return str(
+        user.get("uuid") or user.get("userUuid") or user.get("user_uuid") or ""
+    ).strip()
+
+
 def _panel_user_get_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
     """Путь GET пользователя и допустимые статусы (3.x ждёт число, UUID даёт 400 NaN)."""
     stored = (user_ref or "").strip()
@@ -418,6 +452,18 @@ def _panel_user_get_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
         # 2.x: GET /api/users/{uuid}. 3.x: тот же путь ждёт number userId → 400 NaN.
         return f"/api/users/{encoded}", (200, 400, 404)
     return f"/api/users/by-short-uuid/{encoded}", (200, 404)
+
+
+def _panel_hwid_devices_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
+    """GET /api/hwid/devices/{userId}: 3.x ждёт число, UUID даёт 400 NaN."""
+    stored = (user_ref or "").strip()
+    kind = _classify_panel_user_ref(stored)
+    encoded = quote(stored)
+    if kind == "id":
+        return f"/api/hwid/devices/{stored}", (200, 404)
+    if kind == "uuid":
+        return f"/api/hwid/devices/{encoded}", (200, 400, 404)
+    return "", ()
 
 
 async def get_user_by_uuid(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
@@ -434,44 +480,132 @@ async def get_user_by_uuid(user_uuid: str, *, host_name: str | None = None) -> d
     return _extract_user_from_api_payload(response.json())
 
 
-async def get_hwid_devices_for_user(user_uuid: str, *, host_name: str | None = None) -> Any | None:
+async def lookup_panel_user(
+    user_ref: str | None = None,
+    *,
+    email: str | None = None,
+    host_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Найти пользователя панели: id / uuid / shortUuid, затем email, затем username.
+
+    На Remnawave 3.x GET /api/users/by-email/{email} снят, а GET /api/users/{uuid}
+    отвечает 400 NaN. Рабочие lookup: числовой id, by-username, by-short-uuid.
+    """
+    stored = (user_ref or "").strip()
+    if stored:
+        found = await get_user_by_uuid(stored, host_name=host_name)
+        if found:
+            return found
+    email_n = (email or "").strip()
+    if email_n:
+        found = await get_user_by_email(email_n, host_name=host_name)
+        if found:
+            return found
+        uname = _username_from_email(email_n)
+        if uname:
+            found = await get_user_by_username(uname, host_name=host_name)
+            if found:
+                return found
+    return None
+
+
+async def panel_user_exists(
+    *,
+    user_ref: str | None = None,
+    email: str | None = None,
+    host_name: str | None = None,
+) -> bool | None:
+    """Есть ли пользователь на панели.
+
+    True — найден; False — подтверждённо отсутствует; None — нельзя решить
+    (UUID на 3.x даёт 400, by-email может быть снят, сеть/API ошибка).
+    False только после 404 на поддерживаемом lookup (id / shortUuid / username)
+    либо 404 UUID на 2.x — никогда из одного 404 by-email.
+    """
+    try:
+        found = await lookup_panel_user(user_ref, email=email, host_name=host_name)
+        if found:
+            return True
+        stored = (user_ref or "").strip()
+        kind = _classify_panel_user_ref(stored)
+        if _username_from_email(email):
+            # lookup уже сходил в by-username и получил 404 — на 3.x это «нет пользователя».
+            return False
+        if kind in ("id", "short"):
+            return False
+        # UUID без email: 400 на 3.x ≠ удаление; 404 на 2.x тоже None без статуса.
+        # Без поддерживаемого lookup не удаляем локальный ключ.
+        return None
+    except RemnawaveAPIError:
+        return None
+    except Exception:
+        return None
+
+
+def _extract_hwid_devices_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        inner = payload.get("response")
+        if inner is None:
+            inner = payload.get("data")
+        if inner is None:
+            inner = payload.get("list")
+        return inner if inner is not None else payload
+    return payload
+
+
+async def _get_hwid_devices_by_ref(user_ref: str, *, host_name: str | None = None) -> tuple[int, Any | None]:
+    path, expected = _panel_hwid_devices_path(user_ref)
+    if not path:
+        return 0, None
+    if host_name:
+        response = await _request_for_host(host_name, "GET", path, expected_status=expected)
+    else:
+        response = await _request("GET", path, expected_status=expected)
+    if response.status_code != 200:
+        return response.status_code, None
+    return response.status_code, _extract_hwid_devices_payload(response.json())
+
+
+async def get_hwid_devices_for_user(
+    user_uuid: str,
+    *,
+    host_name: str | None = None,
+    email: str | None = None,
+) -> Any | None:
     """Получить информацию об HWID-устройствах пользователя.
 
     В Remnawave HWID устройства живут отдельным endpoint'ом и не всегда
     возвращаются внутри /api/users. Поэтому для корректного подсчёта
     подключённых устройств используем этот запрос как источник истины.
+
+    3.x: путь ждёт числовой userId. UUID в сегменте даёт 400 NaN — тогда
+    резолвим id через lookup (email/username) и повторяем запрос.
     """
-    if not user_uuid:
-        return None
-
-    encoded_uuid = quote(str(user_uuid).strip())
+    stored = str(user_uuid or "").strip()
     try:
-        if host_name:
-            response = await _request_for_host(
-                host_name,
-                "GET",
-                f"/api/hwid/devices/{encoded_uuid}",
-                expected_status=(200, 404),
-            )
-        else:
-            response = await _request(
-                "GET",
-                f"/api/hwid/devices/{encoded_uuid}",
-                expected_status=(200, 404),
-            )
+        kind = _classify_panel_user_ref(stored)
+        if kind in ("id", "uuid"):
+            status, payload = await _get_hwid_devices_by_ref(stored, host_name=host_name)
+            if status == 200:
+                return payload
+            if kind == "id" or status == 404:
+                return None
 
-        if response.status_code == 404:
+        user = await lookup_panel_user(stored or None, email=email, host_name=host_name)
+        numeric = _panel_numeric_user_id(user)
+        if numeric and numeric != stored:
+            status, payload = await _get_hwid_devices_by_ref(numeric, host_name=host_name)
+            if status == 200:
+                return payload
             return None
-
-        payload = response.json()
-        if isinstance(payload, dict):
-            inner = payload.get("response")
-            if inner is None:
-                inner = payload.get("data")
-            if inner is None:
-                inner = payload.get("list")
-            return inner if inner is not None else payload
-        return payload
+        fallback_uuid = ""
+        if isinstance(user, dict):
+            fallback_uuid = str(user.get("uuid") or "").strip()
+        if fallback_uuid and fallback_uuid != stored and _classify_panel_user_ref(fallback_uuid) == "uuid":
+            status, payload = await _get_hwid_devices_by_ref(fallback_uuid, host_name=host_name)
+            if status == 200:
+                return payload
+        return None
     except RemnawaveAPIError:
         return None
     except Exception:
@@ -533,11 +667,16 @@ async def delete_hwid_device(
         return False
 
 
-async def get_connected_devices_count(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
+async def get_connected_devices_count(
+    user_uuid: str,
+    *,
+    host_name: str | None = None,
+    email: str | None = None,
+) -> dict[str, Any] | None:
     """Обёртка над get_hwid_devices_for_user для webapp: всегда возвращает
     dict с ключом "devices" (список), даже если исходный ответ Remnawave —
     просто список или пуст."""
-    raw = await get_hwid_devices_for_user(user_uuid, host_name=host_name)
+    raw = await get_hwid_devices_for_user(user_uuid, host_name=host_name, email=email)
     if raw is None:
         return {"devices": []}
     if isinstance(raw, dict):
@@ -1180,13 +1319,7 @@ async def get_user_used_traffic(
     if not user_uuid and not email:
         return 0
     try:
-        payload = await get_user_by_uuid(user_uuid, host_name=host_name) if user_uuid else None
-        if not payload and email:
-            payload = await get_user_by_email(email, host_name=host_name)
-            if not payload:
-                local = (email.split("@", 1)[0] if "@" in email else email)
-                uname = _normalize_username_for_remnawave(local)
-                payload = await get_user_by_username(uname, host_name=host_name)
+        payload = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
         return _extract_used_traffic_bytes(payload)
     except Exception as e:
         logger.error(
@@ -1646,6 +1779,7 @@ async def resolve_panel_user_id(
     *,
     host_name: str,
     user_payload: dict[str, Any] | None = None,
+    email: str | None = None,
 ) -> int | None:
     """Числовой `id` пользователя панели (нужен путям 3.3.2).
 
@@ -1659,7 +1793,7 @@ async def resolve_panel_user_id(
         return int(stored)
     payload = user_payload
     if payload is None:
-        payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+        payload = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
     raw = (payload or {}).get("id")
     if isinstance(raw, bool) or raw is None:
         return None
@@ -2073,7 +2207,6 @@ async def get_key_details_from_host(key_data: dict) -> dict | None:
     email = key_data.get('key_email') or key_data.get('email')
     user_uuid = key_data.get('remnawave_user_uuid') or key_data.get('xui_client_uuid')
     try:
-        user_payload = None
         host_name = key_data.get('host_name')
         if not host_name:
 
@@ -2081,10 +2214,7 @@ async def get_key_details_from_host(key_data: dict) -> dict | None:
             if sq:
                 squad = rw_repo.get_squad(sq)
                 host_name = squad.get('host_name') if squad else None
-        if email:
-            user_payload = await get_user_by_email(email, host_name=host_name)
-        if not user_payload and user_uuid:
-            user_payload = await get_user_by_uuid(user_uuid, host_name=host_name)
+        user_payload = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
         if not user_payload:
             logger.warning("Remnawave: не найден пользователь для ключа %s", key_data.get('key_id'))
             return None
@@ -2104,14 +2234,14 @@ async def get_key_details_from_host(key_data: dict) -> dict | None:
 async def delete_client_on_host(host_name: str, client_email: str) -> bool:
     try:
 
-        user_payload = await get_user_by_email(client_email, host_name=host_name)
+        user_payload = await lookup_panel_user(email=client_email, host_name=host_name)
         if not user_payload:
             logger.info("Remnawave: пользователь %s уже отсутствует", client_email)
             return True
         if isinstance(user_payload, list):
 
             user_payload = next((u for u in user_payload if isinstance(u, dict)), None)
-        user_uuid = str(user_payload.get('uuid') or user_payload.get('id') or '') if isinstance(user_payload, dict) else None
+        user_uuid = panel_user_ref_from_payload(user_payload) if isinstance(user_payload, dict) else ""
         if not user_uuid:
             logger.warning("Remnawave: нет uuid для пользователя %s", client_email)
             return False

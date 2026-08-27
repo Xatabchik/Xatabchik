@@ -1834,17 +1834,18 @@ async def _render_main_page(user_id: int):
 
                     # HWID Usage
                     u = key_details_map.get(k['key_id'])
-                    target_uuid = None
-                    if u:
-                         target_uuid = u.get('uuid')
+                    target_uuid = remnawave_api.panel_user_ref_from_payload(u) if u else None
                     if not target_uuid:
                          target_uuid = k.get('remnawave_user_uuid')
                          
                     host = k.get('host_name')
+                    email = k.get('key_email') or k.get('email')
 
                     if target_uuid and host:
                          try:
-                              devs = await remnawave_api.get_connected_devices_count(target_uuid, host_name=host)
+                              devs = await remnawave_api.get_connected_devices_count(
+                                  target_uuid, host_name=host, email=email
+                              )
                               if devs and 'total' in devs:
                                    k['used_ips'] = int(devs['total'])
                          except: pass
@@ -4710,7 +4711,10 @@ async def api_key_devices(req: KeyActionRequest, request: Request):
             return {"ok": False, "error": "Ключ не имеет привязки к серверу"}
             
         host = req.host_name or key.get("host_name")
-        devices_data = await remnawave_api.get_connected_devices_count(uuid_val, host_name=host)
+        email = key.get("key_email") or key.get("email")
+        devices_data = await remnawave_api.get_connected_devices_count(
+            uuid_val, host_name=host, email=email
+        )
         devices = (devices_data or {}).get("devices") or []
         return {"ok": True, "devices": devices}
     except Exception as e:
@@ -5010,7 +5014,10 @@ async def api_key_devices_delete_all(req: DeleteAllDevicesRequest, request: Requ
             return {"ok": False, "error": "Ключ не имеет привязки к серверу"}
 
         host = req.host_name or key.get("host_name")
-        devices_data = await remnawave_api.get_connected_devices_count(uuid_val, host_name=host)
+        email = key.get("key_email") or key.get("email")
+        devices_data = await remnawave_api.get_connected_devices_count(
+            uuid_val, host_name=host, email=email
+        )
         devices = (devices_data or {}).get("devices") or []
 
         if not devices:
