@@ -348,6 +348,21 @@ def _to_iso(dt: datetime) -> str:
     return dt_utc.isoformat().replace("+00:00", "Z")
 
 
+def _extract_user_from_api_payload(payload: Any) -> dict[str, Any] | None:
+    """Normalize Remnawave user lookup payloads (wrapped, list, or bare dict)."""
+    if isinstance(payload, dict):
+        inner = payload.get("response")
+        data = inner if inner is not None else payload
+    else:
+        data = payload
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                return item
+        return None
+    return data if isinstance(data, dict) else None
+
+
 async def get_user_by_email(email: str, *, host_name: str | None = None) -> dict[str, Any] | None:
     if not email:
         return None
@@ -358,22 +373,7 @@ async def get_user_by_email(email: str, *, host_name: str | None = None) -> dict
         response = await _request("GET", f"/api/users/by-email/{encoded_email}", expected_status=(200, 404))
     if response.status_code == 404:
         return None
-    payload = response.json()
-
-    data: Any
-    if isinstance(payload, dict):
-        inner = payload.get("response")
-        data = inner if inner is not None else payload
-    else:
-        data = payload
-
-    if isinstance(data, list):
-
-        for item in data:
-            if isinstance(item, dict):
-                return item
-        return None
-    return data if isinstance(data, dict) else None
+    return _extract_user_from_api_payload(response.json())
 
 
 async def get_user_by_username(username: str, *, host_name: str | None = None) -> dict[str, Any] | None:
@@ -386,13 +386,7 @@ async def get_user_by_username(username: str, *, host_name: str | None = None) -
         response = await _request("GET", f"/api/users/by-username/{encoded_username}", expected_status=(200, 404))
     if response.status_code == 404:
         return None
-    payload = response.json()
-    if isinstance(payload, dict):
-        inner = payload.get("response")
-        data = inner if inner is not None else payload
-    else:
-        data = payload
-    return data if isinstance(data, dict) else None
+    return _extract_user_from_api_payload(response.json())
 
 
 async def get_user_by_uuid(user_uuid: str, *, host_name: str | None = None) -> dict[str, Any] | None:
@@ -552,7 +546,19 @@ async def ensure_user(
     active_squads = list(dict.fromkeys([squad_uuid] + list(extra_squad_uuids or [])))
 
     email = _normalize_email_for_remnawave(email)
+    generated_username = _normalize_username_for_remnawave(username or email.split("@")[0])
     current = await get_user_by_email(email, host_name=host_name)
+    if not current and generated_username:
+        # Панель может знать пользователя по username, но не по email (пустой/другой
+        # email). POST тогда падает с A019 «User username already exists».
+        current = await get_user_by_username(generated_username, host_name=host_name)
+        if current:
+            logger.info(
+                "Remnawave: %s не найден по email на '%s', найден по username '%s' — обновляю",
+                email,
+                host_name,
+                generated_username,
+            )
     expire_iso = _to_iso(expire_at)
     traffic_limit_strategy = traffic_limit_strategy or "NO_RESET"
 
@@ -622,7 +628,6 @@ async def ensure_user(
             squad_uuid,
             expire_iso,
         )
-        generated_username = _normalize_username_for_remnawave(username or email.split("@")[0])
         payload = {
             "username": generated_username,
             "status": "ACTIVE",
@@ -662,6 +667,7 @@ async def ensure_user(
                 "status": "ACTIVE",
                 "expireAt": expire_iso,
                 "activeInternalSquads": active_squads,
+                "email": email,
             }
             _existing_uuid = _existing.get("uuid")
             _existing_id = _existing.get("id")
