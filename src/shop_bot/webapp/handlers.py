@@ -321,6 +321,7 @@ async def _send_invoice_stars(user_id: int, title: str, description: str, payloa
 
 
 from shop_bot.modules.platega_api import PlategaAPI
+from shop_bot.modules.rollypay_api import RollyPayAPI
 from shop_bot.modules.platega_fulfillment import (
     complete_pending_platega_payment,
     extract_platega_amount,
@@ -354,6 +355,31 @@ def _store_platega_transaction_id(payment_id, user_id, amount, meta, txid) -> No
         create_payload_pending(payment_id, user_id, amount, meta2)
     except Exception:
         logger.warning("Platega: не удалось сохранить provider_transaction_id для payment_id=%s", payment_id)
+
+
+def _rollypay_is_enabled() -> bool:
+    return bool(
+        (get_setting("rollypay_api_key") or "").strip()
+        and (get_setting("rollypay_signing_secret") or "").strip()
+    )
+
+
+def _rollypay_api() -> RollyPayAPI | None:
+    key = (get_setting("rollypay_api_key") or "").strip()
+    if not key:
+        return None
+    return RollyPayAPI(key, get_setting("rollypay_terminal_id") or "")
+
+
+def _store_rollypay_payment_id(payment_id, user_id, amount, meta, provider_id) -> None:
+    if not provider_id:
+        return
+    meta2 = dict(meta or {})
+    meta2["rollypay_payment_id"] = str(provider_id)
+    try:
+        create_payload_pending(payment_id, user_id, amount, meta2)
+    except Exception:
+        logger.warning("RollyPay: не удалось сохранить provider payment_id для payment_id=%s", payment_id)
 
 
 async def _fulfill_webapp_paid_order(metadata: dict) -> bool:
@@ -2774,6 +2800,9 @@ async def api_get_payment_methods(req: PaymentMethodsRequest, request: Request):
     if (get_setting("platega_merchant_id") or "").strip() and (get_setting("platega_secret") or "").strip():
         methods.append({"id": "pay_platega", "name": get_setting("payment_label_platega") or "Platega", "icon": "payments"})
 
+    if _rollypay_is_enabled():
+        methods.append({"id": "pay_rollypay", "name": get_setting("payment_label_rollypay") or "СБП", "icon": "payments"})
+
     # 3. CryptoBot
     if get_setting("cryptobot_token"):
         methods.append({"id": "pay_cryptobot", "name": "Криптовалюта", "icon": "currency_bitcoin"})
@@ -2957,6 +2986,42 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 return {"ok": False, "error": "Ошибка получения ссылки Platega"}
             except Exception as e:
                 return {"ok": False, "error": f"Ошибка Platega: {e}"}
+
+        # --- RollyPay ---
+        elif method_id == "pay_rollypay":
+            if not _rollypay_is_enabled():
+                return {"ok": False, "error": "RollyPay не настроена"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
+                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "plan_id": plan_id, "payment_method": "RollyPay", "payment_id": pid,
+                "tier_device_count": tier_device_count,
+                "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
+            }
+            pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
+            if pending_err:
+                return pending_err
+            comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+            return_url = f"https://t.me/{get_setting('telegram_bot_username')}"
+            try:
+                rollypay = _rollypay_api()
+                if not rollypay:
+                    return {"ok": False, "error": "RollyPay не настроена"}
+                url, provider_id = await rollypay.create_payment(
+                    float(final_price), comment, pid, return_url, return_url,
+                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    customer_id=str(user_id),
+                )
+                if url:
+                    _store_rollypay_payment_id(pid, user_id, float(final_price), meta, provider_id)
+                    kb = create_payment_keyboard(url)
+                    await _send_telegram_message(user_id, f"<b>Оплата по СБП</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Счет также доступен в WebApp.</i>", kb)
+                    return {"ok": True, "payment_url": url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
+            except Exception as e:
+                logger.error(f"RollyPay error: {e}", exc_info=True)
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
 
         # --- Platega Crypto ---
         elif method_id == "pay_platega_crypto":
@@ -3416,6 +3481,46 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
             except Exception as e:
                 return {"ok": False, "error": f"Ошибка Platega: {e}"}
 
+        # --- RollyPay ---
+        if method_id == "pay_rollypay":
+            if not _rollypay_is_enabled():
+                return {"ok": False, "error": "RollyPay не настроена"}
+            pid = str(uuid.uuid4())
+            meta = {
+                "user_id": user_id,
+                "price": final_price,
+                "action": "top_up",
+                "payment_method": "RollyPay",
+                "payment_id": pid,
+            }
+            create_payload_pending(pid, user_id, final_price, meta)
+            try:
+                rollypay = _rollypay_api()
+                if not rollypay:
+                    return {"ok": False, "error": "RollyPay не настроена"}
+                url, provider_id = await rollypay.create_payment(
+                    float(final_price),
+                    "Пополнение баланса",
+                    pid,
+                    return_url,
+                    return_url,
+                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    customer_id=str(user_id),
+                )
+                if url:
+                    _store_rollypay_payment_id(pid, user_id, final_price, meta, provider_id)
+                    kb = create_payment_keyboard(url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Пополнение баланса по СБП</b>\n\nСумма: <b>{final_price:.2f} RUB</b>\n\n<i>Счёт также доступен в WebApp.</i>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
+            except Exception as e:
+                logger.error(f"RollyPay topup error: {e}", exc_info=True)
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
+
         # --- CryptoBot ---
         if method_id == "pay_cryptobot":
             if not get_setting("cryptobot_token"):
@@ -3761,6 +3866,37 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
                 return {"ok": False, "error": "Ошибка получения ссылки Platega"}
             except Exception as e:
                 return {"ok": False, "error": f"Ошибка Platega: {e}"}
+
+        if method_id == "pay_rollypay":
+            if not _rollypay_is_enabled():
+                return {"ok": False, "error": "RollyPay не настроена"}
+            pid = str(uuid.uuid4())
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "RollyPay", pid, host_name)
+            pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
+            if pending_err:
+                return pending_err
+            try:
+                rollypay = _rollypay_api()
+                if not rollypay:
+                    return {"ok": False, "error": "RollyPay не настроена"}
+                url, provider_id = await rollypay.create_payment(
+                    price, description, pid, return_url, return_url,
+                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    customer_id=str(user_id),
+                )
+                if url:
+                    _store_rollypay_payment_id(pid, user_id, price, meta, provider_id)
+                    kb = create_payment_keyboard(url)
+                    await _send_telegram_message(
+                        user_id,
+                        f"<b>Докупка LTE по СБП</b>\n\n{description}\nСумма: <b>{price:.2f} RUB</b>",
+                        kb,
+                    )
+                    return {"ok": True, "payment_url": url, "payment_id": pid, "message": "Счёт создан"}
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
+            except Exception as e:
+                logger.error(f"RollyPay lte-gb error: {e}", exc_info=True)
+                return {"ok": False, "error": "Ошибка получения ссылки RollyPay"}
 
         if method_id == "pay_cryptobot":
             if not get_setting("cryptobot_token"):

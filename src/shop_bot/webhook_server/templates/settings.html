@@ -1973,6 +1973,44 @@
 						</details>
 
 						<details class="rw-drawer rw-drawer-payment">
+							<summary class="rw-drawer-summary"><span>RollyPay</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
+							<div class="rw-drawer-body">
+						<div class="mb-3">
+							<label class="form-label" for="payment_label_rollypay">Название кнопки в боте</label>
+							<input class="form-control" type="text" id="payment_label_rollypay" name="payment_label_rollypay" value="{{ settings.payment_label_rollypay or '' }}" placeholder="💳 СБП" />
+						</div>
+						<div class="mb-3">
+							<label class="form-label" for="rollypay_terminal_id">Terminal ID (UUID кассы)</label>
+							<input class="form-control" type="text" id="rollypay_terminal_id" name="rollypay_terminal_id" value="{{ settings.rollypay_terminal_id or '' }}" />
+							<div class="form-text">Необязательно, если API-ключ выдан на конкретную кассу.</div>
+						</div>
+						<div class="mb-3 password-wrapper">
+							<label class="form-label" for="rollypay_api_key">API Key (X-API-Key)</label>
+							<div class="d-flex gap-2">
+								<input class="form-control" type="password" id="rollypay_api_key" name="rollypay_api_key" value=""
+									placeholder="{{ '●●●● ключ задан — оставьте пустым, чтобы не менять' if settings.rollypay_api_key else 'Ключ не задан' }}" />
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
+							</div>
+						</div>
+						<div class="mb-3 password-wrapper">
+							<label class="form-label" for="rollypay_signing_secret">Signing Secret</label>
+							<div class="d-flex gap-2">
+								<input class="form-control" type="password" id="rollypay_signing_secret" name="rollypay_signing_secret" value=""
+									placeholder="{{ '●●●● ключ задан — оставьте пустым, чтобы не менять' if settings.rollypay_signing_secret else 'Ключ не задан' }}" />
+								<button type="button" class="btn btn-outline-secondary toggle-password"><i class="ti ti-eye" aria-hidden="true"></i></button>
+							</div>
+						</div>
+						<div class="mb-3">
+							<label class="form-label" for="rollypay_payment_method">Способ оплаты</label>
+							<input class="form-control" type="text" id="rollypay_payment_method" name="rollypay_payment_method" value="{{ settings.rollypay_payment_method or 'sbp' }}" />
+							<div class="form-text">Коды: <code>sbp</code>, <code>card</code>, <code>intl_card</code>. Пусто — выбор на форме оплаты.</div>
+							<div class="form-text">URL вебхука: <code>{{ request.url_root.rstrip('/') }}/rollypay-webhook</code></div>
+						</div>
+
+							</div>
+						</details>
+
+						<details class="rw-drawer rw-drawer-payment">
 							<summary class="rw-drawer-summary"><span>TonConnect</span><span class="rw-drawer-caret" aria-hidden="true"></span></summary>
 							<div class="rw-drawer-body">
 						<div class="mb-3">

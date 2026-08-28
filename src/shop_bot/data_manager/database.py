@@ -748,6 +748,10 @@ def initialize_db():
                 "platega_merchant_id": None,
                 "platega_secret": None,
                 "platega_active_methods": "2,10,11,12,13",
+                "rollypay_api_key": None,
+                "rollypay_terminal_id": None,
+                "rollypay_signing_secret": None,
+                "rollypay_payment_method": "sbp",
 
                 "domain": None,
                 "ton_wallet_address": None,
@@ -823,6 +827,7 @@ def initialize_db():
                 "payment_label_yookassa_card": "🏦 Банковская карта",
                 "payment_label_yookassa_sbp": "🏦 СБП / Банковская карта",
                 "payment_label_platega": "💳 Platega",
+                "payment_label_rollypay": "💳 СБП",
                 "payment_label_cryptobot": "💎 Криптовалюта",
                 "payment_label_heleket": "💎 Криптовалюта",
                 "payment_label_tonconnect": "🪙 TON Connect",
@@ -4795,6 +4800,8 @@ SECRET_SETTING_KEYS = frozenset({
     "heleket_api_key",
     "tonapi_key",
     "remnawave_api_token",
+    "rollypay_api_key",
+    "rollypay_signing_secret",
 })
 
 
