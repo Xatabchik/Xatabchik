@@ -2955,39 +2955,35 @@
 
         async function showSuccessScreen(data) {
             localStorage.removeItem('pendingPayment');
+            changePaymentStep('success');
+            if (window.Telegram?.WebApp?.HapticFeedback) {
+                window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+            }
+            await refreshAppData();
 
-            // Запрашиваем актуальный ключ пользователя
             try {
-                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const keyId = currentPaymentData && currentPaymentData.keyId;
+                let url = '/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || '');
+                if (keyId) url += '&key_id=' + encodeURIComponent(String(keyId));
+                const resp = await fetch(url);
                 const status = await resp.json();
+                const key = (status && status.key) || (status.keys && status.keys[0]);
 
-                if (status.ok && status.keys?.length) {
-                    // Берем первый или наиболее подходящий ключ (например, последний измененный)
-                    const key = status.keys[0];
-
-                    document.getElementById('success-expiry').textContent = key.expire_date_str
-                        ? `${key.expire_date_str} (${key.remaining_str})`
-                        : (key.expiry_date || "Бессрочно");
-
+                if (status.ok && key) {
+                    const expiryEl = document.getElementById('success-expiry');
+                    if (expiryEl) {
+                        expiryEl.textContent = key.expire_date_str
+                            ? `${key.expire_date_str} (${key.remaining_str})`
+                            : (key.expiry_date || "Бессрочно");
+                    }
                     const idEl = document.getElementById('success-id');
                     if (idEl) idEl.textContent = key.name || "Не указан";
-
-                    document.getElementById('success-key').textContent = key.sub_url || key.subscription_url || key.key || "";
+                    const keyEl = document.getElementById('success-key');
+                    if (keyEl) keyEl.textContent = key.sub_url || key.subscription_url || key.key || "";
                 }
             } catch (e) {
                 console.error("Error fetching success data:", e);
             }
-
-            changePaymentStep('success');
-
-            // Вибрация успеха если в TG
-            if (window.Telegram?.WebApp?.HapticFeedback) {
-                window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-            }
-
-            // Обновляем UI без перезагрузки страницы
-            await refreshAppData();
         }
 
         function copySuccessKey() {

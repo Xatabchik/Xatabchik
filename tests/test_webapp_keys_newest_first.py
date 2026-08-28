@@ -168,3 +168,35 @@ def test_user_status_returns_newest_key_first(temp_db):
     assert names[0] == "Новый ключ"
     assert names[1] == "Старый ключ"
     assert data["keys"][0]["sub_url"] == "https://sub.example/new"
+
+
+def test_pick_processed_key_prefers_requested_id():
+    from shop_bot.webapp.handlers import _pick_processed_key
+
+    keys = [
+        {"key_id": 20, "expire_date_str": "01.12.2029", "name": "new"},
+        {"key_id": 10, "expire_date_str": "26.10.2026", "name": "extended"},
+    ]
+    picked = _pick_processed_key(keys, 10)
+    assert picked["name"] == "extended"
+    assert picked["expire_date_str"] == "26.10.2026"
+    assert _pick_processed_key(keys, None)["name"] == "new"
+    assert _pick_processed_key([], 10) is None
+
+
+def test_user_status_key_id_returns_extended_key_not_newest(temp_db):
+    from shop_bot.data_manager import database
+
+    old_id, new_id = _seed_two_keys(database)
+    token = issue_auth_token(USER_ID)
+
+    newest = _client().get("/api/user-status", params={"token": token})
+    assert newest.json()["key"]["key_id"] == new_id
+    assert newest.json()["key"]["expire_date_str"] == "01.12.2029"
+
+    extended = _client().get("/api/user-status", params={"token": token, "key_id": old_id})
+    data = extended.json()
+    assert data["ok"] is True
+    assert data["key"]["key_id"] == old_id
+    assert data["key"]["expire_date_str"] == "01.01.2028"
+    assert data["keys"][0]["key_id"] == new_id

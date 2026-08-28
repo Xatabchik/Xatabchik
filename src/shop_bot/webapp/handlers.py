@@ -1314,6 +1314,25 @@ def _sort_keys_newest_first(keys: list) -> list:
     return sorted(keys, key=_key_created_sort_tuple, reverse=True)
 
 
+def _pick_processed_key(keys: list, key_id: int | None = None) -> dict | None:
+    """Ключ для модалки успеха: продлённый/купленный, иначе первый в списке."""
+    if not keys:
+        return None
+    if key_id is not None:
+        try:
+            wanted = int(key_id)
+        except (TypeError, ValueError):
+            wanted = None
+        if wanted is not None:
+            for k in keys:
+                try:
+                    if int(k.get("key_id") or 0) == wanted:
+                        return k
+                except (TypeError, ValueError):
+                    continue
+    return keys[0]
+
+
 def _get_profile_keys_html(keys: list) -> str:
     if not keys:
         return _get_no_key_html()
@@ -4953,7 +4972,7 @@ async def api_support_send(req: SupportMessageSendRequest, request: Request):
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/user-status")
-async def api_user_status(request: Request, token: str | None = None):
+async def api_user_status(request: Request, token: str | None = None, key_id: int | None = None):
     try:
         # Prefer query token; also accept Authorization header via helper.
         user = _require_authenticated_user(request, token=token)
@@ -4967,7 +4986,12 @@ async def api_user_status(request: Request, token: str | None = None):
             keys = _sort_keys_newest_first(keys)
             formatted_keys = [_process_key_data(k) for k in keys]
         
-        return {"ok": True, "keys": formatted_keys, "balance": float(user.get("balance") or 0.0)}
+        return {
+            "ok": True,
+            "keys": formatted_keys,
+            "key": _pick_processed_key(formatted_keys, key_id),
+            "balance": float(user.get("balance") or 0.0),
+        }
     except Exception as e:
         logger.error(f"User status error: {e}")
         return {"ok": False, "error": str(e)}
