@@ -2963,8 +2963,12 @@
                 const status = await resp.json();
 
                 if (status.ok && status.keys?.length) {
-                    // Берем первый или наиболее подходящий ключ (например, последний измененный)
-                    const key = status.keys[0];
+                    // В этом окне показываем ключ, который только что купили или продлили
+                    const wantedId = currentPaymentData && currentPaymentData.keyId
+                        ? String(currentPaymentData.keyId)
+                        : '';
+                    const key = (wantedId && status.keys.find(k => String(k.key_id) === wantedId))
+                        || status.keys[0];
 
                     document.getElementById('success-expiry').textContent = key.expire_date_str
                         ? `${key.expire_date_str} (${key.remaining_str})`
