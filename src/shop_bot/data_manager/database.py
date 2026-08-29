@@ -9049,13 +9049,13 @@ def get_or_create_open_ticket(user_id: int, subject: str | None = None) -> tuple
         logging.error(f"Failed to get_or_create_open_ticket for user {user_id}: {e}")
         return None, False
 
-def add_support_message(ticket_id: int, sender: str, content: str) -> int | None:
+def add_support_message(ticket_id: int, sender: str, content: str, media: str | None = None) -> int | None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO support_messages (ticket_id, sender, content) VALUES (?, ?, ?)",
-                (ticket_id, sender, content)
+                "INSERT INTO support_messages (ticket_id, sender, content, media) VALUES (?, ?, ?, ?)",
+                (ticket_id, sender, content, media)
             )
             cursor.execute(
                 "UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE ticket_id = ?",
@@ -9127,6 +9127,29 @@ def get_user_tickets(user_id: int, status: str | None = None) -> list[dict]:
     except sqlite3.Error as e:
         logging.error(f"Failed to get tickets for user {user_id}: {e}")
         return []
+
+def get_support_message(message_id: int) -> dict | None:
+    """Одно сообщение тикета. Нужно для отдачи вложений в панели."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM support_messages WHERE message_id = ?",
+                (message_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get support message {message_id}: {e}")
+        return None
+
+
+def get_ticket_media_root() -> str:
+    """Каталог вложений — рядом с файлом базы."""
+    import os
+    return os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "ticket_files")
+
 
 def get_ticket_messages(ticket_id: int) -> list[dict]:
     try:
