@@ -4326,6 +4326,8 @@ def create_webhook_app(bot_controller_instance):
             {
                 "sender": m.get('sender'),
                 "content": m.get('content'),
+                "media": m.get('media'),
+                "message_id": m.get('message_id'),
                 "created_at": m.get('created_at')
             }
             for m in messages
@@ -4335,6 +4337,33 @@ def create_webhook_app(bot_controller_instance):
             "status": ticket.get('status'),
             "messages": items
         })
+
+    @flask_app.route('/support/ticket-file/<int:message_id>')
+    @login_required
+    def support_ticket_file(message_id: int):
+        """Отдаёт вложение тикета.
+
+        Под login_required намеренно: в тикеты присылают платёжки,
+        документы и переписку. Без авторизации адрес /support/ticket-file/42
+        перебором открыл бы чужие скриншоты.
+        """
+        import os
+        from flask import send_file, abort
+        from shop_bot.data_manager.database import get_support_message, get_ticket_media_root
+
+        msg = get_support_message(message_id)
+        if not msg or not msg.get('media'):
+            abort(404)
+
+        base = os.path.realpath(get_ticket_media_root())
+        full = os.path.realpath(os.path.join(base, str(msg['media'])))
+
+        # значение из БД не считаем доверенным: путь вида "../../users.db"
+        # иначе отдал бы наружу саму базу
+        if not full.startswith(base + os.sep) or not os.path.isfile(full):
+            abort(404)
+
+        return send_file(full)
 
     @flask_app.route('/support/<int:ticket_id>/delete', methods=['POST'])
     @login_required

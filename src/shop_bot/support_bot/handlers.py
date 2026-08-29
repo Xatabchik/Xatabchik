@@ -201,6 +201,55 @@ def get_support_router() -> Router:
         await message.answer("✉️ Опишите проблему максимально подробно одним сообщением.")
         await state.set_state(SupportDialog.waiting_for_message)
 
+    TICKET_MEDIA_MAX_BYTES = 10 * 1024 * 1024
+    TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+    async def _save_ticket_media(bot: Bot, message: types.Message, ticket_id: int):
+        """Сохраняет изображение из сообщения в тикет.
+
+        Файл кладётся к нам на диск, а не остаётся ссылкой на Telegram:
+        ссылки вида api.telegram.org/file/bot<токен>/... содержат токен
+        бота открытым текстом и протухают со временем.
+
+        Возвращает относительный путь вида "<ticket_id>/<uuid>.jpg" или None.
+        """
+        import os
+        import uuid as _uuid
+
+        file_id = None
+        ext = ".jpg"
+
+        photo = message.photo[-1] if message.photo else None
+        doc = message.document
+
+        if photo:
+            if photo.file_size and photo.file_size > TICKET_MEDIA_MAX_BYTES:
+                return None
+            file_id = photo.file_id
+        elif doc and str(doc.mime_type or "").startswith("image/"):
+            if doc.file_size and doc.file_size > TICKET_MEDIA_MAX_BYTES:
+                return None
+            file_id = doc.file_id
+            candidate = os.path.splitext(str(doc.file_name or ""))[1].lower()
+            if candidate in TICKET_MEDIA_EXTS:
+                ext = candidate
+
+        if not file_id:
+            return None
+
+        try:
+            from shop_bot.data_manager.database import get_ticket_media_root
+
+            folder = os.path.join(get_ticket_media_root(), str(ticket_id))
+            os.makedirs(folder, exist_ok=True)
+            # имя генерируем сами: имя файла от пользователя доверять нельзя
+            name = f"{_uuid.uuid4().hex}{ext}"
+            await bot.download(file_id, destination=os.path.join(folder, name))
+            return f"{ticket_id}/{name}"
+        except Exception as e:
+            logging.error(f"Не удалось сохранить вложение тикета {ticket_id}: {e}")
+            return None
+
     @router.message(SupportDialog.waiting_for_message, F.chat.type == "private")
     async def support_message_received(message: types.Message, state: FSMContext, bot: Bot):
         if _is_user_banned(message.from_user.id):
@@ -221,7 +270,8 @@ def get_support_router() -> Router:
             await message.answer("❌ Не удалось создать обращение. Попробуйте позже.")
             await state.clear()
             return
-        add_support_message(ticket_id, sender="user", content=(message.text or message.caption or ""))
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(ticket_id, sender="user", content=(message.text or message.caption or ""), media=_media)
         ticket = get_ticket(ticket_id)
         support_forum_chat_id = get_setting("support_forum_chat_id")
         thread_id = None
@@ -398,7 +448,8 @@ def get_support_router() -> Router:
             await message.answer("Нельзя ответить на этот тикет.")
             await state.clear()
             return
-        add_support_message(ticket_id, sender='user', content=(message.text or message.caption or ''))
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(ticket_id, sender='user', content=(message.text or message.caption or ''), media=_media)
         await state.clear()
         await message.answer("Сообщение отправлено.")
         try:
@@ -520,7 +571,8 @@ def get_support_router() -> Router:
                 return
             content = (message.text or message.caption or "").strip()
             if content:
-                add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content)
+                _media = await _save_ticket_media(bot, message, int(ticket['ticket_id']))
+                add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content, media=_media)
             header = await bot.send_message(
                 chat_id=user_id,
                 text=f"💬 Ответ поддержки по тикету #{ticket['ticket_id']}"

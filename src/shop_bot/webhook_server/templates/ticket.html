@@ -69,6 +69,15 @@
               </span>
             </div>
             <div class="content">{{ m.content }}</div>
+            {% if m.media %}
+            <div class="ticket-attachment mt-2">
+              <a href="{{ url_for('support_ticket_file', message_id=m.message_id) }}" target="_blank">
+                <img src="{{ url_for('support_ticket_file', message_id=m.message_id) }}"
+                     alt="Вложение" loading="lazy"
+                     style="max-width: 320px; max-height: 320px; border-radius: 8px; display: block;">
+              </a>
+            </div>
+            {% endif %}
           </div>
         {% else %}
           <p class="no-messages text-center text-secondary py-4">
