@@ -128,48 +128,28 @@ async def resolve_telegram_file_size(
     return api_size, source
 
 
-class _CappedFileWriter:
-    """Пишет на диск и обрывает поток, если вышли за лимит."""
-
-    def __init__(self, path: str, max_bytes: int):
-        self._path = path
-        self._max = max_bytes
-        self._fh = open(path, "wb")
-        self._n = 0
-
-    def write(self, data: Any) -> int:
-        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
-        if self._n + len(raw) > self._max:
-            raise OSError("ticket media exceeds size limit")
-        self._n += len(raw)
-        return self._fh.write(raw)
-
-    def flush(self) -> None:
-        self._fh.flush()
-
-    def close(self) -> None:
-        if not self._fh.closed:
-            self._fh.close()
-
-
 async def download_ticket_media_capped(
     bot: Any,
     source: Any,
     part_path: str,
     max_bytes: int = TICKET_MEDIA_MAX_BYTES,
 ) -> bool:
-    writer = _CappedFileWriter(part_path, max_bytes)
+    """Качаем в путь на диске: aiogram для BinaryIO вызывает seek(0), свой writer ломался молча."""
     try:
-        await bot.download(source, destination=writer)
+        await bot.download(source, destination=part_path)
+        if not os.path.isfile(part_path):
+            logger.warning("Вложение тикета: download не создал файл")
+            return False
+        size = os.path.getsize(part_path)
+        if size <= 0 or size > max_bytes:
+            logger.warning("Вложение тикета: после download размер %s, лимит %s", size, max_bytes)
+            _unlink_quiet(part_path)
+            return False
         return True
     except Exception:
+        logger.exception("Не удалось скачать вложение тикета")
         _unlink_quiet(part_path)
         return False
-    finally:
-        try:
-            writer.close()
-        except OSError:
-            pass
 
 
 def declared_size_over_limit(
@@ -485,11 +465,13 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
     if photo:
         declared_size = getattr(photo, "file_size", None)
         if declared_size_over_limit(declared_size):
+            logger.warning("Тикет %s: фото больше лимита (%s)", ticket_id, declared_size)
             return None
         file_id = photo.file_id
     elif doc and document_may_be_ticket_media(doc):
         declared_size = getattr(doc, "file_size", None)
         if declared_size_over_limit(declared_size):
+            logger.warning("Тикет %s: документ больше лимита (%s)", ticket_id, declared_size)
             return None
         file_id = doc.file_id
 
@@ -502,14 +484,20 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         known_size, download_source = await resolve_telegram_file_size(
             bot, file_id, declared_size
         )
-        if known_size is None or declared_size_over_limit(known_size):
+        if known_size is None:
+            logger.warning("Тикет %s: размер файла неизвестен, download пропущен", ticket_id)
+            return None
+        if declared_size_over_limit(known_size):
+            logger.warning("Тикет %s: getFile/size %s больше лимита", ticket_id, known_size)
             return None
         ticket_id = int(ticket_id)
         folder = jailed_ticket_folder(ticket_id)
         if not folder:
+            logger.warning("Тикет %s: каталог вложений вне jail", ticket_id)
             return None
         os.makedirs(folder, exist_ok=True)
         if quota_blocks_new_file(folder, known_size):
+            logger.warning("Тикет %s: квота вложений исчерпана", ticket_id)
             return None
         stem = uuid.uuid4().hex
         part_path = os.path.join(folder, f"{stem}.part")
@@ -517,13 +505,16 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
             return None
         name = commit_ticket_image(part_path, folder, stem)
         if not name:
+            logger.warning("Тикет %s: файл отклонён (размер или не jpeg/png/webp/pdf)", ticket_id)
             return None
         final_path = os.path.join(folder, name)
         count, total = ticket_folder_usage(folder)
         if count > TICKET_MEDIA_MAX_FILES or total > TICKET_MEDIA_MAX_TOTAL_BYTES:
             _unlink_quiet(final_path)
+            logger.warning("Тикет %s: квота после записи, файл удалён", ticket_id)
             return None
         maybe_purge_expired_closed_ticket_media()
+        logger.info("Тикет %s: вложение сохранено %s", ticket_id, name)
         return f"{ticket_id}/{name}"
     except Exception as e:
         logger.error("Не удалось сохранить вложение тикета %s: %s", ticket_id, e)
