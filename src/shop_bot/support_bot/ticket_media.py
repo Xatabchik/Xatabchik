@@ -30,15 +30,15 @@ TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
     """Расширение и MIME по сигнатуре. None — не картинка из whitelist."""
-    if not head or len(head) < 12:
+    if not head:
         return None
-    if head.startswith(b"\xff\xd8\xff"):
+    if len(head) >= 3 and head.startswith(b"\xff\xd8\xff"):
         return ".jpg", "image/jpeg"
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+    if len(head) >= 8 and head.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png", "image/png"
-    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+    if len(head) >= 6 and (head.startswith(b"GIF87a") or head.startswith(b"GIF89a")):
         return ".gif", "image/gif"
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return ".webp", "image/webp"
     return None
 
