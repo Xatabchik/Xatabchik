@@ -511,6 +511,7 @@ _LEGACY_FORWARDERS = (
     "create_host",
     "create_pending_transaction",
     "create_payload_pending",
+    "patch_pending_metadata",
     "claim_processed_payment",
     "unclaim_processed_payment",
     "refund_payment_once",

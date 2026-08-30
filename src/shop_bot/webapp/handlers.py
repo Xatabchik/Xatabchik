@@ -5474,13 +5474,26 @@ async def api_user_transactions(
         from shop_bot.data_manager.remnawave_repository import get_transactions_paginated
         transactions, total = get_transactions_paginated(page=page, per_page=per_page, user_id=user_id)
 
+        status_labels = {
+            "pending": "Ожидает оплаты",
+            "paid": "Оплачено",
+            "success": "Оплачено",
+            "succeeded": "Оплачено",
+            "completed": "Оплачено",
+            "cancelled": "Отменена",
+            "canceled": "Отменена",
+        }
         safe_txs = []
         for tx in transactions:
+            raw_status = (tx.get("status") or "").strip()
             safe_txs.append({
                 "transaction_id": tx.get("transaction_id"),
+                "payment_id": tx.get("payment_id") or "",
+                "provider_transaction_id": tx.get("provider_transaction_id") or "",
                 "amount_rub": tx.get("amount_rub"),
                 "payment_method": tx.get("payment_method") or "—",
-                "status": tx.get("status"),
+                "status": raw_status,
+                "status_label": status_labels.get(raw_status.lower(), raw_status or "—"),
                 "created_date": tx.get("created_date"),
                 "action_label": tx.get("action_label") or "Оплата",
                 "plan_name": tx.get("plan_name") or "—",

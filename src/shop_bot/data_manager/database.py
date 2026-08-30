@@ -4917,10 +4917,103 @@ def _ensure_processed_payments_table(cursor: sqlite3.Cursor) -> None:
     )
 
 
+_PAID_TX_STATUSES = frozenset({"paid", "success", "succeeded", "completed"})
+_PROVIDER_TX_KEYS = (
+    "platega_transaction_id",
+    "cryptobot_invoice_id",
+    "heleket_uuid",
+    "yookassa_payment_id",
+    "rollypay_payment_id",
+)
+
+
+def _tx_meta_dict(raw) -> dict:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _provider_transaction_id_from_meta(metadata: dict | None) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in _PROVIDER_TX_KEYS:
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _mirror_pending_to_ledger(
+    cursor: sqlite3.Cursor,
+    payment_id: str,
+    user_id: int,
+    amount_rub,
+    metadata,
+    status: str = "pending",
+) -> None:
+    """Дублирует неоплаченный счёт в ``transactions``, чтобы он был виден в истории.
+
+    Уже оплаченную строку не перезаписывает.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return
+    meta = _tx_meta_dict(metadata)
+    meta_json = json.dumps(meta, ensure_ascii=False)
+    payment_method = meta.get("payment_method")
+    try:
+        amount = float(amount_rub) if amount_rub is not None else float(meta.get("price") or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    username = None
+    try:
+        cursor.execute("SELECT username FROM users WHERE telegram_id = ?", (int(user_id),))
+        row = cursor.fetchone()
+        if row:
+            username = row[0] if not isinstance(row, sqlite3.Row) else row["username"]
+    except Exception:
+        username = None
+
+    cursor.execute("SELECT status, metadata FROM transactions WHERE payment_id = ?", (pid,))
+    existing = cursor.fetchone()
+    if existing:
+        current_status = (existing[0] or "").strip().lower()
+        if current_status in _PAID_TX_STATUSES:
+            return
+        cursor.execute(
+            """
+            UPDATE transactions
+               SET username = COALESCE(?, username),
+                   user_id = ?,
+                   amount_rub = ?,
+                   payment_method = COALESCE(?, payment_method),
+                   metadata = ?,
+                   status = ?
+             WHERE payment_id = ?
+               AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('paid', 'success', 'succeeded', 'completed')
+            """,
+            (username, int(user_id), amount, payment_method, meta_json, status, pid),
+        )
+        return
+    cursor.execute(
+        """
+        INSERT INTO transactions
+            (username, payment_id, user_id, status, amount_rub, payment_method, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (username, pid, int(user_id), status, amount, payment_method, meta_json),
+    )
+
+
 def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) -> bool:
     """Create/update pending payload metadata.
 
     Important: does NOT revive already paid rows (keeps status='paid' intact).
+    Зеркалит неоплаченный счёт в ``transactions`` (status=pending) вместе с id провайдера.
     """
     pid = (payment_id or "").strip()
     if not pid:
@@ -4949,12 +5042,52 @@ def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) 
                     json.dumps(metadata or {}, ensure_ascii=False),
                 ),
             )
+            _mirror_pending_to_ledger(cursor, pid, int(user_id), amount_rub, metadata, status="pending")
             return True
 
     try:
         return bool(_retry_sqlite(_work))
     except sqlite3.Error as e:
         logging.error(f"Failed to create payload pending {pid}: {e}")
+        return False
+
+
+def patch_pending_metadata(payment_id: str, extra: dict) -> bool:
+    """Дописывает поля (id провайдера) в pending и в зеркало ``transactions``."""
+    pid = (payment_id or "").strip()
+    if not pid or not extra:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                "SELECT user_id, amount_rub, metadata FROM pending_transactions WHERE payment_id = ? AND status = 'pending'",
+                (pid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            meta = _tx_meta_dict(row[2])
+            for key, value in extra.items():
+                if value not in (None, ""):
+                    meta[key] = value
+            cursor.execute(
+                """
+                UPDATE pending_transactions
+                   SET metadata = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE payment_id = ? AND status = 'pending'
+                """,
+                (json.dumps(meta, ensure_ascii=False), pid),
+            )
+            _mirror_pending_to_ledger(cursor, pid, int(row[0]), row[1], meta, status="pending")
+            return True
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to patch pending metadata {pid}: {e}")
         return False
 
 
@@ -5266,7 +5399,18 @@ def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> b
                     """,
                     (pid,),
                 )
-            return cursor.rowcount == 1
+            cancelled = cursor.rowcount == 1
+            if cancelled:
+                cursor.execute(
+                    """
+                    UPDATE transactions
+                       SET status = 'cancelled'
+                     WHERE payment_id = ?
+                       AND LOWER(TRIM(COALESCE(status, ''))) = 'pending'
+                    """,
+                    (pid,),
+                )
+            return cancelled
 
     try:
         return bool(_retry_sqlite(_work))
@@ -7627,12 +7771,11 @@ def create_pending_transaction(payment_id: str, user_id: int, amount_rub: float,
             except Exception:
                 pass
 
-            cursor.execute(
-                "INSERT OR IGNORE INTO transactions (payment_id, user_id, status, amount_rub, metadata) VALUES (?, ?, ?, ?, ?)",
-                (pid, int(user_id), 'pending', float(amount_rub), json.dumps(metadata or {}, ensure_ascii=False))
-            )
+            _mirror_pending_to_ledger(cursor, pid, int(user_id), amount_rub, metadata, status="pending")
             conn.commit()
-            return cursor.lastrowid or 0
+            cursor.execute("SELECT transaction_id FROM transactions WHERE payment_id = ?", (pid,))
+            row = cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
     except sqlite3.Error as e:
         logging.error(f"Failed to create pending transaction: {e}")
         return 0
@@ -7750,15 +7893,7 @@ def _describe_transaction_action(metadata: dict) -> dict:
         key_id = None
     label = _TX_ACTION_LABELS.get(action, "Оплата тарифа" if action is None else action)
     size_gb = metadata.get("size_gb") if isinstance(metadata, dict) else None
-    # ID транзакции на стороне платёжного провайдера (если применимо и был сохранён).
-    provider_transaction_id = None
-    if isinstance(metadata, dict):
-        provider_transaction_id = (
-            metadata.get("platega_transaction_id")
-            or metadata.get("cryptobot_invoice_id")
-            or metadata.get("heleket_uuid")
-            or metadata.get("yookassa_payment_id")
-        )
+    provider_transaction_id = _provider_transaction_id_from_meta(metadata if isinstance(metadata, dict) else None)
     return {
         "action": action,
         "action_label": label,
@@ -7821,11 +7956,48 @@ def log_transaction(username: str, transaction_id: str | None, payment_id: str |
     def _work():
         with _connect_pending_db() as conn:
             cursor = conn.cursor()
+            pid = (str(payment_id).strip() if payment_id is not None else "")
+            new_meta = metadata if isinstance(metadata, str) else json.dumps(metadata or {}, ensure_ascii=False)
+            if pid:
+                cursor.execute(
+                    "SELECT metadata FROM transactions WHERE payment_id = ?",
+                    (pid,),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    merged = _tx_meta_dict(existing[0])
+                    merged.update(_tx_meta_dict(new_meta))
+                    cursor.execute(
+                        """
+                        UPDATE transactions
+                           SET username = COALESCE(?, username),
+                               user_id = ?,
+                               status = ?,
+                               amount_rub = ?,
+                               amount_currency = COALESCE(?, amount_currency),
+                               currency_name = COALESCE(?, currency_name),
+                               payment_method = COALESCE(?, payment_method),
+                               metadata = ?
+                         WHERE payment_id = ?
+                        """,
+                        (
+                            username,
+                            user_id,
+                            status,
+                            amount_rub,
+                            amount_currency,
+                            currency_name,
+                            payment_method,
+                            json.dumps(merged, ensure_ascii=False),
+                            pid,
+                        ),
+                    )
+                    return True
             cursor.execute(
                 """INSERT INTO transactions
                    (username, transaction_id, payment_id, user_id, status, amount_rub, amount_currency, currency_name, payment_method, metadata, created_date)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (username, transaction_id, payment_id, user_id, status, amount_rub, amount_currency, currency_name, payment_method, metadata, datetime.now())
+                (username, transaction_id, payment_id, user_id, status, amount_rub, amount_currency, currency_name, payment_method, new_meta, datetime.now())
             )
             return True
 

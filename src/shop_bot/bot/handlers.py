@@ -1001,6 +1001,10 @@ async def _create_heleket_payment_request(
                     try:
                         result = data.get("result") or {}
                         pay_url = result.get("url")
+                        heleket_uuid = result.get("uuid")
+                        if heleket_uuid:
+                            from shop_bot.data_manager.database import patch_pending_metadata
+                            patch_pending_metadata(payment_id, {"heleket_uuid": str(heleket_uuid)})
                         if pay_url:
                             return pay_url
                     except Exception:
@@ -1051,6 +1055,8 @@ async def create_cryptobot_api_invoice(amount: float, payload_str: str) -> tuple
                     pay_url = res.get("bot_invoice_url") or res.get("invoice_url")
                     invoice_id = res.get("invoice_id")
                     if pay_url and invoice_id is not None:
+                        from shop_bot.data_manager.database import patch_pending_metadata
+                        patch_pending_metadata(payload_str, {"cryptobot_invoice_id": str(invoice_id)})
                         return pay_url, int(invoice_id)
                 logger.error(f"CryptoBot: неожиданный ответ API: {data}")
                 return None
@@ -1166,6 +1172,8 @@ async def _create_cryptobot_invoice(
                     pay_url = res.get("bot_invoice_url") or res.get("invoice_url")
                     invoice_id = res.get("invoice_id")
                     if pay_url and invoice_id is not None:
+                        from shop_bot.data_manager.database import patch_pending_metadata
+                        patch_pending_metadata(payment_id, {"cryptobot_invoice_id": str(invoice_id)})
                         return pay_url, int(invoice_id)
                 logger.error(f"CryptoBot: неожиданный ответ API: {data}")
                 return None
@@ -9407,7 +9415,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         out = {}
         if not isinstance(meta, dict):
             return out
-        for k in ("platega_transaction_id", "cryptobot_invoice_id", "heleket_uuid", "yookassa_payment_id"):
+        for k in ("platega_transaction_id", "cryptobot_invoice_id", "heleket_uuid", "yookassa_payment_id", "rollypay_payment_id"):
             v = meta.get(k)
             if v:
                 out[k] = v
@@ -9616,7 +9624,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 log_transaction(
                     username=log_username,
                     transaction_id=None,
-                    payment_id=str(uuid.uuid4()),
+                    payment_id=payment_id,
                     user_id=user_id,
                     status='paid',
                     amount_rub=float(price),
@@ -9734,7 +9742,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 log_transaction(
                     username=log_username,
                     transaction_id=None,
-                    payment_id=str(uuid.uuid4()),
+                    payment_id=payment_id,
                     user_id=user_id,
                     status='paid',
                     amount_rub=float(price),
@@ -9811,7 +9819,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 log_transaction(
                     username=log_username,
                     transaction_id=None,
-                    payment_id=str(uuid.uuid4()),
+                    payment_id=payment_id,
                     user_id=user_id,
                     status='paid',
                     amount_rub=float(price),
@@ -9871,7 +9879,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             logged_ok = log_transaction(
                 username=log_username,
                 transaction_id=None,
-                payment_id=str(uuid.uuid4()),
+                payment_id=payment_id,
                 user_id=user_id,
                 status='paid',
                 amount_rub=float(price),
