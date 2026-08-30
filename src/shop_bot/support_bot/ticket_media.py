@@ -9,6 +9,9 @@
 
 На тикет: не больше 10 файлов и 30 МБ суммарно. При удалении тикета
 каталог ``ticket_files/<ticket_id>/`` снимается вместе со строками БД.
+
+Тип файла определяется по magic bytes (jpeg/png/gif/webp), не по имени
+и не по MIME Telegram. Панель отдаёт вложение с этим MIME и nosniff.
 """
 from __future__ import annotations
 
@@ -23,6 +26,30 @@ TICKET_MEDIA_MAX_BYTES = 10 * 1024 * 1024
 TICKET_MEDIA_MAX_FILES = 10
 TICKET_MEDIA_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
+    """Расширение и MIME по сигнатуре. None — не картинка из whitelist."""
+    if not head or len(head) < 12:
+        return None
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg", "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png", "image/png"
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return ".gif", "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    return None
+
+
+def detect_image_kind(path: str) -> tuple[str, str] | None:
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return None
+    return detect_image_kind_bytes(head)
 
 
 def declared_size_over_limit(
@@ -153,6 +180,29 @@ def delete_ticket_media_dir(ticket_id: int) -> bool:
     return not os.path.isdir(folder)
 
 
+def commit_ticket_image(part_path: str, dest_dir: str, stem: str) -> str | None:
+    """Размер + magic. Возвращает ``stem.ext`` или None; ``*.part`` удаляется при отказе."""
+    try:
+        if not os.path.isfile(part_path):
+            return None
+        size = os.path.getsize(part_path)
+        if size <= 0 or size > TICKET_MEDIA_MAX_BYTES:
+            _unlink_quiet(part_path)
+            return None
+        kind = detect_image_kind(part_path)
+        if kind is None:
+            _unlink_quiet(part_path)
+            return None
+        ext, _mime = kind
+        name = f"{stem}{ext}"
+        final_path = os.path.join(dest_dir, name)
+        os.replace(part_path, final_path)
+        return name
+    except Exception:
+        _unlink_quiet(part_path)
+        return None
+
+
 def _unlink_quiet(*paths: str) -> None:
     for path in paths:
         try:
@@ -170,7 +220,6 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
     не ломает обращение.
     """
     file_id = None
-    ext = ".jpg"
     declared_size = None
 
     photo = message.photo[-1] if getattr(message, "photo", None) else None
@@ -186,9 +235,6 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         if declared_size_over_limit(declared_size):
             return None
         file_id = doc.file_id
-        candidate = os.path.splitext(str(getattr(doc, "file_name", None) or ""))[1].lower()
-        if candidate in TICKET_MEDIA_EXTS:
-            ext = candidate
 
     if not file_id:
         return None
@@ -209,12 +255,13 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         os.makedirs(folder, exist_ok=True)
         if quota_blocks_new_file(folder, incoming):
             return None
-        name = f"{uuid.uuid4().hex}{ext}"
-        final_path = os.path.join(folder, name)
-        part_path = final_path + ".part"
+        stem = uuid.uuid4().hex
+        part_path = os.path.join(folder, f"{stem}.part")
         await bot.download(file_id, destination=part_path)
-        if not finalize_ticket_media_download(part_path, final_path):
+        name = commit_ticket_image(part_path, folder, stem)
+        if not name:
             return None
+        final_path = os.path.join(folder, name)
         count, total = ticket_folder_usage(folder)
         if count > TICKET_MEDIA_MAX_FILES or total > TICKET_MEDIA_MAX_TOTAL_BYTES:
             _unlink_quiet(final_path)

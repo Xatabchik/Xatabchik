@@ -4350,6 +4350,7 @@ def create_webhook_app(bot_controller_instance):
         import os
         from flask import send_file, abort
         from shop_bot.data_manager.database import get_support_message, get_ticket_media_root
+        from shop_bot.support_bot.ticket_media import detect_image_kind
 
         msg = get_support_message(message_id)
         if not msg or not msg.get('media'):
@@ -4363,7 +4364,17 @@ def create_webhook_app(bot_controller_instance):
         if not full.startswith(base + os.sep) or not os.path.isfile(full):
             abort(404)
 
-        return send_file(full)
+        kind = detect_image_kind(full)
+        if kind is None:
+            abort(404)
+        _ext, mimetype = kind
+        response = send_file(
+            full,
+            mimetype=mimetype,
+            download_name=os.path.basename(full),
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @flask_app.route('/support/<int:ticket_id>/delete', methods=['POST'])
     @login_required

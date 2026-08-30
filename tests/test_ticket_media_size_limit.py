@@ -112,12 +112,13 @@ def test_save_keeps_small_image(temp_db, tmp_path, monkeypatch):
     media_root = tmp_path / "ticket_files"
     monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
 
-    payload = b"tiny-jpeg"
+    payload = b"\xff\xd8\xff\xe0tiny"
     bot = _DownloadBot(payload)
     result = asyncio.run(save_ticket_media(bot, _photo_message(len(payload)), ticket_id=9))
 
     assert result is not None
     assert result.startswith("9/")
+    assert result.endswith(".jpg")
     saved = media_root / result
     assert saved.is_file()
     assert saved.read_bytes() == payload
