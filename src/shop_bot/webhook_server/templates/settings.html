@@ -2002,7 +2002,7 @@
 						</div>
 						<div class="mb-3">
 							<label class="form-label" for="rollypay_payment_method">Способ оплаты</label>
-							<input class="form-control" type="text" id="rollypay_payment_method" name="rollypay_payment_method" value="{{ settings.rollypay_payment_method or 'sbp' }}" />
+							<input class="form-control" type="text" id="rollypay_payment_method" name="rollypay_payment_method" value="{{ settings.rollypay_payment_method or '' }}" />
 							<div class="form-text">Коды: <code>sbp</code>, <code>card</code>, <code>intl_card</code>. Пусто — выбор на форме оплаты.</div>
 							<div class="form-text">URL вебхука: <code>{{ request.url_root.rstrip('/') }}/rollypay-webhook</code></div>
 						</div>

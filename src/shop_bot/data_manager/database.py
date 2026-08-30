@@ -751,7 +751,7 @@ def initialize_db():
                 "rollypay_api_key": None,
                 "rollypay_terminal_id": None,
                 "rollypay_signing_secret": None,
-                "rollypay_payment_method": "sbp",
+                "rollypay_payment_method": "",
 
                 "domain": None,
                 "ton_wallet_address": None,

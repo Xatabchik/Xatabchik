@@ -3010,7 +3010,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                     return {"ok": False, "error": "RollyPay не настроена"}
                 url, provider_id = await rollypay.create_payment(
                     float(final_price), comment, pid, return_url, return_url,
-                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    payment_method=(get_setting("rollypay_payment_method") or ""),
                     customer_id=str(user_id),
                 )
                 if url:
@@ -3504,7 +3504,7 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
                     pid,
                     return_url,
                     return_url,
-                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    payment_method=(get_setting("rollypay_payment_method") or ""),
                     customer_id=str(user_id),
                 )
                 if url:
@@ -3881,7 +3881,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
                     return {"ok": False, "error": "RollyPay не настроена"}
                 url, provider_id = await rollypay.create_payment(
                     price, description, pid, return_url, return_url,
-                    payment_method=(get_setting("rollypay_payment_method") or "sbp"),
+                    payment_method=(get_setting("rollypay_payment_method") or ""),
                     customer_id=str(user_id),
                 )
                 if url:

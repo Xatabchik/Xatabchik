@@ -3810,7 +3810,7 @@ def get_user_router() -> Router:
 
         api_key = (get_setting("rollypay_api_key") or "").strip()
         terminal_id = (get_setting("rollypay_terminal_id") or "").strip()
-        method = (get_setting("rollypay_payment_method") or "sbp").strip()
+        method = (get_setting("rollypay_payment_method") or "").strip()
         bot_username = (get_setting("telegram_bot_username") or "").strip().lstrip("@")
         return_url = f"https://t.me/{bot_username}" if bot_username else ""
         client = RollyPayAPI(api_key, terminal_id)

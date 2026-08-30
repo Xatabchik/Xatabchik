@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://rollypay.io/api/v1"
+BASE_URL = "https://api.rollypay.io/api/v1"
 WEBHOOK_TIMESTAMP_TOLERANCE_SEC = 300
 _PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
