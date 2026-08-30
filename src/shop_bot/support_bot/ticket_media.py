@@ -189,34 +189,6 @@ def declared_size_over_limit(
     return size > max_bytes
 
 
-def finalize_ticket_media_download(
-    part_path: str,
-    final_path: str,
-    max_bytes: int = TICKET_MEDIA_MAX_BYTES,
-) -> bool:
-    """Оставляет файл только если он не пустой и не больше лимита.
-
-    Скачивание идёт в ``*.part``; при отказе оба пути удаляются.
-    """
-    try:
-        if not os.path.isfile(part_path):
-            return False
-        size = os.path.getsize(part_path)
-        if size <= 0 or size > max_bytes:
-            os.unlink(part_path)
-            return False
-        os.replace(part_path, final_path)
-        return True
-    except Exception:
-        for path in (part_path, final_path):
-            try:
-                if os.path.isfile(path):
-                    os.unlink(path)
-            except OSError:
-                pass
-        return False
-
-
 def ticket_folder_usage(folder: str) -> tuple[int, int]:
     """Число финальных файлов и их суммарный размер. ``*.part`` не считаем."""
     count = 0

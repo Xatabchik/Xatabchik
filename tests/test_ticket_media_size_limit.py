@@ -12,7 +12,6 @@ from conftest import temp_db  # noqa: F401
 from shop_bot.support_bot.ticket_media import (
     TICKET_MEDIA_MAX_BYTES,
     declared_size_over_limit,
-    finalize_ticket_media_download,
     save_ticket_media,
 )
 
@@ -24,34 +23,6 @@ def test_declared_size_none_or_zero_is_not_a_pass():
     assert declared_size_over_limit(1) is False
     assert declared_size_over_limit(TICKET_MEDIA_MAX_BYTES) is False
     assert declared_size_over_limit(TICKET_MEDIA_MAX_BYTES + 1) is True
-
-
-def test_finalize_keeps_file_under_limit(tmp_path):
-    part = tmp_path / "a.jpg.part"
-    final = tmp_path / "a.jpg"
-    part.write_bytes(b"ok-image")
-    assert finalize_ticket_media_download(str(part), str(final)) is True
-    assert final.is_file()
-    assert final.read_bytes() == b"ok-image"
-    assert not part.exists()
-
-
-def test_finalize_rejects_oversize_and_deletes_part(tmp_path):
-    part = tmp_path / "big.jpg.part"
-    final = tmp_path / "big.jpg"
-    part.write_bytes(b"x" * (TICKET_MEDIA_MAX_BYTES + 1))
-    assert finalize_ticket_media_download(str(part), str(final)) is False
-    assert not part.exists()
-    assert not final.exists()
-
-
-def test_finalize_rejects_empty_file(tmp_path):
-    part = tmp_path / "empty.jpg.part"
-    final = tmp_path / "empty.jpg"
-    part.write_bytes(b"")
-    assert finalize_ticket_media_download(str(part), str(final)) is False
-    assert not part.exists()
-    assert not final.exists()
 
 
 class _DownloadBot:
