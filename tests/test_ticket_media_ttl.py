@@ -12,6 +12,7 @@ from shop_bot.support_bot.ticket_media import (
     closed_ticket_media_expired,
     parse_ticket_updated_at,
     purge_expired_closed_ticket_media,
+    ticket_media_on_disk,
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
@@ -169,3 +170,43 @@ def test_open_ticket_file_still_served(temp_db, tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert resp.data == PNG
     assert (root / str(ticket_id) / "shot.png").is_file()
+
+
+def test_ticket_media_on_disk_false_when_missing_or_empty(tmp_path):
+    missing = tmp_path / "nope"
+    assert ticket_media_on_disk(str(missing)) is False
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert ticket_media_on_disk(str(empty)) is False
+
+
+def test_ticket_media_on_disk_true_when_subdir_exists(tmp_path):
+    root = tmp_path / "ticket_files"
+    (root / "12").mkdir(parents=True)
+    assert ticket_media_on_disk(str(root)) is True
+
+
+def test_scheduler_skips_purge_when_no_files(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.data_manager import scheduler as sched
+
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(tmp_path / "absent"))
+    called = []
+    monkeypatch.setattr(
+        sched,
+        "purge_expired_closed_ticket_media",
+        lambda: called.append(1),
+        raising=False,
+    )
+
+    def _boom():
+        called.append("imported")
+        raise AssertionError("purge must not be imported/run")
+
+    monkeypatch.setattr(
+        "shop_bot.support_bot.ticket_media.purge_expired_closed_ticket_media",
+        _boom,
+    )
+    sched._last_ticket_media_purge_at = None
+    sched._maybe_purge_closed_ticket_media()
+    assert called == []

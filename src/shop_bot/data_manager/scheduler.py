@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+import os
 
 from datetime import datetime, timedelta
 
@@ -1483,9 +1484,23 @@ _last_ticket_media_purge_at: datetime | None = None
 TICKET_MEDIA_PURGE_INTERVAL_SECONDS = 3600
 
 
+def _ticket_files_present() -> bool:
+    """Дешёвая проверка: нет каталога или он пуст — TTL не запускаем."""
+    try:
+        root = database.get_ticket_media_root()
+        if not root or not os.path.isdir(root):
+            return False
+        with os.scandir(root) as it:
+            return next(it, None) is not None
+    except OSError:
+        return False
+
+
 def _maybe_purge_closed_ticket_media() -> None:
-    """TTL вложений закрытых тикетов. Ошибка не должна ронять цикл магазина."""
+    """TTL вложений. Отдельный task не создаём; если файлов нет — сразу выход."""
     global _last_ticket_media_purge_at
+    if not _ticket_files_present():
+        return
     now = datetime.now()
     if (
         _last_ticket_media_purge_at

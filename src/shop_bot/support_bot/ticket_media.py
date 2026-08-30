@@ -219,6 +219,21 @@ def closed_ticket_media_expired(
     return updated <= moment - timedelta(days=days)
 
 
+def ticket_media_on_disk(root: str | None = None) -> bool:
+    """True, если в ticket_files есть хоть одна запись. Без SQL и без полного обхода."""
+    if root is None:
+        from shop_bot.data_manager.database import get_ticket_media_root
+
+        root = get_ticket_media_root()
+    try:
+        if not root or not os.path.isdir(root):
+            return False
+        with os.scandir(root) as it:
+            return next(it, None) is not None
+    except OSError:
+        return False
+
+
 def expire_ticket_media_if_closed_ttl(ticket_id: int, *, now: datetime | None = None) -> bool:
     """Если тикет закрыт дольше TTL — удаляет файлы и обнуляет media. True = истекло."""
     from shop_bot.data_manager.database import clear_support_message_media, get_ticket
@@ -246,6 +261,8 @@ def purge_expired_closed_ticket_media(
 
     moment = now or datetime.utcnow()
     days = closed_ttl_days() if ttl_days is None else max(1, int(ttl_days))
+    if not ticket_media_on_disk(get_ticket_media_root()):
+        return {"purged": 0, "orphans": 0}
     cutoff = moment - timedelta(days=days)
     purged = 0
     orphans = 0
@@ -299,8 +316,10 @@ def purge_expired_closed_ticket_media(
 
 
 def maybe_purge_expired_closed_ticket_media() -> dict[str, int] | None:
-    """Не чаще раза в час. Ошибка не должна ломать сохранение вложения."""
+    """Не чаще раза в час. Нет файлов — сразу выход, таймер не заводим."""
     global _last_purge_monotonic
+    if not ticket_media_on_disk():
+        return None
     now = time.monotonic()
     if now - _last_purge_monotonic < TICKET_MEDIA_PURGE_INTERVAL_SECONDS:
         return None
