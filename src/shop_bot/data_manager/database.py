@@ -8902,6 +8902,11 @@ def delete_user_completely(user_id: int) -> bool:
 
             # Сначала удалить сообщения поддержки по тикетам пользователя
             cursor.execute(
+                "SELECT ticket_id FROM support_tickets WHERE user_id = ?",
+                (user_id,),
+            )
+            support_ticket_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0]]
+            cursor.execute(
                 """
                 DELETE FROM support_messages
                 WHERE ticket_id IN (
@@ -8998,6 +9003,8 @@ def delete_user_completely(user_id: int) -> bool:
             )
 
             conn.commit()
+            for ticket_id in support_ticket_ids:
+                _cleanup_ticket_media(ticket_id)
             logger.info("User %s fully deleted with all related data", user_id)
             return True
     except sqlite3.Error as e:
@@ -9200,6 +9207,16 @@ def update_ticket_subject(ticket_id: int, subject: str) -> bool:
         logging.error(f"Failed to update subject for ticket {ticket_id}: {e}")
         return False
 
+def _cleanup_ticket_media(ticket_id: int) -> None:
+    """Файлы вложений живут вне SQLite — удаляем каталог вместе с тикетом."""
+    try:
+        from shop_bot.support_bot.ticket_media import delete_ticket_media_dir
+
+        delete_ticket_media_dir(ticket_id)
+    except Exception as e:
+        logging.error("Failed to delete ticket media for ticket %s: %s", ticket_id, e)
+
+
 def delete_ticket(ticket_id: int) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -9213,7 +9230,10 @@ def delete_ticket(ticket_id: int) -> bool:
                 (ticket_id,)
             )
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            _cleanup_ticket_media(ticket_id)
+        return deleted
     except sqlite3.Error as e:
         logging.error(f"Failed to delete ticket {ticket_id}: {e}")
         return False
