@@ -107,25 +107,26 @@ async def resolve_telegram_file_size(
     file_id: str,
     declared_size: Any = None,
 ) -> tuple[int | None, Any]:
-    """Размер до download. Если в сообщении размера нет — getFile.
+    """Размер до download. Всегда getFile, если бот его умеет.
 
     Возвращает (размер или None, объект для bot.download).
-    None значит качать нельзя: лимит неизвестен или getFile не ответил.
+    Download по File надёжнее, чем по голому file_id: локальный Bot API
+    отдаёт file_path, без него папка тикета создавалась пустой.
+    None значит качать нельзя: лимит неизвестен и getFile не ответил.
     """
     known = positive_file_size(declared_size)
-    if known is not None:
-        return known, file_id
     get_file = getattr(bot, "get_file", None)
     if get_file is None:
-        return None, file_id
+        return known, file_id
     try:
         tg_file = await get_file(file_id)
     except Exception:
-        logger.warning("getFile для вложения тикета не удался, download пропущен")
-        return None, file_id
+        logger.warning("getFile для вложения тикета не удался")
+        return known, file_id
     api_size = positive_file_size(getattr(tg_file, "file_size", None) if tg_file is not None else None)
+    size = api_size if api_size is not None else known
     source = tg_file if tg_file is not None else file_id
-    return api_size, source
+    return size, source
 
 
 async def download_ticket_media_capped(
@@ -413,10 +414,24 @@ def commit_ticket_image(part_path: str, dest_dir: str, stem: str) -> str | None:
             return None
         size = os.path.getsize(part_path)
         if size <= 0 or size > TICKET_MEDIA_MAX_BYTES:
+            logger.warning(
+                "Вложение тикета: после download размер %s, лимит %s",
+                size,
+                TICKET_MEDIA_MAX_BYTES,
+            )
             _unlink_quiet(part_path)
             return None
         kind = detect_image_kind(part_path)
         if kind is None:
+            try:
+                with open(part_path, "rb") as fh:
+                    head_hex = fh.read(16).hex()
+            except OSError:
+                head_hex = "unreadable"
+            logger.warning(
+                "Вложение тикета: не jpeg/png/webp/pdf, заголовок %s",
+                head_hex,
+            )
             _unlink_quiet(part_path)
             return None
         ext, _mime = kind
@@ -427,6 +442,15 @@ def commit_ticket_image(part_path: str, dest_dir: str, stem: str) -> str | None:
     except Exception:
         _unlink_quiet(part_path)
         return None
+
+
+def remove_empty_ticket_folder(folder: str) -> None:
+    """Снимает пустой ``ticket_files/<id>/`` после неудачного save."""
+    try:
+        if folder and os.path.isdir(folder) and not os.listdir(folder):
+            os.rmdir(folder)
+    except OSError:
+        pass
 
 
 def _unlink_quiet(*paths: str) -> None:
@@ -480,6 +504,8 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
 
     part_path = ""
     final_path = ""
+    folder = ""
+    saved = False
     try:
         known_size, download_source = await resolve_telegram_file_size(
             bot, file_id, declared_size
@@ -491,7 +517,7 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
             logger.warning("Тикет %s: getFile/size %s больше лимита", ticket_id, known_size)
             return None
         ticket_id = int(ticket_id)
-        folder = jailed_ticket_folder(ticket_id)
+        folder = jailed_ticket_folder(ticket_id) or ""
         if not folder:
             logger.warning("Тикет %s: каталог вложений вне jail", ticket_id)
             return None
@@ -514,9 +540,13 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
             logger.warning("Тикет %s: квота после записи, файл удалён", ticket_id)
             return None
         maybe_purge_expired_closed_ticket_media()
-        logger.info("Тикет %s: вложение сохранено %s", ticket_id, name)
+        logger.info("Тикет %s: вложение сохранено %s", ticket_id, final_path)
+        saved = True
         return f"{ticket_id}/{name}"
     except Exception as e:
         logger.error("Не удалось сохранить вложение тикета %s: %s", ticket_id, e)
         _unlink_quiet(part_path, final_path)
         return None
+    finally:
+        if folder and not saved:
+            remove_empty_ticket_folder(folder)

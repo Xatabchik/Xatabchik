@@ -67,6 +67,7 @@ def test_save_rejects_when_telegram_omits_size_but_file_is_huge(temp_db, tmp_pat
     assert bot.downloads == 0
     leftover_files = [p for p in media_root.rglob("*") if p.is_file()] if media_root.exists() else []
     assert leftover_files == []
+    assert not (media_root / "7").exists()
 
 
 def test_save_skips_download_if_getfile_has_no_size(temp_db, tmp_path, monkeypatch):
@@ -112,6 +113,7 @@ def test_capped_download_stops_lying_file_size(temp_db, tmp_path, monkeypatch):
     assert result is None
     leftover = [p for p in media_root.rglob("*") if p.is_file()] if media_root.exists() else []
     assert leftover == []
+    assert not (media_root / "7").exists()
 
 
 def test_save_rejects_declared_oversize_without_download(temp_db, tmp_path, monkeypatch):
@@ -147,6 +149,7 @@ def test_save_keeps_small_image(temp_db, tmp_path, monkeypatch):
     assert result is not None
     assert result.startswith("9/")
     assert result.endswith(".jpg")
+    assert bot.get_file_calls == 1
     saved = media_root / result
     assert saved.is_file()
     assert saved.read_bytes() == payload

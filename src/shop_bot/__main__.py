@@ -105,6 +105,15 @@ def main():
     logger.info("Инициализация базы данных...")
     rw_repo.initialize_db()
     logger.info("Инициализация базы данных завершена.")
+    try:
+        from shop_bot.data_manager.database import get_ticket_media_root
+
+        logger.info(
+            "Вложения тикетов: %s (рядом с users.db, не в webhook_server/)",
+            get_ticket_media_root(),
+        )
+    except Exception:
+        pass
 
     bot_controller = BotController()
     flask_app = create_webhook_app(bot_controller)

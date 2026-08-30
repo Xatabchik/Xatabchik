@@ -108,6 +108,7 @@ def test_save_rejects_html_even_if_telegram_says_jpeg(temp_db, tmp_path, monkeyp
     assert result is None
     leftover = [p for p in root.rglob("*") if p.is_file()] if root.exists() else []
     assert leftover == []
+    assert not (root / "21").exists()
 
 
 def test_save_png_document_named_jpg_keeps_png_ext(temp_db, tmp_path, monkeypatch):

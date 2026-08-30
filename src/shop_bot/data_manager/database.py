@@ -9159,10 +9159,31 @@ def get_support_message(message_id: int) -> dict | None:
         return None
 
 
+def resolve_db_file_path(db_file=None) -> Path:
+    """Абсолютный путь к users.db без зависимости от cwd процесса.
+
+    ``os.path.abspath("users.db")`` берёт текущую папку процесса. Бот с
+    cwd=/xatabchik пишет в /xatabchik/ticket_files, а если Flask когда-то
+    стартовал из webhook_server — панель искала файлы там. Админка живёт
+    в src/shop_bot/webhook_server/, вложения — рядом с базой, не в исходниках.
+    """
+    raw = Path(db_file if db_file is not None else DB_FILE)
+    if raw.is_absolute():
+        return raw.resolve()
+    name = raw.name
+    docker_db = Path("/app/project") / name
+    if docker_db.is_file():
+        return docker_db.resolve()
+    # database.py → src/shop_bot/data_manager → корень репозитория
+    return (Path(__file__).resolve().parents[3] / name).resolve()
+
+
 def get_ticket_media_root() -> str:
-    """Каталог вложений — рядом с файлом базы."""
-    import os
-    return os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "ticket_files")
+    """Каталог вложений рядом с users.db, не в webhook_server/."""
+    override = (os.getenv("TICKET_FILES_DIR") or "").strip()
+    if override:
+        return str(Path(override).expanduser().resolve())
+    return str(resolve_db_file_path().parent / "ticket_files")
 
 
 def list_closed_ticket_ids_older_than(cutoff) -> list[int]:
