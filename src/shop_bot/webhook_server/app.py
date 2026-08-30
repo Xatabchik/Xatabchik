@@ -4357,7 +4357,11 @@ def create_webhook_app(bot_controller_instance):
             if expire_ticket_media_if_closed_ttl(int(msg['ticket_id'])):
                 abort(404)
         except Exception:
-            pass
+            logger.exception(
+                "TTL вложения тикета %s при отдаче, файл не отдаём",
+                msg.get("ticket_id"),
+            )
+            abort(404)
 
         base = os.path.realpath(get_ticket_media_root())
         full = os.path.realpath(os.path.join(base, str(msg['media'])))

@@ -131,17 +131,38 @@ async def resolve_telegram_file_size(
     return size, source
 
 
+class _CappedSeekBuffer(io.BytesIO):
+    """BytesIO с seek (его зовёт aiogram) и потолком, чтобы не держать 20 МБ в RAM."""
+
+    def __init__(self, max_bytes: int):
+        super().__init__()
+        self._max_bytes = max_bytes
+        self.overflow = False
+
+    def write(self, b):  # type: ignore[override]
+        if b is None:
+            return 0
+        chunk = b if isinstance(b, (bytes, bytearray)) else bytes(b)
+        if self.overflow:
+            return len(chunk)
+        if self.tell() + len(chunk) > self._max_bytes:
+            self.overflow = True
+            raise OverflowError("ticket media exceeds cap")
+        return super().write(chunk)
+
+
 async def download_ticket_media_capped(
     bot: Any,
     source: Any,
     part_path: str,
     max_bytes: int = TICKET_MEDIA_MAX_BYTES,
 ) -> bool:
-    """Качаем в BytesIO (у него есть seek — aiogram его вызывает), затем на диск.
+    """Качаем в буфер с seek и потолком 10 МБ, затем на диск.
 
-    Путь + aiofiles раньше мог молча не создать файл; BytesIO это обходит.
+    Путь + aiofiles раньше мог молча не создать файл; обычный BytesIO
+    держал бы весь ответ Telegram (~20 МБ) до проверки размера.
     """
-    buf = io.BytesIO()
+    buf = _CappedSeekBuffer(max_bytes)
     try:
         file_path = getattr(source, "file_path", None)
         download_file = getattr(bot, "download_file", None)
@@ -149,12 +170,12 @@ async def download_ticket_media_capped(
             await download_file(file_path, destination=buf)
         else:
             await bot.download(source, destination=buf)
+        if buf.overflow:
+            logger.warning("Вложение тикета: поток больше лимита %s", max_bytes)
+            return False
         data = buf.getvalue()
         if not data:
             logger.warning("Вложение тикета: download вернул пусто")
-            return False
-        if len(data) > max_bytes:
-            logger.warning("Вложение тикета: после download размер %s, лимит %s", len(data), max_bytes)
             return False
         parent = os.path.dirname(part_path)
         if parent:
@@ -162,6 +183,10 @@ async def download_ticket_media_capped(
         with open(part_path, "wb") as fh:
             fh.write(data)
         return True
+    except OverflowError:
+        logger.warning("Вложение тикета: поток оборван на лимите %s", max_bytes)
+        _unlink_quiet(part_path)
+        return False
     except Exception:
         logger.exception("Не удалось скачать вложение тикета")
         _unlink_quiet(part_path)

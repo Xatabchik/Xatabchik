@@ -144,6 +144,40 @@ def test_expire_on_serve_is_404_and_deletes_file(temp_db, tmp_path, monkeypatch)
     assert database.get_ticket(ticket_id) is not None
 
 
+def test_expire_error_on_serve_is_fail_closed(temp_db, tmp_path, monkeypatch):
+    """Сбой TTL не должен отдавать файл оператору в обход политики хранения."""
+    from shop_bot.data_manager import database
+    from shop_bot.support_bot import ticket_media
+    from shop_bot.webhook_server import app as wh_mod
+
+    root = _media_root(tmp_path, monkeypatch)
+    ticket_id = database.create_support_ticket(70114, "ttl-fail")
+    _put_png(root, ticket_id)
+    message_id = database.add_support_message(ticket_id, "user", "скрин", media=f"{ticket_id}/shot.png")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("ttl storage down")
+
+    monkeypatch.setattr(ticket_media, "expire_ticket_media_if_closed_ttl", _boom)
+
+    class _PanelBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_loop(self):
+            return None
+
+    flask_app = wh_mod.create_webhook_app(_PanelBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+
+    resp = client.get(f"/support/ticket-file/{message_id}")
+    assert resp.status_code == 404
+    assert resp.data != PNG
+
+
 def test_open_ticket_file_still_served(temp_db, tmp_path, monkeypatch):
     from shop_bot.data_manager import database
     from shop_bot.webhook_server import app as wh_mod
