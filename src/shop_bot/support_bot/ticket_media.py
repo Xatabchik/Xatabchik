@@ -12,12 +12,18 @@
 
 Тип файла определяется по magic bytes (jpeg/png/gif/webp), не по имени
 и не по MIME Telegram. Панель отдаёт вложение с этим MIME и nosniff.
+
+Вложения закрытого тикета хранятся ``TICKET_MEDIA_CLOSED_TTL_DAYS`` суток
+(по ``updated_at`` закрытия), затем каталог удаляется. Строки тикета в БД
+не трогаем.
 """
 from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -26,6 +32,10 @@ TICKET_MEDIA_MAX_BYTES = 10 * 1024 * 1024
 TICKET_MEDIA_MAX_FILES = 10
 TICKET_MEDIA_MAX_TOTAL_BYTES = 30 * 1024 * 1024
 TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+TICKET_MEDIA_CLOSED_TTL_DAYS = 7
+TICKET_MEDIA_PURGE_INTERVAL_SECONDS = 3600
+
+_last_purge_monotonic = 0.0
 
 
 def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
@@ -167,6 +177,136 @@ def jailed_ticket_folder(ticket_id: int, root: str | None = None) -> str | None:
     return folder
 
 
+def closed_ttl_days() -> int:
+    raw = os.environ.get("TICKET_MEDIA_CLOSED_TTL_DAYS", str(TICKET_MEDIA_CLOSED_TTL_DAYS))
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        days = TICKET_MEDIA_CLOSED_TTL_DAYS
+    return max(1, min(days, 3650))
+
+
+def parse_ticket_updated_at(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def closed_ticket_media_expired(
+    ticket: dict | None,
+    *,
+    now: datetime | None = None,
+    ttl_days: int | None = None,
+) -> bool:
+    """True, если тикет закрыт дольше TTL — файлы пора снять."""
+    if not ticket or (ticket.get("status") or "") != "closed":
+        return False
+    updated = parse_ticket_updated_at(ticket.get("updated_at"))
+    if updated is None:
+        return False
+    days = closed_ttl_days() if ttl_days is None else max(1, int(ttl_days))
+    moment = now or datetime.utcnow()
+    return updated <= moment - timedelta(days=days)
+
+
+def expire_ticket_media_if_closed_ttl(ticket_id: int, *, now: datetime | None = None) -> bool:
+    """Если тикет закрыт дольше TTL — удаляет файлы и обнуляет media. True = истекло."""
+    from shop_bot.data_manager.database import clear_support_message_media, get_ticket
+
+    ticket = get_ticket(int(ticket_id))
+    if not closed_ticket_media_expired(ticket, now=now):
+        return False
+    delete_ticket_media_dir(int(ticket_id))
+    clear_support_message_media(int(ticket_id))
+    return True
+
+
+def purge_expired_closed_ticket_media(
+    *,
+    now: datetime | None = None,
+    ttl_days: int | None = None,
+) -> dict[str, int]:
+    """Снимает каталоги закрытых тикетов старше TTL и осиротевшие папки."""
+    from shop_bot.data_manager.database import (
+        clear_support_message_media,
+        get_ticket,
+        get_ticket_media_root,
+        list_closed_ticket_ids_older_than,
+    )
+
+    moment = now or datetime.utcnow()
+    days = closed_ttl_days() if ttl_days is None else max(1, int(ttl_days))
+    cutoff = moment - timedelta(days=days)
+    purged = 0
+    orphans = 0
+    seen: set[int] = set()
+
+    for tid in list_closed_ticket_ids_older_than(cutoff):
+        if tid in seen:
+            continue
+        seen.add(tid)
+        delete_ticket_media_dir(tid)
+        clear_support_message_media(tid)
+        purged += 1
+
+    try:
+        root = get_ticket_media_root()
+        names = os.listdir(root) if os.path.isdir(root) else []
+    except OSError:
+        names = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        tid = int(name)
+        if tid in seen:
+            continue
+        folder = jailed_ticket_folder(tid)
+        if not folder or not os.path.isdir(folder):
+            continue
+        ticket = get_ticket(tid)
+        if ticket is None:
+            delete_ticket_media_dir(tid)
+            orphans += 1
+            continue
+        if closed_ticket_media_expired(ticket, now=moment, ttl_days=days):
+            delete_ticket_media_dir(tid)
+            clear_support_message_media(tid)
+            purged += 1
+            seen.add(tid)
+
+    if purged or orphans:
+        logger.info(
+            "TTL вложений закрытых тикетов: снято папок %s, сирот %s",
+            purged,
+            orphans,
+        )
+    return {"purged": purged, "orphans": orphans}
+
+
+def maybe_purge_expired_closed_ticket_media() -> dict[str, int] | None:
+    """Не чаще раза в час. Ошибка не должна ломать сохранение вложения."""
+    global _last_purge_monotonic
+    now = time.monotonic()
+    if now - _last_purge_monotonic < TICKET_MEDIA_PURGE_INTERVAL_SECONDS:
+        return None
+    _last_purge_monotonic = now
+    try:
+        return purge_expired_closed_ticket_media()
+    except Exception:
+        logger.exception("Не удалось почистить вложения закрытых тикетов")
+        return None
+
+
 def delete_ticket_media_dir(ticket_id: int) -> bool:
     """Удаляет ``ticket_files/<ticket_id>/``. Не трогает соседние тикеты и корень."""
     import shutil
@@ -266,6 +406,7 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         if count > TICKET_MEDIA_MAX_FILES or total > TICKET_MEDIA_MAX_TOTAL_BYTES:
             _unlink_quiet(final_path)
             return None
+        maybe_purge_expired_closed_ticket_media()
         return f"{ticket_id}/{name}"
     except Exception as e:
         logger.error("Не удалось сохранить вложение тикета %s: %s", ticket_id, e)

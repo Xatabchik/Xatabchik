@@ -1479,6 +1479,28 @@ async def check_broadcast_campaigns(bot: Bot):
         )
 
 
+_last_ticket_media_purge_at: datetime | None = None
+TICKET_MEDIA_PURGE_INTERVAL_SECONDS = 3600
+
+
+def _maybe_purge_closed_ticket_media() -> None:
+    """TTL вложений закрытых тикетов. Ошибка не должна ронять цикл магазина."""
+    global _last_ticket_media_purge_at
+    now = datetime.now()
+    if (
+        _last_ticket_media_purge_at
+        and (now - _last_ticket_media_purge_at).total_seconds() < TICKET_MEDIA_PURGE_INTERVAL_SECONDS
+    ):
+        return
+    try:
+        from shop_bot.support_bot.ticket_media import purge_expired_closed_ticket_media
+
+        purge_expired_closed_ticket_media()
+        _last_ticket_media_purge_at = now
+    except Exception as e:
+        logger.error("Scheduler: ошибка TTL вложений тикетов: %s", e, exc_info=True)
+
+
 async def periodic_subscription_check(bot_controller: BotController):
     logger.info("Scheduler: Планировщик фоновых задач запущен.")
     await asyncio.sleep(10)
@@ -1488,6 +1510,7 @@ async def periodic_subscription_check(bot_controller: BotController):
             await _maybe_sync_keys_with_panels()
             _early_bot = bot_controller.get_bot_instance() if bot_controller.get_status().get("is_running") else None
             await _maybe_enforce_dual_traffic_limits(_early_bot)
+            _maybe_purge_closed_ticket_media()
 
 
             await _maybe_run_periodic_speedtests()

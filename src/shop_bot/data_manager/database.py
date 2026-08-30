@@ -9165,6 +9165,44 @@ def get_ticket_media_root() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "ticket_files")
 
 
+def list_closed_ticket_ids_older_than(cutoff) -> list[int]:
+    """Закрытые тикеты с updated_at не новее cutoff (наивный ISO-текст SQLite)."""
+    if hasattr(cutoff, "strftime"):
+        cutoff_s = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        cutoff_s = str(cutoff)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT ticket_id FROM support_tickets
+                WHERE status = 'closed' AND updated_at <= ?
+                """,
+                (cutoff_s,),
+            )
+            return [int(row[0]) for row in cursor.fetchall() if row and row[0]]
+    except sqlite3.Error as e:
+        logging.error("Failed to list closed tickets older than %s: %s", cutoff_s, e)
+        return []
+
+
+def clear_support_message_media(ticket_id: int) -> int:
+    """Обнуляет media у сообщений тикета после TTL/удаления файлов."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE support_messages SET media = NULL WHERE ticket_id = ? AND media IS NOT NULL",
+                (int(ticket_id),),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+    except sqlite3.Error as e:
+        logging.error("Failed to clear media refs for ticket %s: %s", ticket_id, e)
+        return 0
+
+
 def get_ticket_messages(ticket_id: int) -> list[dict]:
     try:
         with sqlite3.connect(DB_FILE) as conn:

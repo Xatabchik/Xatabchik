@@ -4350,11 +4350,20 @@ def create_webhook_app(bot_controller_instance):
         import os
         from flask import send_file, abort
         from shop_bot.data_manager.database import get_support_message, get_ticket_media_root
-        from shop_bot.support_bot.ticket_media import detect_image_kind
+        from shop_bot.support_bot.ticket_media import (
+            detect_image_kind,
+            expire_ticket_media_if_closed_ttl,
+        )
 
         msg = get_support_message(message_id)
         if not msg or not msg.get('media'):
             abort(404)
+
+        try:
+            if expire_ticket_media_if_closed_ttl(int(msg['ticket_id'])):
+                abort(404)
+        except Exception:
+            pass
 
         base = os.path.realpath(get_ticket_media_root())
         full = os.path.realpath(os.path.join(base, str(msg['media'])))
