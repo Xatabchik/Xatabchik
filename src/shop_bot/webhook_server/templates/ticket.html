@@ -71,11 +71,17 @@
             <div class="content">{{ m.content }}</div>
             {% if m.media %}
             <div class="ticket-attachment mt-2">
-              <a href="{{ url_for('support_ticket_file', message_id=m.message_id) }}" target="_blank">
+              {% if m.media.endswith('.pdf') %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('support_ticket_file', message_id=m.message_id) }}" target="_blank" rel="noopener">
+                PDF
+              </a>
+              {% else %}
+              <a href="{{ url_for('support_ticket_file', message_id=m.message_id) }}" target="_blank" rel="noopener">
                 <img src="{{ url_for('support_ticket_file', message_id=m.message_id) }}"
                      alt="Вложение" loading="lazy"
                      style="max-width: 320px; max-height: 320px; border-radius: 8px; display: block;">
               </a>
+              {% endif %}
             </div>
             {% endif %}
           </div>

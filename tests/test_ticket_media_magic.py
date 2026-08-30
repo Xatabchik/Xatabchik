@@ -17,6 +17,7 @@ JPEG = b"\xff\xd8\xff\xe0" + b"\x00\x10JFIF"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
 GIF = b"GIF89a" + b"\x01\x00\x01\x00\x00\x00\x00"
 WEBP = b"RIFF" + b"\x10\x00\x00\x00" + b"WEBP" + b"xxxx"
+PDF = b"%PDF-1.4\n%dummy"
 
 
 class _DownloadBot:
@@ -60,13 +61,14 @@ def test_detect_known_image_signatures():
     assert detect_image_kind_bytes(JPEG) == (".jpg", "image/jpeg")
     assert detect_image_kind_bytes(PNG) == (".png", "image/png")
     assert detect_image_kind_bytes(WEBP) == (".webp", "image/webp")
+    assert detect_image_kind_bytes(PDF) == (".pdf", "application/pdf")
     assert detect_image_kind_bytes(GIF) is None
 
 
 def test_detect_rejects_html_svg_and_short():
     assert detect_image_kind_bytes(b"<html><img>") is None
     assert detect_image_kind_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'>") is None
-    assert detect_image_kind_bytes(b"%PDF-1.4") is None
+    assert detect_image_kind_bytes(b"%PDF") is None
     assert detect_image_kind_bytes(b"\xff\xd8") is None
 
 
@@ -178,3 +180,55 @@ def test_detect_image_kind_reads_file(tmp_path):
     p = tmp_path / "a.webp"
     p.write_bytes(WEBP)
     assert detect_image_kind(str(p)) == (".webp", "image/webp")
+
+
+def test_save_pdf_document(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+    bot = _DownloadBot(PDF)
+    msg = _doc_message(mime="application/pdf", name="check.pdf", payload_size=len(PDF))
+    result = asyncio.run(save_ticket_media(bot, msg, ticket_id=23))
+    assert result is not None
+    assert result.endswith(".pdf")
+    assert (root / result).read_bytes() == PDF
+
+
+def test_save_rejects_zip_named_pdf(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+    bot = _DownloadBot(b"PK\x03\x04not-a-pdf")
+    msg = _doc_message(mime="application/pdf", name="x.pdf", payload_size=20)
+    result = asyncio.run(save_ticket_media(bot, msg, ticket_id=24))
+    assert result is None
+
+
+def test_ticket_file_serves_pdf_with_nosniff(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.webhook_server import app as wh_mod
+
+    root = tmp_path / "ticket_files"
+    root.mkdir()
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+
+    ticket_id = database.create_support_ticket(60103, "pdf")
+    rel = f"{ticket_id}/doc.pdf"
+    dest = root / str(ticket_id)
+    dest.mkdir()
+    (dest / "doc.pdf").write_bytes(PDF)
+    message_id = database.add_support_message(ticket_id, "user", "чек", media=rel)
+
+    flask_app = wh_mod.create_webhook_app(_PanelBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+
+    resp = client.get(f"/support/ticket-file/{message_id}")
+    assert resp.status_code == 200
+    assert resp.headers.get("Content-Type", "").startswith("application/pdf")
+    assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+    assert resp.data == PDF

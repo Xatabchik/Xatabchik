@@ -9,7 +9,7 @@
 На тикет: не больше 10 файлов и 30 МБ суммарно. При удалении тикета
 каталог ``ticket_files/<ticket_id>/`` снимается вместе со строками БД.
 
-Тип файла определяется по magic bytes (jpeg/png/webp), не по имени
+Тип файла определяется по magic bytes (jpeg/png/webp/pdf), не по имени
 и не по MIME Telegram. GIF не принимаем. Панель отдаёт MIME и nosniff.
 
 Вложения закрытого тикета хранятся ``TICKET_MEDIA_CLOSED_TTL_DAYS`` суток
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 TICKET_MEDIA_MAX_BYTES = 10 * 1024 * 1024
 TICKET_MEDIA_MAX_FILES = 10
 TICKET_MEDIA_MAX_TOTAL_BYTES = 30 * 1024 * 1024
-TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".pdf")
 TICKET_MEDIA_CLOSED_TTL_DAYS = 7
 TICKET_MEDIA_PURGE_INTERVAL_SECONDS = 3600
 
@@ -38,7 +38,7 @@ _last_purge_monotonic = 0.0
 
 
 def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
-    """Расширение и MIME по сигнатуре. None — не картинка из whitelist."""
+    """Расширение и MIME по сигнатуре. None — не jpeg/png/webp/pdf."""
     if not head:
         return None
     if len(head) >= 3 and head.startswith(b"\xff\xd8\xff"):
@@ -47,6 +47,8 @@ def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
         return ".png", "image/png"
     if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return ".webp", "image/webp"
+    if len(head) >= 5 and head.startswith(b"%PDF-"):
+        return ".pdf", "application/pdf"
     return None
 
 
@@ -456,6 +458,17 @@ def _unlink_quiet(*paths: str) -> None:
             pass
 
 
+def document_may_be_ticket_media(doc: Any) -> bool:
+    """Документ можно скачать: картинка или PDF. Тип всё равно подтвердит magic."""
+    mime = str(getattr(doc, "mime_type", None) or "").lower()
+    name = str(getattr(doc, "file_name", None) or "").lower()
+    if mime.startswith("image/"):
+        return True
+    if mime in ("application/pdf", "application/x-pdf"):
+        return True
+    return name.endswith(".pdf")
+
+
 async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | None:
     """Сохраняет изображение из сообщения. Контракт как у прежнего хелпера.
 
@@ -474,7 +487,7 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         if declared_size_over_limit(declared_size):
             return None
         file_id = photo.file_id
-    elif doc and str(getattr(doc, "mime_type", None) or "").startswith("image/"):
+    elif doc and document_may_be_ticket_media(doc):
         declared_size = getattr(doc, "file_size", None)
         if declared_size_over_limit(declared_size):
             return None
