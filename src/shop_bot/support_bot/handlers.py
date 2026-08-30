@@ -229,7 +229,12 @@ def get_support_router() -> Router:
             await state.clear()
             return
         _media = await _save_ticket_media(bot, message, ticket_id)
-        add_support_message(ticket_id, sender="user", content=(message.text or message.caption or ""), media=_media)
+        add_support_message(
+            ticket_id,
+            sender="user",
+            content=(message.text or message.caption or ""),
+            media=_media,
+        )
         ticket = get_ticket(ticket_id)
         support_forum_chat_id = get_setting("support_forum_chat_id")
         thread_id = None
@@ -407,7 +412,12 @@ def get_support_router() -> Router:
             await state.clear()
             return
         _media = await _save_ticket_media(bot, message, ticket_id)
-        add_support_message(ticket_id, sender='user', content=(message.text or message.caption or ''), media=_media)
+        add_support_message(
+            ticket_id,
+            sender='user',
+            content=(message.text or message.caption or ''),
+            media=_media,
+        )
         await state.clear()
         await message.answer("Сообщение отправлено.")
         try:
@@ -528,9 +538,14 @@ def get_support_router() -> Router:
             if not (is_admin_by_setting or is_admin_in_chat):
                 return
             content = (message.text or message.caption or "").strip()
-            if content:
-                _media = await _save_ticket_media(bot, message, int(ticket['ticket_id']))
-                add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content, media=_media)
+            _media = await _save_ticket_media(bot, message, int(ticket['ticket_id']))
+            if content or _media:
+                add_support_message(
+                    ticket_id=int(ticket['ticket_id']),
+                    sender='admin',
+                    content=content,
+                    media=_media,
+                )
             header = await bot.send_message(
                 chat_id=user_id,
                 text=f"💬 Ответ поддержки по тикету #{ticket['ticket_id']}"
@@ -1049,7 +1064,10 @@ def get_support_router() -> Router:
         ticket_id, created_new = get_or_create_open_ticket(user_id, None)
         if not ticket_id:
             return
-        add_support_message(ticket_id, sender='user', content=content)
+        # Основной путь после создания тикета: FSM уже сброшен,
+        # фото/PDF раньше сюда приходили и в media не писались.
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(ticket_id, sender='user', content=content, media=_media)
         ticket = get_ticket(ticket_id)
 
         try:

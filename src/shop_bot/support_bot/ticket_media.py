@@ -3,8 +3,8 @@
 Файлы пишутся на диск рядом с БД и отдаются только панелью под login_required.
 Наружу как static / Telegram file URL они не публикуются.
 
-Лимит 10 МБ: заявленный file_size, иначе getFile до download. Без известного
-размера файл не качается. Download ещё и обрезается по 10 МБ.
+Лимит 10 МБ: заявленный file_size или getFile. Если размера нет — качаем
+в память с потолком 10 МБ и проверяем после.
 
 На тикет: не больше 10 файлов и 30 МБ суммарно. При удалении тикета
 каталог ``ticket_files/<ticket_id>/`` снимается вместе со строками БД.
@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import time
@@ -112,7 +113,8 @@ async def resolve_telegram_file_size(
     Возвращает (размер или None, объект для bot.download).
     Download по File надёжнее, чем по голому file_id: локальный Bot API
     отдаёт file_path, без него папка тикета создавалась пустой.
-    None значит качать нельзя: лимит неизвестен и getFile не ответил.
+    None — размер неизвестен; вызывающая сторона всё равно может качать
+    с потолком 10 МБ.
     """
     known = positive_file_size(declared_size)
     get_file = getattr(bot, "get_file", None)
@@ -135,17 +137,30 @@ async def download_ticket_media_capped(
     part_path: str,
     max_bytes: int = TICKET_MEDIA_MAX_BYTES,
 ) -> bool:
-    """Качаем в путь на диске: aiogram для BinaryIO вызывает seek(0), свой writer ломался молча."""
+    """Качаем в BytesIO (у него есть seek — aiogram его вызывает), затем на диск.
+
+    Путь + aiofiles раньше мог молча не создать файл; BytesIO это обходит.
+    """
+    buf = io.BytesIO()
     try:
-        await bot.download(source, destination=part_path)
-        if not os.path.isfile(part_path):
-            logger.warning("Вложение тикета: download не создал файл")
+        file_path = getattr(source, "file_path", None)
+        download_file = getattr(bot, "download_file", None)
+        if file_path and download_file is not None:
+            await download_file(file_path, destination=buf)
+        else:
+            await bot.download(source, destination=buf)
+        data = buf.getvalue()
+        if not data:
+            logger.warning("Вложение тикета: download вернул пусто")
             return False
-        size = os.path.getsize(part_path)
-        if size <= 0 or size > max_bytes:
-            logger.warning("Вложение тикета: после download размер %s, лимит %s", size, max_bytes)
-            _unlink_quiet(part_path)
+        if len(data) > max_bytes:
+            logger.warning("Вложение тикета: после download размер %s, лимит %s", len(data), max_bytes)
             return False
+        parent = os.path.dirname(part_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(part_path, "wb") as fh:
+            fh.write(data)
         return True
     except Exception:
         logger.exception("Не удалось скачать вложение тикета")
@@ -470,7 +485,7 @@ def document_may_be_ticket_media(doc: Any) -> bool:
         return True
     if mime in ("application/pdf", "application/x-pdf"):
         return True
-    return name.endswith(".pdf")
+    return name.endswith(TICKET_MEDIA_EXTS)
 
 
 async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | None:
@@ -510,12 +525,11 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
         known_size, download_source = await resolve_telegram_file_size(
             bot, file_id, declared_size
         )
-        if known_size is None:
-            logger.warning("Тикет %s: размер файла неизвестен, download пропущен", ticket_id)
-            return None
         if declared_size_over_limit(known_size):
             logger.warning("Тикет %s: getFile/size %s больше лимита", ticket_id, known_size)
             return None
+        if known_size is None:
+            logger.info("Тикет %s: размер неизвестен, качаем с потолком %s", ticket_id, TICKET_MEDIA_MAX_BYTES)
         ticket_id = int(ticket_id)
         folder = jailed_ticket_folder(ticket_id) or ""
         if not folder:

@@ -70,18 +70,21 @@ def test_save_rejects_when_telegram_omits_size_but_file_is_huge(temp_db, tmp_pat
     assert not (media_root / "7").exists()
 
 
-def test_save_skips_download_if_getfile_has_no_size(temp_db, tmp_path, monkeypatch):
+def test_save_downloads_if_getfile_has_no_size(temp_db, tmp_path, monkeypatch):
+    """Размер неизвестен — всё равно качаем, потом проверяем magic и лимит."""
     from shop_bot.data_manager import database
 
     media_root = tmp_path / "ticket_files"
     monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
 
-    bot = _DownloadBot(b"\xff\xd8\xff\xe0tiny", api_size_missing=True)
+    payload = b"\xff\xd8\xff\xe0tiny"
+    bot = _DownloadBot(payload, api_size_missing=True)
     result = asyncio.run(save_ticket_media(bot, _photo_message(0), ticket_id=7))
 
-    assert result is None
+    assert result is not None
     assert bot.get_file_calls == 1
-    assert bot.downloads == 0
+    assert bot.downloads == 1
+    assert (media_root / result).read_bytes() == payload
 
 
 def test_save_uses_getfile_size_then_downloads_small(temp_db, tmp_path, monkeypatch):
@@ -98,6 +101,21 @@ def test_save_uses_getfile_size_then_downloads_small(temp_db, tmp_path, monkeypa
     assert bot.get_file_calls == 1
     assert bot.downloads == 1
     assert (media_root / result).read_bytes() == payload
+
+
+def test_unknown_size_huge_payload_is_not_kept(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    media_root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
+
+    bot = _DownloadBot(b"x" * (TICKET_MEDIA_MAX_BYTES + 80), api_size_missing=True)
+    result = asyncio.run(save_ticket_media(bot, _photo_message(None), ticket_id=7))
+
+    assert result is None
+    leftover = [p for p in media_root.rglob("*") if p.is_file()] if media_root.exists() else []
+    assert leftover == []
+    assert not (media_root / "7").exists()
 
 
 def test_capped_download_stops_lying_file_size(temp_db, tmp_path, monkeypatch):

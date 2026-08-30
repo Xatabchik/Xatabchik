@@ -184,6 +184,20 @@ def test_detect_image_kind_reads_file(tmp_path):
     assert detect_image_kind(str(p)) == (".webp", "image/webp")
 
 
+def test_save_jpeg_document_with_octet_stream_mime(temp_db, tmp_path, monkeypatch):
+    """Скриншот «как файл» часто приходит как application/octet-stream."""
+    from shop_bot.data_manager import database
+
+    root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+    bot = _DownloadBot(JPEG)
+    msg = _doc_message(mime="application/octet-stream", name="screen.jpg", payload_size=len(JPEG))
+    result = asyncio.run(save_ticket_media(bot, msg, ticket_id=25))
+    assert result is not None
+    assert result.endswith(".jpg")
+    assert (root / result).read_bytes() == JPEG
+
+
 def test_save_pdf_document(temp_db, tmp_path, monkeypatch):
     from shop_bot.data_manager import database
 
