@@ -126,10 +126,17 @@ def test_upload_and_download_owner_only(temp_db, tmp_path, monkeypatch):
     assert saved.read_bytes() == JPEG
 
     no_auth = client.get(f"/api/support/ticket-file/{message_id}")
-    assert no_auth.status_code == 401
-
+    missing = client.get("/api/support/ticket-file/999999999")
+    unknown = client.get("/api/support/ticket-file-does-not-exist/1")
+    leaked_dir = client.get("/ticket_files/7/anything.jpg")
     foreign = client.get(f"/api/support/ticket-file/{message_id}", params={"token": attacker})
-    assert foreign.status_code == 404
+
+    for probe in (no_auth, missing, foreign, leaked_dir, unknown):
+        assert probe.status_code == 404
+        assert probe.json() == {"detail": "Not Found"}
+        assert b"Unauthorized" not in probe.content
+        assert b'"ok"' not in probe.content
+    assert no_auth.content == missing.content == foreign.content == leaked_dir.content
 
     mine = client.get(f"/api/support/ticket-file/{message_id}", params={"token": owner})
     assert mine.status_code == 200

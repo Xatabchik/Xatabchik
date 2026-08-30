@@ -183,7 +183,7 @@ class _PanelBot:
 
 
 def test_ticket_file_is_not_public(temp_db):
-    """Вложения не доступны снаружи: без сессии панели — редирект на логин."""
+    """Без сессии панели — глухой 404, без редиректа на логин и без Unauthorized."""
     from shop_bot.webhook_server import app as wh_mod
 
     flask_app = wh_mod.create_webhook_app(_PanelBot())
@@ -193,8 +193,14 @@ def test_ticket_file_is_not_public(temp_db):
     with client.session_transaction() as sess:
         sess.pop("logged_in", None)
 
-    resp = client.get("/support/ticket-file/1", follow_redirects=False)
-    assert resp.status_code in (301, 302, 303, 401)
-    location = (resp.headers.get("Location") or "").lower()
-    assert "login" in location or resp.status_code == 401
-    assert resp.status_code != 200
+    missing = client.get("/support/ticket-file/999999", follow_redirects=False)
+    unauth = client.get("/support/ticket-file/1", follow_redirects=False)
+    leaked_dir = client.get("/ticket_files/4/secret.jpg", follow_redirects=False)
+
+    assert missing.status_code == 404
+    assert unauth.status_code == 404
+    assert leaked_dir.status_code == 404
+    assert unauth.headers.get("Location") in (None, "")
+    assert b"Unauthorized" not in unauth.get_data()
+    assert b"login" not in unauth.get_data().lower()
+    assert missing.get_data() == unauth.get_data()

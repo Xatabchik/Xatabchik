@@ -1,5 +1,5 @@
 from typing import Any
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import aiohttp
@@ -454,6 +454,18 @@ if os.path.exists(ico_dir):
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+
+def _hidden_not_found() -> None:
+    """Как несуществующий URL: стандартный FastAPI 404, без Unauthorized."""
+    raise HTTPException(status_code=404)
+
+
+@app.api_route("/ticket_files", methods=["GET", "HEAD", "POST", "PUT", "DELETE"])
+@app.api_route("/ticket_files/{rest:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE"])
+async def _block_ticket_files_dir(rest: str = ""):
+    """Каталог ticket_files не является static и не должен открываться по URL."""
+    return _hidden_not_found()
 
 
 # Endpoint: list referral payout methods for current user
@@ -5256,43 +5268,43 @@ async def api_support_close(req: SupportTicketRequest, request: Request):
 
 @app.get("/api/support/ticket-file/{message_id}")
 async def api_support_ticket_file(message_id: int, request: Request, token: str | None = None):
-    """Вложение тикета только владельцу. Не публичный URL и не админский /support/ticket-file."""
+    """Вложение только владельцу. Без сессии и при чужом id — тот же 404, что у несуществующего URL."""
     user = _require_authenticated_user(request, token=token)
     if not user:
-        return _unauthorized()
+        return _hidden_not_found()
     user_id = int(user["telegram_id"])
     from shop_bot.data_manager.database import get_support_message, get_ticket, get_ticket_media_root
     from shop_bot.support_bot.ticket_media import detect_image_kind, expire_ticket_media_if_closed_ttl
 
     msg = get_support_message(int(message_id))
     if not msg or not msg.get("media"):
-        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+        return _hidden_not_found()
     ticket = get_ticket(int(msg["ticket_id"]))
     if not _ticket_owned_by(ticket, user_id):
-        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+        return _hidden_not_found()
     try:
         if expire_ticket_media_if_closed_ttl(int(msg["ticket_id"])):
-            return JSONResponse({"ok": False, "error": "expired"}, status_code=404)
+            return _hidden_not_found()
     except Exception:
-        logger.exception("TTL webapp ticket file %s", message_id)
-        return JSONResponse({"ok": False, "error": "expired"}, status_code=404)
+        logger.exception("TTL webapp ticket file")
+        return _hidden_not_found()
 
     base = os.path.realpath(get_ticket_media_root())
     full = os.path.realpath(os.path.join(base, str(msg["media"])))
     if not full.startswith(base + os.sep) or not os.path.isfile(full):
-        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+        return _hidden_not_found()
     kind = detect_image_kind(full)
     if kind is None:
-        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+        return _hidden_not_found()
     _ext, mimetype = kind
     return FileResponse(
         full,
         media_type=mimetype,
-        filename=os.path.basename(full),
         headers={
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Cache-Control": "private, no-store",
+            "X-Robots-Tag": "noindex, nofollow",
         },
     )
 
