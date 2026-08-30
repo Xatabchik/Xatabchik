@@ -85,6 +85,11 @@ def test_ticket_view_is_owner_only(temp_db):
 
 def test_upload_and_download_owner_only(temp_db, tmp_path, monkeypatch):
     from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    handlers._SUPPORT_LAST.clear()
+    handlers._SUPPORT_HITS.clear()
+    monkeypatch.setattr(handlers, "SUPPORT_MIN_INTERVAL_SECONDS", 0)
 
     root = tmp_path / "ticket_files"
     monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
@@ -135,6 +140,11 @@ def test_upload_and_download_owner_only(temp_db, tmp_path, monkeypatch):
 def test_upload_rejects_html_and_oversize(temp_db, tmp_path, monkeypatch):
     from shop_bot.data_manager import database
     from shop_bot.support_bot.ticket_media import TICKET_MEDIA_MAX_BYTES
+    from shop_bot.webapp import handlers
+
+    handlers._SUPPORT_LAST.clear()
+    handlers._SUPPORT_HITS.clear()
+    monkeypatch.setattr(handlers, "SUPPORT_MIN_INTERVAL_SECONDS", 0)
 
     root = tmp_path / "ticket_files"
     monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
@@ -157,6 +167,62 @@ def test_upload_rejects_html_and_oversize(temp_db, tmp_path, monkeypatch):
         files={"file": ("big.jpg", b"x" * (TICKET_MEDIA_MAX_BYTES + 20), "image/jpeg")},
     )
     assert huge.json().get("ok") is False
+
+
+def test_ticket_file_accepts_cookie_without_query_token(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+    token = _user(database, 92050, "cookie")
+    ticket_id = database.create_support_ticket(92050, "Кука")
+    dest = root / str(ticket_id)
+    dest.mkdir(parents=True)
+    (dest / "shot.jpg").write_bytes(JPEG)
+    message_id = database.add_support_message(ticket_id, "user", "x", media=f"{ticket_id}/shot.jpg")
+    client = _client()
+    client.cookies.set("auth_token", token)
+    resp = client.get(f"/api/support/ticket-file/{message_id}")
+    assert resp.status_code == 200
+    assert resp.content == JPEG
+    assert "no-referrer" in (resp.headers.get("Referrer-Policy") or "")
+
+
+def test_send_rejects_empty_and_clips_long_text(temp_db, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    handlers._SUPPORT_LAST.clear()
+    handlers._SUPPORT_HITS.clear()
+    monkeypatch.setattr(handlers, "SUPPORT_MIN_INTERVAL_SECONDS", 0)
+    token = _user(database, 92060, "clip")
+    ticket_id = database.create_support_ticket(92060, "Текст")
+    client = _client()
+    empty = client.post("/api/support/send", json={"token": token, "ticket_id": ticket_id, "message": "   "})
+    assert empty.json().get("ok") is False
+    long_msg = "я" * 5000
+    ok = client.post("/api/support/send", json={"token": token, "ticket_id": ticket_id, "message": long_msg})
+    assert ok.json().get("ok") is True
+    stored = database.get_ticket_messages(ticket_id)[-1]["content"]
+    assert len(stored) == handlers.SUPPORT_TEXT_MAX_LEN
+
+
+def test_send_rate_limit_blocks_flood(temp_db, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    handlers._SUPPORT_LAST.clear()
+    handlers._SUPPORT_HITS.clear()
+    monkeypatch.setattr(handlers, "SUPPORT_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(handlers, "SUPPORT_SEND_PER_MINUTE", 2)
+    token = _user(database, 92070, "flood")
+    ticket_id = database.create_support_ticket(92070, "Флуд")
+    client = _client()
+    assert client.post("/api/support/send", json={"token": token, "ticket_id": ticket_id, "message": "1"}).json().get("ok") is True
+    assert client.post("/api/support/send", json={"token": token, "ticket_id": ticket_id, "message": "2"}).json().get("ok") is True
+    third = client.post("/api/support/send", json={"token": token, "ticket_id": ticket_id, "message": "3"})
+    assert third.status_code == 429
+    assert third.json().get("ok") is False
 
 
 def test_save_ticket_media_bytes_writes_png(temp_db, tmp_path, monkeypatch):

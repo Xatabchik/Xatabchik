@@ -856,7 +856,7 @@
                         title="Файл (jpeg, png, webp, PDF)">
                         <span class="material-symbols-rounded text-xl">attach_file</span>
                     </button>
-                    <textarea id="support-message-input" rows="1" placeholder="Сообщение..."
+                    <textarea id="support-message-input" rows="1" placeholder="Сообщение..." maxlength="2000"
                         class="flex-1 bg-white/5 text-white rounded-[1.25rem] border border-white/10 px-4 py-3 text-[13px] focus:outline-none focus:border-primary/50 transition-colors placeholder:text-gray-500 resize-none max-h-24 custom-scrollbar leading-tight"
                         oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"></textarea>
 
@@ -1104,8 +1104,7 @@
         }
 
         function supportFileUrl(messageId) {
-            const token = window.getAuthToken() || '';
-            return '/api/support/ticket-file/' + encodeURIComponent(messageId) + '?token=' + encodeURIComponent(token);
+            return '/api/support/ticket-file/' + encodeURIComponent(messageId);
         }
 
         function renderSupportAttachment(msg) {

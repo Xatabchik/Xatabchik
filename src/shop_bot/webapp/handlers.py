@@ -84,6 +84,18 @@ TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 10 * 60
 # Rate-limit auth endpoints to reduce brute-force of tokens / initData replay.
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
 AUTH_RATE_LIMIT = "30/minute"
+SUPPORT_RATE_LIMIT = "30/minute"
+SUPPORT_TEXT_MAX_LEN = 2000
+SUPPORT_CAPTION_MAX_LEN = 500
+SUPPORT_MAX_MESSAGES_PER_TICKET = 200
+SUPPORT_CREATE_DAILY_MAX = 8
+SUPPORT_SEND_PER_MINUTE = 20
+SUPPORT_UPLOAD_PER_MINUTE = 8
+SUPPORT_CREATE_PER_HOUR = 5
+SUPPORT_MIN_INTERVAL_SECONDS = 1.5
+_SUPPORT_HITS: dict[str, deque[float]] = {}
+_SUPPORT_LAST: dict[str, float] = {}
+_SUPPORT_HITS_LOCK = threading.Lock()
 
 # Дополнительно к IP: один и тот же email нельзя молотить с разных адресов
 # (SlowAPI считает только get_remote_address). Лимит тот же 30/мин, чтобы
@@ -133,6 +145,9 @@ def _resolve_user_from_request_token(data: dict, request: Request) -> dict | Non
     token = data.get("token") or request.headers.get("Authorization")
     if token and token.startswith("Bearer "):
         token = token.split(" ", 1)[1]
+
+    if not token:
+        token = request.cookies.get("auth_token")
 
     if not token:
         return None
@@ -4917,6 +4932,53 @@ async def api_key_comment(req: CommentRequest, request: Request):
         logger.error(f"Error updating comment: {e}")
         return {"ok": False, "error": str(e)}
 
+def _support_rate_response() -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": "Слишком много запросов. Подождите минуту."},
+        status_code=429,
+    )
+
+
+def _support_user_rate_limited(user_id: int, action: str, limit: int, window: float) -> bool:
+    key = f"{int(user_id)}:{action}"
+    now = time.time()
+    with _SUPPORT_HITS_LOCK:
+        q = _SUPPORT_HITS.setdefault(key, deque())
+        while q and now - q[0] > window:
+            q.popleft()
+        if len(q) >= limit:
+            return True
+        q.append(now)
+        return False
+
+
+def _support_too_fast(user_id: int, min_interval: float | None = None) -> bool:
+    if min_interval is None:
+        min_interval = SUPPORT_MIN_INTERVAL_SECONDS
+    key = f"{int(user_id)}:gap"
+    now = time.time()
+    with _SUPPORT_HITS_LOCK:
+        last = _SUPPORT_LAST.get(key, 0.0)
+        if now - last < min_interval:
+            return True
+        _SUPPORT_LAST[key] = now
+        return False
+
+
+def _clip_support_text(value: str | None, max_len: int) -> str:
+    return (value or "").strip()[:max_len]
+
+
+def _tickets_created_today_count(tickets) -> int:
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    n = 0
+    for t in tickets or []:
+        created = str(t.get("created_at") or "")
+        if created.startswith(today):
+            n += 1
+    return n
+
+
 def _public_ticket_row(ticket: dict) -> dict:
     return {
         "ticket_id": ticket.get("ticket_id"),
@@ -4963,13 +5025,14 @@ async def _notify_webapp_support(
             username_display = f"@{tg_user.username}" if getattr(tg_user, "username", None) else f"ID {user_id}"
         except Exception:
             username_display = f"ID {user_id}"
+        safe_body = html.escape(_clip_support_text(body, 400))
         notification_text = (
             f"{title}\n\n"
-            f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
+            f"👤 <b>USER:</b> (<code>{user_id}</code> - {html.escape(str(username_display))} )\n"
             f"📝 <b>ID тикета:</b> <code>#{ticket.get('ticket_id')}</code>\n"
-            f"💬 <b>Тема:</b> <i>{html.escape(str(ticket.get('subject') or 'Без темы'))}</i>\n\n"
+            f"💬 <b>Тема:</b> <i>{html.escape(str(ticket.get('subject') or 'Без темы')[:64])}</i>\n\n"
             f"💌 Сообщения:\n"
-            f"<blockquote>{html.escape(body)}</blockquote>"
+            f"<blockquote>{safe_body}</blockquote>"
         )
         forum_chat_id = ticket.get("forum_chat_id")
         thread_id = ticket.get("message_thread_id")
@@ -5036,6 +5099,7 @@ async def api_support_status(req: SupportStatusRequest, request: Request):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/support/create")
+@limiter.limit(SUPPORT_RATE_LIMIT)
 async def api_support_create(req: SupportTicketCreateRequest, request: Request):
     try:
         user = _require_authenticated_user(
@@ -5044,10 +5108,15 @@ async def api_support_create(req: SupportTicketCreateRequest, request: Request):
         if not user:
             return _unauthorized()
         user_id = int(user["telegram_id"])
-            
-        from shop_bot.data_manager.remnawave_repository import get_or_create_open_ticket, add_support_message, get_setting
-        
-        subject_text = req.subject.strip()[:64]
+        if _support_user_rate_limited(user_id, "create", SUPPORT_CREATE_PER_HOUR, 3600):
+            return _support_rate_response()
+
+        from shop_bot.data_manager.remnawave_repository import get_or_create_open_ticket, get_user_tickets
+
+        if _tickets_created_today_count(get_user_tickets(user_id)) >= SUPPORT_CREATE_DAILY_MAX:
+            return {"ok": False, "error": "Сегодня слишком много обращений. Напишите в открытый тикет или завтра."}
+
+        subject_text = _clip_support_text(req.subject, 64)
         if not subject_text:
             return {"ok": False, "error": "Тема обращения не может быть пустой"}
             
@@ -5078,6 +5147,7 @@ async def api_support_create(req: SupportTicketCreateRequest, request: Request):
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/support/send")
+@limiter.limit(SUPPORT_RATE_LIMIT)
 async def api_support_send(req: SupportMessageSendRequest, request: Request):
     try:
         user = _require_authenticated_user(
@@ -5086,19 +5156,32 @@ async def api_support_send(req: SupportMessageSendRequest, request: Request):
         if not user:
             return _unauthorized()
         user_id = int(user["telegram_id"])
-            
-        from shop_bot.data_manager.remnawave_repository import get_ticket, add_support_message
+        if _support_too_fast(user_id) or _support_user_rate_limited(
+            user_id, "send", SUPPORT_SEND_PER_MINUTE, 60
+        ):
+            return _support_rate_response()
+
+        from shop_bot.data_manager.remnawave_repository import (
+            add_support_message,
+            get_ticket,
+            get_ticket_messages,
+        )
         ticket = get_ticket(req.ticket_id)
         if not ticket or ticket.get('user_id') != user_id or ticket.get('status') != 'open':
             return {"ok": False, "error": "Тикет не найден или закрыт"}
-            
-        add_support_message(req.ticket_id, sender="user", content=req.message)
+        text = _clip_support_text(req.message, SUPPORT_TEXT_MAX_LEN)
+        if not text:
+            return {"ok": False, "error": "Сообщение пустое"}
+        if len(get_ticket_messages(req.ticket_id) or []) >= SUPPORT_MAX_MESSAGES_PER_TICKET:
+            return {"ok": False, "error": "В тикете слишком много сообщений. Откройте новое обращение."}
+
+        add_support_message(req.ticket_id, sender="user", content=text)
         try:
             await _notify_webapp_support(
                 user_id,
                 ticket,
                 title="📨 <b>Новое сообщение (WebApp)!</b>",
-                body=req.message,
+                body=text,
             )
         except Exception as e:
             logger.warning("WebApp support notify failed: %s", e)
@@ -5138,6 +5221,7 @@ async def api_support_ticket(req: SupportTicketRequest, request: Request):
 
 
 @app.post("/api/support/close")
+@limiter.limit(SUPPORT_RATE_LIMIT)
 async def api_support_close(req: SupportTicketRequest, request: Request):
     try:
         user = _require_authenticated_user(
@@ -5205,11 +5289,16 @@ async def api_support_ticket_file(message_id: int, request: Request, token: str 
         full,
         media_type=mimetype,
         filename=os.path.basename(full),
-        headers={"X-Content-Type-Options": "nosniff"},
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
 @app.post("/api/support/upload")
+@limiter.limit(SUPPORT_RATE_LIMIT)
 async def api_support_upload(
     request: Request,
     file: UploadFile = File(...),
@@ -5229,6 +5318,14 @@ async def api_support_upload(
         ticket = get_ticket(int(ticket_id))
         if not _ticket_owned_by(ticket, user_id) or ticket.get("status") != "open":
             return {"ok": False, "error": "Тикет не найден или закрыт"}
+        if _support_too_fast(user_id) or _support_user_rate_limited(
+            user_id, "upload", SUPPORT_UPLOAD_PER_MINUTE, 60
+        ):
+            return _support_rate_response()
+        from shop_bot.data_manager.remnawave_repository import get_ticket_messages
+
+        if len(get_ticket_messages(int(ticket_id)) or []) >= SUPPORT_MAX_MESSAGES_PER_TICKET:
+            return {"ok": False, "error": "В тикете слишком много сообщений. Откройте новое обращение."}
 
         chunks: list[bytes] = []
         total = 0
@@ -5244,7 +5341,7 @@ async def api_support_upload(
         rel = save_ticket_media_bytes(payload, int(ticket_id))
         if not rel:
             return {"ok": False, "error": "Можно прикрепить jpeg, png, webp или PDF до 10 МБ"}
-        text = (caption or "").strip()
+        text = _clip_support_text(caption, SUPPORT_CAPTION_MAX_LEN)
         add_support_message(int(ticket_id), sender="user", content=text, media=rel)
         try:
             await _notify_webapp_support(
