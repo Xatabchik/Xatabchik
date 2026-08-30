@@ -10,6 +10,7 @@ from shop_bot.support_bot.ticket_media import (
     commit_ticket_image,
     detect_image_kind,
     detect_image_kind_bytes,
+    public_support_message,
     save_ticket_media,
 )
 
@@ -232,3 +233,63 @@ def test_ticket_file_serves_pdf_with_nosniff(temp_db, tmp_path, monkeypatch):
     assert resp.headers.get("Content-Type", "").startswith("application/pdf")
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
     assert resp.data == PDF
+
+
+def test_public_support_message_hides_path():
+    out = public_support_message({
+        "sender": "user",
+        "content": "чек",
+        "media": "12/deadbeef.png",
+        "message_id": 99,
+        "created_at": "2026-01-01 00:00:00",
+    })
+    assert out["has_media"] is True
+    assert out["media_kind"] == "image"
+    assert out["message_id"] == 99
+    assert "media" not in out
+    assert "deadbeef" not in str(out)
+
+    pdf = public_support_message({"media": "3/ab.pdf", "message_id": 1, "content": ""})
+    assert pdf["media_kind"] == "pdf"
+    assert "ab.pdf" not in str(pdf)
+
+    empty = public_support_message({"content": "hi", "media": None, "message_id": 2})
+    assert empty["has_media"] is False
+    assert empty["media_kind"] is None
+
+
+def test_messages_json_has_no_raw_media_path(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.webhook_server import app as wh_mod
+
+    root = tmp_path / "ticket_files"
+    root.mkdir()
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(root))
+
+    ticket_id = database.create_support_ticket(60104, "json")
+    secret = f"{ticket_id}/cafebabe.png"
+    dest = root / str(ticket_id)
+    dest.mkdir()
+    (dest / "cafebabe.png").write_bytes(PNG)
+    mid = database.add_support_message(ticket_id, "user", "скрин", media=secret)
+    database.add_support_message(ticket_id, "user", "pdf", media=f"{ticket_id}/aa.pdf")
+
+    flask_app = wh_mod.create_webhook_app(_PanelBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["logged_in"] = True
+
+    resp = client.get(f"/support/{ticket_id}/messages.json")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    dumped = resp.get_data(as_text=True)
+    assert "cafebabe" not in dumped
+    assert "aa.pdf" not in dumped
+    assert "/ticket_files" not in dumped
+    items = body["messages"]
+    assert items[0]["has_media"] is True
+    assert items[0]["media_kind"] == "image"
+    assert items[0]["message_id"] == mid
+    assert "media" not in items[0]
+    assert items[1]["media_kind"] == "pdf"

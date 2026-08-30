@@ -522,6 +522,33 @@ document.addEventListener('DOMContentLoaded', function () {
 
             wrap.appendChild(meta);
             wrap.appendChild(content);
+
+            const messageId = Number(m.message_id);
+            if (m.has_media && Number.isInteger(messageId) && messageId > 0) {
+                const box = document.createElement('div');
+                box.className = 'ticket-attachment mt-2';
+                const url = '/support/ticket-file/' + messageId;
+                const link = document.createElement('a');
+                link.href = url;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                if (m.media_kind === 'image') {
+                    const img = document.createElement('img');
+                    img.src = url;
+                    img.alt = 'Вложение';
+                    img.loading = 'lazy';
+                    img.style.maxWidth = '320px';
+                    img.style.maxHeight = '320px';
+                    img.style.borderRadius = '8px';
+                    img.style.display = 'block';
+                    link.appendChild(img);
+                } else {
+                    link.className = 'btn btn-sm btn-outline-secondary';
+                    link.textContent = m.media_kind === 'pdf' ? 'PDF' : 'Вложение';
+                }
+                box.appendChild(link);
+                wrap.appendChild(box);
+            }
             return wrap;
         }
 

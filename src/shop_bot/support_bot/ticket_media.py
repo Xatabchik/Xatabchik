@@ -61,6 +61,34 @@ def detect_image_kind(path: str) -> tuple[str, str] | None:
     return detect_image_kind_bytes(head)
 
 
+def media_kind_from_stored(media: str | None) -> str | None:
+    """image | pdf | file по имени на диске. Сырой путь наружу не отдаём."""
+    if not media:
+        return None
+    name = str(media).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not name or ".." in name:
+        return None
+    if name.endswith(".pdf"):
+        return "pdf"
+    if name.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        return "image"
+    return "file"
+
+
+def public_support_message(m: dict) -> dict:
+    """Поля сообщения для панели/JSON без пути ticket_files."""
+    raw = m.get("media")
+    has_media = bool(raw) and str(raw).strip() not in ("", "None")
+    return {
+        "sender": m.get("sender"),
+        "content": m.get("content"),
+        "message_id": m.get("message_id"),
+        "created_at": m.get("created_at"),
+        "has_media": has_media,
+        "media_kind": media_kind_from_stored(raw) if has_media else None,
+    }
+
+
 def positive_file_size(file_size: Any) -> int | None:
     """Положительный размер в байтах или None, если Telegram его не дал."""
     if file_size is None:
