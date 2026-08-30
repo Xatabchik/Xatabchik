@@ -3,9 +3,8 @@
 Файлы пишутся на диск рядом с БД и отдаются только панелью под login_required.
 Наружу как static / Telegram file URL они не публикуются.
 
-Лимит 10 МБ проверяется дважды: по заявленному Telegram file_size (если он
-есть и > 0) и по реальному размеру после скачивания. file_size is None / 0
-не считается «файл маленький» — иначе лимит обходится.
+Лимит 10 МБ: заявленный file_size, иначе getFile до download. Без известного
+размера файл не качается. Download ещё и обрезается по 10 МБ.
 
 На тикет: не больше 10 файлов и 30 МБ суммарно. При удалении тикета
 каталог ``ticket_files/<ticket_id>/`` снимается вместе со строками БД.
@@ -62,13 +61,96 @@ def detect_image_kind(path: str) -> tuple[str, str] | None:
     return detect_image_kind_bytes(head)
 
 
+def positive_file_size(file_size: Any) -> int | None:
+    """Положительный размер в байтах или None, если Telegram его не дал."""
+    if file_size is None:
+        return None
+    try:
+        size = int(file_size)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    return size
+
+
+async def resolve_telegram_file_size(
+    bot: Any,
+    file_id: str,
+    declared_size: Any = None,
+) -> tuple[int | None, Any]:
+    """Размер до download. Если в сообщении размера нет — getFile.
+
+    Возвращает (размер или None, объект для bot.download).
+    None значит качать нельзя: лимит неизвестен или getFile не ответил.
+    """
+    known = positive_file_size(declared_size)
+    if known is not None:
+        return known, file_id
+    get_file = getattr(bot, "get_file", None)
+    if get_file is None:
+        return None, file_id
+    try:
+        tg_file = await get_file(file_id)
+    except Exception:
+        logger.warning("getFile для вложения тикета не удался, download пропущен")
+        return None, file_id
+    api_size = positive_file_size(getattr(tg_file, "file_size", None) if tg_file is not None else None)
+    source = tg_file if tg_file is not None else file_id
+    return api_size, source
+
+
+class _CappedFileWriter:
+    """Пишет на диск и обрывает поток, если вышли за лимит."""
+
+    def __init__(self, path: str, max_bytes: int):
+        self._path = path
+        self._max = max_bytes
+        self._fh = open(path, "wb")
+        self._n = 0
+
+    def write(self, data: Any) -> int:
+        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+        if self._n + len(raw) > self._max:
+            raise OSError("ticket media exceeds size limit")
+        self._n += len(raw)
+        return self._fh.write(raw)
+
+    def flush(self) -> None:
+        self._fh.flush()
+
+    def close(self) -> None:
+        if not self._fh.closed:
+            self._fh.close()
+
+
+async def download_ticket_media_capped(
+    bot: Any,
+    source: Any,
+    part_path: str,
+    max_bytes: int = TICKET_MEDIA_MAX_BYTES,
+) -> bool:
+    writer = _CappedFileWriter(part_path, max_bytes)
+    try:
+        await bot.download(source, destination=writer)
+        return True
+    except Exception:
+        _unlink_quiet(part_path)
+        return False
+    finally:
+        try:
+            writer.close()
+        except OSError:
+            pass
+
+
 def declared_size_over_limit(
     file_size: int | None,
     max_bytes: int = TICKET_MEDIA_MAX_BYTES,
 ) -> bool:
     """True, если Telegram уже сообщил размер больше лимита.
 
-    None и 0 — размер неизвестен; отказ решает проверка после download.
+    None и 0 — размер неизвестен; тогда нужен getFile, не download.
     """
     if file_size is None:
         return False
@@ -406,22 +488,22 @@ async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | Non
     part_path = ""
     final_path = ""
     try:
+        known_size, download_source = await resolve_telegram_file_size(
+            bot, file_id, declared_size
+        )
+        if known_size is None or declared_size_over_limit(known_size):
+            return None
         ticket_id = int(ticket_id)
         folder = jailed_ticket_folder(ticket_id)
         if not folder:
             return None
-        incoming = None
-        try:
-            if declared_size is not None and int(declared_size) > 0:
-                incoming = int(declared_size)
-        except (TypeError, ValueError):
-            incoming = None
         os.makedirs(folder, exist_ok=True)
-        if quota_blocks_new_file(folder, incoming):
+        if quota_blocks_new_file(folder, known_size):
             return None
         stem = uuid.uuid4().hex
         part_path = os.path.join(folder, f"{stem}.part")
-        await bot.download(file_id, destination=part_path)
+        if not await download_ticket_media_capped(bot, download_source, part_path):
+            return None
         name = commit_ticket_image(part_path, folder, stem)
         if not name:
             return None

@@ -24,6 +24,9 @@ class _DownloadBot:
 
     async def download(self, file_id, destination):
         self.downloads += 1
+        if hasattr(destination, "write"):
+            destination.write(self.payload)
+            return
         with open(destination, "wb") as fh:
             fh.write(self.payload)
 

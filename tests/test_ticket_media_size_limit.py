@@ -55,12 +55,23 @@ def test_finalize_rejects_empty_file(tmp_path):
 
 
 class _DownloadBot:
-    def __init__(self, payload: bytes):
+    def __init__(self, payload: bytes, *, api_size=None, api_size_missing: bool = False):
         self.payload = payload
         self.downloads = 0
+        self.get_file_calls = 0
+        self.api_size = len(payload) if api_size is None else api_size
+        self.api_size_missing = api_size_missing
+
+    async def get_file(self, file_id):
+        self.get_file_calls += 1
+        size = None if self.api_size_missing else self.api_size
+        return SimpleNamespace(file_id=file_id, file_size=size)
 
     async def download(self, file_id, destination):
         self.downloads += 1
+        if hasattr(destination, "write"):
+            destination.write(self.payload)
+            return
         with open(destination, "wb") as fh:
             fh.write(self.payload)
 
@@ -71,19 +82,65 @@ def _photo_message(file_size):
 
 
 def test_save_rejects_when_telegram_omits_size_but_file_is_huge(temp_db, tmp_path, monkeypatch):
-    """file_size=None больше не обходит лимит: после download файл выбрасывается."""
+    """file_size=None: getFile до download, большой файл не качается."""
     from shop_bot.data_manager import database
 
     media_root = tmp_path / "ticket_files"
     monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
 
-    bot = _DownloadBot(b"x" * (TICKET_MEDIA_MAX_BYTES + 50))
+    bot = _DownloadBot(b"x" * (TICKET_MEDIA_MAX_BYTES + 50), api_size=TICKET_MEDIA_MAX_BYTES + 50)
     result = asyncio.run(save_ticket_media(bot, _photo_message(None), ticket_id=7))
 
     assert result is None
-    assert bot.downloads == 1
-    leftover_files = [p for p in media_root.rglob("*") if p.is_file()]
+    assert bot.get_file_calls == 1
+    assert bot.downloads == 0
+    leftover_files = [p for p in media_root.rglob("*") if p.is_file()] if media_root.exists() else []
     assert leftover_files == []
+
+
+def test_save_skips_download_if_getfile_has_no_size(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    media_root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
+
+    bot = _DownloadBot(b"\xff\xd8\xff\xe0tiny", api_size_missing=True)
+    result = asyncio.run(save_ticket_media(bot, _photo_message(0), ticket_id=7))
+
+    assert result is None
+    assert bot.get_file_calls == 1
+    assert bot.downloads == 0
+
+
+def test_save_uses_getfile_size_then_downloads_small(temp_db, tmp_path, monkeypatch):
+    from shop_bot.data_manager import database
+
+    media_root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
+
+    payload = b"\xff\xd8\xff\xe0tiny"
+    bot = _DownloadBot(payload, api_size=len(payload))
+    result = asyncio.run(save_ticket_media(bot, _photo_message(None), ticket_id=7))
+
+    assert result is not None
+    assert bot.get_file_calls == 1
+    assert bot.downloads == 1
+    assert (media_root / result).read_bytes() == payload
+
+
+def test_capped_download_stops_lying_file_size(temp_db, tmp_path, monkeypatch):
+    """Сообщили 100 байт, качают больше 10 МБ — поток обрывается, файл не остаётся."""
+    from shop_bot.data_manager import database
+
+    media_root = tmp_path / "ticket_files"
+    monkeypatch.setattr(database, "get_ticket_media_root", lambda: str(media_root))
+
+    bot = _DownloadBot(b"x" * (TICKET_MEDIA_MAX_BYTES + 80), api_size=100)
+    result = asyncio.run(save_ticket_media(bot, _photo_message(100), ticket_id=7))
+
+    assert result is None
+    leftover = [p for p in media_root.rglob("*") if p.is_file()] if media_root.exists() else []
+    assert leftover == []
 
 
 def test_save_rejects_declared_oversize_without_download(temp_db, tmp_path, monkeypatch):
