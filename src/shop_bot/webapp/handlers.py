@@ -1,7 +1,7 @@
 from typing import Any
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import aiohttp
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user_keys, get_msk_time, get_webapp_settings, get_user, get_referral_count, get_all_hosts, list_squads, get_plans_for_host
 import os
@@ -1998,6 +1998,12 @@ class SupportMessageSendRequest(BaseModel):
     user_id: int | None = None  # ignored; identity from token only
     ticket_id: int
     message: str
+    token: str | None = None
+    init_data: str | None = None
+
+class SupportTicketRequest(BaseModel):
+    user_id: int | None = None  # ignored; identity from token only
+    ticket_id: int
     token: str | None = None
     init_data: str | None = None
 
@@ -4911,6 +4917,89 @@ async def api_key_comment(req: CommentRequest, request: Request):
         logger.error(f"Error updating comment: {e}")
         return {"ok": False, "error": str(e)}
 
+def _public_ticket_row(ticket: dict) -> dict:
+    return {
+        "ticket_id": ticket.get("ticket_id"),
+        "subject": ticket.get("subject") or "Обращение без темы",
+        "status": ticket.get("status"),
+        "updated_at": ticket.get("updated_at"),
+    }
+
+
+def _public_ticket_messages(messages) -> list[dict]:
+    from shop_bot.support_bot.ticket_media import public_support_message
+
+    items = []
+    for m in messages or []:
+        if m.get("sender") == "note":
+            continue
+        items.append(public_support_message(m))
+    return items
+
+
+def _ticket_owned_by(ticket: dict | None, user_id: int) -> bool:
+    if not ticket:
+        return False
+    try:
+        return int(ticket.get("user_id") or 0) == int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+
+async def _notify_webapp_support(
+    user_id: int,
+    ticket: dict,
+    *,
+    title: str,
+    body: str,
+) -> None:
+    token = get_setting("support_bot_token")
+    if not token:
+        return
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        try:
+            tg_user = await bot.get_chat(user_id)
+            username_display = f"@{tg_user.username}" if getattr(tg_user, "username", None) else f"ID {user_id}"
+        except Exception:
+            username_display = f"ID {user_id}"
+        notification_text = (
+            f"{title}\n\n"
+            f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
+            f"📝 <b>ID тикета:</b> <code>#{ticket.get('ticket_id')}</code>\n"
+            f"💬 <b>Тема:</b> <i>{html.escape(str(ticket.get('subject') or 'Без темы'))}</i>\n\n"
+            f"💌 Сообщения:\n"
+            f"<blockquote>{html.escape(body)}</blockquote>"
+        )
+        forum_chat_id = ticket.get("forum_chat_id")
+        thread_id = ticket.get("message_thread_id")
+        if forum_chat_id and thread_id:
+            try:
+                await bot.send_message(
+                    chat_id=int(forum_chat_id),
+                    message_thread_id=int(thread_id),
+                    text=notification_text,
+                )
+                return
+            except Exception as e:
+                logger.warning("Error mirroring webapp support to forum: %s", e)
+        admin_ids_str = get_setting("admin_ids") or ""
+        admin_ids = [aid.strip() for aid in admin_ids_str.split(",") if aid.strip()]
+        for aid in admin_ids:
+            try:
+                await bot.send_message(
+                    chat_id=int(aid),
+                    text=notification_text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_dm_{ticket.get('ticket_id')}")]
+                    ]),
+                )
+            except Exception:
+                pass
+    finally:
+        await bot.session.close()
+
+
 @app.post("/api/support/status")
 async def api_support_status(req: SupportStatusRequest, request: Request):
     try:
@@ -4920,34 +5009,28 @@ async def api_support_status(req: SupportStatusRequest, request: Request):
         if not user:
             return _unauthorized()
         user_id = int(user["telegram_id"])
-            
+
         from shop_bot.data_manager.remnawave_repository import get_user_tickets, get_ticket_messages
+
         tickets = get_user_tickets(user_id) or []
-        open_tickets = [t for t in tickets if t.get('status') == 'open']
-        if not open_tickets:
-            return {"ok": True, "has_ticket": False}
-        
-        ticket = max(open_tickets, key=lambda t: int(t['ticket_id']))
-        messages = get_ticket_messages(ticket['ticket_id']) or []
-        
-        formatted_messages = []
-        for m in messages:
-            if m.get('sender') == 'note':
-                continue
-            formatted_messages.append({
-                "sender": m.get("sender"),
-                "content": m.get("content"),
-                "created_at": m.get("created_at")
-            })
-            
-        return {
-            "ok": True, 
-            "has_ticket": True, 
-            "ticket_id": ticket['ticket_id'],
-            "subject": ticket.get('subject', 'Обращение без темы'),
-            "status": ticket.get('status'),
-            "messages": formatted_messages
+        open_tickets = [t for t in tickets if t.get("status") == "open"]
+        payload = {
+            "ok": True,
+            "has_ticket": False,
+            "tickets": [_public_ticket_row(t) for t in tickets],
         }
+        if not open_tickets:
+            return payload
+
+        ticket = max(open_tickets, key=lambda t: int(t["ticket_id"]))
+        payload.update({
+            "has_ticket": True,
+            "ticket_id": ticket["ticket_id"],
+            "subject": ticket.get("subject") or "Обращение без темы",
+            "status": ticket.get("status"),
+            "messages": _public_ticket_messages(get_ticket_messages(ticket["ticket_id"])),
+        })
+        return payload
     except Exception as e:
         logger.error(f"Error in support status: {e}")
         return {"ok": False, "error": str(e)}
@@ -4975,43 +5058,20 @@ async def api_support_create(req: SupportTicketCreateRequest, request: Request):
             
         if not created_new:
             return {"ok": False, "error": "У вас уже есть открытый тикет"}
-            
-        from aiogram import Bot
-        token = get_setting("support_bot_token")
-        if token:
-            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            try:
-                try:
-                    tg_user = await bot.get_chat(user_id)
-                    username_display = f"@{tg_user.username}" if getattr(tg_user, 'username', None) else f"ID {user_id}"
-                except Exception:
-                    username_display = f"ID {user_id}"
-                    
-                notification_text = (
-                    f"🆕 <b>Новое обращение (WebApp)!</b>\n\n"
-                    f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
-                    f"📝 <b>ID тикета:</b> <code>#{ticket_id}</code>\n"
-                    f"💬 <b>Тема:</b> <i>{subject_text}</i>\n\n"
-                    f"💌 Сообщения:\n"
-                    f"<blockquote>Тикет открыт через веб-приложение.</blockquote>"
-                )
-                
-                admin_ids_str = get_setting("admin_ids") or ""
-                admin_ids = [aid.strip() for aid in admin_ids_str.split(",") if aid.strip()]
-                for aid in admin_ids:
-                    try:
-                        await bot.send_message(
-                            chat_id=int(aid),
-                            text=notification_text,
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_dm_{ticket_id}")]
-                            ])
-                        )
-                    except Exception:
-                        pass
-            finally:
-                await bot.session.close()
-                    
+
+        from shop_bot.data_manager.remnawave_repository import get_ticket
+
+        ticket = get_ticket(ticket_id) or {"ticket_id": ticket_id, "subject": subject_text}
+        try:
+            await _notify_webapp_support(
+                user_id,
+                ticket,
+                title="🆕 <b>Новое обращение (WebApp)!</b>",
+                body="Тикет открыт через веб-приложение.",
+            )
+        except Exception as e:
+            logger.warning("WebApp support notify failed: %s", e)
+
         return {"ok": True, "ticket_id": ticket_id}
     except Exception as e:
         logger.error(f"Error in support create: {e}")
@@ -5027,65 +5087,177 @@ async def api_support_send(req: SupportMessageSendRequest, request: Request):
             return _unauthorized()
         user_id = int(user["telegram_id"])
             
-        from shop_bot.data_manager.remnawave_repository import get_ticket, add_support_message, get_setting
+        from shop_bot.data_manager.remnawave_repository import get_ticket, add_support_message
         ticket = get_ticket(req.ticket_id)
         if not ticket or ticket.get('user_id') != user_id or ticket.get('status') != 'open':
             return {"ok": False, "error": "Тикет не найден или закрыт"}
             
         add_support_message(req.ticket_id, sender="user", content=req.message)
-        
-        from aiogram import Bot
-        token = get_setting("support_bot_token")
-        if token:
-            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            try:
-                try:
-                    tg_user = await bot.get_chat(user_id)
-                    username_display = f"@{tg_user.username}" if getattr(tg_user, 'username', None) else f"ID {user_id}"
-                except Exception:
-                    username_display = f"ID {user_id}"
-                    
-                notification_text = (
-                    f"📨 <b>Новое сообщение (WebApp)!</b>\n\n"
-                    f"👤 <b>USER:</b> (<code>{user_id}</code> - {username_display})\n"
-                    f"📝 <b>ID тикета:</b> <code>#{req.ticket_id}</code>\n"
-                    f"💬 <b>Тема:</b> <i>{ticket.get('subject', 'Без темы')}</i>\n\n"
-                    f"💌 Сообщения:\n"
-                    f"<blockquote>{req.message}</blockquote>"
-                )
-                
-                forum_chat_id = ticket.get('forum_chat_id')
-                thread_id = ticket.get('message_thread_id')
-                
-                if forum_chat_id and thread_id:
-                    try:
-                        await bot.send_message(
-                            chat_id=int(forum_chat_id),
-                            message_thread_id=int(thread_id),
-                            text=notification_text
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error mirroring to forum: {e}")
-                else:
-                    admin_ids_str = get_setting("admin_ids") or ""
-                    admin_ids = [aid.strip() for aid in admin_ids_str.split(",") if aid.strip()]
-                    for aid in admin_ids:
-                        try:
-                            await bot.send_message(
-                                chat_id=int(aid),
-                                text=notification_text,
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_dm_{req.ticket_id}")]
-                                ])
-                            )
-                        except Exception:
-                            pass
-            finally:
-                await bot.session.close()
-                        
+        try:
+            await _notify_webapp_support(
+                user_id,
+                ticket,
+                title="📨 <b>Новое сообщение (WebApp)!</b>",
+                body=req.message,
+            )
+        except Exception as e:
+            logger.warning("WebApp support notify failed: %s", e)
+
         return {"ok": True}
     except Exception as e:
         logger.error(f"Error in support send: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/support/ticket")
+async def api_support_ticket(req: SupportTicketRequest, request: Request):
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
+        from shop_bot.data_manager.remnawave_repository import get_ticket, get_ticket_messages, get_user_tickets
+
+        ticket = get_ticket(int(req.ticket_id))
+        if not _ticket_owned_by(ticket, user_id):
+            return {"ok": False, "error": "Тикет не найден"}
+        tickets = get_user_tickets(user_id) or []
+        return {
+            "ok": True,
+            "ticket_id": ticket["ticket_id"],
+            "subject": ticket.get("subject") or "Обращение без темы",
+            "status": ticket.get("status"),
+            "messages": _public_ticket_messages(get_ticket_messages(ticket["ticket_id"])),
+            "tickets": [_public_ticket_row(t) for t in tickets],
+        }
+    except Exception as e:
+        logger.error("Error in support ticket: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/support/close")
+async def api_support_close(req: SupportTicketRequest, request: Request):
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
+        from shop_bot.data_manager.remnawave_repository import get_ticket, set_ticket_status
+
+        ticket = get_ticket(int(req.ticket_id))
+        if not _ticket_owned_by(ticket, user_id):
+            return {"ok": False, "error": "Тикет не найден"}
+        if ticket.get("status") == "closed":
+            return {"ok": True, "already": True}
+        if not set_ticket_status(int(req.ticket_id), "closed"):
+            return {"ok": False, "error": "Не удалось закрыть тикет"}
+        try:
+            await _notify_webapp_support(
+                user_id,
+                ticket,
+                title="✅ <b>Тикет закрыт (WebApp)</b>",
+                body="Пользователь закрыл обращение.",
+            )
+        except Exception as e:
+            logger.warning("WebApp support close notify failed: %s", e)
+        return {"ok": True}
+    except Exception as e:
+        logger.error("Error in support close: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/support/ticket-file/{message_id}")
+async def api_support_ticket_file(message_id: int, request: Request, token: str | None = None):
+    """Вложение тикета только владельцу. Не публичный URL и не админский /support/ticket-file."""
+    user = _require_authenticated_user(request, token=token)
+    if not user:
+        return _unauthorized()
+    user_id = int(user["telegram_id"])
+    from shop_bot.data_manager.database import get_support_message, get_ticket, get_ticket_media_root
+    from shop_bot.support_bot.ticket_media import detect_image_kind, expire_ticket_media_if_closed_ttl
+
+    msg = get_support_message(int(message_id))
+    if not msg or not msg.get("media"):
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    ticket = get_ticket(int(msg["ticket_id"]))
+    if not _ticket_owned_by(ticket, user_id):
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    try:
+        if expire_ticket_media_if_closed_ttl(int(msg["ticket_id"])):
+            return JSONResponse({"ok": False, "error": "expired"}, status_code=404)
+    except Exception:
+        logger.exception("TTL webapp ticket file %s", message_id)
+        return JSONResponse({"ok": False, "error": "expired"}, status_code=404)
+
+    base = os.path.realpath(get_ticket_media_root())
+    full = os.path.realpath(os.path.join(base, str(msg["media"])))
+    if not full.startswith(base + os.sep) or not os.path.isfile(full):
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    kind = detect_image_kind(full)
+    if kind is None:
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    _ext, mimetype = kind
+    return FileResponse(
+        full,
+        media_type=mimetype,
+        filename=os.path.basename(full),
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/api/support/upload")
+async def api_support_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    ticket_id: int = Form(...),
+    token: str | None = Form(None),
+    caption: str = Form(""),
+    init_data: str | None = Form(None),
+):
+    try:
+        user = _require_authenticated_user(request, token=token, init_data=init_data)
+        if not user:
+            return _unauthorized()
+        user_id = int(user["telegram_id"])
+        from shop_bot.data_manager.remnawave_repository import add_support_message, get_ticket
+        from shop_bot.support_bot.ticket_media import TICKET_MEDIA_MAX_BYTES, save_ticket_media_bytes
+
+        ticket = get_ticket(int(ticket_id))
+        if not _ticket_owned_by(ticket, user_id) or ticket.get("status") != "open":
+            return {"ok": False, "error": "Тикет не найден или закрыт"}
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            piece = await file.read(64 * 1024)
+            if not piece:
+                break
+            total += len(piece)
+            if total > TICKET_MEDIA_MAX_BYTES:
+                return {"ok": False, "error": "Файл больше 10 МБ"}
+            chunks.append(piece)
+        payload = b"".join(chunks)
+        rel = save_ticket_media_bytes(payload, int(ticket_id))
+        if not rel:
+            return {"ok": False, "error": "Можно прикрепить jpeg, png, webp или PDF до 10 МБ"}
+        text = (caption or "").strip()
+        add_support_message(int(ticket_id), sender="user", content=text, media=rel)
+        try:
+            await _notify_webapp_support(
+                user_id,
+                ticket,
+                title="📎 <b>Вложение (WebApp)!</b>",
+                body=text or "Файл во вложении.",
+            )
+        except Exception as e:
+            logger.warning("WebApp support upload notify failed: %s", e)
+        return {"ok": True}
+    except Exception as e:
+        logger.error("Error in support upload: %s", e)
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/user-status")

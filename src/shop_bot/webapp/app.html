@@ -765,7 +765,11 @@
                 <h1 id="support-header-title" class="text-lg font-bold tracking-wide uppercase leading-none truncate">
                     Служба заботы</h1>
             </div>
-            <div class="flex-1 flex justify-end items-center pr-4">
+            <div class="flex-1 flex justify-end items-center pr-2 gap-2">
+                <button id="support-close-btn" type="button" onclick="closeSupportTicket()"
+                    class="hidden text-[10px] font-bold text-red-300 bg-red-500/10 border border-red-500/20 px-2 py-1 rounded-lg hover:bg-red-500/20">
+                    Закрыть
+                </button>
                 <div id="support-status-badge" class="hidden z-20">
                     <!-- Badge (🟢 Открыт / 🔴 Закрыт) inserted by JS -->
                 </div>
@@ -824,6 +828,8 @@
                 </a>
             </div>
 
+            <div id="support-tickets-list" class="w-full flex flex-col gap-2 mt-2 hidden text-left"></div>
+
             <div
                 class="flex items-center gap-2 text-[9px] text-gray-500 uppercase font-bold tracking-widest opacity-60 shrink-0">
                 <span class="material-symbols-rounded text-xs text-primary">schedule</span>
@@ -844,6 +850,12 @@
             <div id="support-input-area"
                 class="shrink-0 p-3 bg-[#121212] border-t border-white/5 relative z-20 pb-safe">
                 <div class="flex items-end gap-2 max-w-full relative">
+                    <input type="file" id="support-file-input" class="hidden" accept="image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf">
+                    <button id="support-attach-btn" type="button" onclick="document.getElementById('support-file-input').click()"
+                        class="w-[42px] h-[42px] shrink-0 bg-white/5 text-gray-300 rounded-full flex items-center justify-center border border-white/10 hover:bg-white/10 active:scale-95 transition-all"
+                        title="Файл (jpeg, png, webp, PDF)">
+                        <span class="material-symbols-rounded text-xl">attach_file</span>
+                    </button>
                     <textarea id="support-message-input" rows="1" placeholder="Сообщение..."
                         class="flex-1 bg-white/5 text-white rounded-[1.25rem] border border-white/10 px-4 py-3 text-[13px] focus:outline-none focus:border-primary/50 transition-colors placeholder:text-gray-500 resize-none max-h-24 custom-scrollbar leading-tight"
                         oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"></textarea>
@@ -1055,8 +1067,11 @@
 
         // --- Поддержка (Чат) Логика ---
         let currentTicketId = null;
+        let viewingTicket = false;
+        let preferSupportHome = false;
         let supportPollInterval = null;
         let lastMessageCount = 0;
+        let lastTicketListKey = '';
 
         function startSupportPolling() {
             if (supportPollInterval) clearInterval(supportPollInterval);
@@ -1079,7 +1094,6 @@
         function formatMessageTime(dateString) {
             if (!dateString) return '';
             try {
-                // expecting YYYY-MM-DD HH:MM:SS
                 const parts = dateString.split(' ');
                 if (parts.length === 2) {
                     const timeParts = parts[1].split(':');
@@ -1089,85 +1103,222 @@
             } catch (e) { return dateString; }
         }
 
+        function supportFileUrl(messageId) {
+            const token = window.getAuthToken() || '';
+            return '/api/support/ticket-file/' + encodeURIComponent(messageId) + '?token=' + encodeURIComponent(token);
+        }
+
+        function renderSupportAttachment(msg) {
+            const box = document.createElement('div');
+            box.className = 'mt-2';
+            const messageId = Number(msg.message_id);
+            if (!msg.has_media || !Number.isInteger(messageId) || messageId <= 0) return box;
+            const url = supportFileUrl(messageId);
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            if (msg.media_kind === 'image') {
+                const img = document.createElement('img');
+                img.src = url;
+                img.alt = 'Вложение';
+                img.loading = 'lazy';
+                img.className = 'max-w-[220px] max-h-[220px] rounded-lg block';
+                link.appendChild(img);
+            } else {
+                link.className = 'inline-flex items-center gap-1 text-[12px] font-bold text-primary';
+                link.textContent = msg.media_kind === 'pdf' ? 'PDF' : 'Вложение';
+            }
+            box.appendChild(link);
+            return box;
+        }
+
         function renderMessages(messages) {
             const container = document.getElementById('support-messages-container');
-            if (messages.length === lastMessageCount) return; // No new messages
+            if (!container) return;
+            if (messages.length === lastMessageCount && container.childElementCount) return;
             lastMessageCount = messages.length;
+            container.replaceChildren();
 
-            let html = '';
             messages.forEach((msg, idx) => {
                 const isUser = msg.sender === 'user';
                 const timeStr = formatMessageTime(msg.created_at);
                 const showAvatar = idx === 0 || messages[idx - 1].sender !== msg.sender;
-
-                if (isUser) {
-                    html += `
-                        <div class="flex justify-end w-full mb-3 animate-in fade-in slide-in-from-right-2 duration-300">
-                            <div class="max-w-[85%] w-fit bg-primary/20 border border-primary/30 text-white rounded-2xl rounded-br-sm px-3 pt-2 pb-1.5 shadow-lg flex items-end gap-2">
-                                <span class="text-[14px] leading-snug break-words whitespace-pre-wrap">${msg.content}</span>
-                                <span class="text-[10px] text-primary/80 font-bold leading-none shrink-0 mb-0.5">${timeStr}</span>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    html += `
-                        <div class="flex items-end justify-start gap-2 w-full mb-3 animate-in fade-in slide-in-from-left-2 duration-300">
-                            ${showAvatar ? `
-                                <div class="w-8 h-8 glass-card border border-white/5 rounded-full flex items-center justify-center shrink-0 mb-0.5">
-                                    <span class="material-symbols-rounded text-[16px] text-gray-400">support_agent</span>
-                                </div>
-                            ` : `<div class="w-8 shrink-0"></div>`}
-                            <div class="max-w-[85%] w-fit bg-white/5 border border-white/10 text-gray-100 rounded-2xl rounded-bl-sm px-3 pt-2 pb-1.5 shadow-lg flex items-end gap-2">
-                                <span class="text-[14px] leading-snug break-words whitespace-pre-wrap">${msg.content}</span>
-                                <span class="text-[10px] text-gray-500 font-bold leading-none shrink-0 mb-0.5">${timeStr}</span>
-                            </div>
-                        </div>
-                    `;
+                const row = document.createElement('div');
+                row.className = isUser
+                    ? 'flex justify-end w-full mb-3'
+                    : 'flex items-end justify-start gap-2 w-full mb-3';
+                if (!isUser) {
+                    if (showAvatar) {
+                        const av = document.createElement('div');
+                        av.className = 'w-8 h-8 glass-card border border-white/5 rounded-full flex items-center justify-center shrink-0 mb-0.5';
+                        av.innerHTML = '<span class="material-symbols-rounded text-[16px] text-gray-400">support_agent</span>';
+                        row.appendChild(av);
+                    } else {
+                        const spacer = document.createElement('div');
+                        spacer.className = 'w-8 shrink-0';
+                        row.appendChild(spacer);
+                    }
                 }
+                const bubble = document.createElement('div');
+                bubble.className = isUser
+                    ? 'max-w-[85%] w-fit bg-primary/20 border border-primary/30 text-white rounded-2xl rounded-br-sm px-3 pt-2 pb-1.5 shadow-lg flex flex-col gap-1'
+                    : 'max-w-[85%] w-fit bg-white/5 border border-white/10 text-gray-100 rounded-2xl rounded-bl-sm px-3 pt-2 pb-1.5 shadow-lg flex flex-col gap-1';
+                const textRow = document.createElement('div');
+                textRow.className = 'flex items-end gap-2';
+                const text = document.createElement('span');
+                text.className = 'text-[14px] leading-snug break-words whitespace-pre-wrap';
+                text.textContent = msg.content || '';
+                const time = document.createElement('span');
+                time.className = isUser
+                    ? 'text-[10px] text-primary/80 font-bold leading-none shrink-0 mb-0.5'
+                    : 'text-[10px] text-gray-500 font-bold leading-none shrink-0 mb-0.5';
+                time.textContent = timeStr;
+                if (msg.content) textRow.appendChild(text);
+                textRow.appendChild(time);
+                bubble.appendChild(textRow);
+                const attach = renderSupportAttachment(msg);
+                if (attach.childElementCount) bubble.appendChild(attach);
+                row.appendChild(bubble);
+                container.appendChild(row);
             });
-            container.innerHTML = html;
             scrollToBottom(container);
+        }
+
+        function renderTicketsList(tickets) {
+            const box = document.getElementById('support-tickets-list');
+            if (!box) return;
+            const key = JSON.stringify((tickets || []).map(t => [t.ticket_id, t.status, t.updated_at]));
+            if (key === lastTicketListKey && box.childElementCount) return;
+            lastTicketListKey = key;
+            box.replaceChildren();
+            if (!tickets || !tickets.length) {
+                box.classList.add('hidden');
+                return;
+            }
+            box.classList.remove('hidden');
+            const title = document.createElement('div');
+            title.className = 'text-[10px] text-gray-500 uppercase font-bold tracking-widest px-1';
+            title.textContent = 'Мои обращения';
+            box.appendChild(title);
+            tickets.forEach((t) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'w-full glass-card border border-white/10 rounded-xl px-4 py-3 flex items-center justify-between gap-2 text-left hover:bg-white/5';
+                const left = document.createElement('div');
+                left.className = 'min-w-0';
+                const name = document.createElement('div');
+                name.className = 'text-[13px] text-white font-semibold truncate';
+                name.textContent = '#' + t.ticket_id + ' · ' + (t.subject || 'Без темы');
+                const when = document.createElement('div');
+                when.className = 'text-[10px] text-gray-500';
+                when.textContent = t.updated_at || '';
+                left.appendChild(name);
+                left.appendChild(when);
+                const badge = document.createElement('span');
+                const open = t.status === 'open';
+                badge.className = open
+                    ? 'text-[10px] shrink-0 bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full font-bold'
+                    : 'text-[10px] shrink-0 bg-red-500/10 text-red-400 px-2 py-0.5 rounded-full font-bold';
+                badge.textContent = open ? 'Открыт' : 'Закрыт';
+                btn.appendChild(left);
+                btn.appendChild(badge);
+                btn.addEventListener('click', () => openSupportTicket(t.ticket_id));
+                box.appendChild(btn);
+            });
+        }
+
+        function showSupportHome(tickets) {
+            viewingTicket = false;
+            currentTicketId = null;
+            lastMessageCount = 0;
+            document.getElementById('support-loading').classList.add('hidden');
+            document.getElementById('support-create-view').classList.remove('hidden');
+            document.getElementById('support-chat-view').classList.add('hidden');
+            document.getElementById('support-header-title').textContent = 'Служба заботы';
+            document.getElementById('support-status-badge').classList.add('hidden');
+            document.getElementById('support-close-btn')?.classList.add('hidden');
+            const hasOpen = (tickets || []).some((t) => t.status === 'open');
+            const createBtn = document.getElementById('support-create-btn');
+            if (createBtn) {
+                createBtn.disabled = hasOpen;
+                createBtn.style.opacity = hasOpen ? '0.5' : '1';
+            }
+            renderTicketsList(tickets || []);
+        }
+
+        function showSupportChat(data) {
+            viewingTicket = true;
+            currentTicketId = data.ticket_id;
+            document.getElementById('support-loading').classList.add('hidden');
+            document.getElementById('support-create-view').classList.add('hidden');
+            document.getElementById('support-chat-view').classList.remove('hidden');
+            document.getElementById('support-header-title').textContent = data.subject || ('Тикет #' + data.ticket_id);
+            const badge = document.getElementById('support-status-badge');
+            const closeBtn = document.getElementById('support-close-btn');
+            badge.classList.remove('hidden');
+            if (data.status === 'open') {
+                badge.innerHTML = '<span class="text-[10px] bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full font-bold">Открыт</span>';
+                document.getElementById('support-input-area').classList.remove('hidden');
+                document.getElementById('support-closed-area').classList.add('hidden');
+                closeBtn?.classList.remove('hidden');
+            } else {
+                badge.innerHTML = '<span class="text-[10px] bg-red-500/10 text-red-500 px-2 py-0.5 rounded-full font-bold">Закрыт</span>';
+                document.getElementById('support-input-area').classList.add('hidden');
+                document.getElementById('support-closed-area').classList.remove('hidden');
+                closeBtn?.classList.add('hidden');
+            }
+            renderMessages(data.messages || []);
+            if (data.tickets) renderTicketsList(data.tickets);
         }
 
         async function fetchSupportStatus() {
             try {
+                if (viewingTicket && currentTicketId) {
+                    const response = await fetch('/api/support/ticket', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ticket_id: currentTicketId, token: window.getAuthToken() || '' })
+                    });
+                    const data = await response.json();
+                    if (data.ok) {
+                        showSupportChat(data);
+                        return;
+                    }
+                }
                 const response = await fetch('/api/support/status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: RENDERED_USER_ID, token: window.getAuthToken() || '' })
+                    body: JSON.stringify({ token: window.getAuthToken() || '' })
                 });
                 const data = await response.json();
-
-                document.getElementById('support-loading').classList.add('hidden');
-
-                if (data.ok && data.has_ticket) {
-                    currentTicketId = data.ticket_id;
-                    document.getElementById('support-create-view').classList.add('hidden');
-                    document.getElementById('support-chat-view').classList.remove('hidden');
-                    document.getElementById('support-header-title').textContent = data.subject || `Тикет #${data.ticket_id}`;
-
-                    const badge = document.getElementById('support-status-badge');
-                    badge.classList.remove('hidden');
-                    if (data.status === 'open') {
-                        badge.innerHTML = '<span class="text-[10px] bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full font-bold">🟢 Открыт</span>';
-                        document.getElementById('support-input-area').classList.remove('hidden');
-                        document.getElementById('support-closed-area').classList.add('hidden');
-                    } else {
-                        badge.innerHTML = '<span class="text-[10px] bg-red-500/10 text-red-500 px-2 py-0.5 rounded-full font-bold">🔴 Закрыт</span>';
-                        document.getElementById('support-input-area').classList.add('hidden');
-                        document.getElementById('support-closed-area').classList.remove('hidden');
-                    }
-
-                    renderMessages(data.messages || []);
-                } else {
-                    currentTicketId = null;
-                    document.getElementById('support-create-view').classList.remove('hidden');
-                    document.getElementById('support-chat-view').classList.add('hidden');
-                    document.getElementById('support-header-title').textContent = 'Служба заботы';
-                    document.getElementById('support-status-badge').classList.add('hidden');
+                if (data.ok && data.has_ticket && !preferSupportHome && !viewingTicket) {
+                    showSupportChat(data);
+                } else if (data.ok) {
+                    showSupportHome(data.tickets || []);
                 }
             } catch (e) {
                 console.error(e);
+            }
+        }
+
+        async function openSupportTicket(ticketId) {
+            lastMessageCount = 0;
+            currentTicketId = ticketId;
+            viewingTicket = true;
+            document.getElementById('support-loading').classList.remove('hidden');
+            document.getElementById('support-create-view').classList.add('hidden');
+            try {
+                const res = await fetch('/api/support/ticket', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticket_id: ticketId, token: window.getAuthToken() || '' })
+                });
+                const data = await res.json();
+                if (data.ok) showSupportChat(data);
+                else showNotification(data.error || 'Тикет не найден', 'error');
+            } catch (e) {
+                showNotification('Ошибка связи', 'error');
             }
         }
 
@@ -1185,11 +1336,15 @@
                 const res = await fetch('/api/support/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: RENDERED_USER_ID, subject: subj, token: window.getAuthToken() || '' })
+                    body: JSON.stringify({ subject: subj, token: window.getAuthToken() || '' })
                 });
                 const data = await res.json();
                 if (data.ok) {
                     input.value = '';
+                    lastMessageCount = 0;
+                    preferSupportHome = false;
+                    viewingTicket = true;
+                    currentTicketId = data.ticket_id;
                     await fetchSupportStatus();
                 } else {
                     showNotification(data.error || 'Ошибка', 'error');
@@ -1217,7 +1372,6 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        user_id: RENDERED_USER_ID,
                         ticket_id: currentTicketId,
                         message: text,
                         token: window.getAuthToken() || ''
@@ -1227,6 +1381,7 @@
                 if (data.ok) {
                     input.value = '';
                     input.style.height = '';
+                    lastMessageCount = 0;
                     await fetchSupportStatus();
                 } else {
                     showNotification(data.error || 'Ошибка отправки', 'error');
@@ -1240,22 +1395,82 @@
             }
         }
 
+        async function uploadSupportFile(file) {
+            if (!currentTicketId || !file) return;
+            const btn = document.getElementById('support-attach-btn');
+            if (btn) btn.disabled = true;
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('ticket_id', String(currentTicketId));
+                fd.append('token', window.getAuthToken() || '');
+                const caption = (document.getElementById('support-message-input')?.value || '').trim();
+                if (caption) fd.append('caption', caption);
+                const res = await fetch('/api/support/upload', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.ok) {
+                    const input = document.getElementById('support-message-input');
+                    if (input) {
+                        input.value = '';
+                        input.style.height = '';
+                    }
+                    lastMessageCount = 0;
+                    await fetchSupportStatus();
+                } else {
+                    showNotification(data.error || 'Не удалось отправить файл', 'error');
+                }
+            } catch (e) {
+                showNotification('Ошибка связи', 'error');
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function closeSupportTicket() {
+            if (!currentTicketId) return;
+            try {
+                const res = await fetch('/api/support/close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticket_id: currentTicketId, token: window.getAuthToken() || '' })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    lastMessageCount = 0;
+                    await fetchSupportStatus();
+                } else {
+                    showNotification(data.error || 'Не удалось закрыть', 'error');
+                }
+            } catch (e) {
+                showNotification('Ошибка связи', 'error');
+            }
+        }
+
         function resetSupportChat() {
+            preferSupportHome = true;
+            viewingTicket = false;
             currentTicketId = null;
             lastMessageCount = 0;
+            lastTicketListKey = '';
             document.getElementById('support-messages-container').innerHTML = '';
             document.getElementById('support-chat-view').classList.add('hidden');
             document.getElementById('support-create-view').classList.remove('hidden');
             document.getElementById('support-header-title').textContent = 'Служба заботы';
             document.getElementById('support-status-badge').classList.add('hidden');
+            document.getElementById('support-close-btn')?.classList.add('hidden');
+            fetchSupportStatus();
         }
 
-        // Enter to send
         document.getElementById('support-message-input')?.addEventListener('keypress', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendSupportMessage();
             }
+        });
+        document.getElementById('support-file-input')?.addEventListener('change', function (e) {
+            const file = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (file) uploadSupportFile(file);
         });
 
 
@@ -1281,6 +1496,11 @@
             _updateBottomNav(page);
 
             if (page === supportPage) {
+                preferSupportHome = false;
+                viewingTicket = false;
+                currentTicketId = null;
+                lastMessageCount = 0;
+                lastTicketListKey = '';
                 document.getElementById('support-loading').classList.remove('hidden');
                 document.getElementById('support-create-view').classList.add('hidden');
                 document.getElementById('support-chat-view').classList.add('hidden');
@@ -1310,7 +1530,10 @@
         if (backBtn) backBtn.addEventListener('click', goBackToLastMain);
         if (backRenewBtn) backRenewBtn.addEventListener('click', goBackToLastMain);
         if (backSetupBtn) backSetupBtn.addEventListener('click', goBackToLastMain);
-        if (backSupportBtn) backSupportBtn.addEventListener('click', goBackToMain);
+        if (backSupportBtn) backSupportBtn.addEventListener('click', () => {
+            if (viewingTicket) resetSupportChat();
+            else goBackToMain();
+        });
 
         function navigateTo(tab) {
             window.location.hash = (tab === 'home') ? '' : tab;
