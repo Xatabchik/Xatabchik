@@ -25,6 +25,7 @@ from shop_bot.data_manager.remnawave_repository import (
     ban_user,
     unban_user,
 )
+from shop_bot.support_bot.ticket_media import save_ticket_media
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,12 @@ def get_support_router() -> Router:
         await message.answer("✉️ Опишите проблему максимально подробно одним сообщением.")
         await state.set_state(SupportDialog.waiting_for_message)
 
+    async def _save_ticket_media(bot: Bot, message: types.Message, ticket_id: int):
+        # Логика и лимит 10 МБ — в ticket_media.save_ticket_media.
+        # Хендлеры магазина не трогаем; отказ по размеру возвращает None,
+        # текст обращения сохраняется как раньше.
+        return await save_ticket_media(bot, message, ticket_id)
+
     @router.message(SupportDialog.waiting_for_message, F.chat.type == "private")
     async def support_message_received(message: types.Message, state: FSMContext, bot: Bot):
         if _is_user_banned(message.from_user.id):
@@ -221,7 +228,13 @@ def get_support_router() -> Router:
             await message.answer("❌ Не удалось создать обращение. Попробуйте позже.")
             await state.clear()
             return
-        add_support_message(ticket_id, sender="user", content=(message.text or message.caption or ""))
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(
+            ticket_id,
+            sender="user",
+            content=(message.text or message.caption or ""),
+            media=_media,
+        )
         ticket = get_ticket(ticket_id)
         support_forum_chat_id = get_setting("support_forum_chat_id")
         thread_id = None
@@ -398,7 +411,13 @@ def get_support_router() -> Router:
             await message.answer("Нельзя ответить на этот тикет.")
             await state.clear()
             return
-        add_support_message(ticket_id, sender='user', content=(message.text or message.caption or ''))
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(
+            ticket_id,
+            sender='user',
+            content=(message.text or message.caption or ''),
+            media=_media,
+        )
         await state.clear()
         await message.answer("Сообщение отправлено.")
         try:
@@ -519,8 +538,14 @@ def get_support_router() -> Router:
             if not (is_admin_by_setting or is_admin_in_chat):
                 return
             content = (message.text or message.caption or "").strip()
-            if content:
-                add_support_message(ticket_id=int(ticket['ticket_id']), sender='admin', content=content)
+            _media = await _save_ticket_media(bot, message, int(ticket['ticket_id']))
+            if content or _media:
+                add_support_message(
+                    ticket_id=int(ticket['ticket_id']),
+                    sender='admin',
+                    content=content,
+                    media=_media,
+                )
             header = await bot.send_message(
                 chat_id=user_id,
                 text=f"💬 Ответ поддержки по тикету #{ticket['ticket_id']}"
@@ -1039,7 +1064,10 @@ def get_support_router() -> Router:
         ticket_id, created_new = get_or_create_open_ticket(user_id, None)
         if not ticket_id:
             return
-        add_support_message(ticket_id, sender='user', content=content)
+        # Основной путь после создания тикета: FSM уже сброшен,
+        # фото/PDF раньше сюда приходили и в media не писались.
+        _media = await _save_ticket_media(bot, message, ticket_id)
+        add_support_message(ticket_id, sender='user', content=content, media=_media)
         ticket = get_ticket(ticket_id)
 
         try:

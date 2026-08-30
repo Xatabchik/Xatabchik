@@ -4311,30 +4311,77 @@ def create_webhook_app(bot_controller_instance):
                     flash('Не удалось открыть тикет.', 'danger')
                 return redirect(url_for('support_ticket_page', ticket_id=ticket_id))
 
-        messages = get_ticket_messages(ticket_id)
+        from shop_bot.support_bot.ticket_media import public_support_message
+
+        messages = [public_support_message(m) for m in (get_ticket_messages(ticket_id) or [])]
         common_data = get_common_template_data()
         return render_template('ticket.html', ticket=ticket, messages=messages, **common_data)
 
     @flask_app.route('/support/<int:ticket_id>/messages.json')
     @login_required
     def support_ticket_messages_api(ticket_id):
+        from shop_bot.support_bot.ticket_media import public_support_message
+
         ticket = get_ticket(ticket_id)
         if not ticket:
             return jsonify({"error": "not_found"}), 404
-        messages = get_ticket_messages(ticket_id) or []
-        items = [
-            {
-                "sender": m.get('sender'),
-                "content": m.get('content'),
-                "created_at": m.get('created_at')
-            }
-            for m in messages
-        ]
+        items = [public_support_message(m) for m in (get_ticket_messages(ticket_id) or [])]
         return jsonify({
             "ticket_id": ticket_id,
             "status": ticket.get('status'),
             "messages": items
         })
+
+    @flask_app.route('/support/ticket-file/<int:message_id>')
+    @login_required
+    def support_ticket_file(message_id: int):
+        """Отдаёт вложение тикета.
+
+        Под login_required намеренно: в тикеты присылают платёжки,
+        документы и переписку. Без авторизации адрес /support/ticket-file/42
+        перебором открыл бы чужие скриншоты.
+        """
+        import os
+        from flask import send_file, abort
+        from shop_bot.data_manager.database import get_support_message, get_ticket_media_root
+        from shop_bot.support_bot.ticket_media import (
+            detect_image_kind,
+            expire_ticket_media_if_closed_ttl,
+        )
+
+        msg = get_support_message(message_id)
+        if not msg or not msg.get('media'):
+            abort(404)
+
+        try:
+            if expire_ticket_media_if_closed_ttl(int(msg['ticket_id'])):
+                abort(404)
+        except Exception:
+            logger.exception(
+                "TTL вложения тикета %s при отдаче, файл не отдаём",
+                msg.get("ticket_id"),
+            )
+            abort(404)
+
+        base = os.path.realpath(get_ticket_media_root())
+        full = os.path.realpath(os.path.join(base, str(msg['media'])))
+
+        # значение из БД не считаем доверенным: путь вида "../../users.db"
+        # иначе отдал бы наружу саму базу
+        if not full.startswith(base + os.sep) or not os.path.isfile(full):
+            abort(404)
+
+        kind = detect_image_kind(full)
+        if kind is None:
+            abort(404)
+        _ext, mimetype = kind
+        response = send_file(
+            full,
+            mimetype=mimetype,
+            download_name=os.path.basename(full),
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @flask_app.route('/support/<int:ticket_id>/delete', methods=['POST'])
     @login_required

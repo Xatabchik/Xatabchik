@@ -8902,6 +8902,11 @@ def delete_user_completely(user_id: int) -> bool:
 
             # Сначала удалить сообщения поддержки по тикетам пользователя
             cursor.execute(
+                "SELECT ticket_id FROM support_tickets WHERE user_id = ?",
+                (user_id,),
+            )
+            support_ticket_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0]]
+            cursor.execute(
                 """
                 DELETE FROM support_messages
                 WHERE ticket_id IN (
@@ -8998,6 +9003,8 @@ def delete_user_completely(user_id: int) -> bool:
             )
 
             conn.commit()
+            for ticket_id in support_ticket_ids:
+                _cleanup_ticket_media(ticket_id)
             logger.info("User %s fully deleted with all related data", user_id)
             return True
     except sqlite3.Error as e:
@@ -9056,13 +9063,13 @@ def get_or_create_open_ticket(user_id: int, subject: str | None = None) -> tuple
         logging.error(f"Failed to get_or_create_open_ticket for user {user_id}: {e}")
         return None, False
 
-def add_support_message(ticket_id: int, sender: str, content: str) -> int | None:
+def add_support_message(ticket_id: int, sender: str, content: str, media: str | None = None) -> int | None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO support_messages (ticket_id, sender, content) VALUES (?, ?, ?)",
-                (ticket_id, sender, content)
+                "INSERT INTO support_messages (ticket_id, sender, content, media) VALUES (?, ?, ?, ?)",
+                (ticket_id, sender, content, media)
             )
             cursor.execute(
                 "UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE ticket_id = ?",
@@ -9135,6 +9142,88 @@ def get_user_tickets(user_id: int, status: str | None = None) -> list[dict]:
         logging.error(f"Failed to get tickets for user {user_id}: {e}")
         return []
 
+def get_support_message(message_id: int) -> dict | None:
+    """Одно сообщение тикета. Нужно для отдачи вложений в панели."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM support_messages WHERE message_id = ?",
+                (message_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get support message {message_id}: {e}")
+        return None
+
+
+def resolve_db_file_path(db_file=None) -> Path:
+    """Абсолютный путь к users.db без зависимости от cwd процесса.
+
+    ``os.path.abspath("users.db")`` берёт текущую папку процесса. Бот с
+    cwd=/xatabchik пишет в /xatabchik/ticket_files, а если Flask когда-то
+    стартовал из webhook_server — панель искала файлы там. Админка живёт
+    в src/shop_bot/webhook_server/, вложения — рядом с базой, не в исходниках.
+    """
+    raw = Path(db_file if db_file is not None else DB_FILE)
+    if raw.is_absolute():
+        return raw.resolve()
+    name = raw.name
+    docker_db = Path("/app/project") / name
+    if docker_db.is_file():
+        return docker_db.resolve()
+    # database.py → src/shop_bot/data_manager → корень репозитория
+    return (Path(__file__).resolve().parents[3] / name).resolve()
+
+
+def get_ticket_media_root() -> str:
+    """Каталог вложений рядом с users.db, не в webhook_server/."""
+    override = (os.getenv("TICKET_FILES_DIR") or "").strip()
+    if override:
+        return str(Path(override).expanduser().resolve())
+    return str(resolve_db_file_path().parent / "ticket_files")
+
+
+def list_closed_ticket_ids_older_than(cutoff) -> list[int]:
+    """Закрытые тикеты с updated_at не новее cutoff (наивный ISO-текст SQLite)."""
+    if hasattr(cutoff, "strftime"):
+        cutoff_s = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        cutoff_s = str(cutoff)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT ticket_id FROM support_tickets
+                WHERE status = 'closed' AND updated_at <= ?
+                """,
+                (cutoff_s,),
+            )
+            return [int(row[0]) for row in cursor.fetchall() if row and row[0]]
+    except sqlite3.Error as e:
+        logging.error("Failed to list closed tickets older than %s: %s", cutoff_s, e)
+        return []
+
+
+def clear_support_message_media(ticket_id: int) -> int:
+    """Обнуляет media у сообщений тикета после TTL/удаления файлов."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE support_messages SET media = NULL WHERE ticket_id = ? AND media IS NOT NULL",
+                (int(ticket_id),),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+    except sqlite3.Error as e:
+        logging.error("Failed to clear media refs for ticket %s: %s", ticket_id, e)
+        return 0
+
+
 def get_ticket_messages(ticket_id: int) -> list[dict]:
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -9177,6 +9266,16 @@ def update_ticket_subject(ticket_id: int, subject: str) -> bool:
         logging.error(f"Failed to update subject for ticket {ticket_id}: {e}")
         return False
 
+def _cleanup_ticket_media(ticket_id: int) -> None:
+    """Файлы вложений живут вне SQLite — удаляем каталог вместе с тикетом."""
+    try:
+        from shop_bot.support_bot.ticket_media import delete_ticket_media_dir
+
+        delete_ticket_media_dir(ticket_id)
+    except Exception as e:
+        logging.error("Failed to delete ticket media for ticket %s: %s", ticket_id, e)
+
+
 def delete_ticket(ticket_id: int) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
@@ -9190,7 +9289,10 @@ def delete_ticket(ticket_id: int) -> bool:
                 (ticket_id,)
             )
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            _cleanup_ticket_media(ticket_id)
+        return deleted
     except sqlite3.Error as e:
         logging.error(f"Failed to delete ticket {ticket_id}: {e}")
         return False

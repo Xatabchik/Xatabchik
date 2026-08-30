@@ -22,3 +22,6 @@ TODO
 
 test
 .pytest_cache/
+
+# Вложения тикетов — только локально, не в git и не как static
+ticket_files/
