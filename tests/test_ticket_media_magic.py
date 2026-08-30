@@ -59,8 +59,8 @@ class _PanelBot:
 def test_detect_known_image_signatures():
     assert detect_image_kind_bytes(JPEG) == (".jpg", "image/jpeg")
     assert detect_image_kind_bytes(PNG) == (".png", "image/png")
-    assert detect_image_kind_bytes(GIF) == (".gif", "image/gif")
     assert detect_image_kind_bytes(WEBP) == (".webp", "image/webp")
+    assert detect_image_kind_bytes(GIF) is None
 
 
 def test_detect_rejects_html_svg_and_short():
@@ -68,6 +68,14 @@ def test_detect_rejects_html_svg_and_short():
     assert detect_image_kind_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'>") is None
     assert detect_image_kind_bytes(b"%PDF-1.4") is None
     assert detect_image_kind_bytes(b"\xff\xd8") is None
+
+
+def test_commit_rejects_gif(tmp_path):
+    part = tmp_path / "x.part"
+    part.write_bytes(GIF)
+    assert commit_ticket_image(str(part), str(tmp_path), "abc") is None
+    assert not part.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_commit_uses_png_ext_not_declared_name(tmp_path):

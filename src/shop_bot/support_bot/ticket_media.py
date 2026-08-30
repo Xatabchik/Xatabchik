@@ -9,8 +9,8 @@
 На тикет: не больше 10 файлов и 30 МБ суммарно. При удалении тикета
 каталог ``ticket_files/<ticket_id>/`` снимается вместе со строками БД.
 
-Тип файла определяется по magic bytes (jpeg/png/gif/webp), не по имени
-и не по MIME Telegram. Панель отдаёт вложение с этим MIME и nosniff.
+Тип файла определяется по magic bytes (jpeg/png/webp), не по имени
+и не по MIME Telegram. GIF не принимаем. Панель отдаёт MIME и nosniff.
 
 Вложения закрытого тикета хранятся ``TICKET_MEDIA_CLOSED_TTL_DAYS`` суток
 (по ``updated_at`` закрытия), затем каталог удаляется. Строки тикета в БД
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 TICKET_MEDIA_MAX_BYTES = 10 * 1024 * 1024
 TICKET_MEDIA_MAX_FILES = 10
 TICKET_MEDIA_MAX_TOTAL_BYTES = 30 * 1024 * 1024
-TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+TICKET_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 TICKET_MEDIA_CLOSED_TTL_DAYS = 7
 TICKET_MEDIA_PURGE_INTERVAL_SECONDS = 3600
 
@@ -45,8 +45,6 @@ def detect_image_kind_bytes(head: bytes) -> tuple[str, str] | None:
         return ".jpg", "image/jpeg"
     if len(head) >= 8 and head.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png", "image/png"
-    if len(head) >= 6 and (head.startswith(b"GIF87a") or head.startswith(b"GIF89a")):
-        return ".gif", "image/gif"
     if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return ".webp", "image/webp"
     return None
