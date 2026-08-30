@@ -139,6 +139,11 @@ def _get_payment_methods() -> dict:
     platega_secret = get_setting('platega_secret')
     platega_enabled = bool(platega_merchant_id and platega_secret)
 
+    rollypay_enabled = bool(
+        (get_setting('rollypay_api_key') or '').strip()
+        and (get_setting('rollypay_signing_secret') or '').strip()
+    )
+
     ton_wallet_address = get_setting('ton_wallet_address')
     tonapi_key = get_setting('tonapi_key')
     tonconnect_enabled = bool(ton_wallet_address and tonapi_key)
@@ -162,6 +167,7 @@ def _get_payment_methods() -> dict:
         'yookassa': yookassa_enabled,
         'heleket': heleket_enabled,
         'platega': platega_enabled,
+        'rollypay': rollypay_enabled,
         'cryptobot': cryptobot_enabled,
         'tonconnect': tonconnect_enabled,
         'yoomoney': yoomoney_enabled,
@@ -2586,6 +2592,44 @@ def get_user_router() -> Router:
         )
         await state.clear()
 
+    @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_rollypay")
+    async def trafficgb_pay_rollypay_handler(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        await callback.answer("Создаю ссылку на оплату...")
+        if not _rollypay_is_enabled():
+            await callback.message.edit_text("❌ Оплата по СБП временно недоступна.")
+            await state.clear()
+            return
+        data = await state.get_data()
+        price = Decimal(str(data.get('traffic_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('traffic_package_size_gb')
+        payment_id = str(uuid.uuid4())
+        metadata = _traffic_gb_metadata(data, user_id, "RollyPay", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url, provider_id = await _create_rollypay_payment_link(
+            amount_rub=price, payment_id=payment_id, description=f"Докупка {size_gb} ГБ трафика",
+            customer_id=str(user_id),
+        )
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку. Попробуйте позже.")
+            await state.clear()
+            return
+        try:
+            metadata2 = dict(metadata)
+            metadata2["rollypay_payment_id"] = provider_id
+            create_payload_pending(payment_id, user_id, float(price), metadata2)
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_rollypay_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
     @user_router.callback_query(TrafficGbTopUp.waiting_for_method, F.data == "trafficgb_pay_heleket")
     async def trafficgb_pay_heleket_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Создаю счёт...")
@@ -2971,6 +3015,44 @@ def get_user_router() -> Router:
         await callback.message.edit_text(
             "Нажмите на кнопку ниже для оплаты:",
             reply_markup=keyboards.create_platega_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(LteGbTopUp.waiting_for_method, F.data == "ltegb_pay_rollypay")
+    async def ltegb_pay_rollypay_handler(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        await callback.answer("Создаю ссылку на оплату...")
+        if not _rollypay_is_enabled():
+            await callback.message.edit_text("❌ Оплата по СБП временно недоступна.")
+            await state.clear()
+            return
+        data = await state.get_data()
+        price = Decimal(str(data.get('lte_package_price', 0)))
+        if price <= 0:
+            await callback.message.edit_text("❌ Некорректная цена пакета.")
+            await state.clear()
+            return
+        size_gb = data.get('lte_package_size_gb')
+        payment_id = str(uuid.uuid4())
+        metadata = _lte_gb_metadata(data, user_id, "RollyPay", payment_id)
+        create_payload_pending(payment_id, user_id, float(price), metadata)
+        pay_url, provider_id = await _create_rollypay_payment_link(
+            amount_rub=price, payment_id=payment_id, description=f"Докупка {size_gb} ГБ LTE",
+            customer_id=str(user_id),
+        )
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку. Попробуйте позже.")
+            await state.clear()
+            return
+        try:
+            metadata2 = dict(metadata)
+            metadata2["rollypay_payment_id"] = provider_id
+            create_payload_pending(payment_id, user_id, float(price), metadata2)
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_rollypay_payment_keyboard(pay_url, payment_id)
         )
         await state.clear()
 
@@ -3715,6 +3797,29 @@ def get_user_router() -> Router:
 
 
 
+    def _rollypay_is_enabled() -> bool:
+        return bool(
+            (get_setting("rollypay_api_key") or "").strip()
+            and (get_setting("rollypay_signing_secret") or "").strip()
+        )
+
+    async def _create_rollypay_payment_link(
+        *, amount_rub, payment_id: str, description: str, customer_id: str = ""
+    ):
+        from shop_bot.modules.rollypay_api import RollyPayAPI
+
+        api_key = (get_setting("rollypay_api_key") or "").strip()
+        terminal_id = (get_setting("rollypay_terminal_id") or "").strip()
+        method = (get_setting("rollypay_payment_method") or "").strip()
+        bot_username = (get_setting("telegram_bot_username") or "").strip().lstrip("@")
+        return_url = f"https://t.me/{bot_username}" if bot_username else ""
+        client = RollyPayAPI(api_key, terminal_id)
+        return await client.create_payment(
+            float(amount_rub), description, payment_id, return_url, return_url,
+            payment_method=method,
+            customer_id=customer_id,
+        )
+
     def _platega_is_enabled() -> bool:
         return bool((get_setting("platega_merchant_id") or "").strip() and (get_setting("platega_secret") or "").strip())
 
@@ -3964,6 +4069,83 @@ def get_user_router() -> Router:
 
         await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
 
+    @user_router.callback_query(F.data.startswith("check_rollypay:"))
+    async def check_rollypay_payment_handler(callback: types.CallbackQuery, bot: Bot):
+        try:
+            pid = callback.data.split(":", 1)[1]
+        except Exception:
+            await callback.answer("Некорректный идентификатор платежа.", show_alert=True)
+            return
+
+        try:
+            status = (get_pending_status(pid) or "").lower()
+        except Exception:
+            status = ""
+        if status == "paid":
+            await callback.answer("✅ Оплата уже получена и обработана.", show_alert=True)
+            return
+
+        meta = None
+        try:
+            meta = _get_pending_metadata(pid)
+        except Exception:
+            meta = None
+        if not isinstance(meta, dict) or str(meta.get("payment_method") or "") != "RollyPay":
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        txid = meta.get("rollypay_payment_id")
+        if not txid:
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        from shop_bot.modules.rollypay_api import RollyPayAPI
+
+        api_key = (get_setting("rollypay_api_key") or "").strip()
+        if not api_key:
+            await callback.answer("⏳ Не удалось проверить статус. Попробуйте позже.", show_alert=True)
+            return
+        remote = await RollyPayAPI(api_key, get_setting("rollypay_terminal_id") or "").get_payment(str(txid))
+        if not remote:
+            await callback.answer("⏳ Не удалось проверить статус. Попробуйте позже.", show_alert=True)
+            return
+
+        remote_status = str(remote.get("status") or "").strip().lower()
+        if remote_status != "paid":
+            if remote_status in {"expired", "canceled", "chargeback"}:
+                await callback.answer(f"❌ Платеж завершился со статусом: {remote_status}", show_alert=True)
+                return
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        if str(remote.get("order_id") or "").strip() != str(pid):
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        try:
+            expected = Decimal(str(meta.get("price")))
+            got = Decimal(str(remote.get("amount")))
+        except Exception:
+            await callback.answer("⏳ Не удалось проверить статус. Попробуйте позже.", show_alert=True)
+            return
+        if got.quantize(Decimal("0.01")) != expected.quantize(Decimal("0.01")):
+            logger.warning("RollyPay manual check: amount mismatch payment_id=%s got=%s expected=%s", pid, got, expected)
+            await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
+            return
+
+        metadata = find_and_complete_pending_transaction(pid)
+        if not metadata:
+            await callback.answer("✅ Оплата подтверждена, но транзакция уже обработана.", show_alert=True)
+            return
+        metadata.setdefault("payment_method", "RollyPay")
+        metadata["rollypay_payment_id"] = str(txid)
+        try:
+            await process_successful_payment(bot, metadata)
+            await callback.answer("✅ Оплата получена! Обрабатываю…", show_alert=True)
+        except Exception as e:
+            logger.error(f"RollyPay manual check: process_successful_payment failed: {e}", exc_info=True)
+            await callback.answer("⚠️ Оплата получена, но обработка не завершена. Напишите в поддержку.", show_alert=True)
+
     @user_router.callback_query(F.data.startswith("check_yookassa:"))
     async def check_yookassa_payment_handler(callback: types.CallbackQuery, bot: Bot):
         try:
@@ -4185,6 +4367,54 @@ def get_user_router() -> Router:
         await callback.message.edit_text(
             "Нажмите на кнопку ниже для оплаты:",
             reply_markup=keyboards.create_platega_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
+    @user_router.callback_query(TopUpProcess.waiting_for_topup_method, F.data == "topup_pay_rollypay")
+    async def topup_pay_rollypay(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        await callback.answer("Создаю ссылку на оплату...")
+        if not _rollypay_is_enabled():
+            await callback.message.edit_text("❌ Оплата по СБП временно недоступна.")
+            await state.clear()
+            return
+
+        data = await state.get_data()
+        amount_rub = Decimal(str(data.get('topup_amount', 0)))
+        if amount_rub <= 0:
+            await callback.message.edit_text("❌ Некорректная сумма.")
+            await state.clear()
+            return
+
+        payment_id = str(uuid.uuid4())
+        metadata = {
+            "user_id": user_id,
+            "price": float(amount_rub),
+            "action": "top_up",
+            "payment_method": "RollyPay",
+            "payment_id": payment_id,
+        }
+        create_payload_pending(payment_id, user_id, float(amount_rub), metadata)
+
+        pay_url, provider_id = await _create_rollypay_payment_link(
+            amount_rub=amount_rub, payment_id=payment_id, description="Пополнение баланса",
+            customer_id=str(user_id),
+        )
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку. Попробуйте позже или выберите другой способ оплаты.")
+            await state.clear()
+            return
+
+        try:
+            metadata2 = dict(metadata)
+            metadata2["rollypay_payment_id"] = provider_id
+            create_payload_pending(payment_id, user_id, float(amount_rub), metadata2)
+        except Exception:
+            pass
+
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_rollypay_payment_keyboard(pay_url, payment_id)
         )
         await state.clear()
 
@@ -7869,6 +8099,94 @@ def get_user_router() -> Router:
         )
         await state.clear()
 
+    @user_router.callback_query(PaymentProcess.waiting_for_payment_method, F.data == "pay_rollypay")
+    async def pay_rollypay_handler(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer("Создаю ссылку на оплату...")
+        if not _rollypay_is_enabled():
+            await callback.message.edit_text("❌ Оплата по СБП не настроена. Обратитесь к администратору.")
+            await state.clear()
+            return
+
+        data = await state.get_data()
+        plan_id = data.get('plan_id')
+        plan = get_plan_by_id(plan_id)
+        if not plan:
+            await callback.message.edit_text("❌ Ошибка: Тариф не найден.")
+            await state.clear()
+            return
+
+        base_price = Decimal(str(plan['price']))
+        user_data = get_user(callback.from_user.id) or {}
+        if user_data.get('referred_by') and user_data.get('total_spent', 0) == 0:
+            try:
+                discount_percentage = Decimal(str(get_setting("referral_discount") or "0"))
+            except Exception:
+                discount_percentage = Decimal('0')
+            if discount_percentage > 0:
+                base_price -= (base_price * discount_percentage / 100).quantize(Decimal("0.01"))
+
+        promo_code = data.get('promo_code')
+        promo_discount = Decimal(str(data.get('promo_discount', 0)))
+        if promo_code and promo_discount > 0:
+            base_price = (base_price - promo_discount).quantize(Decimal("0.01"))
+            if base_price < Decimal('0.01'):
+                base_price = Decimal('0.01')
+
+        payment_id = str(uuid.uuid4())
+
+        months = int(plan.get('months') or 0)
+        duration_days = int(plan.get('duration_days') or 0)
+        host_name = data.get('host_name')
+        action = data.get('action')
+        key_id = data.get('key_id')
+        customer_email = data.get('customer_email') or get_setting("receipt_email")
+
+        metadata = {
+            "user_id": callback.from_user.id,
+            "months": months,
+            "duration_days": duration_days,
+            "price": float(base_price),
+            "action": action,
+            "key_id": key_id,
+            "host_name": host_name,
+            "plan_id": plan_id,
+            "customer_email": customer_email,
+            "payment_method": "RollyPay",
+            "payment_id": payment_id,
+            "promo_code": promo_code,
+            "promo_discount": float(data.get('promo_discount', 0)),
+        }
+
+        try:
+            create_payload_pending(payment_id, callback.from_user.id, float(base_price), metadata)
+        except PromoUnavailableError:
+            await callback.message.edit_text("❌ Промокод больше недоступен. Выберите оплату без него или другой промокод.")
+            await state.clear()
+            return
+
+        desc = f"Подписка на {months} мес." if months else "Оплата подписки"
+        pay_url, provider_id = await _create_rollypay_payment_link(
+            amount_rub=base_price, payment_id=payment_id, description=desc,
+            customer_id=str(callback.from_user.id),
+        )
+        if not pay_url:
+            await callback.message.edit_text("❌ Не удалось создать ссылку. Попробуйте позже или выберите другой способ оплаты.")
+            await state.clear()
+            return
+
+        try:
+            metadata2 = dict(metadata)
+            metadata2["rollypay_payment_id"] = provider_id
+            create_payload_pending(payment_id, callback.from_user.id, float(base_price), metadata2)
+        except Exception:
+            pass
+
+        await callback.message.edit_text(
+            "Нажмите на кнопку ниже для оплаты:",
+            reply_markup=keyboards.create_rollypay_payment_keyboard(pay_url, payment_id)
+        )
+        await state.clear()
+
     @user_router.callback_query(PaymentProcess.waiting_for_payment_method, F.data == "pay_cryptobot")
     async def create_cryptobot_invoice_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Создаю счет в Crypto Pay...")
@@ -8238,6 +8556,7 @@ def get_user_router() -> Router:
         "pay_stars",
         "pay_yookassa",
         "pay_platega",
+        "pay_rollypay",
         "pay_cryptobot",
         "pay_heleket",
         "pay_yoomoney",
