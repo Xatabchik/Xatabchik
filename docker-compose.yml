@@ -32,6 +32,7 @@ services:
       - .:/app/project
     environment:
       TELEGRAM_PROXY: ${TELEGRAM_PROXY:-}
+      TICKET_FILES_DIR: /app/project/ticket_files
     extra_hosts:
       - host.docker.internal:host-gateway
     container_name: xatabchik-webapp

@@ -513,6 +513,56 @@ def document_may_be_ticket_media(doc: Any) -> bool:
     return name.endswith(TICKET_MEDIA_EXTS)
 
 
+def save_ticket_media_bytes(payload: bytes, ticket_id: int) -> str | None:
+    """Сохраняет вложение из WebApp (байты), те же jail/квота/magic, что у бота.
+
+    Возвращает ``<ticket_id>/<uuid>.ext`` или None.
+    """
+    if not payload:
+        return None
+    if len(payload) > TICKET_MEDIA_MAX_BYTES:
+        logger.warning("Тикет %s: web-вложение больше лимита (%s)", ticket_id, len(payload))
+        return None
+    if detect_image_kind_bytes(payload[:16]) is None:
+        logger.warning("Тикет %s: web-вложение не jpeg/png/webp/pdf", ticket_id)
+        return None
+    try:
+        ticket_id = int(ticket_id)
+    except (TypeError, ValueError):
+        return None
+    folder = jailed_ticket_folder(ticket_id) or ""
+    if not folder:
+        return None
+    os.makedirs(folder, exist_ok=True)
+    if quota_blocks_new_file(folder, len(payload)):
+        logger.warning("Тикет %s: квота вложений исчерпана", ticket_id)
+        remove_empty_ticket_folder(folder)
+        return None
+    stem = uuid.uuid4().hex
+    part_path = os.path.join(folder, f"{stem}.part")
+    try:
+        with open(part_path, "wb") as fh:
+            fh.write(payload)
+        name = commit_ticket_image(part_path, folder, stem)
+        if not name:
+            return None
+        final_path = os.path.join(folder, name)
+        count, total = ticket_folder_usage(folder)
+        if count > TICKET_MEDIA_MAX_FILES or total > TICKET_MEDIA_MAX_TOTAL_BYTES:
+            _unlink_quiet(final_path)
+            logger.warning("Тикет %s: квота после записи, файл удалён", ticket_id)
+            return None
+        maybe_purge_expired_closed_ticket_media()
+        logger.info("Тикет %s: web-вложение сохранено %s", ticket_id, final_path)
+        return f"{ticket_id}/{name}"
+    except Exception as e:
+        logger.error("Не удалось сохранить web-вложение тикета %s: %s", ticket_id, e)
+        _unlink_quiet(part_path)
+        return None
+    finally:
+        remove_empty_ticket_folder(folder)
+
+
 async def save_ticket_media(bot: Any, message: Any, ticket_id: int) -> str | None:
     """Сохраняет изображение из сообщения. Контракт как у прежнего хелпера.
 

@@ -19,7 +19,7 @@ from hmac import compare_digest
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from math import ceil
-from flask import Flask, request, render_template, redirect, url_for, flash, session, current_app, jsonify, send_file, Response
+from flask import Flask, request, render_template, redirect, url_for, flash, session, current_app, jsonify, send_file, Response, abort
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 import secrets
 import urllib.parse
@@ -4332,14 +4332,17 @@ def create_webhook_app(bot_controller_instance):
             "messages": items
         })
 
+    @flask_app.route('/ticket_files', defaults={'rest': ''}, methods=['GET', 'HEAD', 'POST'])
+    @flask_app.route('/ticket_files/<path:rest>', methods=['GET', 'HEAD', 'POST'])
+    def block_ticket_files_dir(rest: str):
+        abort(404)
+
     @flask_app.route('/support/ticket-file/<int:message_id>')
-    @login_required
     def support_ticket_file(message_id: int):
         """Отдаёт вложение тикета.
 
-        Под login_required намеренно: в тикеты присылают платёжки,
-        документы и переписку. Без авторизации адрес /support/ticket-file/42
-        перебором открыл бы чужие скриншоты.
+        Без сессии панели — глухой 404, не редирект на логин:
+        иначе URL сам подсказывает, что файл существует.
         """
         import os
         from flask import send_file, abort
@@ -4348,6 +4351,9 @@ def create_webhook_app(bot_controller_instance):
             detect_image_kind,
             expire_ticket_media_if_closed_ttl,
         )
+
+        if 'logged_in' not in session:
+            abort(404)
 
         msg = get_support_message(message_id)
         if not msg or not msg.get('media'):
@@ -4381,6 +4387,9 @@ def create_webhook_app(bot_controller_instance):
             download_name=os.path.basename(full),
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
     @flask_app.route('/support/<int:ticket_id>/delete', methods=['POST'])
