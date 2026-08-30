@@ -275,8 +275,13 @@ def purge_expired_closed_ticket_media(
             continue
         ticket = get_ticket(tid)
         if ticket is None:
-            delete_ticket_media_dir(tid)
-            orphans += 1
+            try:
+                mtime = datetime.utcfromtimestamp(os.path.getmtime(folder))
+            except OSError:
+                continue
+            if mtime <= moment - timedelta(days=days):
+                delete_ticket_media_dir(tid)
+                orphans += 1
             continue
         if closed_ticket_media_expired(ticket, now=moment, ttl_days=days):
             delete_ticket_media_dir(tid)

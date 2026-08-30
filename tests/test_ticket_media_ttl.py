@@ -1,6 +1,8 @@
 """TTL вложений закрытых тикетов: файлы снимаются, строки тикета остаются."""
 from __future__ import annotations
 
+import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -77,15 +79,14 @@ def test_purge_removes_old_closed_keeps_open_and_recent(temp_db, tmp_path, monke
     recent_id = database.create_support_ticket(70102, "recent")
     open_id = database.create_support_ticket(70103, "open")
 
-    database.set_ticket_status(old_id, "closed")
-    database.set_ticket_status(recent_id, "closed")
-    _set_updated_at(database, old_id, now - timedelta(days=10))
-    _set_updated_at(database, recent_id, now - timedelta(days=2))
-
     old_file = _put_png(root, old_id)
     recent_file = _put_png(root, recent_id)
     open_file = _put_png(root, open_id)
     database.add_support_message(old_id, "user", "x", media=f"{old_id}/shot.png")
+    database.set_ticket_status(old_id, "closed")
+    database.set_ticket_status(recent_id, "closed")
+    _set_updated_at(database, old_id, now - timedelta(days=10))
+    _set_updated_at(database, recent_id, now - timedelta(days=2))
 
     result = purge_expired_closed_ticket_media(now=now, ttl_days=7)
 
@@ -104,6 +105,8 @@ def test_purge_removes_orphan_folder(temp_db, tmp_path, monkeypatch):
     orphan = tmp_path / "ticket_files" / "888888"
     orphan.mkdir(parents=True)
     (orphan / "x.png").write_bytes(PNG)
+    old = time.time() - 10 * 86400
+    os.utime(orphan, (old, old))
 
     result = purge_expired_closed_ticket_media()
     assert result["orphans"] >= 1
@@ -116,10 +119,10 @@ def test_expire_on_serve_is_404_and_deletes_file(temp_db, tmp_path, monkeypatch)
 
     root = _media_root(tmp_path, monkeypatch)
     ticket_id = database.create_support_ticket(70104, "ttl-serve")
-    database.set_ticket_status(ticket_id, "closed")
-    _set_updated_at(database, ticket_id, datetime.utcnow() - timedelta(days=9))
     _put_png(root, ticket_id)
     message_id = database.add_support_message(ticket_id, "user", "скрин", media=f"{ticket_id}/shot.png")
+    database.set_ticket_status(ticket_id, "closed")
+    _set_updated_at(database, ticket_id, datetime.utcnow() - timedelta(days=9))
 
     class _PanelBot:
         def get_status(self):
