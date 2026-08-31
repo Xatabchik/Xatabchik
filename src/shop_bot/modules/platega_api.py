@@ -12,10 +12,50 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import urllib.error
+import urllib.request
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+_TX_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def get_transaction_sync(
+    merchant_id: str,
+    secret: str,
+    transaction_id: str,
+    base_url: str | None = None,
+    timeout: int = 20,
+) -> dict | None:
+    """Синхронный GET /transaction/{id} для Flask-вебхука. Телу колбэка не доверяем."""
+    mid = (merchant_id or "").strip()
+    sec = (secret or "").strip()
+    txid = str(transaction_id or "").strip()
+    if not mid or not sec or not txid or not _TX_ID_RE.fullmatch(txid):
+        return None
+    base = (base_url or "https://app.platega.io").strip().rstrip("/")
+    url = f"{base}/transaction/{txid}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "X-MerchantId": mid,
+            "X-Secret": sec,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as e:
+        logger.error("Platega get_transaction_sync failed txid=%s err=%s", txid, e)
+        return None
 
 
 class PlategaAPI:

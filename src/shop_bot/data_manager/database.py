@@ -5138,6 +5138,98 @@ def get_pending_metadata(payment_id: str) -> dict | None:
     return _get_pending_metadata(payment_id)
 
 
+def get_pending_record(payment_id: str) -> dict | None:
+    """Строка pending_transactions с любым статусом (pending/cancelled/paid)."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return None
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                "SELECT user_id, amount_rub, metadata, status FROM pending_transactions WHERE payment_id = ?",
+                (pid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            raw = row[2]
+            try:
+                meta = json.loads(raw or "{}")
+            except Exception:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta.setdefault("payment_id", pid)
+            return {
+                "payment_id": pid,
+                "user_id": row[0],
+                "amount_rub": row[1],
+                "metadata": meta,
+                "status": (row[3] or "").strip(),
+            }
+
+    try:
+        return _retry_sqlite(_work)
+    except sqlite3.Error as e:
+        logging.error(f"Failed to read pending record {pid}: {e}")
+        return None
+
+
+def revive_cancelled_invoice(payment_id: str) -> bool:
+    """Вернуть отменённый счёт в pending, если позже пришла реальная оплата."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            cursor.execute(
+                """
+                UPDATE pending_transactions
+                   SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+                 WHERE payment_id = ?
+                   AND LOWER(TRIM(COALESCE(status, ''))) IN ('cancelled', 'canceled')
+                """,
+                (pid,),
+            )
+            revived = cursor.rowcount == 1
+            if revived:
+                cursor.execute(
+                    """
+                    UPDATE transactions
+                       SET status = 'pending'
+                     WHERE payment_id = ?
+                       AND LOWER(TRIM(COALESCE(status, ''))) IN ('cancelled', 'canceled')
+                    """,
+                    (pid,),
+                )
+            return revived
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to revive cancelled invoice {pid}: {e}")
+        return False
+
+
+def prepare_pending_for_fulfillment(payment_id: str) -> dict | None:
+    """Metadata для выдачи: отменённый счёт поднимаем, paid не трогаем."""
+    rec = get_pending_record(payment_id)
+    if not rec:
+        return None
+    status = (rec.get("status") or "").strip().lower()
+    if status == "paid":
+        return None
+    if status in ("cancelled", "canceled"):
+        revive_cancelled_invoice(payment_id)
+    return _get_pending_metadata(payment_id)
+
+
 def get_pending_status(payment_id: str) -> str | None:
     """Return status of pending transaction: 'pending', 'paid', or None if not found."""
     pid = (payment_id or "").strip()

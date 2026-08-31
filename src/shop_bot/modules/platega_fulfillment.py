@@ -50,6 +50,19 @@ def extract_platega_amount(payload: dict | None):
     return None
 
 
+def remote_is_canceled(remote: dict | None, payment_id: str) -> bool:
+    """True только если API провайдера подтвердил отмену этого счёта."""
+    if not isinstance(remote, dict):
+        return False
+    if normalize_platega_status(remote.get("status")) != "canceled":
+        return False
+    remote_payload = str(remote.get("payload") or "").strip()
+    pid = (payment_id or "").strip()
+    if remote_payload and pid and remote_payload != pid:
+        return False
+    return True
+
+
 def mark_pending_canceled(
     payment_id: str,
     *,

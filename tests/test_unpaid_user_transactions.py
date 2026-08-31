@@ -132,7 +132,8 @@ def test_webapp_user_transactions_include_unpaid_and_provider_id(temp_db):
     assert tx["payment_id"] == pid
 
 
-def test_platega_canceled_webhook_sets_ledger_cancelled(temp_db):
+def test_platega_canceled_webhook_sets_ledger_cancelled(temp_db, monkeypatch):
+    from shop_bot.modules import platega_api
     from shop_bot.webhook_server.app import create_webhook_app
 
     insert_user(temp_db.DB_FILE, telegram_id=93007, username="cncl")
@@ -149,6 +150,11 @@ def test_platega_canceled_webhook_sets_ledger_cancelled(temp_db):
             "platega_transaction_id": "plt-c1",
             "payment_id": pid,
         },
+    )
+    monkeypatch.setattr(
+        platega_api,
+        "get_transaction_sync",
+        lambda *a, **k: {"status": "CANCELED", "payload": pid, "id": "plt-c1"},
     )
 
     class _FakeBot:
@@ -174,6 +180,86 @@ def test_platega_canceled_webhook_sets_ledger_cancelled(temp_db):
     rows, _ = temp_db.get_transactions_paginated(page=1, per_page=5, user_id=93007)
     assert rows[0]["status"] == "cancelled"
     assert rows[0]["provider_transaction_id"] == "plt-c1"
+
+
+def test_platega_canceled_webhook_keeps_pending_if_api_not_canceled(temp_db, monkeypatch):
+    from shop_bot.modules import platega_api
+    from shop_bot.webhook_server.app import create_webhook_app
+
+    insert_user(temp_db.DB_FILE, telegram_id=93009, username="keep")
+    temp_db.update_setting("platega_merchant_id", "mid-1")
+    temp_db.update_setting("platega_secret", "real-secret")
+    pid = "pay-fake-cancel"
+    temp_db.create_payload_pending(
+        pid,
+        93009,
+        80.0,
+        {"user_id": 93009, "payment_method": "Platega", "platega_transaction_id": "plt-live", "payment_id": pid},
+    )
+    monkeypatch.setattr(
+        platega_api,
+        "get_transaction_sync",
+        lambda *a, **k: {"status": "PENDING", "payload": pid, "id": "plt-live"},
+    )
+
+    class _FakeBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_loop(self):
+            return None
+
+        def get_bot_instance(self):
+            return None
+
+    flask_app = create_webhook_app(_FakeBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    resp = client.post(
+        "/platega-webhook",
+        json={"status": "CANCELED", "payload": pid, "id": "plt-live"},
+        headers={"X-MerchantId": "mid-1", "X-Secret": "real-secret"},
+    )
+    assert resp.status_code == 200
+    assert temp_db.get_pending_status(pid) == "pending"
+
+
+def test_platega_confirmed_revives_cancelled_invoice(temp_db):
+    from shop_bot.webhook_server.app import create_webhook_app
+
+    insert_user(temp_db.DB_FILE, telegram_id=93010, username="rev")
+    temp_db.update_setting("platega_merchant_id", "mid-1")
+    temp_db.update_setting("platega_secret", "real-secret")
+    pid = "pay-revive"
+    temp_db.create_payload_pending(
+        pid,
+        93010,
+        90.0,
+        {"user_id": 93010, "price": 90.0, "payment_method": "Platega", "payment_id": pid},
+    )
+    assert temp_db.cancel_pending_transaction(pid)
+    assert temp_db.get_pending_status(pid) == "cancelled"
+
+    class _FakeBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_loop(self):
+            return None
+
+        def get_bot_instance(self):
+            return None
+
+    flask_app = create_webhook_app(_FakeBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    resp = client.post(
+        "/platega-webhook",
+        json={"status": "CONFIRMED", "payload": pid, "id": "plt-r1", "amount": 90.0},
+        headers={"X-MerchantId": "mid-1", "X-Secret": "real-secret"},
+    )
+    assert resp.status_code == 200
+    assert temp_db.get_pending_status(pid) == "paid"
 
 
 def test_create_payload_pending_does_not_revive_cancelled_ledger(temp_db):

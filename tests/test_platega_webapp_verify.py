@@ -291,12 +291,15 @@ def test_app_html_has_platega_verify_controls():
 
 
 def test_normalize_platega_status_mapping():
-    from shop_bot.modules.platega_fulfillment import normalize_platega_status
+    from shop_bot.modules.platega_fulfillment import normalize_platega_status, remote_is_canceled
 
     assert normalize_platega_status("CONFIRMED") == "confirmed"
     assert normalize_platega_status("CANCELED") == "canceled"
     assert normalize_platega_status("CHARGEBACKED") == "canceled"
     assert normalize_platega_status("PENDING") == "pending"
+    assert remote_is_canceled({"status": "CANCELED", "payload": "p1"}, "p1") is True
+    assert remote_is_canceled({"status": "PENDING", "payload": "p1"}, "p1") is False
+    assert remote_is_canceled({"status": "CANCELED", "payload": "other"}, "p1") is False
 
 
 def test_platega_api_get_transaction_uses_shared_request(monkeypatch):
