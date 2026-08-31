@@ -4435,7 +4435,7 @@ def create_webhook_app(bot_controller_instance):
             logger.warning(f"Не удалось обработать удаление темы форума для тикета {ticket_id} перед удалением: {e}")
         if delete_ticket(ticket_id):
             flash(f"Тикет #{ticket_id} удалён.", 'success')
-            return redirect(request.referrer or url_for('support_list_page'))
+            return redirect(url_for('support_list_page'))
         else:
             flash(f"Не удалось удалить тикет #{ticket_id}.", 'danger')
             return redirect(url_for('support_ticket_page', ticket_id=ticket_id))
