@@ -9588,6 +9588,98 @@ def delete_ticket(ticket_id: int) -> bool:
         logging.error(f"Failed to delete ticket {ticket_id}: {e}")
         return False
 
+
+def _ticket_forum_target(row: dict) -> dict | None:
+    forum_chat_id = row.get("forum_chat_id")
+    thread_id = row.get("message_thread_id")
+    if not forum_chat_id or thread_id in (None, ""):
+        return None
+    try:
+        return {
+            "ticket_id": int(row["ticket_id"]),
+            "user_id": row.get("user_id"),
+            "forum_chat_id": forum_chat_id,
+            "message_thread_id": int(thread_id),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def bulk_close_open_tickets() -> dict:
+    """Один UPDATE всех открытых тикетов. Форум/уведомления — на стороне вызывающего.
+
+    Возвращает ``{"count": int, "forum_targets": list[dict]}``.
+    """
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT ticket_id, user_id, forum_chat_id, message_thread_id "
+                "FROM support_tickets WHERE status = 'open'"
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+            if rows:
+                cursor.execute(
+                    "UPDATE support_tickets SET status = 'closed', "
+                    "updated_at = CURRENT_TIMESTAMP WHERE status = 'open'"
+                )
+            conn.commit()
+        targets = [t for t in (_ticket_forum_target(r) for r in rows) if t]
+        return {"count": len(rows), "forum_targets": targets}
+    except sqlite3.Error as e:
+        logging.error("Failed to bulk-close open tickets: %s", e)
+        return {"count": 0, "forum_targets": []}
+
+
+def bulk_delete_all_tickets() -> dict:
+    """Один DELETE всех тикетов и сообщений. Вложения на диске не трогает.
+
+    Возвращает ``{"count": int, "ticket_ids": list[int], "forum_targets": list[dict]}``.
+    """
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT ticket_id, user_id, forum_chat_id, message_thread_id "
+                "FROM support_tickets"
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+            if rows:
+                cursor.execute("DELETE FROM support_messages")
+                cursor.execute("DELETE FROM support_tickets")
+            conn.commit()
+        ids = []
+        for r in rows:
+            try:
+                ids.append(int(r["ticket_id"]))
+            except (TypeError, ValueError):
+                continue
+        targets = [t for t in (_ticket_forum_target(r) for r in rows) if t]
+        return {"count": len(ids), "ticket_ids": ids, "forum_targets": targets}
+    except sqlite3.Error as e:
+        logging.error("Failed to bulk-delete tickets: %s", e)
+        return {"count": 0, "ticket_ids": [], "forum_targets": []}
+
+
+def cleanup_ticket_media_ids(ticket_ids: list[int]) -> int:
+    """Удаляет каталоги вложений пачкой. Ошибки по одному id не рвут остальные."""
+    cleaned = 0
+    for raw in ticket_ids or []:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        try:
+            _cleanup_ticket_media(tid)
+            cleaned += 1
+        except Exception:
+            logging.exception("Failed to cleanup media for ticket %s", tid)
+    return cleaned
+
 def get_tickets_paginated(page: int = 1, per_page: int = 20, status: str | None = None) -> tuple[list[dict], int]:
     offset = (page - 1) * per_page
     try:

@@ -263,6 +263,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
 
+                if (form.hasAttribute('data-busy-on-submit')) {
+                    const btn = form.querySelector('button[type="submit"]');
+                    if (btn) btn.disabled = true;
+                }
+
                 if (form.getAttribute('data-ajax') === 'delete') {
                     event.preventDefault();
                     try {

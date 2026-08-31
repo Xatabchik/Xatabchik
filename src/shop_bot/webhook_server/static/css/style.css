@@ -5301,6 +5301,15 @@ body.login-page #scene { display: none !important; }
   border: 1px solid var(--border-color);
 }
 
+.support-bulk-form {
+  margin: 0;
+}
+
+.support-bulk-form .btn[disabled] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .support-btn-group {
   display: flex;
   gap: 8px;
@@ -5699,6 +5708,10 @@ body.login-page #scene { display: none !important; }
 @media (max-width: 768px) {
   .support-tickets-grid {
     flex-direction: column;
+  }
+
+  .page-header .support-bulk-form .btn {
+    width: 100%;
   }
 
   .support-ticket-header {

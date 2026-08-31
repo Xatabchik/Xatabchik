@@ -60,6 +60,7 @@ from shop_bot.data_manager.remnawave_repository import (
     prepare_pending_for_fulfillment,
     get_tickets_paginated, get_open_tickets_count, get_ticket, get_ticket_messages,
     add_support_message, set_ticket_status, delete_ticket,
+    bulk_close_open_tickets, bulk_delete_all_tickets, cleanup_ticket_media_ids,
     get_closed_tickets_count, get_all_tickets_count, update_host_subscription_url,
     update_host_url, update_host_name, update_host_ssh_settings, get_latest_speedtest, get_speedtests,
     get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment, get_keys_paginated,
@@ -518,6 +519,95 @@ def toggle_franchise_settings() -> bool:
         return False
 
 # === End Franchise settings ===
+
+
+_BULK_TICKET_FORUM_GAP_SEC = 0.12
+_BULK_TICKET_FORUM_TIMEOUT_SEC = 3.0
+_bulk_ticket_forum_lock = threading.Lock()
+
+
+def _forum_coro_wait(loop, coro, timeout: float) -> None:
+    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+    fut.result(timeout=timeout)
+
+
+def run_bulk_ticket_followup(
+    *,
+    action: str,
+    forum_targets: list[dict],
+    media_ticket_ids: list[int] | None = None,
+    bot=None,
+    loop=None,
+    gap_sec: float = _BULK_TICKET_FORUM_GAP_SEC,
+    call_timeout: float = _BULK_TICKET_FORUM_TIMEOUT_SEC,
+) -> None:
+    """Форум и файлы после массового SQL. Не вызывать из HTTP-потока в проде.
+
+    Пауза между вызовами Telegram, чтобы не забить flood-limit. Ошибка одной
+    темы не останавливает остальные. Пользователям в личку не пишем — это
+    массовая админ-операция, не переписка по тикету.
+    """
+    if media_ticket_ids:
+        try:
+            cleanup_ticket_media_ids(media_ticket_ids)
+        except Exception:
+            logger.exception("Массовое удаление тикетов: не удалось почистить вложения")
+
+    if not forum_targets:
+        return
+    if not bot or not loop or not loop.is_running():
+        logger.warning(
+            "Массовые тикеты (%s): support-бот недоступен, темы форума не тронуты (%s шт.)",
+            action,
+            len(forum_targets),
+        )
+        return
+
+    with _bulk_ticket_forum_lock:
+        for i, target in enumerate(forum_targets):
+            chat_id = target.get("forum_chat_id")
+            thread_id = target.get("message_thread_id")
+            ticket_id = target.get("ticket_id")
+            try:
+                if action == "delete":
+                    try:
+                        _forum_coro_wait(
+                            loop,
+                            bot.delete_forum_topic(
+                                chat_id=int(chat_id), message_thread_id=int(thread_id)
+                            ),
+                            call_timeout,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Массовое удаление: тема тикета %s не удалена (%s), пробую закрыть",
+                            ticket_id,
+                            e,
+                        )
+                        _forum_coro_wait(
+                            loop,
+                            bot.close_forum_topic(
+                                chat_id=int(chat_id), message_thread_id=int(thread_id)
+                            ),
+                            call_timeout,
+                        )
+                else:
+                    _forum_coro_wait(
+                        loop,
+                        bot.close_forum_topic(
+                            chat_id=int(chat_id), message_thread_id=int(thread_id)
+                        ),
+                        call_timeout,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Массовые тикеты (%s): тема тикета %s пропущена: %s",
+                    action,
+                    ticket_id,
+                    e,
+                )
+            if gap_sec and i + 1 < len(forum_targets):
+                time.sleep(gap_sec)
 
 
 def create_webhook_app(bot_controller_instance):
@@ -4220,6 +4310,76 @@ def create_webhook_app(bot_controller_instance):
             all_count=all_count,
             **common_data
         )
+
+    def _schedule_bulk_ticket_followup(
+        *,
+        action: str,
+        forum_targets: list,
+        media_ticket_ids: list | None = None,
+    ) -> None:
+        bot = _support_bot_controller.get_bot_instance()
+        loop = _support_bot_controller.get_loop()
+        kwargs = {
+            "action": action,
+            "forum_targets": list(forum_targets or []),
+            "media_ticket_ids": list(media_ticket_ids or []),
+            "bot": bot,
+            "loop": loop,
+        }
+        if current_app.config.get("BULK_TICKETS_SYNC"):
+            run_bulk_ticket_followup(**kwargs)
+            return
+
+        def _job():
+            try:
+                run_bulk_ticket_followup(**kwargs)
+            except Exception:
+                logger.exception("Массовые тикеты (%s): фоновая задача упала", action)
+
+        threading.Thread(
+            target=_job, name=f"shopbot-bulk-tickets-{action}", daemon=True
+        ).start()
+
+    @flask_app.route('/support/bulk-close', methods=['POST'])
+    @login_required
+    def support_bulk_close_route():
+        dest = url_for('support_list_page')
+        result = bulk_close_open_tickets()
+        count = int(result.get("count") or 0)
+        if count == 0:
+            flash("Нет открытых тикетов.", "warning")
+            return redirect(dest)
+        _schedule_bulk_ticket_followup(
+            action="close",
+            forum_targets=result.get("forum_targets") or [],
+        )
+        flash(
+            f"Закрыто тикетов: {count}. Список уже обновлён, темы форума "
+            "закрываются в фоне — панель не ждёт Telegram.",
+            "success",
+        )
+        return redirect(dest)
+
+    @flask_app.route('/support/bulk-delete', methods=['POST'])
+    @login_required
+    def support_bulk_delete_route():
+        dest = url_for('support_list_page')
+        result = bulk_delete_all_tickets()
+        count = int(result.get("count") or 0)
+        if count == 0:
+            flash("Нет тикетов для удаления.", "warning")
+            return redirect(dest)
+        _schedule_bulk_ticket_followup(
+            action="delete",
+            forum_targets=result.get("forum_targets") or [],
+            media_ticket_ids=result.get("ticket_ids") or [],
+        )
+        flash(
+            f"Удалено тикетов: {count}. Список уже обновлён, файлы и темы "
+            "форума дочищаются в фоне — панель не ждёт Telegram.",
+            "success",
+        )
+        return redirect(dest)
 
     @flask_app.route('/support/<int:ticket_id>', methods=['GET', 'POST'])
     @login_required
