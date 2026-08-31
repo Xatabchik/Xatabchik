@@ -9635,6 +9635,9 @@ def find_open_tickets_idle_after_admin(
 
     Заметки (sender=note) и сообщения пользователя сбрасывают таймер: закрываем
     только если пользователь после ответа админа молчит.
+
+    ``updated_at`` тоже должен быть старше порога: переоткрытие тикета без нового
+    ответа админа обновляет ``updated_at`` и не должно сразу закрыть его снова.
     """
     days = parse_ticket_auto_close_days(days)
     if days <= 0:
@@ -9665,10 +9668,11 @@ def find_open_tickets_idle_after_admin(
                 WHERE t.status = 'open'
                   AND last.sender = 'admin'
                   AND last.created_at <= ?
+                  AND t.updated_at <= ?
                 ORDER BY last.created_at ASC, t.ticket_id ASC
                 LIMIT ?
                 """,
-                (cutoff_s, limit_n),
+                (cutoff_s, cutoff_s, limit_n),
             )
             return [dict(r) for r in cursor.fetchall()]
     except sqlite3.Error as e:
@@ -9684,9 +9688,9 @@ def auto_close_idle_admin_tickets(
 ) -> dict:
     """Закрывает найденные простаивающие тикеты. Форум — снаружи.
 
-    UPDATE ещё раз проверяет, что последнее сообщение всё ещё от админа и
-    старше порога: иначе ответ пользователя между SELECT и UPDATE закрыл бы
-    живой тикет.
+    UPDATE ещё раз проверяет, что последнее сообщение всё ещё от админа,
+    оно старше порога, и ``updated_at`` тоже старше порога: иначе ответ
+    пользователя или переоткрытие между SELECT и UPDATE закрыли бы живой тикет.
     """
     days_n = parse_ticket_auto_close_days(days)
     empty = {"count": 0, "days": days_n, "forum_targets": [], "tickets": []}
@@ -9714,6 +9718,7 @@ def auto_close_idle_admin_tickets(
                 SET status = 'closed', updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'open'
                   AND ticket_id IN ({placeholders})
+                  AND updated_at <= ?
                   AND (
                     SELECT m.sender FROM support_messages m
                     WHERE m.ticket_id = support_tickets.ticket_id
@@ -9726,7 +9731,7 @@ def auto_close_idle_admin_tickets(
                   ) <= ?
                 RETURNING ticket_id, user_id, forum_chat_id, message_thread_id
                 """,
-                (*ids, cutoff_s),
+                (*ids, cutoff_s, cutoff_s),
             )
             closed_rows = [dict(r) for r in cursor.fetchall()]
             conn.commit()

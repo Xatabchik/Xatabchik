@@ -21,11 +21,21 @@ def _ticket_with_messages(database, user_id: int, senders: list[str]) -> tuple[i
 
 
 def _created_at(database, message_id: int, when: datetime) -> None:
+    ts = when.strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(database.DB_FILE) as conn:
         conn.execute(
             "UPDATE support_messages SET created_at = ? WHERE message_id = ?",
-            (when.strftime("%Y-%m-%d %H:%M:%S"), int(message_id)),
+            (ts, int(message_id)),
         )
+        row = conn.execute(
+            "SELECT ticket_id FROM support_messages WHERE message_id = ?",
+            (int(message_id),),
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE support_tickets SET updated_at = ? WHERE ticket_id = ?",
+                (ts, int(row[0])),
+            )
         conn.commit()
 
 
@@ -106,6 +116,19 @@ def test_already_closed_ticket_is_skipped(temp_db):
     _created_at(temp_db, mids[-1], NOW - timedelta(days=20))
     temp_db.set_ticket_status(tid, "closed")
     assert temp_db.find_open_tickets_idle_after_admin(7, now=NOW) == []
+
+
+def test_reopened_ticket_is_not_immediately_reclosed(temp_db):
+    """Переоткрытие обновляет updated_at — старый ответ админа не должен сразу закрыть тикет."""
+    tid, mids = _ticket_with_messages(temp_db, 700010, ["user", "admin"])
+    _created_at(temp_db, mids[-1], NOW - timedelta(days=10))
+    temp_db.set_ticket_status(tid, "closed")
+    temp_db.set_ticket_status(tid, "open")
+    found = temp_db.find_open_tickets_idle_after_admin(7, now=NOW)
+    assert found == []
+    result = temp_db.auto_close_idle_admin_tickets(7, now=NOW)
+    assert result["count"] == 0
+    assert temp_db.get_ticket(tid)["status"] == "open"
 
 
 def test_user_reply_between_find_and_update_keeps_ticket_open(temp_db, monkeypatch):
