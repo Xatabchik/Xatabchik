@@ -141,7 +141,7 @@ def test_rollypay_webhook_chargeback_does_not_complete(temp_db, monkeypatch):
     headers["Content-Type"] = "application/json"
     resp = client.post("/rollypay-webhook", data=body, headers=headers)
     assert resp.status_code == 200
-    assert _pending_status(pid) == "pending"
+    assert _pending_status(pid) == "cancelled"
 
 
 def test_rollypay_webhook_amount_mismatch_keeps_pending(temp_db, monkeypatch):

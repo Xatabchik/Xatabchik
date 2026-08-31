@@ -4918,6 +4918,9 @@ def _ensure_processed_payments_table(cursor: sqlite3.Cursor) -> None:
 
 
 _PAID_TX_STATUSES = frozenset({"paid", "success", "succeeded", "completed"})
+_TERMINAL_TX_STATUSES = _PAID_TX_STATUSES | frozenset(
+    {"cancelled", "canceled", "failed", "expired", "chargeback"}
+)
 _PROVIDER_TX_KEYS = (
     "platega_transaction_id",
     "cryptobot_invoice_id",
@@ -4982,7 +4985,7 @@ def _mirror_pending_to_ledger(
     existing = cursor.fetchone()
     if existing:
         current_status = (existing[0] or "").strip().lower()
-        if current_status in _PAID_TX_STATUSES:
+        if current_status in _TERMINAL_TX_STATUSES:
             return
         cursor.execute(
             """
@@ -4994,7 +4997,8 @@ def _mirror_pending_to_ledger(
                    metadata = ?,
                    status = ?
              WHERE payment_id = ?
-               AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('paid', 'success', 'succeeded', 'completed')
+               AND LOWER(TRIM(COALESCE(status, ''))) NOT IN
+                   ('paid', 'success', 'succeeded', 'completed', 'cancelled', 'canceled', 'failed', 'expired')
             """,
             (username, int(user_id), amount, payment_method, meta_json, status, pid),
         )
@@ -5042,7 +5046,14 @@ def create_payload_pending(payment_id: str, user_id: int, amount_rub, metadata) 
                     json.dumps(metadata or {}, ensure_ascii=False),
                 ),
             )
-            _mirror_pending_to_ledger(cursor, pid, int(user_id), amount_rub, metadata, status="pending")
+            cursor.execute(
+                "SELECT status FROM pending_transactions WHERE payment_id = ?",
+                (pid,),
+            )
+            pending_row = cursor.fetchone()
+            pending_status = (pending_row[0] or "").strip().lower() if pending_row else ""
+            if pending_status == "pending":
+                _mirror_pending_to_ledger(cursor, pid, int(user_id), amount_rub, metadata, status="pending")
             return True
 
     try:
@@ -5381,16 +5392,19 @@ def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> b
         with _connect_pending_db() as conn:
             cursor = conn.cursor()
             _ensure_pending_tables(cursor)
-            if user_id is not None:
-                cursor.execute(
-                    """
-                    UPDATE pending_transactions
-                    SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-                    WHERE payment_id = ? AND status = 'pending' AND user_id = ?
-                    """,
-                    (pid, int(user_id)),
-                )
-            else:
+            cursor.execute(
+                "SELECT user_id, status FROM pending_transactions WHERE payment_id = ?",
+                (pid,),
+            )
+            pending_row = cursor.fetchone()
+            if pending_row and user_id is not None and int(pending_row[0]) != int(user_id):
+                return False
+            pending_status = (pending_row[1] or "").strip().lower() if pending_row else ""
+            if pending_status == "paid":
+                return False
+
+            pending_cancelled = False
+            if pending_status == "pending":
                 cursor.execute(
                     """
                     UPDATE pending_transactions
@@ -5399,8 +5413,20 @@ def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> b
                     """,
                     (pid,),
                 )
-            cancelled = cursor.rowcount == 1
-            if cancelled:
+                pending_cancelled = cursor.rowcount == 1
+
+            if user_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE transactions
+                       SET status = 'cancelled'
+                     WHERE payment_id = ?
+                       AND user_id = ?
+                       AND LOWER(TRIM(COALESCE(status, ''))) = 'pending'
+                    """,
+                    (pid, int(user_id)),
+                )
+            else:
                 cursor.execute(
                     """
                     UPDATE transactions
@@ -5410,7 +5436,8 @@ def cancel_pending_transaction(payment_id: str, user_id: int | None = None) -> b
                     """,
                     (pid,),
                 )
-            return cancelled
+            ledger_cancelled = cursor.rowcount == 1
+            return pending_cancelled or ledger_cancelled or pending_status == "cancelled"
 
     try:
         return bool(_retry_sqlite(_work))

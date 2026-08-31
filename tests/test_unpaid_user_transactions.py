@@ -132,6 +132,67 @@ def test_webapp_user_transactions_include_unpaid_and_provider_id(temp_db):
     assert tx["payment_id"] == pid
 
 
+def test_platega_canceled_webhook_sets_ledger_cancelled(temp_db):
+    from shop_bot.webhook_server.app import create_webhook_app
+
+    insert_user(temp_db.DB_FILE, telegram_id=93007, username="cncl")
+    temp_db.update_setting("platega_merchant_id", "mid-1")
+    temp_db.update_setting("platega_secret", "real-secret")
+    pid = "pay-canceled-hook"
+    temp_db.create_payload_pending(
+        pid,
+        93007,
+        120.0,
+        {
+            "user_id": 93007,
+            "payment_method": "Platega",
+            "platega_transaction_id": "plt-c1",
+            "payment_id": pid,
+        },
+    )
+
+    class _FakeBot:
+        def get_status(self):
+            return {"is_running": False}
+
+        def get_loop(self):
+            return None
+
+        def get_bot_instance(self):
+            return None
+
+    flask_app = create_webhook_app(_FakeBot())
+    flask_app.config["WTF_CSRF_ENABLED"] = False
+    client = flask_app.test_client()
+    resp = client.post(
+        "/platega-webhook",
+        json={"status": "CANCELED", "payload": pid, "id": "plt-c1", "amount": 120.0},
+        headers={"X-MerchantId": "mid-1", "X-Secret": "real-secret"},
+    )
+    assert resp.status_code == 200
+    assert temp_db.get_pending_status(pid) == "cancelled"
+    rows, _ = temp_db.get_transactions_paginated(page=1, per_page=5, user_id=93007)
+    assert rows[0]["status"] == "cancelled"
+    assert rows[0]["provider_transaction_id"] == "plt-c1"
+
+
+def test_create_payload_pending_does_not_revive_cancelled_ledger(temp_db):
+    from shop_bot.data_manager import database
+
+    insert_user(database.DB_FILE, telegram_id=93008, username="stay")
+    pid = "pay-stay-cancelled"
+    database.create_payload_pending(pid, 93008, 10.0, {"user_id": 93008, "payment_id": pid})
+    assert database.cancel_pending_transaction(pid, 93008)
+    database.create_payload_pending(
+        pid,
+        93008,
+        10.0,
+        {"user_id": 93008, "payment_id": pid, "platega_transaction_id": "late"},
+    )
+    rows, _ = database.get_transactions_paginated(page=1, per_page=5, user_id=93008)
+    assert rows[0]["status"] == "cancelled"
+
+
 def test_unpaid_does_not_count_as_income(temp_db):
     from shop_bot.data_manager import database
 

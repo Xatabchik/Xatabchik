@@ -138,7 +138,9 @@ def test_verify_canceled_does_not_fulfill(temp_db, monkeypatch, fulfill_calls):
     assert resp.json()["status"] == "canceled"
     assert resp.json()["key_issued"] is False
     assert fulfill_calls == []
-    assert temp_db.get_pending_status(pid) == "pending"
+    assert temp_db.get_pending_status(pid) == "cancelled"
+    rows, _ = temp_db.get_transactions_paginated(page=1, per_page=5, user_id=OWNER_ID)
+    assert rows[0]["status"] == "cancelled"
 
 
 def test_verify_chargebacked_is_canceled(temp_db, monkeypatch, fulfill_calls):
@@ -153,6 +155,7 @@ def test_verify_chargebacked_is_canceled(temp_db, monkeypatch, fulfill_calls):
     resp = _verify(_client(), token, pid)
     assert resp.json()["status"] == "canceled"
     assert fulfill_calls == []
+    assert temp_db.get_pending_status(pid) == "cancelled"
 
 
 def test_verify_foreign_user_forbidden_does_not_call_platega(temp_db, monkeypatch, fulfill_calls):

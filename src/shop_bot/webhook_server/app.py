@@ -31,7 +31,11 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 from shop_bot.modules import remnawave_api
 from shop_bot.modules import telegram_reachability
-from shop_bot.modules.platega_fulfillment import complete_pending_platega_payment
+from shop_bot.modules.platega_fulfillment import (
+    complete_pending_platega_payment,
+    mark_pending_canceled,
+    normalize_platega_status,
+)
 from shop_bot.bot import handlers
 from shop_bot.bot import keyboards
 from aiogram import Bot
@@ -50,6 +54,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_recent_transactions, get_paginated_transactions, get_all_users, get_user_keys,
     ban_user, unban_user, delete_user_keys, get_setting, find_and_complete_ton_transaction,
     find_and_complete_pending_transaction,
+    cancel_pending_transaction,
     get_tickets_paginated, get_open_tickets_count, get_ticket, get_ticket_messages,
     add_support_message, set_ticket_status, delete_ticket,
     get_closed_tickets_count, get_all_tickets_count, update_host_subscription_url,
@@ -5970,8 +5975,15 @@ def create_webhook_app(bot_controller_instance):
 
             status = (data.get('status') or '').strip().lower()
             if status != 'succeeded':
-                # Не финальный успех — игнорируем.
-                logger.info(f"YooKassa webhook: payment {provider_payment_id} status={status} (ignored)")
+                if status == 'canceled':
+                    meta = data.get('metadata') or {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    internal_payment_id = (meta.get('payment_id') or '').strip()
+                    if internal_payment_id:
+                        cancel_pending_transaction(internal_payment_id)
+                else:
+                    logger.info(f"YooKassa webhook: payment {provider_payment_id} status={status} (ignored)")
                 return 'OK', 200
 
             amount_obj = data.get('amount') or {}
@@ -6212,6 +6224,16 @@ def create_webhook_app(bot_controller_instance):
             if not payment_id:
                 return 'OK', 200
 
+            if normalize_platega_status(status_raw) == "canceled":
+                if platega_transaction_id:
+                    try:
+                        from shop_bot.data_manager.database import patch_pending_metadata
+                        patch_pending_metadata(payment_id, {"platega_transaction_id": platega_transaction_id})
+                    except Exception:
+                        pass
+                mark_pending_canceled(payment_id, provider_transaction_id=platega_transaction_id or None)
+                return 'OK', 200
+
             # Обрабатываем только успешное подтверждение
             if status_raw == 'CONFIRMED':
                 pending_meta = None
@@ -6292,9 +6314,12 @@ def create_webhook_app(bot_controller_instance):
                 return 'Bad Request', 400
 
             event_type = str(payload.get('event_type') or '').strip()
-            if event_type in ('payment.chargeback', 'payment.refunded', 'refund_request.completed'):
+            if event_type in ('payment.chargeback', 'payment.refunded', 'refund_request.completed', 'payment.canceled', 'payment.expired'):
+                cancel_pid = str(payload.get('order_id') or '').strip()
+                if cancel_pid:
+                    cancel_pending_transaction(cancel_pid)
                 logger.error(
-                    'RollyPay: возврат/чарджбек order_id=%s provider_id=%s — без автозачисления',
+                    'RollyPay: возврат/чарджбек/отмена order_id=%s provider_id=%s — без автозачисления',
                     payload.get('order_id'),
                     payload.get('payment_id'),
                 )
@@ -6329,6 +6354,8 @@ def create_webhook_app(bot_controller_instance):
 
             remote_status = str(remote.get('status') or '').strip().lower()
             if remote_status != 'paid':
+                if remote_status in {'canceled', 'cancelled', 'expired', 'chargeback'}:
+                    cancel_pending_transaction(payment_id)
                 logger.info(
                     "RollyPay webhook: API status=%s payment_id=%s (ignored)",
                     remote_status,

@@ -341,6 +341,7 @@ from shop_bot.modules.platega_fulfillment import (
     complete_pending_platega_payment,
     extract_platega_amount,
     is_platega_payment_method,
+    mark_pending_canceled,
     normalize_platega_status,
     provider_transaction_id_from_meta,
 )
@@ -4267,6 +4268,7 @@ async def api_verify_platega_payment(payment_id: str, req: VerifyPlategaPaymentR
         }
 
     if remote_status == "canceled":
+        mark_pending_canceled(pid, provider_transaction_id=txid)
         return {
             "ok": True,
             "status": "canceled",

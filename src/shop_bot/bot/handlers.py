@@ -4071,7 +4071,8 @@ def get_user_router() -> Router:
                 await callback.answer("⚠️ Оплата получена, но обработка не завершена. Напишите в поддержку.", show_alert=True)
             return
 
-        if remote_status in {"FAILED", "CANCELED", "EXPIRED"}:
+        if remote_status in {"FAILED", "CANCELED", "CANCELLED", "EXPIRED", "CHARGEBACKED"}:
+            cancel_pending_transaction(pid)
             await callback.answer(f"❌ Платеж завершился со статусом: {remote_status}", show_alert=True)
             return
 
@@ -4120,7 +4121,8 @@ def get_user_router() -> Router:
 
         remote_status = str(remote.get("status") or "").strip().lower()
         if remote_status != "paid":
-            if remote_status in {"expired", "canceled", "chargeback"}:
+            if remote_status in {"expired", "canceled", "cancelled", "chargeback"}:
+                cancel_pending_transaction(pid)
                 await callback.answer(f"❌ Платеж завершился со статусом: {remote_status}", show_alert=True)
                 return
             await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
@@ -4205,6 +4207,7 @@ def get_user_router() -> Router:
         remote_status = (getattr(payment, "status", "") or "").lower()
         if remote_status != "succeeded":
             if remote_status == "canceled":
+                cancel_pending_transaction(pid)
                 await callback.answer("❌ Платёж отменён.", show_alert=True)
                 return
             await callback.answer("⏳ Платеж ещё не подтверждён. Попробуйте позже.", show_alert=True)
