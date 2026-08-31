@@ -90,7 +90,18 @@ async def create_heleket_payment_request(
                     result = data.get("result") or {}
                     pay_url = result.get("url")
                     if pay_url:
-                        return {"payment_url": pay_url, "raw": data}
+                        heleket_uuid = result.get("uuid")
+                        if heleket_uuid and order_id:
+                            try:
+                                from shop_bot.data_manager.database import patch_pending_metadata
+                                patch_pending_metadata(order_id, {"heleket_uuid": str(heleket_uuid)})
+                            except Exception:
+                                logger.warning("Heleket: не удалось сохранить uuid для order_id=%s", order_id)
+                        return {
+                            "payment_url": pay_url,
+                            "uuid": heleket_uuid,
+                            "raw": data,
+                        }
                 logger.error(f"Heleket: неожиданный ответ API: {data}")
                 return None
     except Exception as e:

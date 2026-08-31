@@ -138,7 +138,9 @@ def test_verify_canceled_does_not_fulfill(temp_db, monkeypatch, fulfill_calls):
     assert resp.json()["status"] == "canceled"
     assert resp.json()["key_issued"] is False
     assert fulfill_calls == []
-    assert temp_db.get_pending_status(pid) == "pending"
+    assert temp_db.get_pending_status(pid) == "cancelled"
+    rows, _ = temp_db.get_transactions_paginated(page=1, per_page=5, user_id=OWNER_ID)
+    assert rows[0]["status"] == "cancelled"
 
 
 def test_verify_chargebacked_is_canceled(temp_db, monkeypatch, fulfill_calls):
@@ -153,6 +155,7 @@ def test_verify_chargebacked_is_canceled(temp_db, monkeypatch, fulfill_calls):
     resp = _verify(_client(), token, pid)
     assert resp.json()["status"] == "canceled"
     assert fulfill_calls == []
+    assert temp_db.get_pending_status(pid) == "cancelled"
 
 
 def test_verify_foreign_user_forbidden_does_not_call_platega(temp_db, monkeypatch, fulfill_calls):
@@ -288,12 +291,15 @@ def test_app_html_has_platega_verify_controls():
 
 
 def test_normalize_platega_status_mapping():
-    from shop_bot.modules.platega_fulfillment import normalize_platega_status
+    from shop_bot.modules.platega_fulfillment import normalize_platega_status, remote_is_canceled
 
     assert normalize_platega_status("CONFIRMED") == "confirmed"
     assert normalize_platega_status("CANCELED") == "canceled"
     assert normalize_platega_status("CHARGEBACKED") == "canceled"
     assert normalize_platega_status("PENDING") == "pending"
+    assert remote_is_canceled({"status": "CANCELED", "payload": "p1"}, "p1") is True
+    assert remote_is_canceled({"status": "PENDING", "payload": "p1"}, "p1") is False
+    assert remote_is_canceled({"status": "CANCELED", "payload": "other"}, "p1") is False
 
 
 def test_platega_api_get_transaction_uses_shared_request(monkeypatch):

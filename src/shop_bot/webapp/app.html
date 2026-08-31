@@ -3797,25 +3797,32 @@
                     return;
                 }
 
-                const methodIcons = { 'Balance': 'account_balance', 'ReferralBalance': 'diamond', 'Stars': 'star', 'Cryptobot': 'currency_bitcoin', 'Platega': 'credit_card', 'YooMoney': 'account_balance_wallet' };
+                const methodIcons = { 'Balance': 'account_balance', 'ReferralBalance': 'diamond', 'Stars': 'star', 'Cryptobot': 'currency_bitcoin', 'CryptoBot': 'currency_bitcoin', 'Platega': 'credit_card', 'YooMoney': 'account_balance_wallet', 'YooKassa': 'account_balance_wallet', 'Heleket': 'currency_bitcoin', 'RollyPay': 'credit_card', 'TON Connect': 'currency_bitcoin', 'Ton': 'currency_bitcoin' };
+                const escTx = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                 let html = '<div class="flex flex-col gap-2">';
                 txs.forEach(tx => {
                     const icon = methodIcons[tx.payment_method] || 'receipt';
                     const dateStr = tx.created_date ? tx.created_date.split(' ')[0] : '—';
                     const amount = tx.amount_rub != null ? `${Number(tx.amount_rub).toFixed(0)} ₽` : '—';
-                    const statusColor = tx.status === 'success' || tx.status === 'completed' ? 'text-emerald-400' : 'text-gray-400';
+                    const st = String(tx.status || '').toLowerCase();
+                    const statusColor = (st === 'paid' || st === 'success' || st === 'completed' || st === 'succeeded')
+                        ? 'text-emerald-400'
+                        : (st === 'pending' ? 'text-amber-400' : (st === 'cancelled' || st === 'canceled' ? 'text-red-400' : 'text-gray-400'));
+                    const statusText = escTx(tx.status_label || tx.status || '—');
+                    const providerId = escTx(tx.provider_transaction_id || '');
                     html += `
                         <div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">
                             <div class="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
                                 <span class="material-symbols-rounded text-primary text-sm">${icon}</span>
                             </div>
                             <div class="flex-1 overflow-hidden">
-                                <div class="text-[10px] font-bold text-white truncate">${tx.action_label}</div>
-                                <div class="text-[9px] text-gray-500">${tx.payment_method} • ${dateStr}</div>
+                                <div class="text-[10px] font-bold text-white truncate">${escTx(tx.action_label)}</div>
+                                <div class="text-[9px] text-gray-500">${escTx(tx.payment_method)} • ${escTx(dateStr)}</div>
+                                ${providerId ? `<div class="text-[9px] text-gray-500 truncate">ID: ${providerId}</div>` : ''}
                             </div>
                             <div class="text-right shrink-0">
-                                <div class="text-xs font-black text-primary">${amount}</div>
-                                <div class="text-[9px] ${statusColor}">${tx.status}</div>
+                                <div class="text-xs font-black text-primary">${escTx(amount)}</div>
+                                <div class="text-[9px] ${statusColor}">${statusText}</div>
                             </div>
                         </div>
                     `;
@@ -4622,10 +4629,17 @@
                     data.transactions.slice(0, 3).forEach(tx => {
                         const dateStr = tx.created_date ? tx.created_date.split(' ')[0] : '—';
                         const amount = tx.amount_rub != null ? Number(tx.amount_rub).toFixed(0) + ' ₽' : '—';
+                        const st = String(tx.status || '').toLowerCase();
+                        const statusColor = (st === 'paid' || st === 'success' || st === 'completed' || st === 'succeeded')
+                            ? 'text-emerald-400' : (st === 'pending' ? 'text-amber-400' : 'text-gray-400');
+                        const esc = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        const providerId = esc(tx.provider_transaction_id || '');
                         html += '<div class="flex items-center gap-3 p-2.5 bg-white/5 border border-white/5 rounded-xl">' +
                             '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-symbols-rounded text-primary text-sm">receipt</span></div>' +
-                            '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white truncate">' + tx.action_label + '</div><div class="text-[9px] text-gray-500">' + dateStr + '</div></div>' +
-                            '<div class="text-xs font-black text-primary">' + amount + '</div></div>';
+                            '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white truncate">' + esc(tx.action_label) + '</div>' +
+                            '<div class="text-[9px] text-gray-500">' + esc(dateStr) + (providerId ? ' • ID: ' + providerId : '') + '</div></div>' +
+                            '<div class="text-right shrink-0"><div class="text-xs font-black text-primary">' + esc(amount) + '</div>' +
+                            '<div class="text-[9px] ' + statusColor + '">' + esc(tx.status_label || tx.status || '') + '</div></div></div>';
                     });
                     html += '</div>';
                     prevEl.innerHTML = html;

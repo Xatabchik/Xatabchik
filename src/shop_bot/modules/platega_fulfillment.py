@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from shop_bot.data_manager.database import find_and_complete_pending_transaction
+from shop_bot.data_manager.database import find_and_complete_pending_transaction, patch_pending_metadata
+from shop_bot.data_manager.remnawave_repository import cancel_pending_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,43 @@ def extract_platega_amount(payload: dict | None):
     if isinstance(details, dict) and details.get("amount") is not None:
         return details.get("amount")
     return None
+
+
+def remote_is_canceled(remote: dict | None, payment_id: str) -> bool:
+    """True только если API провайдера подтвердил отмену этого счёта."""
+    if not isinstance(remote, dict):
+        return False
+    if normalize_platega_status(remote.get("status")) != "canceled":
+        return False
+    remote_payload = str(remote.get("payload") or "").strip()
+    pid = (payment_id or "").strip()
+    if remote_payload and pid and remote_payload != pid:
+        return False
+    return True
+
+
+def mark_pending_canceled(
+    payment_id: str,
+    *,
+    provider_transaction_id: str | None = None,
+) -> bool:
+    """Пометить счёт отменённым в pending и в истории транзакций."""
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+    if provider_transaction_id:
+        try:
+            patch_pending_metadata(pid, {"platega_transaction_id": str(provider_transaction_id)})
+        except Exception:
+            logger.warning("Platega: не удалось сохранить id провайдера перед отменой %s", pid)
+    ok = bool(cancel_pending_transaction(pid))
+    if ok:
+        logger.info(
+            "Pending invoice canceled: payment_id=%s provider_transaction_id=%s",
+            pid,
+            provider_transaction_id or "",
+        )
+    return ok
 
 
 def complete_pending_platega_payment(

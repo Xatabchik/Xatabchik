@@ -141,7 +141,62 @@ def test_rollypay_webhook_chargeback_does_not_complete(temp_db, monkeypatch):
     headers["Content-Type"] = "application/json"
     resp = client.post("/rollypay-webhook", data=body, headers=headers)
     assert resp.status_code == 200
+    assert _pending_status(pid) == "cancelled"
+
+
+def test_rollypay_webhook_cancel_keeps_pending_if_api_says_paid(temp_db, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.modules import rollypay_api
+
+    database.update_setting("rollypay_api_key", "api-key")
+    database.update_setting("rollypay_signing_secret", "real-secret")
+    pid = "rp-cancel-paid"
+    _pending(payment_id=pid, user_id=506, amount=150.0)
+    monkeypatch.setattr(
+        rollypay_api,
+        "get_payment_sync",
+        lambda *a, **k: {"status": "paid", "order_id": pid, "amount": "150.00"},
+    )
+    client = _flask_client(temp_db)
+    body = json.dumps(
+        {"event_type": "payment.canceled", "order_id": pid, "payment_id": "prov-live"}
+    ).encode()
+    headers = _sign(body, "real-secret")
+    headers["Content-Type"] = "application/json"
+    resp = client.post("/rollypay-webhook", data=body, headers=headers)
+    assert resp.status_code == 200
     assert _pending_status(pid) == "pending"
+
+
+def test_rollypay_paid_revives_cancelled_invoice(temp_db, monkeypatch):
+    from shop_bot.data_manager import database
+    from shop_bot.modules import rollypay_api
+
+    database.update_setting("rollypay_api_key", "api-key")
+    database.update_setting("rollypay_signing_secret", "real-secret")
+    pid = "rp-revive"
+    _pending(payment_id=pid, user_id=507, amount=150.0)
+    assert database.cancel_pending_transaction(pid)
+    assert _pending_status(pid) == "cancelled"
+    monkeypatch.setattr(
+        rollypay_api,
+        "get_payment_sync",
+        lambda *a, **k: {
+            "status": "paid",
+            "order_id": pid,
+            "amount": "150.00",
+            "payment_currency": "RUB",
+        },
+    )
+    client = _flask_client(temp_db)
+    body = json.dumps(
+        {"event_type": "payment.paid", "order_id": pid, "payment_id": "prov-rev"}
+    ).encode()
+    headers = _sign(body, "real-secret")
+    headers["Content-Type"] = "application/json"
+    resp = client.post("/rollypay-webhook", data=body, headers=headers)
+    assert resp.status_code == 200
+    assert _pending_status(pid) == "paid"
 
 
 def test_rollypay_webhook_amount_mismatch_keeps_pending(temp_db, monkeypatch):
