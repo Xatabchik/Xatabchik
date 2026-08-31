@@ -12,8 +12,7 @@ logger = logging.getLogger(__name__)
 
 _IDLE_CLOSE_GAP_SEC = 0.12
 _IDLE_CLOSE_CALL_TIMEOUT_SEC = 3.0
-_idle_close_lock = threading.Lock()
-_idle_close_running = False
+_idle_close_followup_lock = threading.Lock()
 
 
 def _ru_days_word(n: int) -> str:
@@ -53,122 +52,107 @@ def run_idle_close_followup(tickets: list[dict], days: int) -> None:
         return
 
     days_text = _ru_days_word(days)
-    for i, row in enumerate(tickets):
-        ticket_id = row.get("ticket_id")
-        forum_chat_id = row.get("forum_chat_id")
-        thread_id = row.get("message_thread_id")
-        user_id = row.get("user_id")
-        try:
-            if forum_chat_id and thread_id not in (None, ""):
-                try:
-                    _forum_wait(
-                        loop,
-                        bot.send_message(
-                            chat_id=int(forum_chat_id),
-                            text=(
-                                f"⏱ Тикет #{ticket_id} закрыт автоматически: "
-                                f"нет ответа пользователя {days_text}."
+    with _idle_close_followup_lock:
+        for i, row in enumerate(tickets):
+            ticket_id = row.get("ticket_id")
+            forum_chat_id = row.get("forum_chat_id")
+            thread_id = row.get("message_thread_id")
+            user_id = row.get("user_id")
+            try:
+                if forum_chat_id and thread_id not in (None, ""):
+                    try:
+                        _forum_wait(
+                            loop,
+                            bot.send_message(
+                                chat_id=int(forum_chat_id),
+                                text=(
+                                    f"⏱ Тикет #{ticket_id} закрыт автоматически: "
+                                    f"нет ответа пользователя {days_text}."
+                                ),
+                                message_thread_id=int(thread_id),
                             ),
-                            message_thread_id=int(thread_id),
-                        ),
-                        _IDLE_CLOSE_CALL_TIMEOUT_SEC,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Автозакрытие: не удалось написать в тему тикета %s: %s",
-                        ticket_id,
-                        e,
-                    )
-                try:
-                    _forum_wait(
-                        loop,
-                        bot.close_forum_topic(
-                            chat_id=int(forum_chat_id),
-                            message_thread_id=int(thread_id),
-                        ),
-                        _IDLE_CLOSE_CALL_TIMEOUT_SEC,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Автозакрытие: не удалось закрыть тему тикета %s: %s",
-                        ticket_id,
-                        e,
-                    )
-            if user_id:
-                try:
-                    _forum_wait(
-                        loop,
-                        bot.send_message(
-                            chat_id=int(user_id),
-                            text=(
-                                f"✅ Ваш тикет #{ticket_id} закрыт автоматически: "
-                                f"нет ответа {days_text}. "
-                                "Вы можете создать новое обращение."
+                            _IDLE_CLOSE_CALL_TIMEOUT_SEC,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Автозакрытие: не удалось написать в тему тикета %s: %s",
+                            ticket_id,
+                            e,
+                        )
+                    try:
+                        _forum_wait(
+                            loop,
+                            bot.close_forum_topic(
+                                chat_id=int(forum_chat_id),
+                                message_thread_id=int(thread_id),
                             ),
-                        ),
-                        _IDLE_CLOSE_CALL_TIMEOUT_SEC,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Автозакрытие: не удалось уведомить пользователя тикета %s: %s",
-                        ticket_id,
-                        e,
-                    )
-        except Exception:
-            logger.exception("Автозакрытие: сбой по тикету %s", ticket_id)
-        if _IDLE_CLOSE_GAP_SEC and i + 1 < len(tickets):
-            time.sleep(_IDLE_CLOSE_GAP_SEC)
+                            _IDLE_CLOSE_CALL_TIMEOUT_SEC,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Автозакрытие: не удалось закрыть тему тикета %s: %s",
+                            ticket_id,
+                            e,
+                        )
+                if user_id:
+                    try:
+                        _forum_wait(
+                            loop,
+                            bot.send_message(
+                                chat_id=int(user_id),
+                                text=(
+                                    f"✅ Ваш тикет #{ticket_id} закрыт автоматически: "
+                                    f"нет ответа {days_text}. "
+                                    "Вы можете создать новое обращение."
+                                ),
+                            ),
+                            _IDLE_CLOSE_CALL_TIMEOUT_SEC,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Автозакрытие: не удалось уведомить пользователя тикета %s: %s",
+                            ticket_id,
+                            e,
+                        )
+            except Exception:
+                logger.exception("Автозакрытие: сбой по тикету %s", ticket_id)
+            if _IDLE_CLOSE_GAP_SEC and i + 1 < len(tickets):
+                time.sleep(_IDLE_CLOSE_GAP_SEC)
 
 
 def maybe_auto_close_idle_tickets(*, now=None, sync_followup: bool = False) -> int:
     """Закрывает пачку простаивающих тикетов. Telegram — в фоне, SQL сразу.
 
-    ``sync_followup=True`` только для тестов.
+    SQL не ждёт Telegram: следующий цикл планировщика может закрыть ещё пачку,
+    пока фоновые уведомления догоняют. Вызовы Telegram сериализует
+    ``_idle_close_followup_lock``. ``sync_followup=True`` только для тестов.
     """
-    global _idle_close_running
     days = database.get_ticket_auto_close_days()
     if days <= 0:
         return 0
 
-    with _idle_close_lock:
-        if _idle_close_running:
-            return 0
-        _idle_close_running = True
+    result = database.auto_close_idle_admin_tickets(days, now=now)
+    count = int(result.get("count") or 0)
+    tickets = list(result.get("tickets") or [])
+    if count == 0:
+        return 0
+    logger.info("Автозакрытие тикетов: закрыто %s (порог %s).", count, _ru_days_word(days))
 
-    try:
-        result = database.auto_close_idle_admin_tickets(days, now=now)
-        count = int(result.get("count") or 0)
-        tickets = list(result.get("tickets") or [])
-        if count == 0:
-            with _idle_close_lock:
-                _idle_close_running = False
-            return 0
-        logger.info("Автозакрытие тикетов: закрыто %s (порог %s).", count, _ru_days_word(days))
-
-        def _job():
-            global _idle_close_running
-            try:
-                run_idle_close_followup(tickets, days)
-            except Exception:
-                logger.exception("Автозакрытие тикетов: фоновая задача упала")
-            finally:
-                with _idle_close_lock:
-                    _idle_close_running = False
-
-        if sync_followup:
-            _job()
-            return count
-
-        try:
-            threading.Thread(
-                target=_job, name="shopbot-idle-ticket-close", daemon=True
-            ).start()
-        except Exception:
-            with _idle_close_lock:
-                _idle_close_running = False
-            raise
+    if sync_followup:
+        run_idle_close_followup(tickets, days)
         return count
+
+    threading.Thread(
+        target=_run_followup_safe,
+        args=(tickets, days),
+        name="shopbot-idle-ticket-close",
+        daemon=True,
+    ).start()
+    return count
+
+
+def _run_followup_safe(tickets: list[dict], days: int) -> None:
+    try:
+        run_idle_close_followup(tickets, days)
     except Exception:
-        with _idle_close_lock:
-            _idle_close_running = False
-        raise
+        logger.exception("Автозакрытие тикетов: фоновая задача упала")

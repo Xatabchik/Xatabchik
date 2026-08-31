@@ -6,20 +6,9 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-import pytest
-
 from conftest import temp_db  # noqa: F401
 
 NOW = datetime(2026, 8, 31, 12, 0, 0)
-
-
-@pytest.fixture(autouse=True)
-def _reset_idle_close_flag():
-    from shop_bot.support_bot import idle_close
-
-    idle_close._idle_close_running = False
-    yield
-    idle_close._idle_close_running = False
 
 
 def _ticket_with_messages(database, user_id: int, senders: list[str]) -> tuple[int, list[int]]:
@@ -117,6 +106,26 @@ def test_already_closed_ticket_is_skipped(temp_db):
     _created_at(temp_db, mids[-1], NOW - timedelta(days=20))
     temp_db.set_ticket_status(tid, "closed")
     assert temp_db.find_open_tickets_idle_after_admin(7, now=NOW) == []
+
+
+def test_user_reply_between_find_and_update_keeps_ticket_open(temp_db, monkeypatch):
+    """Пользователь успел ответить после SELECT — UPDATE не должен закрыть тикет."""
+    from shop_bot.data_manager import database
+
+    tid, mids = _ticket_with_messages(temp_db, 700009, ["user", "admin"])
+    _created_at(temp_db, mids[-1], NOW - timedelta(days=8))
+    orig = database.find_open_tickets_idle_after_admin
+
+    def find_then_user_replies(*args, **kwargs):
+        rows = orig(*args, **kwargs)
+        database.add_support_message(tid, "user", "я ответил")
+        return rows
+
+    monkeypatch.setattr(database, "find_open_tickets_idle_after_admin", find_then_user_replies)
+    result = database.auto_close_idle_admin_tickets(7, now=NOW)
+    assert result["count"] == 0
+    assert result["tickets"] == []
+    assert database.get_ticket(tid)["status"] == "open"
 
 
 def test_maybe_auto_close_reads_setting_and_does_not_wait(temp_db, monkeypatch):
