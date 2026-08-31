@@ -1516,6 +1516,16 @@ def _maybe_purge_closed_ticket_media() -> None:
         logger.error("Scheduler: ошибка TTL вложений тикетов: %s", e, exc_info=True)
 
 
+def _maybe_auto_close_idle_tickets() -> None:
+    """После ответа админа пользователь молчит N дней — закрываем тикет. SQL сразу, Telegram в фоне."""
+    try:
+        from shop_bot.support_bot.idle_close import maybe_auto_close_idle_tickets
+
+        maybe_auto_close_idle_tickets()
+    except Exception as e:
+        logger.error("Scheduler: ошибка автозакрытия тикетов: %s", e, exc_info=True)
+
+
 async def periodic_subscription_check(bot_controller: BotController):
     logger.info("Scheduler: Планировщик фоновых задач запущен.")
     await asyncio.sleep(10)
@@ -1526,6 +1536,7 @@ async def periodic_subscription_check(bot_controller: BotController):
             _early_bot = bot_controller.get_bot_instance() if bot_controller.get_status().get("is_running") else None
             await _maybe_enforce_dual_traffic_limits(_early_bot)
             _maybe_purge_closed_ticket_media()
+            _maybe_auto_close_idle_tickets()
 
 
             await _maybe_run_periodic_speedtests()

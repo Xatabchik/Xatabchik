@@ -55,6 +55,11 @@
       <input class="form-control" type="text" id="support_forum_chat_id" name="support_forum_chat_id" value="{{ settings.support_forum_chat_id or '' }}" placeholder="например, -1001234567890" />
       <div class="form-hint">Группа должна быть супергруппой с включёнными темами, бот — админ.</div>
     </div>
+    <div class="mb-3">
+      <label class="form-label" for="ticket_auto_close_days">Автозакрытие тикета (дней)</label>
+      <input class="form-control" type="number" id="ticket_auto_close_days" name="ticket_auto_close_days" min="0" max="365" step="1" inputmode="numeric" value="{{ settings.ticket_auto_close_days or '0' }}" title="Нужно целое число от 0 до 365." oninvalid="this.setCustomValidity('Автозакрытие тикета: нужно целое число от 0 до 365.')" oninput="this.setCustomValidity('')" />
+      <div class="form-hint">Только целое число (0–365). После ответа админа, если нет сообщения пользователя N дней. 0 — выключено.</div>
+    </div>
   </section>
 
   <button type="submit" class="btn btn-primary">Сохранить</button>

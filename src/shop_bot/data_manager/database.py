@@ -757,6 +757,7 @@ def initialize_db():
                 "ton_wallet_address": None,
                 "tonapi_key": None,
                 "support_forum_chat_id": None,
+                "ticket_auto_close_days": "0",
                 "enable_fixed_referral_bonus": "false",
                 "fixed_referral_bonus_amount": "50",
                 "referral_reward_type": "percent_purchase",
@@ -9603,6 +9604,176 @@ def _ticket_forum_target(row: dict) -> dict | None:
         }
     except (TypeError, ValueError):
         return None
+
+
+TICKET_AUTO_CLOSE_DAYS_MAX = 365
+TICKET_AUTO_CLOSE_BATCH = 50
+TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER = (
+    "Автозакрытие тикета не сохранено: нужно целое число от 0 до 365."
+)
+_TICKET_AUTO_CLOSE_WHOLE_RE = re.compile(r"^\d+$")
+
+
+def validate_ticket_auto_close_days(raw) -> tuple[int | None, str | None]:
+    """Для формы настроек: только целое 0–365.
+
+    Дроби вроде 7.5 / 7.0 не принимаем — иначе ``int("7.5")`` тихо превращал
+    значение в 0 (выключено). Пустое поле = 0.
+    """
+    if raw is None:
+        return 0, None
+    try:
+        s = str(raw).strip()
+    except (TypeError, ValueError):
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    if s == "":
+        return 0, None
+    if not _TICKET_AUTO_CLOSE_WHOLE_RE.fullmatch(s):
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    days = int(s)
+    if days > TICKET_AUTO_CLOSE_DAYS_MAX:
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    return days, None
+
+
+def parse_ticket_auto_close_days(raw) -> int:
+    """0 — выключено. Нецелое и мусор → 0. Целое больше 365 режем потолком."""
+    days, err = validate_ticket_auto_close_days(raw)
+    if days is not None and err is None:
+        return days
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    if n <= 0:
+        return 0
+    return min(n, TICKET_AUTO_CLOSE_DAYS_MAX)
+
+
+def get_ticket_auto_close_days() -> int:
+    return parse_ticket_auto_close_days(get_setting("ticket_auto_close_days"))
+
+
+def find_open_tickets_idle_after_admin(
+    days: int,
+    *,
+    now: datetime | None = None,
+    limit: int = TICKET_AUTO_CLOSE_BATCH,
+) -> list[dict]:
+    """Открытые тикеты, где последнее сообщение — ответ админа старше ``days`` суток.
+
+    Заметки (sender=note) и сообщения пользователя сбрасывают таймер: закрываем
+    только если пользователь после ответа админа молчит.
+
+    ``updated_at`` тоже должен быть старше порога: переоткрытие тикета без нового
+    ответа админа обновляет ``updated_at`` и не должно сразу закрыть его снова.
+    """
+    days = parse_ticket_auto_close_days(days)
+    if days <= 0:
+        return []
+    try:
+        limit_n = int(limit)
+    except (TypeError, ValueError):
+        limit_n = TICKET_AUTO_CLOSE_BATCH
+    if limit_n <= 0:
+        return []
+    moment = now or datetime.utcnow()
+    cutoff_s = (moment - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT t.ticket_id, t.user_id, t.forum_chat_id, t.message_thread_id,
+                       last.sender AS last_sender, last.created_at AS last_created_at
+                FROM support_tickets t
+                JOIN support_messages last
+                  ON last.message_id = (
+                      SELECT MAX(m.message_id)
+                      FROM support_messages m
+                      WHERE m.ticket_id = t.ticket_id
+                  )
+                WHERE t.status = 'open'
+                  AND last.sender = 'admin'
+                  AND last.created_at <= ?
+                  AND t.updated_at <= ?
+                ORDER BY last.created_at ASC, t.ticket_id ASC
+                LIMIT ?
+                """,
+                (cutoff_s, cutoff_s, limit_n),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to find idle tickets after admin reply: %s", e)
+        return []
+
+
+def auto_close_idle_admin_tickets(
+    days: int,
+    *,
+    now: datetime | None = None,
+    limit: int = TICKET_AUTO_CLOSE_BATCH,
+) -> dict:
+    """Закрывает найденные простаивающие тикеты. Форум — снаружи.
+
+    UPDATE ещё раз проверяет, что последнее сообщение всё ещё от админа,
+    оно старше порога, и ``updated_at`` тоже старше порога: иначе ответ
+    пользователя или переоткрытие между SELECT и UPDATE закрыли бы живой тикет.
+    """
+    days_n = parse_ticket_auto_close_days(days)
+    empty = {"count": 0, "days": days_n, "forum_targets": [], "tickets": []}
+    rows = find_open_tickets_idle_after_admin(days_n, now=now, limit=limit)
+    if not rows:
+        return empty
+    ids: list[int] = []
+    for row in rows:
+        try:
+            ids.append(int(row["ticket_id"]))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return empty
+    moment = now or datetime.utcnow()
+    cutoff_s = (moment - timedelta(days=days_n)).strftime("%Y-%m-%d %H:%M:%S")
+    placeholders = ",".join("?" * len(ids))
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE support_tickets
+                SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'open'
+                  AND ticket_id IN ({placeholders})
+                  AND updated_at <= ?
+                  AND (
+                    SELECT m.sender FROM support_messages m
+                    WHERE m.ticket_id = support_tickets.ticket_id
+                    ORDER BY m.message_id DESC LIMIT 1
+                  ) = 'admin'
+                  AND (
+                    SELECT m.created_at FROM support_messages m
+                    WHERE m.ticket_id = support_tickets.ticket_id
+                    ORDER BY m.message_id DESC LIMIT 1
+                  ) <= ?
+                RETURNING ticket_id, user_id, forum_chat_id, message_thread_id
+                """,
+                (*ids, cutoff_s, cutoff_s),
+            )
+            closed_rows = [dict(r) for r in cursor.fetchall()]
+            conn.commit()
+    except sqlite3.Error as e:
+        logging.error("Failed to auto-close idle tickets: %s", e)
+        return empty
+    targets = [t for t in (_ticket_forum_target(r) for r in closed_rows) if t]
+    return {
+        "count": len(closed_rows),
+        "days": days_n,
+        "forum_targets": targets,
+        "tickets": closed_rows,
+    }
 
 
 def bulk_close_open_tickets() -> dict:
