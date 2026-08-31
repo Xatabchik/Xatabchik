@@ -348,6 +348,7 @@ ALL_SETTINGS_KEYS = [
     "referral_reward_type",
     "referral_on_start_referrer_amount",
     "support_forum_chat_id",
+    "ticket_auto_close_days",
     "support_bot_token",
     "support_bot_username",
     "panel_brand_title",

@@ -1660,6 +1660,11 @@
                             <input type="text" id="support_forum_chat_id" name="support_forum_chat_id" value="{{ settings.support_forum_chat_id or '' }}" class="form-control pill" />
                             <small class="text-secondary">Укажите ID forum-чата, если нужен вывод тикетов в обсуждения.</small>
                         </div>
+                        <div class="form-group">
+                            <label for="ticket_auto_close_days">Автозакрытие тикета (дней):</label>
+                            <input type="number" id="ticket_auto_close_days" name="ticket_auto_close_days" min="0" max="365" step="1" value="{{ settings.ticket_auto_close_days or '0' }}" class="form-control pill" />
+                            <small class="text-secondary">Если после ответа админа пользователь молчит N дней — тикет закроется сам. 0 — выключено. Форум и уведомление уходят в фоне, панель не ждёт.</small>
+                        </div>
                     </div>
                 </div>
             </section>
