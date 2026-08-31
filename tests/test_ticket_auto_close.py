@@ -48,7 +48,27 @@ def test_parse_ticket_auto_close_days():
     assert parse_ticket_auto_close_days("-3") == 0
     assert parse_ticket_auto_close_days("0") == 0
     assert parse_ticket_auto_close_days("7") == 7
+    assert parse_ticket_auto_close_days("7.5") == 0
+    assert parse_ticket_auto_close_days("7.0") == 0
     assert parse_ticket_auto_close_days("9999") == 365
+
+
+def test_validate_ticket_auto_close_days_requires_whole_integer():
+    from shop_bot.data_manager.database import (
+        TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER,
+        validate_ticket_auto_close_days,
+    )
+
+    assert validate_ticket_auto_close_days(None) == (0, None)
+    assert validate_ticket_auto_close_days("") == (0, None)
+    assert validate_ticket_auto_close_days("0") == (0, None)
+    assert validate_ticket_auto_close_days("7") == (7, None)
+    assert validate_ticket_auto_close_days(" 12 ") == (12, None)
+
+    for raw in ("7.5", "7.0", "abc", "-3", "9999", "7,5"):
+        days, err = validate_ticket_auto_close_days(raw)
+        assert days is None, raw
+        assert err == TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER, raw
 
 
 def test_idle_close_disabled_when_days_zero(temp_db):
@@ -202,9 +222,7 @@ def test_scheduler_hook_calls_idle_close(temp_db, monkeypatch):
     assert called == [1]
 
 
-def test_settings_page_has_auto_close_field(temp_db, monkeypatch):
-    from shop_bot.webhook_server import app as wh_mod
-
+def _settings_client(wh_mod):
     class _Bot:
         def get_status(self):
             return {"is_running": False}
@@ -217,6 +235,69 @@ def test_settings_page_has_auto_close_field(temp_db, monkeypatch):
     client = flask_app.test_client()
     with client.session_transaction() as sess:
         sess["logged_in"] = True
-    html = client.get("/settings").get_data(as_text=True)
+    return client
+
+
+def test_settings_page_has_auto_close_field(temp_db, monkeypatch):
+    from shop_bot.webhook_server import app as wh_mod
+
+    html = _settings_client(wh_mod).get("/settings").get_data(as_text=True)
     assert 'name="ticket_auto_close_days"' in html
     assert "Автозакрытие тикета" in html
+    assert "целое число" in html.lower()
+
+
+def test_settings_rejects_fractional_auto_close_days(temp_db, monkeypatch):
+    from shop_bot.data_manager.database import TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    from shop_bot.webhook_server import app as wh_mod
+
+    temp_db.update_setting("ticket_auto_close_days", "7")
+    client = _settings_client(wh_mod)
+    resp = client.post(
+        "/settings",
+        data={"ticket_auto_close_days": "7.5", "next_hash": "#support-bot"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    with client.session_transaction() as sess:
+        flashes = sess.get("_flashes") or []
+    messages = [msg for _cat, msg in flashes]
+    assert TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER in messages
+    assert temp_db.get_setting("ticket_auto_close_days") == "7"
+
+
+def test_settings_rejects_decimal_whole_auto_close_days(temp_db, monkeypatch):
+    from shop_bot.data_manager.database import TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    from shop_bot.webhook_server import app as wh_mod
+
+    temp_db.update_setting("ticket_auto_close_days", "7")
+    client = _settings_client(wh_mod)
+    resp = client.post(
+        "/settings",
+        data={"ticket_auto_close_days": "7.0", "next_hash": "#support-bot"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    with client.session_transaction() as sess:
+        flashes = sess.get("_flashes") or []
+    messages = [msg for _cat, msg in flashes]
+    assert TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER in messages
+    assert temp_db.get_setting("ticket_auto_close_days") == "7"
+
+
+def test_settings_saves_whole_auto_close_days(temp_db, monkeypatch):
+    from shop_bot.webhook_server import app as wh_mod
+
+    temp_db.update_setting("ticket_auto_close_days", "0")
+    client = _settings_client(wh_mod)
+    resp = client.post(
+        "/settings",
+        data={"ticket_auto_close_days": "14", "next_hash": "#support-bot"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    with client.session_transaction() as sess:
+        flashes = sess.get("_flashes") or []
+    messages = [msg for _cat, msg in flashes]
+    assert "Настройки сохранены." in messages
+    assert temp_db.get_setting("ticket_auto_close_days") == "14"

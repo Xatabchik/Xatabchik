@@ -1662,8 +1662,8 @@
                         </div>
                         <div class="form-group">
                             <label for="ticket_auto_close_days">Автозакрытие тикета (дней):</label>
-                            <input type="number" id="ticket_auto_close_days" name="ticket_auto_close_days" min="0" max="365" step="1" value="{{ settings.ticket_auto_close_days or '0' }}" class="form-control pill" />
-                            <small class="text-secondary">Если после ответа админа пользователь молчит N дней — тикет закроется сам. 0 — выключено. Форум и уведомление уходят в фоне, панель не ждёт.</small>
+                            <input type="number" id="ticket_auto_close_days" name="ticket_auto_close_days" min="0" max="365" step="1" inputmode="numeric" value="{{ settings.ticket_auto_close_days or '0' }}" class="form-control pill" title="Нужно целое число от 0 до 365." oninvalid="this.setCustomValidity('Автозакрытие тикета: нужно целое число от 0 до 365.')" oninput="this.setCustomValidity('')" />
+                            <small class="text-secondary">Только целое число (0–365). Если после ответа админа пользователь молчит N дней — тикет закроется сам. 0 — выключено. Форум и уведомление уходят в фоне, панель не ждёт.</small>
                         </div>
                     </div>
                 </div>

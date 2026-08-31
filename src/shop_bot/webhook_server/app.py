@@ -111,6 +111,7 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     encrypt_managed_bot_token,
     decrypt_managed_bot_token,
+    validate_ticket_auto_close_days,
 )
 from shop_bot.data_manager.database import get_transactions_paginated
 from shop_bot.data_manager.database import get_all_key_ids, extend_key, set_key_expiry
@@ -4684,6 +4685,13 @@ def create_webhook_app(bot_controller_instance):
                 if key in SECRET_SETTING_KEYS and not (request.form.get(key) or '').strip():
                     continue
                 if key in request.form:
+                    if key == "ticket_auto_close_days":
+                        days, err = validate_ticket_auto_close_days(request.form.get(key))
+                        if err:
+                            flash(err, "warning")
+                            continue
+                        update_setting(key, str(days))
+                        continue
                     update_setting(key, request.form.get(key))
 
             want_totp = False

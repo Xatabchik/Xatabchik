@@ -9608,17 +9608,46 @@ def _ticket_forum_target(row: dict) -> dict | None:
 
 TICKET_AUTO_CLOSE_DAYS_MAX = 365
 TICKET_AUTO_CLOSE_BATCH = 50
+TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER = (
+    "Автозакрытие тикета не сохранено: нужно целое число от 0 до 365."
+)
+_TICKET_AUTO_CLOSE_WHOLE_RE = re.compile(r"^\d+$")
+
+
+def validate_ticket_auto_close_days(raw) -> tuple[int | None, str | None]:
+    """Для формы настроек: только целое 0–365.
+
+    Дроби вроде 7.5 / 7.0 не принимаем — иначе ``int("7.5")`` тихо превращал
+    значение в 0 (выключено). Пустое поле = 0.
+    """
+    if raw is None:
+        return 0, None
+    try:
+        s = str(raw).strip()
+    except (TypeError, ValueError):
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    if s == "":
+        return 0, None
+    if not _TICKET_AUTO_CLOSE_WHOLE_RE.fullmatch(s):
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    days = int(s)
+    if days > TICKET_AUTO_CLOSE_DAYS_MAX:
+        return None, TICKET_AUTO_CLOSE_DAYS_NOT_INTEGER
+    return days, None
 
 
 def parse_ticket_auto_close_days(raw) -> int:
-    """0 — выключено. Мусор и отрицательные значения тоже 0. Потолок 365."""
+    """0 — выключено. Нецелое и мусор → 0. Целое больше 365 режем потолком."""
+    days, err = validate_ticket_auto_close_days(raw)
+    if days is not None and err is None:
+        return days
     try:
-        days = int(str(raw).strip())
+        n = int(str(raw).strip())
     except (TypeError, ValueError, AttributeError):
         return 0
-    if days <= 0:
+    if n <= 0:
         return 0
-    return min(days, TICKET_AUTO_CLOSE_DAYS_MAX)
+    return min(n, TICKET_AUTO_CLOSE_DAYS_MAX)
 
 
 def get_ticket_auto_close_days() -> int:

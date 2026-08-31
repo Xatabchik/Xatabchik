@@ -528,6 +528,7 @@ _LEGACY_FORWARDERS = (
     "find_open_tickets_idle_after_admin",
     "auto_close_idle_admin_tickets",
     "parse_ticket_auto_close_days",
+    "validate_ticket_auto_close_days",
     "get_ticket_auto_close_days",
     "bulk_delete_all_tickets",
     "cleanup_ticket_media_ids",
