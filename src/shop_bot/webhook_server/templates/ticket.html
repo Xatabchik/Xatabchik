@@ -108,31 +108,31 @@
         <div class="mb-3">
           <textarea id="reply-text" name="message" class="form-control" rows="4" placeholder="Введите ответ администратора..." {% if ticket.status == 'closed' %}disabled{% endif %}></textarea>
         </div>
-        <div class="d-flex gap-2 flex-wrap">
-          <button id="reply-btn" type="submit" name="action" value="reply" class="btn btn-primary" {% if ticket.status == 'closed' %}disabled{% endif %}>
-            <i class="ti ti-send me-1"></i>
-            Ответить
-          </button>
-          {% if ticket.status == 'open' %}
-            <button id="toggle-status-btn" type="submit" name="action" value="close" class="btn btn-danger">
-              <i class="ti ti-lock me-1"></i>
-              Закрыть тикет
-            </button>
-          {% else %}
-            <button id="toggle-status-btn" type="submit" name="action" value="open" class="btn btn-success">
-              <i class="ti ti-lock-open me-1"></i>
-              Открыть тикет
-            </button>
-          {% endif %}
-          <form method="post" action="{{ url_for('delete_support_ticket_route', ticket_id=ticket.ticket_id) }}" onsubmit="return confirm('Удалить тикет #{{ ticket.ticket_id }}? Это действие необратимо.');" class="ms-auto">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-            <button type="submit" class="btn btn-outline-danger">
-              <i class="ti ti-trash me-1"></i>
-              Удалить тикет
-            </button>
-          </form>
-        </div>
       </form>
+      <div class="d-flex gap-2 flex-wrap">
+        <button form="reply-form" id="reply-btn" type="submit" name="action" value="reply" class="btn btn-primary" {% if ticket.status == 'closed' %}disabled{% endif %}>
+          <i class="ti ti-send me-1"></i>
+          Ответить
+        </button>
+        {% if ticket.status == 'open' %}
+          <button form="reply-form" id="toggle-status-btn" type="submit" name="action" value="close" class="btn btn-danger">
+            <i class="ti ti-lock me-1"></i>
+            Закрыть тикет
+          </button>
+        {% else %}
+          <button form="reply-form" id="toggle-status-btn" type="submit" name="action" value="open" class="btn btn-success">
+            <i class="ti ti-lock-open me-1"></i>
+            Открыть тикет
+          </button>
+        {% endif %}
+        <form id="delete-ticket-form" method="post" action="{{ url_for('delete_support_ticket_route', ticket_id=ticket.ticket_id) }}" onsubmit="return confirm('Удалить тикет #{{ ticket.ticket_id }}? Это действие необратимо.');" class="ms-auto">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-outline-danger">
+            <i class="ti ti-trash me-1"></i>
+            Удалить тикет
+          </button>
+        </form>
+      </div>
     </div>
   </div>
 </div>
