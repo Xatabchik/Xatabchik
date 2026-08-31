@@ -11,6 +11,32 @@
       </h1>
       <div class="text-secondary mt-1">Управление обращениями пользователей</div>
     </div>
+    <div class="col-auto ms-auto d-print-none">
+      <div class="d-flex gap-2 flex-wrap justify-content-end">
+        <form method="post"
+              action="{{ url_for('support_bulk_close_route') }}"
+              class="support-bulk-form"
+              data-confirm="Закрыть все открытые тикеты ({{ open_count }})? Пользователям в личку не пишем — темы форума закроются в фоне."
+              data-busy-on-submit>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-outline-secondary" {% if not open_count %}disabled{% endif %} title="Закрыть все открытые тикеты">
+            <i class="ti ti-lock me-1"></i>
+            Закрыть все тикеты
+          </button>
+        </form>
+        <form method="post"
+              action="{{ url_for('support_bulk_delete_route') }}"
+              class="support-bulk-form"
+              data-confirm="Удалить ВСЕ тикеты ({{ all_count }})? Это необратимо: переписка и вложения будут удалены."
+              data-busy-on-submit>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+          <button type="submit" class="btn btn-outline-danger" {% if not all_count %}disabled{% endif %} title="Удалить все тикеты">
+            <i class="ti ti-trash me-1"></i>
+            Удалить все тикеты
+          </button>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 
