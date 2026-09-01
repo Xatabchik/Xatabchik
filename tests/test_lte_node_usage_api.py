@@ -634,6 +634,97 @@ def test_numeric_identity_is_not_queried_twice(temp_db):
     assert len(user_calls) == 1, user_calls
 
 
+V3_NAN = {
+    "statusCode": 400,
+    "message": "Validation failed",
+    "errors": [{"expected": "number", "code": "invalid_type", "received": "NaN",
+                "path": ["userId"], "message": "Invalid input: expected number, received NaN"}],
+}
+STORED_UUID = "00000000-0000-4000-8000-0000000000aa"
+KEY_EMAIL = "100001-1@bot.local"
+KEY_USERNAME = "100001-1"
+
+
+def test_uuid_plus_email_uses_numeric_squad_scoped_on_3x(temp_db):
+    """Ключ с UUID + email: lookup by-username даёт числовой id, bandwidth-stats — только им."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+    _router(api, [
+        (f"/api/users/{STORED_UUID}", _Resp(V3_NAN, 400)),
+        ("/by-email/", _Resp({}, 404)),
+        (f"/by-username/{KEY_USERNAME}", _Resp({"response": {"id": 4242, "username": KEY_USERNAME}})),
+        SQUAD_SCOPED_332,
+        ("/bandwidth-stats/users/", _Resp({"should": "not probe uuid"}, 400)),
+    ], calls=calls)
+
+    result = asyncio.run(api.get_user_node_usage_for_squad(
+        STORED_UUID, host_name="H", squad_uuid="squad-lte", node_uuids=["n1", "n2"],
+        start_date=START, end_date=END, email=KEY_EMAIL,
+    ))
+
+    assert result.path == api.USAGE_PATH_SQUAD_SCOPED
+    assert result.per_node == {"n1": 5 * GB, "n2": 1 * GB}
+    stats = [c for c in calls if "bandwidth-stats" in c]
+    assert stats == ["/api/bandwidth-stats/internal-squads/squad-lte/users/4242/usage"], calls
+    assert any(f"/by-username/{KEY_USERNAME}" in c for c in calls)
+
+
+def test_missing_numeric_id_does_not_poison_squad_scoped_cache(temp_db):
+    """UUID без email не должен помечать squad-scoped как «панель не умеет» — соседний ключ с id живой."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+    _router(api, [
+        (f"/api/users/{STORED_UUID}", _Resp(V3_NAN, 400)),
+        ("/internal-squads/squad-lte/users/4242/usage", SQUAD_SCOPED_332[1]),
+        ("/bandwidth-stats/users/", _Resp(None, 404)),
+        ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
+        ("/usage/range", _Resp(None, 404)),
+    ], calls=calls)
+
+    with pytest.raises(api.RemnawavePathUnsupportedError):
+        asyncio.run(api.get_user_node_usage_for_squad(
+            STORED_UUID, host_name="H", squad_uuid="squad-lte", node_uuids=["n1", "n2"],
+            start_date=START, end_date=END,
+        ))
+
+    result = asyncio.run(api.get_user_node_usage_for_squad(
+        "4242", host_name="H", squad_uuid="squad-lte", node_uuids=["n1", "n2"],
+        start_date=START, end_date=END, panel_user_id=4242,
+    ))
+    assert result.path == api.USAGE_PATH_SQUAD_SCOPED
+    assert result.per_node["n1"] == 5 * GB
+    squad_calls = [c for c in calls if "internal-squads/squad-lte/users/4242/usage" in c]
+    assert len(squad_calls) == 1, calls
+
+
+def test_numeric_user_path_200_does_not_probe_uuid_on_3x(temp_db):
+    """3.x приняла числовой userId (200, пустой series) — UUID в bandwidth-stats не зондруем."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": "squad-lte"})
+    calls: list[str] = []
+    _router(api, [
+        ("/internal-squads/squad-lte/users/", _Resp(None, 404)),
+        ("/bandwidth-stats/users/4242", _Resp({"response": {"series": [], "topNodes": []}})),
+        (f"/bandwidth-stats/users/{STORED_UUID}", _Resp({"should": "not be called"}, 400)),
+        ("/bandwidth-stats/nodes/users", _Resp(None, 404)),
+        ("/usage/range", _Resp(None, 404)),
+    ], calls=calls)
+
+    result = asyncio.run(api.get_user_node_usage_for_squad(
+        STORED_UUID, host_name="H", squad_uuid="squad-lte", node_uuids=["n1"],
+        start_date=START, end_date=END, panel_user_id=4242,
+    ))
+
+    assert result.path == api.USAGE_PATH_USER_BY_ID
+    assert result.per_node == {}
+    stats = [c for c in calls if "bandwidth-stats" in c]
+    assert "/api/bandwidth-stats/users/4242" in stats
+    assert not any(STORED_UUID in c for c in stats)
+    assert not any(c.endswith("/legacy") for c in stats)
+
+
 def test_legacy_wrapper_is_probed_once_per_instance(temp_db):
     """Исторический путь неприменим ни к 2.8.1, ни к 3.3.2 — после первой неудачи он не
     должен опрашиваться на каждом ключе (иначе панель получает поток заведомых 400)."""

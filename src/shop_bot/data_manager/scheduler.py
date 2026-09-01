@@ -640,6 +640,7 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 user_uuid = k.get("remnawave_user_uuid")
                 if not host_name or not user_uuid:
                     continue
+                key_email = k.get("key_email") or k.get("email") or None
 
                 # Агрегат пользователя остаётся источником для ОСНОВНОГО пула: там лимит
                 # энфорсит сама панель через trafficLimitBytes, и разбивка по нодам не нужна.
@@ -647,7 +648,7 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                     used = await remnawave_api.get_user_used_traffic(
                         str(user_uuid),
                         host_name=host_name,
-                        email=(k.get("key_email") or k.get("email") or None),
+                        email=key_email,
                     )
                 except Exception as e:
                     logger.error(f"Scheduler[dual-limits]: не удалось получить трафик key_id={key_id_for_usage}: {e}", exc_info=True)
@@ -721,6 +722,7 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         node_uuids=node_uuids,
                         start_date=period_start_dt,
                         end_date=datetime.now(),
+                        email=key_email,
                     )
                     node_names = {n["uuid"]: n.get("node_name") for n in nodes}
                     for node_uuid, node_bytes in usage.per_node.items():

@@ -37,7 +37,7 @@ class _FakeRemnawave:
         self.usage_path = usage_path
         self.fail_hosts = fail_hosts or set()
         self.usage_calls: list[str] = []
-        self.node_usage_calls: list[tuple[str, str]] = []
+        self.node_usage_calls: list[tuple[str, str, str | None]] = []
         self.removed_squads: list[tuple[str, str]] = []
         self.added_squads: list[tuple[str, str]] = []
         self.disabled: list[str] = []
@@ -62,7 +62,7 @@ class _FakeRemnawave:
 
         if host_name in self.fail_hosts:
             raise RuntimeError(f"panel unreachable for {host_name}")
-        self.node_usage_calls.append((str(user_uuid), host_name))
+        self.node_usage_calls.append((str(user_uuid), host_name, kwargs.get("email")))
         per_node = {
             uuid: int(self.usage_by_node.get(uuid, 0))
             for uuid in node_uuids
@@ -163,6 +163,30 @@ def _run_worker(database, fake):
     finally:
         for name, fn in originals.items():
             setattr(remnawave_api, name, fn)
+
+
+def test_worker_passes_key_email_to_node_usage(temp_db):
+    """На 3.x UUID в ключе без email не резолвится в числовой userId — воркер обязан прокинуть email."""
+    database = temp_db
+    plan_id = _setup_lte_host(database, lte_gb=20)
+    _insert_key(
+        database,
+        user_id=1,
+        host_name="Lte",
+        user_uuid="00000000-0000-4000-8000-0000000000aa",
+        plan_id=plan_id,
+        email="100001-1@bot.local",
+    )
+    fake = _FakeRemnawave(
+        {"00000000-0000-4000-8000-0000000000aa": 0},
+        usage_by_node={"node-lte": GB},
+        nodes_by_host={"Lte": ["node-lte"]},
+    )
+    _run_worker(database, fake)
+
+    assert fake.node_usage_calls == [
+        ("00000000-0000-4000-8000-0000000000aa", "Lte", "100001-1@bot.local")
+    ]
 
 
 def test_purchased_boost_keeps_access(temp_db):

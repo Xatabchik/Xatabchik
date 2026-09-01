@@ -1831,6 +1831,11 @@ async def resolve_panel_user_id(
     `vpn_keys.remnawave_user_uuid` там хранит уже числовой id — в этом случае берём его
     напрямую, без лишнего запроса к панели (который к тому же может не отвечать).
     В 2.8.1 хранится UUID, и числовой id приходится доставать из payload.
+
+    На 3.x `GET /api/users/{uuid}` отвечает 400 NaN. Тогда нужен `email` (или готовый
+    `user_payload` с полем `id`): lookup падает на by-username, как в остальных
+    3.x-путях. Без email числовой id не резолвится — это ошибка ЭТОГО ключа, а не
+    «панель не умеет squad-scoped».
     """
     stored = (user_uuid or "").strip()
     if stored.isdigit():
@@ -1912,18 +1917,20 @@ async def get_user_node_usage_for_squad(
     end_date: datetime,
     panel_user_id: int | None = None,
     user_payload: dict[str, Any] | None = None,
+    email: str | None = None,
 ) -> NodeUsage:
     """Расход пользователя по нодам LTE-сквада за период — с разбивкой по нодам.
 
-    Версионно-толерантная цепочка (подтверждена по контракту 2.8.1 и 3.3.2):
+    Версионно-толерантная цепочка (подтверждена по контракту 2.8.1 и 3.3.2 / 3.4):
 
       1. `GET /api/bandwidth-stats/internal-squads/{squadUuid}/users/{userId}/usage`
-         — 3.3.2, числовой userId, ответ `days[].nodes[]{uuid,totalBytes}`, уже
+         — 3.3.2+, числовой userId, ответ `days[].nodes[]{uuid,totalBytes}`, уже
          заскоупленный нодами сквада. В 2.8.1 секции INTERNAL_SQUADS нет -> 404.
-      2. `GET /api/bandwidth-stats/users/{userId}` — 3.3.2 (числовой id) и
-      3. `GET /api/bandwidth-stats/users/{userUuid}` — 2.8.1 (UUID): один и тот же
-         маршрут с разным типом параметра, ответ `series[]/topNodes[]{uuid,total}` по
-         всем нодам, фильтруем списком нод сквада.
+      2. `GET /api/bandwidth-stats/users/{userId}` — 3.3.2+ (числовой id). 200,
+         даже с пустым series, значит панель приняла числовой userId — это 3.x,
+         UUID в этот путь не подставляем (400 NaN).
+      3. `GET /api/bandwidth-stats/users/{userUuid}` — 2.8.1 (UUID): тот же
+         маршрут, ответ `series[]/topNodes[]{uuid,total}` по всем нодам.
       4. `GET /api/bandwidth-stats/users/{userUuid}/legacy` — 2.8.1, плоские строки
          `{userUuid,nodeUuid,total,date}`. В 3.3.2 секции LEGACY нет -> 404.
       5. Исторический `get_user_lte_usage_bytes` — оставлен как последний кандидат без
@@ -1932,6 +1939,11 @@ async def get_user_node_usage_for_squad(
          отсутствует в обеих версиях, а у `POST /bandwidth-stats/nodes/users` другое тело
          и график вместо строк), поэтому его нулевой результат трактуется как «данных
          нет», а не как «расход нулевой».
+
+    `email` нужен, когда в ключе лежит UUID, а панель 3.x: без него числовой id
+    не резолвится. Нерезолвленный id — пропуск 3.x-путей для ЭТОГО ключа, кэш
+    «путь не поддерживается» при этом не трогаем (иначе один старый ключ глушит
+    squad-scoped на час для всей панели).
 
     Ошибки: 404/400/422 -> путь/тип параметра не поддерживается версией, пробуем
     следующего кандидата и запоминаем решение по инстансу панели. Сетевая ошибка или 5xx
@@ -1959,15 +1971,24 @@ async def get_user_node_usage_for_squad(
         nonlocal panel_user_id
         if panel_user_id is None:
             panel_user_id = await resolve_panel_user_id(
-                user_uuid_n, host_name=host_name, user_payload=user_payload
+                user_uuid_n,
+                host_name=host_name,
+                user_payload=user_payload,
+                email=email,
             )
         return panel_user_id
 
-    # 1. squad-scoped (3.3.2)
+    # 1. squad-scoped (3.3.2+)
     if squad_uuid_n and not _usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED):
         numeric_id = await _numeric_id()
         if numeric_id is None:
-            _mark_usage_path_unsupported(instance_key, USAGE_PATH_SQUAD_SCOPED)
+            # Не резолвился id ЭТОГО пользователя (часто UUID без email на 3.x).
+            # Кэш инстанса не трогаем: у соседнего ключа id может быть.
+            logger.debug(
+                "Remnawave[%s]: числовой userId не резолвится для %s — squad-scoped "
+                "пропущен без кэша «путь не поддерживается»",
+                host_name, user_uuid_n,
+            )
         else:
             response = await _request_optional_path(
                 host_name,
@@ -1986,7 +2007,7 @@ async def get_user_node_usage_for_squad(
                     _sum_squad_scoped_days(response.json(), allowed), USAGE_PATH_SQUAD_SCOPED
                 )
 
-    # 2/3. per-user разбивка по нодам: 3.3.2 — числовой id, 2.8.1 — UUID.
+    # 2/3. per-user разбивка по нодам: 3.3.2+ — числовой id, 2.8.1 — UUID.
     tried_idents: set[str] = set()
     for path_id in (USAGE_PATH_USER_BY_ID, USAGE_PATH_USER_BY_UUID):
         if _usage_path_unsupported(instance_key, path_id):
@@ -1994,7 +2015,6 @@ async def get_user_node_usage_for_squad(
         if path_id == USAGE_PATH_USER_BY_ID:
             ident: Any = await _numeric_id()
             if ident is None:
-                _mark_usage_path_unsupported(instance_key, path_id)
                 continue
         else:
             ident = quote(user_uuid_n)
@@ -2016,6 +2036,10 @@ async def get_user_node_usage_for_squad(
         per_node = _sum_user_series(response.json(), allowed)
         if per_node:
             return NodeUsage(per_node, path_id)
+        if path_id == USAGE_PATH_USER_BY_ID:
+            # 200 на числовом userId = Remnawave 3.x. UUID в этот же маршрут даст
+            # 400 NaN и пометит USER_BY_UUID «неподдерживаемым», хотя 3.x-пути живые.
+            return NodeUsage({}, path_id)
 
     # 4. legacy per-user (2.8.1)
     if not _usage_path_unsupported(instance_key, USAGE_PATH_USER_LEGACY):
