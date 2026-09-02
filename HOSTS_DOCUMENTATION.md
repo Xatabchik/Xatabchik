@@ -1,5 +1,7 @@
 # 🖥️ Документация: Система управления хостами (VPN-серверами)
 
+HTTP-клиент панели: `src/shop_bot/modules/remnawave_api.py` (функции — [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) §3). CRUD в БД: `database.create_host` / `get_host` / `update_host_remnawave_settings` / `host_squads`. Индекс: [DOCUMENTATION.md](DOCUMENTATION.md).
+
 ## 📋 Оглавление
 1. [Введение](#введение)
 2. [Архитектура системы](#архитектура-системы)

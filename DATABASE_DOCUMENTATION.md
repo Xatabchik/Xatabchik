@@ -8,6 +8,8 @@
 
 База данных используется для хранения информации о пользователях, VPN-ключах, транзакциях, тикетах поддержки, франшизах и других данных бота.
 
+Связанные документы: [ARCHITECTURE.md](ARCHITECTURE.md), [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) (какие функции пишут в какие таблицы), [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md).
+
 ---
 
 ## Таблицы базы данных
@@ -108,9 +110,9 @@
 | `created_date` | TIMESTAMP | Дата создания (по умолчанию текущее время) |
 
 **Функции для работы:**
-- `create_transaction()` - создание новой транзакции
+- `log_transaction()` - запись завершённой транзакции (отдельной `create_transaction()` нет)
 - `get_recent_transactions()` - получение последних транзакций
-- `get_paginated_transactions()` - постраничное получение транзакций
+- `get_paginated_transactions()` / `get_transactions_paginated()` - постраничное получение (вторая — с поиском и сортировкой)
 
 ---
 
@@ -790,16 +792,27 @@
 - `add_support_message()`, `set_ticket_status()`
 
 ### Реферальная система
-- `get_referrals_for_user()`, `add_to_referral_balance()`
+- `get_referrals_for_user()`, `add_to_referral_balance()`, `link_referrer_if_eligible()`
 - `get_referral_top_rich()`, `get_referral_rank_and_count()`
+- `create_referral_withdrawal_request()`, `list_referral_payout_methods()`
 
 ### Франшиза
-- `create_managed_bot()`, `get_partner_cabinet()`
+- `create_managed_bot()`, `get_partner_cabinet()`, `delete_managed_bot()`
+- `update_managed_bot_active()`, `accrue_partner_commission()`
 - `create_withdraw_request()`
 
 ### Подарки и промокоды
 - `create_user_gift()`, `activate_user_gift()`
-- `create_promo_code()`, `validate_promo_code()`
+- `create_promo_code()`, `check_promo_code_available()`, `reserve_promo_code()`, `redeem_promo_code()`
+  (отдельной `validate_promo_code()` нет — проверка в `check_promo_code_available`)
+
+### Mini App / email
+- `get_webapp_settings()`, `create_webapp_auth_request()`, `get_user_by_auth_token()`
+- `create_user_by_email()`, `set_email_verification_code()`, `mark_email_verified()`
+
+### LTE и трафик
+- `get_key_lte_state()`, `add_key_lte_boost_bytes()`, `create_traffic_package()`
+- `upsert_key_node_usage_snapshot()`, `should_account_lte_traffic()`
 
 ---
 
@@ -841,4 +854,58 @@
 
 ---
 
-*Документация актуальна на 14.02.2026*
+*Документация сверена с `database.py` 01.09.2026. Недостающие таблицы — раздел «Дополнительные таблицы» ниже.*
+
+---
+
+## Дополнительные таблицы
+
+Таблицы есть в `initialize_db` / миграциях, но раньше не были расписаны в этом файле.
+
+### `modules_registry`
+
+Реестр плагинов (`core/module_loader.py`). Поля: `module_id`, `name`, `version`, `status`, `enabled_at`, `error_message`, `metadata`.
+
+### `host_squads` / `remnawave_squads`
+
+Привязка сквадов Remnawave к хосту (`squad_class`: `base` / LTE) и глобальный каталог сквадов. Функции: `add_host_squad`, `get_host_squads`, `add_remnawave_squad`, `apply_global_remnawave_to_hosts`.
+
+### `traffic_packages`
+
+Пакеты докупки ГБ. Поля: `package_id`, `plan_id`, `size_gb`, `price`, `is_active`, `sort_order`, `pool` (`main` или LTE). Функции: `create_traffic_package`, `get_traffic_packages_for_plan`.
+
+### `subscription_lte` / `key_lte_state` / `key_node_usage_snapshots`
+
+LTE-лимиты. `subscription_lte` — устаревшее состояние **на пользователя** (мигрируется в `key_lte_state` на ключ). Снапшоты расхода по нодам за расчётный период — `key_node_usage_snapshots`. Воркер: `scheduler.enforce_dual_traffic_limits`.
+
+### `promo_code_reservations`
+
+Резерв промокода на время unpaid-инвойса (защита от гонки). Функции в `remnawave_repository`: `reserve_promo_code`, `release_promo_reservation`, `release_stale_promo_reservations`.
+
+### `referral_payout_methods` / `referral_withdrawal_requests`
+
+Реквизиты пользователя для вывода рефералки и заявки (`status`: `new` / processed / rejected). Функции: `add_referral_payout_method`, `create_referral_withdrawal_request`, `update_referral_withdrawal_request_status`.
+
+### `webapp_auth_requests`
+
+Одноразовые токены входа Mini App через deep-link `auth_*`. Функции: `create_webapp_auth_request`, `confirm_webapp_auth_request`, `get_webapp_auth_request`.
+
+### `broadcast_campaigns` / `broadcast_sends`
+
+Плановые рассылки неактивным подписчикам. Функции: `create_broadcast_campaign`, `get_pending_broadcast_recipients`, `record_broadcast_sends`. Крутит `scheduler.check_broadcast_campaigns`.
+
+### `utm_links` / `utm_visits`
+
+UTM-ссылки и визиты (`log_utm_visit`, `get_utm_analytics`). Deep-link бота: `?start=utm_<slug>`.
+
+### `server_cost_entries`
+
+Себестоимость серверов для вкладки экономики (`get_economics_summary`, `get_revenue_forecast`).
+
+### `ssh_known_hosts`
+
+Отпечатки SSH (`StoredHostKeyPolicy` в `speedtest_runner`). Функции: `get_ssh_known_host_key`, `save_ssh_known_host_key`.
+
+### `analytics_events`
+
+Сырые события аналитики (если пишутся текущим кодом). Агрегаты панели чаще считаются запросами к `transactions` / `users` / `vpn_keys`.

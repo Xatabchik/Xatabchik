@@ -31,7 +31,9 @@
   </p>
 </div>
 
-**Xatabchik** — комплексное решение для автоматизированной продажи VPN‑конфигураций через Telegram с веб‑панелью на базе Tabler и интеграцией с Remnawave Platform.
+**Xatabchik** — комплексное решение для автоматизированной продажи VPN‑конфигураций через Telegram с веб‑панелью на базе Tabler, Telegram Mini App и интеграцией с Remnawave Platform.
+
+Карта кода и функций: [DOCUMENTATION.md](DOCUMENTATION.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md).
 
 ---
 
@@ -39,9 +41,13 @@
 
 - Полностью автоматизированная воронка: онбординг пользователя, проверка подписки и выдача конфигурации сразу после оплаты.
 - Единая панель управления: управление хостами Remnawave Platform, тарифами, пользователями, платежами, журналами и спидтестами.
-- Гибкая биллинг-модель: поддержка множества серверов, индивидуальных тарифов, пробных периодов и реферальных начислений.
-- Интеграция с YooKassa, CryptoBot, Heleket и TON Connect, включая вебхуки и отправку чеков YooKassa.
-- Построение отчётов и диагностика: принудительная подписка, встроенный саппорт, SSH/net-probe speedtest, мониторинг событий.
+- Telegram Mini App (FastAPI): тот же кабинет в браузере — ключи, оплата, тикеты, email-вход.
+- Гибкая биллинг-модель: множество серверов, индивидуальные тарифы, пробные периоды, докупка ГБ/LTE, реферальные начисления.
+- Платежи: YooKassa, YooMoney, Platega, RollyPay, CryptoBot, Heleket, TON Connect, Telegram Stars, баланс и реферальный баланс. Вебхуки и чеки YooKassa.
+- Support-бот с тикетами (форум-топики) плюс тикеты из основного бота и Mini App.
+- Франшиза: управляемые клоны бота на той же БД с комиссией партнёра.
+- Плагины в `modules/` без перезапуска ядра.
+- Отчёты и диагностика: принудительная подписка, SSH/net-probe speedtest, мониторинг ресурсов.
 
 ## 🖼️ Скриншоты
 <details>
@@ -166,24 +172,48 @@ curl -sSL https://raw.githubusercontent.com/Xatabchik/Xatabchik/main/install.sh 
 ---
 
 ## 💳 Платёжные системы
-Откройте «Настройки → Настройки платёжных систем» и заполните соответствующие поля.
+Откройте «Настройки → Настройки платёжных систем» и заполните соответствующие поля.  
+Полное описание провайдеров, вебхуков и `process_successful_payment`: [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md). Поля настроек: [BOT_SETTINGS_GUIDE.md](BOT_SETTINGS_GUIDE.md).
+
+Вебхуки принимают Flask-панель. Если при установке выбран порт `8443`, добавьте его к URL.
 
 ### YooKassa
 - Укажите `yookassa_shop_id` и `yookassa_secret_key`.
-- В кабинете YooKassa задайте URL вебхука: `https://your-domain.com/yookassa-webhook`
-  Если при установке выбран порт `8443`, то: `https://your-domain.com:8443/yookassa-webhook`.
-- При желании добавьте `Почту для чеков`.
+- URL вебхука: `https://your-domain.com/yookassa-webhook` (или `:8443/yookassa-webhook`).
+- При желании добавьте почту для чеков.
+
+### YooMoney
+- Кошелёк, секрет уведомлений, опционально API-токен и OAuth (`/yoomoney/connect`).
+- Вебхук: `https://your-domain.com/yoomoney-webhook`.
+
+### Platega
+- `platega_merchant_id`, `platega_secret`, `platega_base_url` (по умолчанию `https://app.platega.io`).
+- Вебхук: `https://your-domain.com/platega-webhook` (GET и POST). Телу колбэка панель не доверяет — статус сверяется API.
+
+### RollyPay
+- `rollypay_api_key`, `rollypay_signing_secret`, опционально `rollypay_terminal_id`.
+- Базовый URL зафиксирован в коде (`https://api.rollypay.io/api/v1`).
+- Вебхук: `https://your-domain.com/rollypay-webhook` (HMAC `X-Signature`).
 
 ### CryptoBot
-- Получите токен в [@CryptoBot](https://t.me/CryptoBot) → Crypto Pay.
-- Включите вебхуки на `https://your-domain.com/cryptobot-webhook` (или с портом `:8443`).
-- Укажите `cryptobot_token` в настройках.
+- Токен в [@CryptoBot](https://t.me/CryptoBot) → Crypto Pay.
+- Вебхук: `https://your-domain.com/cryptobot-webhook`.
+- Поле: `cryptobot_token`.
 
 ### Heleket
-- Укажите `heleket_merchant_id` и `heleket_api_key`.
+- `heleket_merchant_id` и `heleket_api_key`.
+- Вебхук: `https://your-domain.com/heleket-webhook`.
 
 ### TON Connect (опционально)
-- Укажите `ton_wallet_address` и `tonapi_key` для курсов.
+- `ton_wallet_address` и `tonapi_key`.
+- Вебхук: `https://your-domain.com/ton-webhook`.
+
+### Telegram Stars
+- Флаг `stars_enabled` и курс `stars_per_rub` (> 0).
+- Подтверждение приходит апдейтом бота `successful_payment`, не вебхуком Flask.
+
+### Баланс и реферальный баланс
+Всегда доступны в боте и Mini App, если на счёте достаточно средств. Провайдер не вызывается.
 
 ---
 
@@ -236,17 +266,24 @@ curl -sSL https://raw.githubusercontent.com/Xatabchik/Xatabchik/main/install.sh 
 ---
 
 ## 🆘 Настройки поддержки (Support)
-Доступны два режима:
 
-1) Внешний саппорт‑бот
-   - Поля: `support_bot_token`, `support_bot_username`, `support_text`.
-   - Пользователь переходит в отдельного бота по кнопке «Помощь».
+Подробности тикетов, вложений и автозакрытия: [SUPPORT_BOT_DOCUMENTATION.md](SUPPORT_BOT_DOCUMENTATION.md).
 
-2) Внешний контакт
+Доступны режимы:
+
+1) Встроенный support‑бот с тикетами
+   - Поля: `support_bot_token`, `support_bot_username`, `support_forum_chat_id`.
+   - Пользователь пишет боту; админы отвечают в форум-топике. Те же тикеты видны в панели (`/support`) и Mini App.
+   - Автозапуск: `auto_start_support_bot`.
+
+2) Тикеты в основном боте
+   - Раздел «Помощь» создаёт записи в тех же таблицах `support_tickets` / `support_messages`.
+
+3) Внешний контакт
    - Поле: `support_user` (например, `@username`).
    - Кнопка ведёт в личные сообщения указанному контакту.
 
-Дополнительно: `support_forum_chat_id` — ID форума/топиков для расширенных сценариев.
+`support_text` — текст кнопки/заглушки.
 
 ---
 
@@ -254,8 +291,11 @@ curl -sSL https://raw.githubusercontent.com/Xatabchik/Xatabchik/main/install.sh 
 Xatabchik поддерживает расширяемую архитектуру через модульную систему. Вы можете создавать и загружать собственные модули без перезагрузки приложения.
 
 **Документация:**
-- [**MODULES_DOCUMENTATION.md**](MODULES_DOCUMENTATION.md) — руководство для разработчиков (создание модулей, структура, безопасность)
-- [**MODULE_DISTRIBUTION.md**](MODULE_DISTRIBUTION.md) — руководство по упаковке и распространению модулей
+- [**DOCUMENTATION.md**](DOCUMENTATION.md) — индекс всех руководств
+- [**ARCHITECTURE.md**](ARCHITECTURE.md) — процессы и слои
+- [**FUNCTIONS_AND_RELATIONS.md**](FUNCTIONS_AND_RELATIONS.md) — функции и связи
+- [**MODULES_DOCUMENTATION.md**](MODULES_DOCUMENTATION.md) — создание модулей, структура, безопасность
+- [**MODULE_DISTRIBUTION.md**](MODULE_DISTRIBUTION.md) — упаковка и распространение ZIP
 
 **Загрузка модулей:**
 1. Подготовьте модуль в виде ZIP архива (см. документацию)
@@ -298,6 +338,22 @@ docker compose up -d --build
 ```
 
 ---
+
+## 📚 Документация по коду
+
+| Документ | О чём |
+|----------|--------|
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Полный индекс |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Архитектура процессов |
+| [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) | Что / где / зачем по модулям |
+| [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md) | Каталог всех функций |
+| [BOT_HANDLERS_DOCUMENTATION.md](BOT_HANDLERS_DOCUMENTATION.md) | Telegram-хендлеры |
+| [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md) | Flask-панель |
+| [WEBAPP_MINIAPP_DOCUMENTATION.md](WEBAPP_MINIAPP_DOCUMENTATION.md) | Mini App |
+| [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md) | Платежи |
+| [DATABASE_DOCUMENTATION.md](DATABASE_DOCUMENTATION.md) | SQLite |
+| [SCHEDULER_DOCUMENTATION.md](SCHEDULER_DOCUMENTATION.md) | Фоновые задачи |
+| [FRANCHISE_IMPLEMENTATION.md](FRANCHISE_IMPLEMENTATION.md) | Клоны ботов |
 
 ## 🙌 Баги и предложения
 Нашли баг или есть идея? Создайте Issue или пришлите Pull Request.

@@ -1,5 +1,7 @@
 # 🔑 Документация по системе VPN-ключей
 
+Выдача после оплаты: `process_successful_payment` → `remnawave_api.create_or_update_key_on_host` → `rw_repo.record_key_from_payload`. LTE и месячный сброс крутит [SCHEDULER_DOCUMENTATION.md](SCHEDULER_DOCUMENTATION.md). Индекс: [DOCUMENTATION.md](DOCUMENTATION.md).
+
 ## Содержание
 - [Обзор системы](#обзор-системы)
 - [Структура хранения ключей](#структура-хранения-ключей)

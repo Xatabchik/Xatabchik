@@ -6,11 +6,32 @@
 
 Модульная система позволяет добавлять обработчики бота и страницы панели без изменения ядра. Модули обнаруживаются в директории `modules/` при старте и могут включаться/выключаться во время работы через панель или Telegram-админку.
 
+Карта функций ядра плагинов: [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) §11, каталог — `src/shop_bot/core/*` в [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md). Упаковка ZIP: [MODULE_DISTRIBUTION.md](MODULE_DISTRIBUTION.md).
+
 Ключевые свойства:
 - Изоляция ошибок: сбои модулей не падают на ядро.
 - Удаление данных при удалении модуля.
 - Горячее включение/выключение без перезапуска процесса.
 - Поддержка зависимостей между модулями.
+
+## API `module_loader` (ядро)
+
+Модуль: `src/shop_bot/core/module_loader.py`. Синглтон: `get_global_module_loader()`.
+
+| Метод | Кто вызывает | Зачем |
+|-------|--------------|--------|
+| `discover_modules` | `BotController.start`, панель | Сканирует `modules/`, пишет `modules_registry` |
+| `enable_module` / `disable_module` / `delete_module` | панель `/modules/<id>/*`, админ-бот | Схема БД, SETTINGS, router, blueprint |
+| `import_module_from_zip` | панель `/modules/upload` | Распаковка + валидация ZIP |
+| `set_dispatcher` / `set_flask_app` | контроллер бота / `create_webhook_app` | Подключить router/blueprint |
+| `get_menu_items` | шапка панели | Пункты сайдбара включённых модулей |
+| `get_settings_schema` / `get_settings_values` | `/modules/<id>/settings` | Форма настроек |
+| `list_modules` / `get_module_status` | UI списка | Статус `enabled` / `disabled` / `error` |
+
+Типы: `ModuleMeta`, `ModuleStatus`, `ModuleInfo` в `module_types.py`.  
+Ошибки хендлеров: `ModuleSafeMiddleware` (`module_middleware.py`) — ловит exception, `set_module_error`, пишет админам; callback без префикса модуля блокируется.
+
+Таблица `modules_registry`: см. [DATABASE_DOCUMENTATION.md](DATABASE_DOCUMENTATION.md).
 
 ## Загрузка модулей
 
