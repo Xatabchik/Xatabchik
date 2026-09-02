@@ -23,7 +23,7 @@
 
 ```
 __init__.py        - пустой, маркер пакета
-handlers.py         - вся backend-логика (2406 строк): роуты FastAPI, HTML-рендеринг, auth, оплата
+handlers.py         - вся backend-логика (~5800 строк): роуты FastAPI, HTML-рендеринг, auth, оплата, тикеты
 app.html            - главная SPA-страница (шаблон с плейсхолдерами {{ ... }}, рендерится строковой заменой)
 login.html          - страница логина/загрузки (для неавторизованных пользователей)
 install.sh          - bash-скрипт первичной настройки Nginx + Certbot (SSL) для домена miniapp
@@ -61,27 +61,21 @@ module/
   `{{ renew_plans_grid }}`, `{{ server_dropdown_options }}`, `{{ server_plans_grid }}`,
   `{{ min_price }}`, `{{ renew_selected_key_display }}`, `{{ user_id }}`.
 
-## 4. КРИТИЧЕСКИ ВАЖНО: отсутствующая функция `get_webapp_settings`
+## 4. Настройки Mini App: `get_webapp_settings`
 
-`handlers.py` импортирует:
-```python
-from shop_bot.data_manager.remnawave_repository import (..., get_webapp_settings, ...)
-```
-Но такой функции **не существует** ни в `remnawave_repository.py`, ни в `database.py` текущего
-проекта (проверено через поиск по всему репозиторию). Значит:
-- Это функция, которую нужно **создать с нуля** при интеграции.
-- Ожидаемо, что она должна возвращать dict с как минимум ключами:
-  `webapp_title`, `webapp_logo`, `webapp_icon`, `tg_fullscreen`, а также (по требованию
-  пользователя) флаг включения и домен — вероятно `webapp_enabled`, `webapp_domain`.
-- В существующем `ALL_SETTINGS_KEYS` (в `webhook_server/app.py`) таких ключей тоже нет —
-  их нужно туда добавить, а также добавить чтение/запись через `get_setting`/`update_setting`
-  (общий key-value механизм настроек бота, таблица `bot_settings` в SQLite).
-- В проекте уже есть похожий текстовый бренд `panel_brand_title` (используется в шапке админки
-  и как fallback для заголовка miniapp) и логотип бота по умолчанию — `src/shop_bot/img/obla.png`
-  (используется в `bot/photo_helper.py::get_default_photo_path()` для отправки картинок ботом).
-  Отдельной настройки "логотип проекта" (URL/путь) в БД пока не существует — её тоже нужно будет
-  завести (или переиспользовать существующий файл `img/obla.png` как источник, что соответствует
-  пожеланию пользователя "логотип он должен брать из логотипа проекта").
+Функция **есть** в `database.py` (проксируется через `remnawave_repository`). Читает ключи из `bot_settings`:
+
+| Ключ | Тип | Назначение |
+|------|-----|------------|
+| `webapp_enabled` | bool | Включён ли Mini App |
+| `webapp_domain` | str | Домен, на котором развёрнут кабинет |
+| `webapp_title` | str | Заголовок (fallback: `panel_brand_title` → `"Xatab VPN"`) |
+| `webapp_logo` | str | URL логотипа |
+| `webapp_icon` | str | favicon / apple-touch-icon |
+| `tg_fullscreen` | bool | Полноэкранный режим в Telegram |
+
+Редактируются в Flask-панели (`GET/POST /settings`) и прогоне nginx (`/settings/webapp/*`).  
+Карта роутов Mini App и связь с ботом: [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md), [BOT_HANDLERS_DOCUMENTATION.md](BOT_HANDLERS_DOCUMENTATION.md), [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md).
 
 ## 5. Аутентификация (Telegram initData + альтернативные способы)
 
@@ -93,27 +87,27 @@ from shop_bot.data_manager.remnawave_repository import (..., get_webapp_settings
 Поддерживаемые способы входа (все реализованы как FastAPI-роуты):
 - `GET /` — если передан `token` (query param) — вход по постоянному токену
   (`database.get_user_by_auth_token`). Если нет `user_id`/токена — отдаётся `login.html`.
-- `GET /api/auth/request-token` — генерирует временный токен и deep-link
-  `tg://resolve?domain=<bot_username>&start=auth_<token>` (пользователь переходит в бота,
-  бот подтверждает — см. `TEMP_AUTH_TOKENS` in-memory dict).
+- `GET /api/auth/request-token` — генерирует временный токен (`database.create_webapp_auth_request`)
+  и deep-link `tg://resolve?domain=<bot_username>&start=auth_<token>`. Бот подтверждает через
+  `confirm_webapp_auth_request` в `start_handler`.
 - `GET /api/auth/check-token/{token}` — поллинг: проверяет, подтверждён ли токен (или уже есть
   постоянный токен в БД).
 - `POST /api/auth/token` — вход через `init_data` (проверка через `validate_telegram_data`),
   выдаёт постоянный токен.
-- `POST /api/auth/telegram-direct` — прямой вход по `user_id` (без проверки initData —
-  используется, видимо, когда открыто изнутри Telegram и user уже известен).
+- `POST /api/auth/telegram-direct` — вход по данным Telegram с проверкой (см. `tests/test_telegram_direct_auth.py`).
+  Клиентский `user_id` сам по себе для выдачи услуги не принимается (`_require_authenticated_user`).
 - `POST /api/auth/email/register` / `/login` — альтернативная регистрация по email+паролю
   (создаёт "виртуального" пользователя с telegram_id, начинающимся на `"999"` — это специальный
   префикс для "не привязанных к Telegram" аккаунтов, что подтверждается также в
   `_get_profile_card_html`, где кнопка "Синхронизировать с Telegram" показывается только если
   `str(user_id).startswith("999")`).
-- `POST /api/auth/email/reset/request|check|verify` — сброс пароля по email через код,
-  отправляемый... в Telegram-сообщение (не на почту!) — см. `_send_telegram_message`.
+- `POST /api/auth/email/reset/request|check|verify` — сброс пароля: код уходит на почту
+  (`modules/email_sender.send_activation_code`), если SMTP настроен.
 - `POST /api/auth/sync-tg` — привязка ранее созданного email-аккаунта к реальному Telegram.
 
-Все токены — постоянные UUID4, хранятся в БД через `database.update_user_auth_token` /
-`get_auth_token_by_user_id` / `get_user_by_email` / `create_user_by_email` (эти функции уже
-должны существовать в проектном `database.py` — требуется проверить/добавить при интеграции).
+Постоянные токены — UUID, таблица пользователей (`update_user_auth_token`, `get_user_by_auth_token`).
+Email-аккаунты: `create_user_by_email`, `hash_password` / `verify_password`, коды в
+`set_email_verification_code` (хеш, не plaintext — `tests/test_password_reset_code_hash.py`).
 
 ## 5.1. Единый сценарий подарочных и реферальных ссылок (pending action)
 
@@ -232,28 +226,37 @@ from shop_bot.data_manager.remnawave_repository import (..., get_webapp_settings
   включения/выключения Webapp в админ-панели — то есть наша будущая настройка
   "включение/выключение" полностью соответствует изначальному замыслу авторов miniapp.
 
-## 12. Что нужно сделать при интеграции (план, ещё не реализовано)
+## 12. Статус интеграции (актуально)
 
-1. Создать `get_webapp_settings()` в `remnawave_repository.py` (или `database.py`) — должна
-   отдавать dict как минимум с: `webapp_enabled`, `webapp_domain`, `webapp_title`,
-   `webapp_logo`, `webapp_icon`, `tg_fullscreen`.
-2. Добавить новые ключи в `ALL_SETTINGS_KEYS` (`webhook_server/app.py`):
-   `webapp_enabled`, `webapp_domain` (логотип — не отдельная настройка, а автоматически
-   берётся из существующего логотипа проекта, как и просил пользователь).
-3. Логотип: определить единый источник "логотипа проекта" — либо использовать
-   `src/shop_bot/img/obla.png` как файл (раздать его в вебе через `StaticFiles`/новый роут),
-   либо (если в будущем появится настройка загрузки логотипа в админке) использовать её.
-   Значение `webapp_logo` в шаблоне должно указывать на публичный URL этого файла.
-4. Добавить секцию в шаблон `webhook_server/templates/settings.html` (или отдельную вкладку) с
-   полями: домен (`webapp_domain`), чекбокс включения (`webapp_enabled`). Обработчик в `app.py`
-   должен сохранять эти значения через `update_setting`.
-5. Исправить импорты в `handlers.py`, если потребуется (пока похоже, что они уже соответствуют
-   структуре проекта — `shop_bot.data_manager.database`, `shop_bot.bot.keyboards`,
-   `shop_bot.bot.handlers`, `shop_bot.modules.*` — все такие модули существуют в проекте).
-6. Добавить сервис `remnawave-webapp` в реальный `docker-compose.yml` проекта (по образцу
-   предоставленного пользователем), а также зависимость `fastapi`/`uvicorn`/`qrcode` и др.
-   в `pyproject.toml`, если их там ещё нет.
-7. Проверить, что `webapp_enabled=False` действительно отключает выдачу Mini App (например,
-   через middleware/проверку в начале `index()`, отдающую 503 или страницу "отключено"), так
-   как в текущем коде такой проверки пока не найдено.
+Пункты ниже **уже сделаны** в текущем репозитории:
+
+1. `get_webapp_settings()` живёт в `database.py` и доступна через `remnawave_repository`.
+2. Ключи `webapp_*` сохраняются из панели (`/settings`, `/settings/webapp/*`).
+3. Сервис `xatabchik-webapp` есть в `docker-compose.yml` (`uvicorn` на порту 8000 → хост 8001).
+4. Зависимости `fastapi`, `uvicorn`, `qrcode` есть в `pyproject.toml`.
+5. Fulfillment оплаты делегируется в `bot.handlers.process_successful_payment`.
+6. Тикеты Mini App пишут в те же `support_*` таблицы, что бот и панель.
+
+Имеет смысл держать в голове при доработках (это не дыры интеграции, а особенности кода):
+
+- HTML собирается строковой заменой, не Jinja.
+- Форматирование дат/трафика дублирует бот и может разъехаться.
+- `modules/cryptobot_api.py` Mini App не импортирует — берёт функцию из `bot/handlers.py`.
+
+Полный список HTTP-роутов: [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md) не покрывает Mini App; актуальные FastAPI-пути:
+
+| Метод | Путь | Назначение |
+|-------|------|------------|
+| GET | `/` | Кабинет или login |
+| GET/POST | `/api/auth/*` | Токен, Telegram, email, reset, sync-tg |
+| POST | `/api/create-payment`, `/create-topup-payment`, `/create-lte-topup-payment` | Инвойсы |
+| POST | `/api/check-payment`, `/api/webapp/payments/{id}/verify` | Сверка статуса |
+| POST | `/api/key/*`, `/api/keys/search` | Устройства, имя, комментарий, автопродление |
+| POST | `/api/support/*` | Тикеты |
+| GET | `/api/user/transactions`, `/api/lte-packages` | История и пакеты LTE |
+| GET | `/ref/{id}`, `/gift/{code}` | Публичные лендинги + pending action |
+
+---
+
+Связанные документы: [ARCHITECTURE.md](ARCHITECTURE.md), [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md), [SUPPORT_BOT_DOCUMENTATION.md](SUPPORT_BOT_DOCUMENTATION.md).
 

@@ -1,5 +1,7 @@
 # Руководство по настройкам Xatabchik VPN Bot
 
+Ключи лежат в `bot_settings` (`get_setting` / `update_setting`). Сохранение: Flask `POST /settings` и админ-меню бота. Карта кода: [DOCUMENTATION.md](DOCUMENTATION.md). Платежи подробно: [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md).
+
 ## Оглавление
 
 1. [Вход и доступ](#вход-и-доступ)
@@ -247,6 +249,25 @@ Support-бот обрабатывает обращения пользовате�
 
 **Название кнопки**
 - По умолчанию: "💳 Platega"
+
+Вебхук: `https://your-domain/platega-webhook`. Реализация: [PAYMENTS_DOCUMENTATION.md](PAYMENTS_DOCUMENTATION.md).
+
+### RollyPay
+
+**API Key**
+- Ключ `rollypay_api_key` из кабинета RollyPay
+
+**Signing Secret**
+- `rollypay_signing_secret` — HMAC вебхука (`X-Signature`)
+
+**Terminal ID**
+- `rollypay_terminal_id` (если выдаётся провайдером)
+
+**Payment method**
+- `rollypay_payment_method` — идентификатор метода в API RollyPay
+
+Базовый URL **не настраивается**: в коде зафиксирован `https://api.rollypay.io/api/v1`.  
+Вебхук: `https://your-domain/rollypay-webhook`.
 
 ### TON Connect (TON Wallet)
 

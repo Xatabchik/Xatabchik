@@ -1,5 +1,7 @@
 # 🤖 Система защиты от ботов (Капча)
 
+Функции: `data_manager/captcha_utils.py` (`generate_*`, `create_captcha_challenge`, `check_captcha_answer`, `has_passed_captcha`). Хендлеры: `bot/handlers.py` (FSM `Captcha`). Таблицы: `captcha_challenges`, `user_captcha_status`. Краткий гайд: [CAPTCHA_QUICK_GUIDE.md](CAPTCHA_QUICK_GUIDE.md).
+
 ## Обзор
 
 Система капчи защищает бота от автоматических регистраций и поддельных аккаунтов. Она обязательна для прохождения новыми пользователями при первой регистрации.

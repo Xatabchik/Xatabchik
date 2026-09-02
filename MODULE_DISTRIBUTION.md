@@ -1,5 +1,7 @@
 # 📦 Как создать ZIP модуля для распространения
 
+Требования к манифесту и API ядра: [MODULES_DOCUMENTATION.md](MODULES_DOCUMENTATION.md). Индекс документации: [DOCUMENTATION.md](DOCUMENTATION.md).
+
 ## Шаг 1: Подготовьте директорию модуля
 
 ```bash

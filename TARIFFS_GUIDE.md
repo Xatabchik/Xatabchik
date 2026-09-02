@@ -1,5 +1,7 @@
 # 📋 Руководство по настройке тарифов
 
+Функции БД: `create_plan`, `update_plan`, `create_traffic_package`, `plan_lte_limit_bytes`. UI: админ-бот `admin_plans_*`, панель `/add-plan` и пакеты. Индекс: [DOCUMENTATION.md](DOCUMENTATION.md).
+
 ## Содержание
 - [Обзор](#обзор)
 - [Структура тарифа](#структура-тарифа)

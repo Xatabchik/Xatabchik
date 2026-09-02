@@ -1,5 +1,7 @@
 # Реализация модуля «Франшиза» (управляемые клоны ботов)
 
+Связанные документы: [ARCHITECTURE.md](ARCHITECTURE.md), [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) §1 и §2, [BOT_HANDLERS_DOCUMENTATION.md](BOT_HANDLERS_DOCUMENTATION.md) (создание клона в root-боте), [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md) (`/franchise*`).
+
 ## Что изменилось в этом цикле
 
 Точечные правки runtime-управления клонами: включение/выключение франшизы и отдельных ботов больше не требует `docker-compose restart`. Добавлены остановка одного клона, автоотключение по невалидному токену, удаление текущего клона владельцем, удаление в веб-админке и отдельный флаг видимости пункта меню.
