@@ -1,6 +1,6 @@
 # Архитектура Xatabchik
 
-Карта процессов, модулей и потоков данных. Полный перечень функций — в [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md). Кто кого вызывает и зачем — в [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md).
+Карта процессов, модулей и потоков данных. Полный перечень функций — в [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md). Кто кого вызывает и зачем — в [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md). Помодульный разбор с call site’ами — [MODULES_AND_FUNCTIONS.md](MODULES_AND_FUNCTIONS.md).
 
 Код в этом цикле **не менялся**. Документация сверена с исходниками на ветке `main` (состояние репозитория на момент обхода).
 
@@ -151,6 +151,7 @@ Root-бот при `franchise_enabled` поднимает `ManagedBotsService.st
 | Тема | Документ |
 |------|----------|
 | Все функции по файлам | [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md) |
+| Модули и вызовы функций | [MODULES_AND_FUNCTIONS.md](MODULES_AND_FUNCTIONS.md) |
 | Связи «кто → кого» | [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) |
 | Хендлеры бота | [BOT_HANDLERS_DOCUMENTATION.md](BOT_HANDLERS_DOCUMENTATION.md) |
 | Админ-панель и вебхуки | [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md) |

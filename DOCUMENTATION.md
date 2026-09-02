@@ -10,6 +10,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Процессы, слои, потоки данных |
 | [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) | Функции по модулям: что / где / зачем |
 | [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md) | Полный табличный каталог функций (~2100) |
+| [MODULES_AND_FUNCTIONS.md](MODULES_AND_FUNCTIONS.md) | Все модули: назначение, функции, кто вызывает |
 
 ## Подсистемы
 
