@@ -55,12 +55,12 @@
 | 42 | `modules/example_module/bot_handlers.py` | [modules_example_module_bot_handlers.md](modules_example_module_bot_handlers.md) |
 | 43 | `modules/example_module/db_cleanup.py` | [modules_example_module_db_cleanup.md](modules_example_module_db_cleanup.md) |
 | 44 | `modules/example_module/panel_routes.py` | [modules_example_module_panel_routes.md](modules_example_module_panel_routes.md) |
-| 45 | `modules/ramadan_tracker/bot_handlers.py` | в работе |
+| 45 | `modules/ramadan_tracker/bot_handlers.py` | [modules_ramadan_tracker_bot_handlers.md](modules_ramadan_tracker_bot_handlers.md) |
 | 46 | `modules/ramadan_tracker/db_cleanup.py` | [modules_ramadan_tracker_db_cleanup.md](modules_ramadan_tracker_db_cleanup.md) |
 | 47 | `modules/ramadan_tracker/db_schema.py` | [modules_ramadan_tracker_db_schema.md](modules_ramadan_tracker_db_schema.md) |
-| 48 | `modules/ramadan_tracker/panel_routes.py` | в работе |
+| 48 | `modules/ramadan_tracker/panel_routes.py` | [modules_ramadan_tracker_panel_routes.md](modules_ramadan_tracker_panel_routes.md) |
 | 49 | `simple_collect.py` | [simple_collect.md](simple_collect.md) |
-| 50 | `simple_monitor_test.py` | в работе |
+| 50 | `simple_monitor_test.py` | [simple_monitor_test.md](simple_monitor_test.md) |
 
 **Docstring в коде: есть** — текст скопирован из исходника дословно.  
 **Docstring в коде: нет** — предлагаемый комментарий написан по прочитанному телу функции, исходник не трогали.
