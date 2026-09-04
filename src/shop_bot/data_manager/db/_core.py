@@ -51,6 +51,8 @@ __all__ = (
 )
 
 
+# Имя логгера задано строкой, а не через __name__: записи в логах должны
+# остаться от 'shop_bot.data_manager.database', как до разделения файла.
 logger = logging.getLogger("shop_bot.data_manager.database")
 
 
