@@ -30,7 +30,7 @@
 | 17 | `src/shop_bot/data_manager/captcha_utils.py` | в работе |
 | 18 | `src/shop_bot/data_manager/resource_monitor.py` | в работе |
 | 19 | `src/shop_bot/data_manager/speedtest_runner.py` | в работе |
-| 20 | `src/shop_bot/modules/remnawave_api.py` | в работе |
+| 20 | `src/shop_bot/modules/remnawave_api.py` | [shop_bot_modules_remnawave_api.md](shop_bot_modules_remnawave_api.md) |
 | 21 | `src/shop_bot/modules/platega_api.py` | [shop_bot_modules_platega_api.md](shop_bot_modules_platega_api.md) |
 | 22 | `src/shop_bot/modules/platega_fulfillment.py` | [shop_bot_modules_platega_fulfillment.md](shop_bot_modules_platega_fulfillment.md) |
 | 23 | `src/shop_bot/modules/rollypay_api.py` | [shop_bot_modules_rollypay_api.md](shop_bot_modules_rollypay_api.md) |
