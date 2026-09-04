@@ -24,12 +24,12 @@
 | 11 | `src/shop_bot/bot/handlers.py` | в работе |
 | 12 | `src/shop_bot/bot/admin_handlers.py` | в работе |
 | 13 | `src/shop_bot/data_manager/database.py` | в работе |
-| 14 | `src/shop_bot/data_manager/remnawave_repository.py` | в работе |
-| 15 | `src/shop_bot/data_manager/scheduler.py` | в работе |
-| 16 | `src/shop_bot/data_manager/backup_manager.py` | в работе |
-| 17 | `src/shop_bot/data_manager/captcha_utils.py` | в работе |
-| 18 | `src/shop_bot/data_manager/resource_monitor.py` | в работе |
-| 19 | `src/shop_bot/data_manager/speedtest_runner.py` | в работе |
+| 14 | `src/shop_bot/data_manager/remnawave_repository.py` | [shop_bot_data_manager_remnawave_repository.md](shop_bot_data_manager_remnawave_repository.md) |
+| 15 | `src/shop_bot/data_manager/scheduler.py` | [shop_bot_data_manager_scheduler.md](shop_bot_data_manager_scheduler.md) |
+| 16 | `src/shop_bot/data_manager/backup_manager.py` | [shop_bot_data_manager_backup_manager.md](shop_bot_data_manager_backup_manager.md) |
+| 17 | `src/shop_bot/data_manager/captcha_utils.py` | [shop_bot_data_manager_captcha_utils.md](shop_bot_data_manager_captcha_utils.md) |
+| 18 | `src/shop_bot/data_manager/resource_monitor.py` | [shop_bot_data_manager_resource_monitor.md](shop_bot_data_manager_resource_monitor.md) |
+| 19 | `src/shop_bot/data_manager/speedtest_runner.py` | [shop_bot_data_manager_speedtest_runner.md](shop_bot_data_manager_speedtest_runner.md) |
 | 20 | `src/shop_bot/modules/remnawave_api.py` | [shop_bot_modules_remnawave_api.md](shop_bot_modules_remnawave_api.md) |
 | 21 | `src/shop_bot/modules/platega_api.py` | [shop_bot_modules_platega_api.md](shop_bot_modules_platega_api.md) |
 | 22 | `src/shop_bot/modules/platega_fulfillment.py` | [shop_bot_modules_platega_fulfillment.md](shop_bot_modules_platega_fulfillment.md) |
@@ -38,7 +38,29 @@
 | 25 | `src/shop_bot/modules/cryptobot_api.py` | [shop_bot_modules_cryptobot_api.md](shop_bot_modules_cryptobot_api.md) |
 | 26 | `src/shop_bot/modules/email_sender.py` | [shop_bot_modules_email_sender.md](shop_bot_modules_email_sender.md) |
 | 27 | `src/shop_bot/modules/telegram_reachability.py` | [shop_bot_modules_telegram_reachability.md](shop_bot_modules_telegram_reachability.md) |
-| 28–50 | core, панель, Mini App, support, франшиза, плагины | в работе |
+| 28 | `src/shop_bot/core/module_types.py` | [shop_bot_core_module_types.md](shop_bot_core_module_types.md) |
+| 29 | `src/shop_bot/core/module_middleware.py` | [shop_bot_core_module_middleware.md](shop_bot_core_module_middleware.md) |
+| 30 | `src/shop_bot/core/module_loader.py` | [shop_bot_core_module_loader.md](shop_bot_core_module_loader.md) |
+| 31 | `src/shop_bot/webhook_server/app.py` | в работе |
+| 32 | `src/shop_bot/webhook_server/apply_app_fix.py` | [shop_bot_webhook_server_apply_app_fix.md](shop_bot_webhook_server_apply_app_fix.md) |
+| 33 | `src/shop_bot/webapp/handlers.py` | в работе |
+| 34 | `src/shop_bot/support_bot/handlers.py` | [shop_bot_support_bot_handlers.md](shop_bot_support_bot_handlers.md) |
+| 35 | `src/shop_bot/support_bot/idle_close.py` | [shop_bot_support_bot_idle_close.md](shop_bot_support_bot_idle_close.md) |
+| 36 | `src/shop_bot/support_bot/ticket_media.py` | [shop_bot_support_bot_ticket_media.md](shop_bot_support_bot_ticket_media.md) |
+| 37 | `src/shop_bot/factory_bot/runtime.py` | [shop_bot_factory_bot_runtime.md](shop_bot_factory_bot_runtime.md) |
+| 38 | `src/shop_bot/factory_bot/middleware.py` | [shop_bot_factory_bot_middleware.md](shop_bot_factory_bot_middleware.md) |
+| 39 | `src/shop_bot/factory_bot/keyboards.py` | [shop_bot_factory_bot_keyboards.md](shop_bot_factory_bot_keyboards.md) |
+| 40 | `src/shop_bot/factory_bot/handlers.py` | [shop_bot_factory_bot_handlers.md](shop_bot_factory_bot_handlers.md) |
+| 41 | `src/shop_bot/factory_bot/service.py` | [shop_bot_factory_bot_service.md](shop_bot_factory_bot_service.md) |
+| 42 | `modules/example_module/bot_handlers.py` | [modules_example_module_bot_handlers.md](modules_example_module_bot_handlers.md) |
+| 43 | `modules/example_module/db_cleanup.py` | [modules_example_module_db_cleanup.md](modules_example_module_db_cleanup.md) |
+| 44 | `modules/example_module/panel_routes.py` | [modules_example_module_panel_routes.md](modules_example_module_panel_routes.md) |
+| 45 | `modules/ramadan_tracker/bot_handlers.py` | в работе |
+| 46 | `modules/ramadan_tracker/db_cleanup.py` | [modules_ramadan_tracker_db_cleanup.md](modules_ramadan_tracker_db_cleanup.md) |
+| 47 | `modules/ramadan_tracker/db_schema.py` | [modules_ramadan_tracker_db_schema.md](modules_ramadan_tracker_db_schema.md) |
+| 48 | `modules/ramadan_tracker/panel_routes.py` | в работе |
+| 49 | `simple_collect.py` | [simple_collect.md](simple_collect.md) |
+| 50 | `simple_monitor_test.py` | в работе |
 
 **Docstring в коде: есть** — текст скопирован из исходника дословно.  
 **Docstring в коде: нет** — предлагаемый комментарий написан по прочитанному телу функции, исходник не трогали.
