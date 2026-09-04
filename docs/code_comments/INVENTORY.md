@@ -3,7 +3,7 @@
 Список составлен по документации ([MODULES_AND_FUNCTIONS.md](../../MODULES_AND_FUNCTIONS.md), [ARCHITECTURE.md](../../ARCHITECTURE.md)) и повторному AST-обходу. **Код не изменяется.**
 
 Правила текста: [CODE_COMMENTING_RULES.md](../../CODE_COMMENTING_RULES.md).
-Готовые аннотации: каталог `docs/code_comments/`.
+Готовые аннотации: каталог `docs/code_comments/` (все 50 файлов очереди закрыты; индекс — [README.md](README.md)).
 
 | Поле | Смысл |
 |------|--------|

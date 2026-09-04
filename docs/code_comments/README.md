@@ -1,13 +1,18 @@
 # Каталог комментариев (код не менялся)
 
-Каждый файл здесь соответствует одному `.py` исходнику. Текст — то, что по правилам проекта стояло бы в docstring / `#`, плюс разбор блоков.
+Каждый файл здесь соответствует одному `.py` исходнику. Текст — то, что по правилам проекта стояло бы в docstring / `#`, плюс разбор неочевидных блоков.
 
 | Файл | Содержание |
 |------|------------|
 | [INVENTORY.md](INVENTORY.md) | Полный список функций и классов к комментированию |
 | [CODE_COMMENTING_RULES.md](../../CODE_COMMENTING_RULES.md) | Стиль, снятый с существующих комментариев в репо |
 
-Очередь из инвентаря (50 исходников). Готовый файл в каталоге — модуль прокомментирован.
+**Docstring в коде: есть** — текст скопирован из исходника дословно.  
+**Docstring в коде: нет** — предлагаемый комментарий написан по прочитанному телу функции, исходник не трогали.
+
+Вложенные хендлеры (внутри `get_user_router` / `get_admin_router` / `create_webhook_app`) комментируются в файле того же исходника.
+
+Крупные исходники разбиты на части; индексный файл указывает диапазоны.
 
 | № | Исходник | Комментарии |
 |--:|----------|-------------|
@@ -20,10 +25,10 @@
 | 7 | `src/shop_bot/bot/callback_safety.py` | [shop_bot_bot_callback_safety.md](shop_bot_bot_callback_safety.md) |
 | 8 | `src/shop_bot/bot/photo_helper.py` | [shop_bot_bot_photo_helper.md](shop_bot_bot_photo_helper.md) |
 | 9 | `src/shop_bot/bot/image_bot.py` | [shop_bot_bot_image_bot.md](shop_bot_bot_image_bot.md) |
-| 10 | `src/shop_bot/bot/keyboards.py` | в работе |
-| 11 | `src/shop_bot/bot/handlers.py` | в работе |
-| 12 | `src/shop_bot/bot/admin_handlers.py` | в работе |
-| 13 | `src/shop_bot/data_manager/database.py` | в работе |
+| 10 | `src/shop_bot/bot/keyboards.py` | [shop_bot_bot_keyboards.md](shop_bot_bot_keyboards.md) |
+| 11 | `src/shop_bot/bot/handlers.py` | [shop_bot_bot_handlers.md](shop_bot_bot_handlers.md) |
+| 12 | `src/shop_bot/bot/admin_handlers.py` | [shop_bot_bot_admin_handlers.md](shop_bot_bot_admin_handlers.md) |
+| 13 | `src/shop_bot/data_manager/database.py` | [shop_bot_data_manager_database.md](shop_bot_data_manager_database.md) |
 | 14 | `src/shop_bot/data_manager/remnawave_repository.py` | [shop_bot_data_manager_remnawave_repository.md](shop_bot_data_manager_remnawave_repository.md) |
 | 15 | `src/shop_bot/data_manager/scheduler.py` | [shop_bot_data_manager_scheduler.md](shop_bot_data_manager_scheduler.md) |
 | 16 | `src/shop_bot/data_manager/backup_manager.py` | [shop_bot_data_manager_backup_manager.md](shop_bot_data_manager_backup_manager.md) |
@@ -41,9 +46,9 @@
 | 28 | `src/shop_bot/core/module_types.py` | [shop_bot_core_module_types.md](shop_bot_core_module_types.md) |
 | 29 | `src/shop_bot/core/module_middleware.py` | [shop_bot_core_module_middleware.md](shop_bot_core_module_middleware.md) |
 | 30 | `src/shop_bot/core/module_loader.py` | [shop_bot_core_module_loader.md](shop_bot_core_module_loader.md) |
-| 31 | `src/shop_bot/webhook_server/app.py` | в работе |
+| 31 | `src/shop_bot/webhook_server/app.py` | [shop_bot_webhook_server_app.md](shop_bot_webhook_server_app.md) |
 | 32 | `src/shop_bot/webhook_server/apply_app_fix.py` | [shop_bot_webhook_server_apply_app_fix.md](shop_bot_webhook_server_apply_app_fix.md) |
-| 33 | `src/shop_bot/webapp/handlers.py` | в работе |
+| 33 | `src/shop_bot/webapp/handlers.py` | [shop_bot_webapp_handlers.md](shop_bot_webapp_handlers.md) |
 | 34 | `src/shop_bot/support_bot/handlers.py` | [shop_bot_support_bot_handlers.md](shop_bot_support_bot_handlers.md) |
 | 35 | `src/shop_bot/support_bot/idle_close.py` | [shop_bot_support_bot_idle_close.md](shop_bot_support_bot_idle_close.md) |
 | 36 | `src/shop_bot/support_bot/ticket_media.py` | [shop_bot_support_bot_ticket_media.md](shop_bot_support_bot_ticket_media.md) |
@@ -61,8 +66,3 @@
 | 48 | `modules/ramadan_tracker/panel_routes.py` | [modules_ramadan_tracker_panel_routes.md](modules_ramadan_tracker_panel_routes.md) |
 | 49 | `simple_collect.py` | [simple_collect.md](simple_collect.md) |
 | 50 | `simple_monitor_test.py` | [simple_monitor_test.md](simple_monitor_test.md) |
-
-**Docstring в коде: есть** — текст скопирован из исходника дословно.  
-**Docstring в коде: нет** — предлагаемый комментарий написан по прочитанному телу функции, исходник не трогали.
-
-Вложенные хендлеры (внутри `get_user_router` / `get_admin_router` / `create_webhook_app`) комментируются в файле того же исходника.

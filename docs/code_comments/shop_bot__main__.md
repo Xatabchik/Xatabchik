@@ -42,6 +42,42 @@
 | 221–227 | вечный sleep | Держит `asyncio.run`; CancelledError — штатная остановка |
 | 229–235 | asyncio.run / finally | Отмена снаружи; финальный лог «Приложение завершается» |
 
+## `ColoredFormatter` (27–50)
+
+**Docstring в коде:** нет
+
+```
+"""logging.Formatter: подсветить тег уровня [INFO]/[WARNING]/… ANSI-цветом."""
+```
+
+Вложена в `main`. `COLORS` — словарь levelname → код; неизвестный уровень не красится.
+
+## `ColoredFormatter.main.format` (37–50)
+
+**Docstring в коде:** нет
+
+```
+"""Собрать запись стандартным Formatter, затем replace `[LEVEL]` на цветной тег."""
+```
+
+## `RussianizeAiogramFilter` (72–99)
+
+**Docstring в коде:** нет
+
+```
+"""logging.Filter: перевести английскую строку aiogram.event про Update id на русскую."""
+```
+
+Вложена в `main`. При любом исключении `filter()` всё равно True (лог не глушится).
+
+## `RussianizeAiogramFilter.main.filter` (73–99)
+
+**Docstring в коде:** нет
+
+```
+"""Если msg совпал с regex полного формата — подменить на русский; иначе пословные замены; всегда True."""
+```
+
 ## `main.ColoredFormatter` / `format`
 
 **Docstring в коде:** нет

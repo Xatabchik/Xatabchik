@@ -15,6 +15,16 @@ This helper is intentionally *dual-mode* for backward compatibility:
 | Строки | Блок | Зачем |
 |--------|------|--------|
 | 23–34 | isinstance CallbackQuery | вернуть корутину `_ack`: answer(cache_time=1), BadRequest/прочее игнор |
+### `fast_callback_answer.wrapper` (40–47)
+
+**Docstring в коде:** нет
+
+```
+"""Сначала ACK callback, затем вызвать исходный handler с теми же args/kwargs."""
+```
+
+| Строки | Блок | Зачем |
+|--------|------|--------|
 | 36–49 | иначе decorator | wrapper сначала ACK, затем исходный handler |
 
 ## `catch_callback_errors` (51–63)
@@ -23,6 +33,16 @@ This helper is intentionally *dual-mode* for backward compatibility:
 
 ```
 """Декоратор: исключение handler → alert «Произошла ошибка…», exception-лог с callback.data, return None."""
+```
+
+| Строки | Блок | Зачем |
+|--------|------|--------|
+### `catch_callback_errors.wrapper` (53–62)
+
+**Docstring в коде:** нет
+
+```
+"""try: вернуть func; except: alert «Произошла ошибка…», лог callback.data, return None."""
 ```
 
 | Строки | Блок | Зачем |

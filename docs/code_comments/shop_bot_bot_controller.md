@@ -36,6 +36,16 @@
 
 | Строки | Блок | Зачем |
 |--------|------|--------|
+### `BotController._start_own_loop._runner` (50–62)
+
+**Docstring в коде:** нет
+
+```
+"""В потоке: new_event_loop, выставить self._loop, ready.set, run_forever, затем close."""
+```
+
+| Строки | Блок | Зачем |
+|--------|------|--------|
 | 50–62 | `_runner` | new_event_loop, call_soon(ready.set), run_forever, close |
 | 66–67 | if not ready.wait(5) | warning, но поток уже запущен |
 

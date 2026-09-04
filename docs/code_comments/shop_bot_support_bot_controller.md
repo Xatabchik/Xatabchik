@@ -22,6 +22,14 @@
 
 Ссылается на тот же приём `ready.set` внутри `run_forever`, что у BotController.
 
+### `SupportBotController._start_own_loop._runner` (31–41)
+
+**Docstring в коде:** нет
+
+```
+"""В потоке: new_event_loop, выставить self._loop, ready.set, run_forever, затем close."""
+```
+
 ```
 """Запустить изолированный asyncio loop; ждать готовности до 5 с."""
 ```
