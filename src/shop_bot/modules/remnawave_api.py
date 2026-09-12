@@ -454,6 +454,20 @@ def _panel_user_get_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
     return f"/api/users/by-short-uuid/{encoded}", (200, 404)
 
 
+def _user_patch_identifier(user_ref: str) -> dict[str, Any]:
+    """Идентификатор пользователя для тела `PATCH /api/users`.
+
+    2.8.1 опознаёт пользователя по `uuid`, 3.3.2 — по числовому `id` (поля uuid у
+    пользователя там нет вовсе), и запрос без идентификатора отклоняется:
+    400 'At least one of username, id must be provided'. Что именно хранится в
+    vpn_keys.remnawave_user_uuid, видно по самому значению.
+    """
+    stored = (user_ref or "").strip()
+    if _classify_panel_user_ref(stored) == "id":
+        return {"id": int(stored)}
+    return {"uuid": stored}
+
+
 def _panel_hwid_devices_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
     """GET /api/hwid/devices/{userId}: 3.x ждёт число, UUID даёт 400 NaN."""
     stored = (user_ref or "").strip()
@@ -1148,8 +1162,10 @@ async def update_user_traffic_limit(user_uuid: str, new_traffic_limit_bytes: int
     """Обновляет лимит трафика (trafficLimitBytes) пользователя в Remnawave."""
     if not user_uuid:
         return False
-    encoded_uuid = quote(user_uuid.strip())
-    payload = {"uuid": user_uuid.strip(), "trafficLimitBytes": int(new_traffic_limit_bytes)}
+    payload = {
+        **_user_patch_identifier(user_uuid),
+        "trafficLimitBytes": int(new_traffic_limit_bytes),
+    }
     if host_name:
         await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200,))
     else:
@@ -1267,11 +1283,7 @@ async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host
     if not user_uuid:
         return False
     try:
-        # PATCH /api/users идентифицирует пользователя по `uuid` (2.8.1) либо по числовому
-        # `id` (3.3.2, где поля uuid у пользователя нет вовсе). Что именно хранится в
-        # vpn_keys.remnawave_user_uuid, видно по самому значению.
-        stored = str(user_uuid).strip()
-        payload: dict[str, Any] = {"id": int(stored)} if stored.isdigit() else {"uuid": stored}
+        payload: dict[str, Any] = _user_patch_identifier(user_uuid)
         payload["activeInternalSquads"] = list(dict.fromkeys(squad_uuids or []))
         await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200, 201))
         logger.info(
