@@ -384,6 +384,44 @@ def test_static_paths_still_resolve_to_the_webapp_directory():
         assert (webapp / name).exists(), f"{name} должен лежать рядом с фасадом"
 
 
+def test_every_module_file_is_wired_into_the_package():
+    """Модуль, забытый в `__init__.py`, молча унёс бы с собой свои маршруты.
+
+    Файл на диске есть, тесты на разрешимость имён его читают, но ни один
+    декоратор `@app.…` в нём не исполнится, потому что модуль никто не
+    импортирует.
+    """
+    pkg = _pkg()
+    wired = {m.__name__.rsplit(".", 1)[1] for m in pkg.MODULES}
+    on_disk = {p.stem for p in _py_files()}
+    assert wired == on_disk, (
+        f"не подключены: {sorted(on_disk - wired)}; "
+        f"подключены, но файла нет: {sorted(wired - on_disk)}")
+
+
+def test_route_table_consists_of_endpoints_plus_the_usual_extras():
+    """Разделяет два числа, которые легко перепутать при ревью.
+
+    В `app.routes` попадают не только эндпоинты приложения: FastAPI сам
+    добавляет схему и страницы документации, а `_app.py` монтирует статику.
+    Поэтому записей в `app.routes` больше, чем функций с `@app.…`.
+    """
+    routes = _facade().app.routes
+    extras = {(type(r).__name__, r.path) for r in routes
+              if type(r).__name__ != "APIRoute"}
+    assert extras == {
+        ("Route", "/openapi.json"),
+        ("Route", "/docs"),
+        ("Route", "/docs/oauth2-redirect"),
+        ("Route", "/redoc"),
+        ("Mount", "/module/ico"),
+        ("Mount", "/uploads"),
+    }, f"изменился состав служебных маршрутов и монтирований: {sorted(extras)}"
+
+    endpoints = [r for r in routes if type(r).__name__ == "APIRoute"]
+    assert len(endpoints) + len(extras) == len(routes)
+
+
 def test_catch_all_route_is_registered_last():
     """`@app.get('/{path_param}')` перехватывает всё, что до него не совпало."""
     facade = _facade()
