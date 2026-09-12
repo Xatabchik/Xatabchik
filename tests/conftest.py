@@ -24,6 +24,32 @@ if SRC_DIR not in sys.path:
 FAKE_BOT_TOKEN = "123456:FAKE_BOT_TOKEN_FOR_TESTS"
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiters():
+    """Сбрасывает процессные счётчики лимитеров перед каждым тестом.
+
+    Свежая БД на тест изоляцию не даёт: счётчики в `webapp/handlers.py` живут
+    в памяти процесса и общие на всю сессию. SlowAPI считает по IP, а у
+    TestClient он всегда один (`testclient`), поэтому 30 запросов в минуту на
+    auth-роуты расходовались вскладчину всеми тестами. Тест, проходящий сам по
+    себе, получал 429 только потому, что предыдущие файлы успели израсходовать
+    лимит в том же 60-секундном окне, — результат зависел от порядка и скорости
+    прогона. Существующие тесты лимитов уже чистят `_EMAIL_AUTH_HITS` вручную;
+    здесь то же делается для всех.
+
+    `handlers` намеренно не импортируется: модуль обращается к БД на этапе
+    импорта (см. `app_client`), поэтому состояние чистится только если он уже
+    загружен.
+    """
+    handlers = sys.modules.get("shop_bot.webapp.handlers")
+    if handlers is not None:
+        handlers.limiter.reset()
+        handlers._EMAIL_AUTH_HITS.clear()
+        handlers._SUPPORT_HITS.clear()
+        handlers._SUPPORT_LAST.clear()
+    yield
+
+
 @pytest.fixture()
 def temp_db(tmp_path, monkeypatch):
     """Свежая БД во временном файле для каждого теста; заодно настраивает
