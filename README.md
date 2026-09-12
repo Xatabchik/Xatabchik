@@ -348,6 +348,7 @@ docker compose up -d --build
 | [FUNCTIONS_AND_RELATIONS.md](FUNCTIONS_AND_RELATIONS.md) | Что / где / зачем по модулям |
 | [docs/FUNCTIONS_CATALOG.md](docs/FUNCTIONS_CATALOG.md) | Каталог всех функций |
 | [MODULES_AND_FUNCTIONS.md](MODULES_AND_FUNCTIONS.md) | Модули: где используются и кто вызывает функции |
+| [docs/code_comments/README.md](docs/code_comments/README.md) | Предлагаемые комментарии к каждой функции (код не менялся) |
 | [BOT_HANDLERS_DOCUMENTATION.md](BOT_HANDLERS_DOCUMENTATION.md) | Telegram-хендлеры |
 | [ADMIN_PANEL_DOCUMENTATION.md](ADMIN_PANEL_DOCUMENTATION.md) | Flask-панель |
 | [WEBAPP_MINIAPP_DOCUMENTATION.md](WEBAPP_MINIAPP_DOCUMENTATION.md) | Mini App |
