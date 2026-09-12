@@ -227,6 +227,55 @@ def test_create_lte_topup_balance_uses_db_price_and_bot_action(temp_db, monkeypa
     assert float(database.get_user(OWNER_ID)["balance"]) == 351.0
 
 
+def test_create_lte_topup_yookassa_includes_receipt(temp_db, monkeypatch):
+    """Магазину с фискализацией платёж без чека отклоняется как
+    `Receipt is missing or illegal` — этот эндпоинт чек не отправлял."""
+    from shop_bot.data_manager import database
+    from shop_bot.webapp import handlers
+
+    key_id, _, pkg_id = _seed_lte_key(database)
+    token = issue_auth_token(OWNER_ID)
+    created = []
+
+    class _FakeYookassaPayment:
+        @staticmethod
+        def create(payload, idempotence_key=None):
+            created.append(payload)
+
+            class _Obj:
+                id = "yoo-lte-id"
+                confirmation = type("C", (), {"confirmation_url": "https://yookassa.test/c"})()
+
+            return _Obj()
+
+    async def _fake_send(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(handlers, "YookassaPayment", _FakeYookassaPayment)
+    monkeypatch.setattr(handlers, "_send_telegram_message", _fake_send)
+    monkeypatch.setattr(handlers, "get_setting", lambda key, *a, **k: {
+        "yookassa_shop_id": "shop",
+        "yookassa_secret_key": "secret",
+        "receipt_email": "receipts@example.com",
+        "telegram_bot_username": "TestVpnBot",
+    }.get(key, ""))
+
+    resp = _client().post(
+        "/api/create-lte-topup-payment",
+        json={"token": token, "key_id": key_id, "package_id": pkg_id, "payment_method": "pay_yookassa"},
+    )
+    data = resp.json()
+    assert data.get("ok") is True, data
+    assert len(created) == 1
+
+    payload = created[0]
+    assert "receipt" in payload, "чек не отправлен"
+    item = payload["receipt"]["items"][0]
+    assert payload["receipt"]["customer"]["email"] == "receipts@example.com"
+    assert item["amount"] == payload["amount"]
+    assert "ГБ" in item["description"]
+
+
 def test_webapp_html_has_lte_packages_step():
     from pathlib import Path
 
