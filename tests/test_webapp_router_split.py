@@ -20,10 +20,12 @@ import ast
 import builtins
 import importlib
 import inspect
+import json
 import os
 import subprocess
 import sys
 import symtable
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -38,8 +40,9 @@ FACADE = "shop_bot.webapp.handlers"
 SHARED_MUTABLE = ("limiter", "_EMAIL_AUTH_HITS", "_SUPPORT_HITS", "_SUPPORT_LAST")
 
 # Имена, которые нужны уже на этапе импорта (декораторы, аннотации, значения
-# по умолчанию), поэтому импортируются значением из модуля-владельца.
-# Владельцы маршрутов не регистрируют, см. _no_route_module_is_imported_by_value.
+# по умолчанию), поэтому импортируются значением из модуля-владельца. Сами эти
+# модули маршрутов не регистрируют — это проверяет
+# test_no_route_module_is_imported_by_value_inside_the_package.
 VALUE_IMPORT_OWNERS = ("_core", "_app", "models")
 
 
@@ -195,10 +198,26 @@ def test_patched_name_is_visible_inside_a_function_body(monkeypatch):
 
 
 def test_shared_mutable_state_is_one_object_everywhere():
-    """conftest сбрасывает лимитеры на месте — объект обязан быть общим."""
+    """Состояние, которое правят на месте, обязано быть одним объектом.
+
+    conftest.reset_rate_limiters вызывает `.reset()` и `.clear()`, а сами
+    функции копят в этих контейнерах попытки авторизации и сообщения в
+    поддержку. Разошлись копии — сброс между тестами перестанет работать, а
+    лимиты начнут считаться по отдельности в каждом модуле.
+
+    Набор берётся из `_core.__all__` по типу значения, а не списком, чтобы
+    новое состояние попадало под проверку само.
+    """
     facade = _facade()
     pkg = _pkg()
-    for name in SHARED_MUTABLE:
+    core = _module("_core")
+
+    mutable = [n for n in core.__all__
+               if isinstance(getattr(core, n), (dict, list, set, deque))]
+    assert set(SHARED_MUTABLE) - {"limiter"} <= set(mutable), (
+        f"проверка потеряла состояние из conftest: {mutable}")
+
+    for name in sorted(set(mutable) | set(SHARED_MUTABLE)):
         holders = [m for m in pkg.MODULES if name in m.__dict__]
         assert holders, f"{name} не попал ни в один модуль"
         ids = {id(m.__dict__[name]) for m in holders}
@@ -206,15 +225,8 @@ def test_shared_mutable_state_is_one_object_everywhere():
         assert id(getattr(facade, name)) in ids, f"{name}: фасад видит другой объект"
 
 
-def test_no_module_value_imports_a_name_managed_by_broadcast():
-    """Значениевый импорт внутри пакета не должен подменять `_link_namespace()`.
-
-    Исключение — имена, нужные уже на этапе импорта (`app`, `limiter`,
-    константы лимитов, pydantic-модели): их владельцы маршрутов не
-    регистрируют, поэтому ранний импорт не сдвигает порядок маршрутов.
-    """
-    allowed_owners = {f"{PKG}.{m}" for m in VALUE_IMPORT_OWNERS}
-    offenders = []
+def _intra_package_imports():
+    """(файл, модуль-владелец, имя) для каждого значениевого импорта в пакете."""
     for path in _py_files():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.ImportFrom):
@@ -222,9 +234,69 @@ def test_no_module_value_imports_a_name_managed_by_broadcast():
             module = node.module or ""
             if not module.startswith(PKG):
                 continue
-            if module not in allowed_owners:
-                offenders.append(f"{path.name}: from {module}")
+            for alias in node.names:
+                yield path, module, alias.asname or alias.name
+
+
+def test_value_imports_come_only_from_owners_without_routes():
+    """Ранний импорт модуля с маршрутами сдвинул бы порядок регистрации."""
+    allowed = {f"{PKG}.{m}" for m in VALUE_IMPORT_OWNERS}
+    offenders = sorted({f"{p.name}: from {mod}"
+                        for p, mod, _ in _intra_package_imports() if mod not in allowed})
     assert offenders == [], f"неразрешённый значениевый импорт внутри пакета: {offenders}"
+
+
+def test_value_imported_names_are_really_needed_at_import_time():
+    """Значением можно тянуть только то, что нужно раньше `_link_namespace()`.
+
+    Это декораторы, аннотации, значения по умолчанию, базовые классы и код
+    уровня модуля. Всё остальное обязано приходить рассылкой, иначе
+    `broadcast()` обновит только модуль-владельца, а копия в импортёре
+    останется прежней.
+    """
+    offenders = []
+    for path in _py_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        needed = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = node.args
+                parts = list(node.decorator_list) + list(args.defaults)
+                parts += [a.annotation for a in
+                          [*args.posonlyargs, *args.args, *args.kwonlyargs]
+                          if a.annotation is not None]
+                parts += [d for d in args.kw_defaults if d is not None]
+                if node.returns is not None:
+                    parts.append(node.returns)
+            elif isinstance(node, ast.ClassDef):
+                parts = list(node.bases) + list(node.keywords) + list(node.body)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            else:
+                parts = [node]
+            for part in parts:
+                needed |= {n.id for n in ast.walk(part) if isinstance(n, ast.Name)}
+
+        for p, module, name in _intra_package_imports():
+            if p == path and name not in needed:
+                offenders.append(f"{path.name}: {name} из {module} не нужен на импорте")
+    assert offenders == [], offenders
+
+
+def test_no_module_value_imports_a_name_that_tests_rebind():
+    """Категорически запрещённый случай: значениевый импорт подменяемого имени.
+
+    `broadcast()` переприсваивает имя в каждом модуле, где оно есть, поэтому
+    сам по себе значениевый импорт подмену не ломает. Но имя, нужное уже на
+    импорте, к моменту подмены успевает попасть в декоратор или аннотацию —
+    там останется прежний объект. Держим два случая разделёнными: подменяемое
+    имя не должно одновременно требоваться на этапе импорта.
+    """
+    rebound = _rebound_names()
+    offenders = sorted({f"{p.name}: {name}"
+                        for p, _, name in _intra_package_imports() if name in rebound})
+    assert offenders == [], (
+        f"подменяемое имя импортировано значением: {offenders}")
 
 
 def test_no_route_module_is_imported_by_value_inside_the_package():
@@ -382,12 +454,13 @@ def test_route_order_is_the_same_for_every_entry_point(mode):
     Каждый режим считается в отдельном процессе: в текущем модули уже лежат в
     `sys.modules`, и порядок импорта там уже не наблюдаем.
     """
-    def routes(argv):
-        out = subprocess.run([sys.executable, "-c", ROUTE_PROBE, argv],
+    def routes(entry_point):
+        out = subprocess.run([sys.executable, "-c", ROUTE_PROBE, entry_point],
                              capture_output=True, text=True, timeout=300,
                              cwd=os.getcwd())
         assert out.returncode == 0, out.stderr[-3000:]
-        import json
         return json.loads(out.stdout.strip().splitlines()[-1])
 
-    assert routes(mode) == routes("prod")
+    reference = routes("prod")
+    assert reference[-1][0] == "/{path_param}", "catch-all оказался не последним"
+    assert routes(mode) == reference
