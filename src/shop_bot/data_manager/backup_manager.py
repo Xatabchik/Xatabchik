@@ -74,6 +74,37 @@ def cleanup_old_backups(keep: int = 7) -> None:
         logger.warning(f"Бэкап: не удалось очистить старые архивы: {e}")
 
 
+def _is_ssl_shutdown_timeout(exc: BaseException) -> bool:
+    """aiohttp часто рвёт уже завершённый upload на SSL close_notify."""
+    parts = [str(exc)]
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        parts.append(str(cause))
+    text = " ".join(parts).lower()
+    return "ssl shutdown timed out" in text
+
+
+async def _upload_bot(source_bot: Bot, timeout: float) -> tuple[Bot, bool]:
+    """Отдельная HTTP-сессия, чтобы долгий upload не портил polling."""
+    token = getattr(source_bot, "token", None)
+    if not token:
+        return source_bot, False
+    try:
+        import inspect
+
+        from aiohttp import TCPConnector
+        from aiogram.client.session.aiohttp import AiohttpSession
+
+        session = AiohttpSession(timeout=float(timeout), limit=2)
+        session._connector_init["force_close"] = True
+        if "ssl_shutdown_timeout" in inspect.signature(TCPConnector.__init__).parameters:
+            session._connector_init["ssl_shutdown_timeout"] = 0
+        return Bot(token=token, session=session), True
+    except Exception as e:
+        logger.warning(f"Бэкап: не удалось создать отдельную сессию отправки: {e}")
+        return source_bot, False
+
+
 async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int = 180, max_attempts: int = 3) -> int:
     """
     Отправляет архив всем администраторам. Возвращает число успешных отправок.
@@ -83,6 +114,7 @@ async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int =
     request_timeout и несколько попыток с задержкой при сетевых сбоях.
     """
     cnt = 0
+    upload_bot, owns_session = await _upload_bot(bot, request_timeout)
     try:
         try:
             admin_ids = list(rw_repo.get_admin_ids() or [])
@@ -97,7 +129,7 @@ async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int =
             for attempt in range(1, max_attempts + 1):
                 try:
                     file = FSInputFile(str(zip_path))
-                    await bot.send_document(
+                    await upload_bot.send_document(
                         chat_id=int(uid),
                         document=file,
                         caption=caption,
@@ -113,7 +145,15 @@ async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int =
                         f"Бэкап: администратор {uid} — flood control, ждём {wait_s}с (попытка {attempt}/{max_attempts})"
                     )
                     await asyncio.sleep(wait_s)
-                except (TelegramNetworkError, TimeoutError, asyncio.TimeoutError) as e:
+                except (TelegramNetworkError, TimeoutError, asyncio.TimeoutError, OSError) as e:
+                    if _is_ssl_shutdown_timeout(e):
+                        logger.warning(
+                            f"Бэкап: SSL shutdown timeout после отправки администратору {uid}; "
+                            "файл, скорее всего, уже доставлен — повтор не делаем."
+                        )
+                        cnt += 1
+                        last_error = None
+                        break
                     last_error = e
                     logger.warning(
                         f"Бэкап: тайм-аут/сетевая ошибка при отправке администратору {uid} "
@@ -133,6 +173,12 @@ async def send_backup_to_admins(bot: Bot, zip_path: Path, request_timeout: int =
     except Exception as e:
         logger.error(f"Бэкап: ошибка при рассылке архива: {e}", exc_info=True)
         return cnt
+    finally:
+        if owns_session:
+            try:
+                await upload_bot.session.close()
+            except Exception:
+                pass
 
 
 
