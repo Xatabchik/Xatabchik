@@ -36,7 +36,7 @@ from shop_bot.data_manager.remnawave_repository import (
     redeem_promo_code, update_promo_code_status, record_key_from_payload, get_key_by_id,
     update_key, get_key_by_email,
     list_referral_payout_methods, add_referral_payout_method, delete_referral_payout_method,
-    get_referral_payout_method, get_pending_status,
+    get_referral_payout_method, get_pending_status, payment_fulfillment_claimed,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
 from shop_bot.data_manager.database import (
@@ -4188,6 +4188,60 @@ def _check_payment_unpaid() -> dict:
     return {"ok": True, "paid": False}
 
 
+def _check_payment_processing() -> dict:
+    """Оплата подтверждена, но услуга ещё не выдана (или выдача сорвалась).
+
+    ``paid`` остаётся False: клиент реагирует только на ``paid`` (см.
+    _tickPaymentPoll в app.html), поэтому продолжит поллинг и не покажет
+    «Всё готово!» раньше, чем ключ реально создан. Контракт от этого не
+    меняется — добавлены только необязательные поля.
+    """
+    return {
+        "ok": True,
+        "paid": False,
+        "processing": True,
+        "message": "Оплата получена, услуга ещё обрабатывается.",
+    }
+
+
+def _payment_confirmed(payment_id: str) -> bool:
+    """Платёж подтверждён провайдером — но это ещё НЕ значит, что услуга выдана."""
+    try:
+        if (get_pending_status(payment_id) or "").lower() == "paid":
+            return True
+    except Exception:
+        pass
+    return check_transaction_exists(payment_id)
+
+
+def _payment_service_delivered(payment_id: str) -> bool:
+    """Услуга по платежу реально выдана.
+
+    Признак — финальная запись в ledger ``transactions`` со status='paid' по
+    тому же payment_id: её пишет log_transaction в самом конце
+    process_successful_payment, уже ПОСЛЕ создания/продления ключа, зачисления
+    баланса или применения докупки (все пять action: покупка/продление ключа,
+    top_up, traffic_gb_topup, lte_gb_topup, main_traffic_reset). На путях сбоя
+    (_abort_key_fulfillment / _abort_topup_fulfillment) до неё дело не доходит,
+    и строка остаётся в status='pending'.
+
+    Само по себе ``pending_transactions.status == 'paid'`` для этого негодно:
+    оно означает только «подтверждение платежа принято», выставляется до
+    выдачи, и из-за него /api/check-payment отвечал «Оплата успешно
+    подтверждена» при пустом ключе.
+
+    Дополнительно требуем idempotency-lock в ``processed_payments``. Это
+    отсекает TON Connect: там status='paid' в ``transactions`` выставляет сам
+    вебхук (find_and_complete_ton_transaction) ещё ДО выдачи, так что без
+    второго условия подтверждение TON-платежа выглядело бы как выданная услуга.
+    Lock ставится в начале выдачи и снимается компенсирующими ветвями при сбое.
+    """
+    return bool(
+        check_transaction_exists(payment_id)
+        and payment_fulfillment_claimed(payment_id)
+    )
+
+
 @app.post("/api/check-payment")
 async def api_check_payment(req: CheckPaymentRequest, request: Request):
     try:
@@ -4204,17 +4258,14 @@ async def api_check_payment(req: CheckPaymentRequest, request: Request):
         if not payment_owned_by_user(req.payment_id, user_id):
             return _check_payment_unpaid()
 
-        # Subscription purchases log with the same payment_id; top_up logs a new uuid,
-        # so also treat pending status 'paid' as success (webhook already completed it).
-        # transactions.status must be 'paid' — TON Connect inserts a pending row first.
-        exists = check_transaction_exists(req.payment_id)
-        if not exists:
-            try:
-                pending_status = (get_pending_status(req.payment_id) or "").lower()
-            except Exception:
-                pending_status = ""
-            if pending_status != "paid":
-                return _check_payment_unpaid()
+        # Успех — только по факту выдачи, а не по факту приёма платежа: иначе в
+        # окне между подтверждением и созданием ключа клиент показывал
+        # «Оплата успешно подтверждена» при пустом ключе, а при сорвавшейся
+        # выдаче — вообще всегда.
+        if not _payment_service_delivered(req.payment_id):
+            if _payment_confirmed(req.payment_id):
+                return _check_payment_processing()
+            return _check_payment_unpaid()
 
         result = {
             "ok": True,
