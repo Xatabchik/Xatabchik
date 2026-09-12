@@ -176,7 +176,8 @@ async def _deliver_to_user(bot: Bot, user_id: int, text: str, *, edit=None, **kw
     зарегистрирован только по email, либо пользователь заблокировал бота. К
     моменту выдачи платёж уже принят, а `claim_processed_payment` пометил его
     обработанным, поэтому повторной попытки не будет. Значит ошибка доставки не
-    должна отменять выдачу: ключ остаётся доступен в Mini App.
+    должна отменять выдачу: ключ, баланс или докупленный трафик остаются
+    доступны в Mini App.
 
     Если передан `edit`, сначала пробуем отредактировать это сообщение, а при
     неудаче отправляем новое — прежнее сообщение могло оказаться нетекстовым
@@ -442,14 +443,12 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 pass
 
             size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"✅ Оплата получена! К вашему тарифу добавлено {size_txt} ГБ трафика.\n"
-                    f"Новый лимит трафика действует до ближайшего ежемесячного сброса, после чего вернётся к базовому значению тарифа."
-                )
-            except Exception:
-                pass
+            await _deliver_to_user(
+                bot,
+                user_id,
+                f"✅ Оплата получена! К вашему тарифу добавлено {size_txt} ГБ трафика.\n"
+                f"Новый лимит трафика действует до ближайшего ежемесячного сброса, после чего вернётся к базовому значению тарифа."
+            )
         except Exception as e:
             logger.error(f"traffic_gb_topup: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
         return
@@ -561,14 +560,12 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
 
             size_txt = f"{size_gb:.0f}" if size_gb == int(size_gb) else f"{size_gb:g}"
             lte_label_html = html_escape(database.get_lte_squad_display_label(key_data.get("host_name")))
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"✅ Оплата получена! К вашему пулу {lte_label_html} (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
-                    f"Доступ на premium-нодах восстановлен."
-                )
-            except Exception:
-                pass
+            await _deliver_to_user(
+                bot,
+                user_id,
+                f"✅ Оплата получена! К вашему пулу {lte_label_html} (💰 premium-ноды) добавлено {size_txt} ГБ.\n"
+                f"Доступ на premium-нодах восстановлен."
+            )
         except Exception as e:
             logger.error(f"lte_gb_topup: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
         return
@@ -580,7 +577,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             key_data = rw_repo.get_key_by_id(key_id_mr) if key_id_mr else None
             if not key_data:
                 logger.error(f"main_traffic_reset: ключ не найден (key_id={key_id_mr})")
-                await bot.send_message(user_id, "⚠️ Оплата получена, но не удалось найти ключ для сброса. Обратитесь в поддержку.")
+                await _deliver_to_user(bot, user_id, "⚠️ Оплата получена, но не удалось найти ключ для сброса. Обратитесь в поддержку.")
                 return
 
             reset_errors = 0
@@ -637,15 +634,9 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 pass
 
             if reset_errors == 0:
-                try:
-                    await bot.send_message(user_id, "✅ Оплата получена! Основной пул трафика сброшен, доступ восстановлен на всех нодах.")
-                except Exception:
-                    pass
+                await _deliver_to_user(bot, user_id, "✅ Оплата получена! Основной пул трафика сброшен, доступ восстановлен на всех нодах.")
             else:
-                try:
-                    await bot.send_message(user_id, "⚠️ Оплата получена, но часть узлов не удалось сбросить. Обратитесь в поддержку, если доступ не восстановился.")
-                except Exception:
-                    pass
+                await _deliver_to_user(bot, user_id, "⚠️ Оплата получена, но часть узлов не удалось сбросить. Обратитесь в поддержку, если доступ не восстановился.")
         except Exception as e:
             logger.error(f"main_traffic_reset: непредвиденная ошибка обработки платежа: {e}", exc_info=True)
         return
@@ -756,17 +747,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                             logger.warning(f"Referral(top_up): failed to increment referral_balance_all for {referrer_id}: {e}")
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok_ref:
-                            try:
-                                await bot.send_message(
-                                    chat_id=referrer_id,
-                                    text=(
-                                        "💰 Вам начислено реферальное вознаграждение за пополнение баланса!\n"
-                                        f"Пользователь: {referrer_username} (ID: {user_id})\n"
-                                        f"Сумма: {float(reward):.2f} RUB"
-                                    )
-                                )
-                            except Exception as e:
-                                logger.warning(f"Referral(top_up): could not send reward notification to {referrer_id}: {e}")
+                            await _deliver_to_user(
+                                bot,
+                                referrer_id,
+                                (
+                                    "💰 Вам начислено реферальное вознаграждение за пополнение баланса!\n"
+                                    f"Пользователь: {referrer_username} (ID: {user_id})\n"
+                                    f"Сумма: {float(reward):.2f} RUB"
+                                ),
+                            )
         except Exception as e:
             logger.warning(f"Referral(top_up): unexpected error while processing reward for user {user_id}: {e}")
 
@@ -782,9 +771,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             except Exception:
                 gifts_count = 0
             if ok:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
+                await _deliver_to_user(
+                    bot,
+                    user_id,
+                    (
                         f"✅ Оплата получена!\n"
                         f"💼 Баланс пополнен на {float(price):.2f} RUB.\n"
                         f"Текущий баланс: {current_balance:.2f} RUB."
@@ -792,9 +782,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     reply_markup=keyboards.create_profile_keyboard(gifts_count=gifts_count)
                 )
             else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
+                await _deliver_to_user(
+                    bot,
+                    user_id,
+                    (
                         "⚠️ Оплата получена, но не удалось обновить баланс. "
                         "Обратитесь в поддержку."
                     ),
@@ -1251,17 +1242,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                             logger.warning(f"Failed to increment referral_balance_all for {referrer_id}: {e}")
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok:
-                            try:
-                                await bot.send_message(
-                                    chat_id=referrer_id,
-                                    text=(
-                                        "💰 Вам начислено реферальное вознаграждение!\n"
-                                        f"Пользователь: {referrer_username} (ID: {user_id})\n"
-                                        f"Сумма: {float(reward):.2f} RUB"
-                                    )
-                                )
-                            except Exception as e:
-                                logger.warning(f"Could not send referral reward notification to {referrer_id}: {e}")
+                            await _deliver_to_user(
+                                bot,
+                                referrer_id,
+                                (
+                                    "💰 Вам начислено реферальное вознаграждение!\n"
+                                    f"Пользователь: {referrer_username} (ID: {user_id})\n"
+                                    f"Сумма: {float(reward):.2f} RUB"
+                                ),
+                            )
         except Exception as e:
             logger.warning(f"Referral: unexpected error while processing reward for user {user_id}: {e}")
 

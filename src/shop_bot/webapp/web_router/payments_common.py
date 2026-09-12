@@ -122,7 +122,23 @@ async def process_successful_payment(bot: Bot, metadata: dict):
     return await bot_process(bot, metadata)
 
 
+def _telegram_chat_exists(user_id: int) -> bool:
+    """False, если чата с таким id в Telegram заведомо нет.
+
+    Аккаунт, зарегистрированный по email, получает синтетический telegram_id
+    (см. `is_email_only_user`) — бот в него писать не может, Telegram на любой
+    запрос отвечает «chat not found». Так же поступает рассылка бота: она
+    пропускает такие аккаунты до обращения к API (см. admin_router/mailing.py).
+    """
+    try:
+        return not rw_repo.is_email_only_user(user_id)
+    except Exception:
+        return True
+
+
 async def _send_telegram_message(user_id: int, text: str, reply_markup=None, photo=None):
+    if not _telegram_chat_exists(user_id):
+        return False
     token = get_setting("telegram_bot_token")
     if not token: return False
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -257,6 +273,7 @@ __all__ = [
     "calculate_webapp_price",
     "notify_admin_of_purchase",
     "process_successful_payment",
+    "_telegram_chat_exists",
     "_send_telegram_message",
     "_send_invoice_stars",
     "_platega_api",
