@@ -154,6 +154,50 @@ async def notify_admin_of_purchase(bot: Bot, metadata: dict):
     except Exception as e:
         logger.warning(f"notify_admin_of_purchase failed: {e}")
 
+
+def _telegram_chat_reachable(user_id: int) -> bool:
+    """False, если писать в этот чат заведомо бессмысленно.
+
+    У аккаунтов, зарегистрированных только по email, `telegram_id`
+    синтетический (см. `is_email_only_user`): Telegram на такой chat_id всегда
+    отвечает «chat not found». Запрос к API в этом случае не делаем, чтобы не
+    сорить ошибками в логе на каждой покупке.
+    """
+    try:
+        return not database.is_email_only_user(user_id)
+    except Exception:
+        return True
+
+
+async def _deliver_to_user(bot: Bot, user_id: int, text: str, *, edit=None, **kwargs) -> bool:
+    """Доставить текст пользователю, не прерывая выдачу уже оплаченного.
+
+    Чат может быть недоступен по причинам, к оплате не относящимся: аккаунт
+    зарегистрирован только по email, либо пользователь заблокировал бота. К
+    моменту выдачи платёж уже принят, а `claim_processed_payment` пометил его
+    обработанным, поэтому повторной попытки не будет. Значит ошибка доставки не
+    должна отменять выдачу: ключ остаётся доступен в Mini App.
+
+    Если передан `edit`, сначала пробуем отредактировать это сообщение, а при
+    неудаче отправляем новое — прежнее сообщение могло оказаться нетекстовым
+    или недоступным для правки.
+    """
+    if edit is not None:
+        try:
+            await edit.edit_text(text, **kwargs)
+            return True
+        except Exception as e:
+            logger.warning(f"Не удалось отредактировать сообщение пользователю {user_id}: {e}")
+    if not _telegram_chat_reachable(user_id):
+        return False
+    try:
+        await bot.send_message(chat_id=user_id, text=text, **kwargs)
+        return True
+    except Exception as e:
+        logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+        return False
+
+
 async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
     """Обработать успешную оплату и выдать услугу.
 
@@ -770,10 +814,20 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             pass
         return
 
-    processing_message = await bot.send_message(
-        chat_id=user_id,
-        text=f"✅ Оплата получена! Обрабатываю ваш запрос на сервере \"{host_name}\"..."
-    )
+    # Сообщение «обрабатываю запрос» — вспомогательное, и недоступность чата не
+    # должна отменять выдачу: платёж уже принят, а claim_processed_payment выше
+    # уже пометил его обработанным, так что повторной попытки не будет.
+    processing_message = None
+    if _telegram_chat_reachable(user_id):
+        try:
+            processing_message = await bot.send_message(
+                chat_id=user_id,
+                text=f"✅ Оплата получена! Обрабатываю ваш запрос на сервере \"{host_name}\"..."
+            )
+        except Exception as e:
+            logger.warning(
+                f"Не удалось сообщить пользователю {user_id} о начале обработки: {e}"
+            )
     key_issued = False
     try:
         email = ""
@@ -1048,7 +1102,13 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                             share_keyboard_builder.button(text="⬅️ Назад в меню", callback_data="back_to_main_menu")
                             share_keyboard_builder.adjust(1)
                             
-                            await processing_message.edit_text(gift_message, reply_markup=share_keyboard_builder.as_markup())
+                            await _deliver_to_user(
+                                bot,
+                                user_id,
+                                gift_message,
+                                edit=processing_message,
+                                reply_markup=share_keyboard_builder.as_markup(),
+                            )
                             key_issued = True
                         else:
                             await _abort_key_fulfillment(
@@ -1327,8 +1387,12 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     metadata['promo_disable_failed'] = True
             metadata['promo_applied_amount'] = applied_amount
         
-        await processing_message.delete()
-        
+        if processing_message is not None:
+            try:
+                await processing_message.delete()
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение о начале обработки: {e}")
+
         connection_string = None
         new_expiry_date = None
         try:
@@ -1370,9 +1434,10 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     f"📱 <b>Ссылка подписки:</b>\n<code>{html_escape(connection_string or '')}</code>"
                 )
         
-        await bot.send_message(
-            chat_id=user_id,
-            text=final_text,
+        await _deliver_to_user(
+            bot,
+            user_id,
+            final_text,
             reply_markup=keyboards.create_key_info_keyboard(key_id, connection_string, gift_code=gift_code, gift_id=gift_id)
         )
 
@@ -1396,24 +1461,16 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     action_label=_format_key_action_label(action, price=price, key_id=key_id),
                     exc=e,
                     factory_bot_id=factory_bot_id,
-                    processing_message=processing_message if 'processing_message' in locals() else None,
+                    processing_message=processing_message,
                     fail_text="❌ Ошибка при выдаче ключа.",
                 )
             except Exception:
-                try:
-                    await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
-                except Exception:
-                    try:
-                        await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
-                    except Exception:
-                        pass
+                await _deliver_to_user(
+                    bot, user_id, "❌ Ошибка при выдаче ключа.", edit=processing_message
+                )
             return False
-        try:
-            await processing_message.edit_text("❌ Ошибка при выдаче ключа.")
-        except Exception:
-            try:
-                await bot.send_message(chat_id=user_id, text="❌ Ошибка при выдаче ключа.")
-            except Exception:
-                pass
+        await _deliver_to_user(
+            bot, user_id, "❌ Ошибка при выдаче ключа.", edit=processing_message
+        )
         # Ключ уже выдан — считаем оплату успешной, несмотря на ошибку нотификации/пост-обработки.
         return True

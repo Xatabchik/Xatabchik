@@ -8,7 +8,16 @@
 {"ok": false, "error": "cannot import name 'get_transaction_comment' ..."},
 и пользователь не мог оплатить подписку через webapp вообще.
 """
-from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import (  # noqa: F401
+    insert_user,
+    issue_auth_token,
+    make_telegram_init_data,
+    temp_db,
+)
+
+# Stars доступны только из Telegram Mini App (см.
+# tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
+# подписанные init_data — как это делает webapp, открытый внутри Telegram.
 
 
 def test_get_transaction_comment_is_self_contained_new_action():
@@ -67,6 +76,7 @@ def test_create_payment_stars_end_to_end(temp_db, monkeypatch):
     resp = client.post("/api/create-payment", json={
         "user_id": 42001,
         "token": token,
+        "init_data": make_telegram_init_data(42001),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",
@@ -95,6 +105,7 @@ def test_create_payment_stars_disabled_returns_clean_error(temp_db):
     resp = client.post("/api/create-payment", json={
         "user_id": 42002,
         "token": token,
+        "init_data": make_telegram_init_data(42002),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",
