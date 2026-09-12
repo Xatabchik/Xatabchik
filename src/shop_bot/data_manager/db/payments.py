@@ -37,6 +37,7 @@ __all__ = (
     "find_and_complete_pending_transaction",
     "get_latest_pending_for_user",
     "claim_processed_payment",
+    "payment_fulfillment_claimed",
     "unclaim_processed_payment",
     "refund_payment_once",
     "cancel_pending_transaction",
@@ -726,6 +727,38 @@ def claim_processed_payment(payment_id: str) -> bool:
         return bool(_retry_sqlite(_work))
     except sqlite3.Error as e:
         logging.error(f"Failed to claim processed payment {pid}: {e}")
+        return False
+
+
+def payment_fulfillment_claimed(payment_id: str) -> bool:
+    """True, если по платежу взят idempotency-lock и он не снят компенсацией.
+
+    Lock ставит `claim_processed_payment` в начале `process_successful_payment`,
+    а компенсирующие ветви при сбое выдачи его снимают
+    (`unclaim_processed_payment` в _abort_key_fulfillment / _abort_topup_fulfillment),
+    чтобы ретрай вебхука мог выдать услугу заново.
+
+    Только для чтения: в отличие от `claim_processed_payment` не вставляет
+    строку, поэтому безопасна для поллинга из /api/check-payment.
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return False
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_processed_payments_table(cursor)
+            cursor.execute(
+                "SELECT 1 FROM processed_payments WHERE payment_id = ? LIMIT 1",
+                (pid,),
+            )
+            return cursor.fetchone() is not None
+
+    try:
+        return bool(_retry_sqlite(_work))
+    except sqlite3.Error as e:
+        logging.error(f"Failed to check processed payment {pid}: {e}")
         return False
 
 

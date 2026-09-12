@@ -5,7 +5,7 @@
 поэтому ни `docker-compose.yml` (`uvicorn shop_bot.webapp.handlers:app`), ни
 `tests/conftest.py`, ни двадцать пять файлов тестов не изменились.
 
-Особенность этого файла, в отличие от `bot/admin_handlers.py`: все 211 определений
+Особенность этого файла, в отличие от `bot/admin_handlers.py`: все 218 определений
 уже лежали на **уровне модуля**, а не внутри фабрики, поэтому переносить их
 можно было как есть — без дедента и без обёрток `register_*`. Зато появилась
 другая забота: в FastAPI выбирается **первый совпавший** маршрут, значит
@@ -64,15 +64,15 @@ PEP 562 (`__getattr__` модуля) здесь не помогает: обра�
 | `web_router/ticket_files_guard.py` | Запрет прямого доступа к каталогу вложений тикетов | 1 | 29 | 2 |
 | `web_router/referral_withdrawals.py` | Заявки на вывод реферального баланса | 2 | 110 | 2 |
 | `web_router/account_sync.py` | Привязка Telegram-аккаунта и тарифы устройств | 2 | 82 | 2 |
-| `web_router/payments_create.py` | Способы оплаты и создание платежа за ключ | 4 | 637 | 2 |
-| `web_router/payments_lte.py` | Докупка LTE-трафика | 3 | 398 | 2 |
+| `web_router/payments_create.py` | Способы оплаты и создание платежа за ключ | 8 | 694 | 2 |
+| `web_router/payments_lte.py` | Докупка LTE-трафика | 3 | 405 | 2 |
 | `web_router/gifts.py` | Подарочные ключи: карточки, список, активация | 6 | 254 | 2 |
 | `web_router/pending_actions.py` | Отложенные действия: подарок и реферальная ссылка | 4 | 217 | 2 |
 | `web_router/key_auto_renew.py` | Включение и отключение автопродления ключа | 1 | 51 | 1 |
 | `web_router/render_page.py` | Сборка главной страницы Mini App и корневой маршрут `/` | 3 | 374 | 1 |
-| `web_router/payments_topup.py` | Пополнение баланса | 1 | 336 | 1 |
+| `web_router/payments_topup.py` | Пополнение баланса | 1 | 340 | 1 |
 | `web_router/payments_promo.py` | Применение промокода | 1 | 76 | 1 |
-| `web_router/payments_check.py` | Проверка состояния платежа | 2 | 85 | 1 |
+| `web_router/payments_check.py` | Проверка состояния платежа | 5 | 140 | 1 |
 | `web_router/payments_platega.py` | Верификация платежа Platega | 2 | 264 | 1 |
 | `web_router/referral_info.py` | Сводка по реферальной программе для пользователя | 1 | 63 | 1 |
 | `web_router/_core.py` | Состояние уровня модуля: токены, лимитеры, счётчики попыток, регулярки | 29 | 104 | 0 |
@@ -85,9 +85,9 @@ PEP 562 (`__getattr__` модуля) здесь не помогает: обра�
 | `web_router/render_plans.py` | HTML-сетка тарифов и серверов | 5 | 178 | 0 |
 | `web_router/models.py` | Pydantic-модели тел запросов | 29 | 235 | 0 |
 | `web_router/auth_password.py` | Проверка пароля и кода сброса | 3 | 56 | 0 |
-| **итого** | | **211** | **6923** | **60** |
+| **итого** | | **218** | **7046** | **60** |
 
-Фасад `handlers.py` — 154 строки вместо 5828.
+Фасад `handlers.py` — 154 строки вместо 5947.
 
 ### Про два разных числа маршрутов
 
@@ -271,72 +271,79 @@ PEP 562 (`__getattr__` модуля) здесь не помогает: обра�
 | 2780–2792 | `api_user_profile_change_email_cancel` | `profile` | `post '/api/user/profile/change-email/cancel'` |
 | 2795–2821 | `api_sync_tg` | `account_sync` | `post '/api/auth/sync-tg'` |
 | 2824–2841 | `api_device_tiers` | `account_sync` | `post '/api/device-tiers'` |
-| 2843–2900 | `api_get_payment_methods` | `payments_create` | `post '/api/payment-methods'` |
-| 2903–3364 | `api_create_payment` | `payments_create` | `post '/api/create-payment'` |
-| 3367–3403 | `_rollback_internal_payment` | `payments_create` |  |
-| 3406–3418 | `_platega_method_code_from_settings` | `payments_create` |  |
-| 3421–3713 | `api_create_topup_payment` | `payments_topup` | `post '/api/create-topup-payment'` |
-| 3716–3729 | `_lte_topup_metadata` | `payments_lte` |  |
-| 3732–3764 | `api_lte_packages` | `payments_lte` | `get '/api/lte-packages'` |
-| 3767–4058 | `api_create_lte_topup_payment` | `payments_lte` | `post '/api/create-lte-topup-payment'` |
-| 4060–4106 | `api_apply_promo` | `payments_promo` | `post '/api/apply-promo'` |
-| 4108–4111 | `CheckPaymentRequest` | `models` |  |
-| 4114–4120 | `_check_payment_unpaid` | `payments_check` |  |
-| 4123–4163 | `api_check_payment` | `payments_check` | `post '/api/check-payment'` |
-| 4166–4168 | `VerifyPlategaPaymentRequest` | `models` |  |
-| 4171–4172 | `_platega_verify_error` | `payments_platega` |  |
-| 4175–4388 | `api_verify_platega_payment` | `payments_platega` | `post '/api/webapp/payments/{payment_id}/verify'` |
-| 4390–4395 | `KeyActionRequest` | `models` |  |
-| 4397–4403 | `DeleteDeviceRequest` | `models` |  |
-| 4405–4410 | `CommentRequest` | `models` |  |
-| 4412–4416 | `GiftActivateRequest` | `models` |  |
-| 4419–4452 | `api_user_referral_info` | `referral_info` | `post '/api/user/referral-info'` |
-| 4455–4471 | `_gift_link_row_html` | `gifts` |  |
-| 4474–4501 | `_get_gift_action_block_html` | `gifts` |  |
-| 4504–4525 | `_get_gift_fallback_card_html` | `gifts` |  |
-| 4528–4582 | `api_user_gifts` | `gifts` | `post '/api/user/gifts'` |
-| 4591–4659 | `_activate_gift_for_user` | `gifts` |  |
-| 4663–4679 | `api_gift_activate` | `gifts` | `post '/api/gift/activate'` |
-| 4687–4693 | `_REFERRAL_LINK_MESSAGES` | `_core` |  |
-| 4696–4732 | `_apply_pending_referral` | `pending_actions` |  |
-| 4736–4739 | `PendingActionCompleteRequest` | `models` |  |
-| 4742–4782 | `_pending_action_public_info` | `pending_actions` |  |
-| 4785–4791 | `api_pending_action_info` | `pending_actions` | `get '/api/webapp/pending-actions/info'` |
-| 4794–4885 | `api_pending_action_complete` | `pending_actions` | `post '/api/webapp/pending-actions/complete'` |
-| 4887–4916 | `api_key_devices` | `key_devices` | `post '/api/key/devices'` |
-| 4918–4948 | `api_key_device_delete` | `key_devices` | `post '/api/key/device/delete'` |
-| 4950–4970 | `api_key_comment` | `key_devices` | `post '/api/key/comment'` |
-| 4972–4976 | `_support_rate_response` | `support` |  |
-| 4979–4989 | `_support_user_rate_limited` | `support` |  |
-| 4992–5002 | `_support_too_fast` | `support` |  |
-| 5005–5006 | `_clip_support_text` | `support` |  |
-| 5009–5016 | `_tickets_created_today_count` | `support` |  |
-| 5019–5025 | `_public_ticket_row` | `support` |  |
-| 5028–5036 | `_public_ticket_messages` | `support` |  |
-| 5039–5045 | `_ticket_owned_by` | `support` |  |
-| 5048–5100 | `_notify_webapp_support` | `support` |  |
-| 5103–5136 | `api_support_status` | `support` | `post '/api/support/status'` |
-| 5138–5184 | `api_support_create` | `support` | `post '/api/support/create'` |
-| 5186–5229 | `api_support_send` | `support` | `post '/api/support/send'` |
-| 5232–5257 | `api_support_ticket` | `support` | `post '/api/support/ticket'` |
-| 5260–5291 | `api_support_close` | `support` | `post '/api/support/close'` |
-| 5294–5334 | `api_support_ticket_file` | `support` | `get '/api/support/ticket-file/{message_id}'` |
-| 5337–5395 | `api_support_upload` | `support` | `post '/api/support/upload'` |
-| 5397–5415 | `api_user_status` | `key_actions` | `get '/api/user-status'` |
-| 5417–5440 | `api_key_rename` | `key_actions` | `post '/api/key/rename'` |
-| 5442–5484 | `api_key_devices_delete_all` | `key_actions` | `post '/api/key/devices/delete-all'` |
-| 5486–5538 | `api_user_transactions` | `key_actions` | `get '/api/user/transactions'` |
-| 5540–5565 | `api_keys_search` | `key_actions` | `post '/api/keys/search'` |
-| 5567–5569 | `_html_esc` | `public_pages` |  |
-| 5572–5579 | `_PUBLIC_FALLBACK_CSP` | `_core` |  |
-| 5580 | `_GIFT_CODE_RE` | `_core` |  |
-| 5583–5588 | `_public_fallback_response` | `public_pages` |  |
-| 5591–5599 | `_parse_public_referrer_id` | `public_pages` |  |
-| 5602–5606 | `_safe_public_gift_code` | `public_pages` |  |
-| 5609–5615 | `_telegram_bot_deeplink` | `public_pages` |  |
-| 5618–5621 | `_html_telegram_btn` | `public_pages` |  |
-| 5624–5653 | `_referral_fallback_html` | `public_pages` |  |
-| 5656–5700 | `web_referral_page` | `public_pages` | `get '/ref/{referrer_id}'` |
-| 5702–5725 | `_gift_fallback_html` | `public_pages` |  |
-| 5728–5793 | `web_gift_page` | `public_pages` | `get '/gift/{gift_code}'` |
-| 5795–5828 | `dynamic_route` | `public_pages` | `get '/{path_param}'` |
+| 2846 | `TELEGRAM_ONLY_PAYMENT_METHODS` | `payments_create` |  |
+| 2848 | `TELEGRAM_ONLY_PAYMENT_ERROR` | `payments_create` |  |
+| 2851–2877 | `_is_telegram_webapp_context` | `payments_create` |  |
+| 2880–2890 | `_telegram_only_method_error` | `payments_create` |  |
+| 2893–2953 | `api_get_payment_methods` | `payments_create` | `post '/api/payment-methods'` |
+| 2956–3421 | `api_create_payment` | `payments_create` | `post '/api/create-payment'` |
+| 3424–3460 | `_rollback_internal_payment` | `payments_create` |  |
+| 3463–3475 | `_platega_method_code_from_settings` | `payments_create` |  |
+| 3478–3774 | `api_create_topup_payment` | `payments_topup` | `post '/api/create-topup-payment'` |
+| 3777–3790 | `_lte_topup_metadata` | `payments_lte` |  |
+| 3793–3825 | `api_lte_packages` | `payments_lte` | `get '/api/lte-packages'` |
+| 3828–4126 | `api_create_lte_topup_payment` | `payments_lte` | `post '/api/create-lte-topup-payment'` |
+| 4128–4174 | `api_apply_promo` | `payments_promo` | `post '/api/apply-promo'` |
+| 4176–4179 | `CheckPaymentRequest` | `models` |  |
+| 4182–4188 | `_check_payment_unpaid` | `payments_check` |  |
+| 4191–4204 | `_check_payment_processing` | `payments_check` |  |
+| 4207–4214 | `_payment_confirmed` | `payments_check` |  |
+| 4217–4242 | `_payment_service_delivered` | `payments_check` |  |
+| 4245–4282 | `api_check_payment` | `payments_check` | `post '/api/check-payment'` |
+| 4285–4287 | `VerifyPlategaPaymentRequest` | `models` |  |
+| 4290–4291 | `_platega_verify_error` | `payments_platega` |  |
+| 4294–4507 | `api_verify_platega_payment` | `payments_platega` | `post '/api/webapp/payments/{payment_id}/verify'` |
+| 4509–4514 | `KeyActionRequest` | `models` |  |
+| 4516–4522 | `DeleteDeviceRequest` | `models` |  |
+| 4524–4529 | `CommentRequest` | `models` |  |
+| 4531–4535 | `GiftActivateRequest` | `models` |  |
+| 4538–4571 | `api_user_referral_info` | `referral_info` | `post '/api/user/referral-info'` |
+| 4574–4590 | `_gift_link_row_html` | `gifts` |  |
+| 4593–4620 | `_get_gift_action_block_html` | `gifts` |  |
+| 4623–4644 | `_get_gift_fallback_card_html` | `gifts` |  |
+| 4647–4701 | `api_user_gifts` | `gifts` | `post '/api/user/gifts'` |
+| 4710–4778 | `_activate_gift_for_user` | `gifts` |  |
+| 4782–4798 | `api_gift_activate` | `gifts` | `post '/api/gift/activate'` |
+| 4806–4812 | `_REFERRAL_LINK_MESSAGES` | `_core` |  |
+| 4815–4851 | `_apply_pending_referral` | `pending_actions` |  |
+| 4855–4858 | `PendingActionCompleteRequest` | `models` |  |
+| 4861–4901 | `_pending_action_public_info` | `pending_actions` |  |
+| 4904–4910 | `api_pending_action_info` | `pending_actions` | `get '/api/webapp/pending-actions/info'` |
+| 4913–5004 | `api_pending_action_complete` | `pending_actions` | `post '/api/webapp/pending-actions/complete'` |
+| 5006–5035 | `api_key_devices` | `key_devices` | `post '/api/key/devices'` |
+| 5037–5067 | `api_key_device_delete` | `key_devices` | `post '/api/key/device/delete'` |
+| 5069–5089 | `api_key_comment` | `key_devices` | `post '/api/key/comment'` |
+| 5091–5095 | `_support_rate_response` | `support` |  |
+| 5098–5108 | `_support_user_rate_limited` | `support` |  |
+| 5111–5121 | `_support_too_fast` | `support` |  |
+| 5124–5125 | `_clip_support_text` | `support` |  |
+| 5128–5135 | `_tickets_created_today_count` | `support` |  |
+| 5138–5144 | `_public_ticket_row` | `support` |  |
+| 5147–5155 | `_public_ticket_messages` | `support` |  |
+| 5158–5164 | `_ticket_owned_by` | `support` |  |
+| 5167–5219 | `_notify_webapp_support` | `support` |  |
+| 5222–5255 | `api_support_status` | `support` | `post '/api/support/status'` |
+| 5257–5303 | `api_support_create` | `support` | `post '/api/support/create'` |
+| 5305–5348 | `api_support_send` | `support` | `post '/api/support/send'` |
+| 5351–5376 | `api_support_ticket` | `support` | `post '/api/support/ticket'` |
+| 5379–5410 | `api_support_close` | `support` | `post '/api/support/close'` |
+| 5413–5453 | `api_support_ticket_file` | `support` | `get '/api/support/ticket-file/{message_id}'` |
+| 5456–5514 | `api_support_upload` | `support` | `post '/api/support/upload'` |
+| 5516–5534 | `api_user_status` | `key_actions` | `get '/api/user-status'` |
+| 5536–5559 | `api_key_rename` | `key_actions` | `post '/api/key/rename'` |
+| 5561–5603 | `api_key_devices_delete_all` | `key_actions` | `post '/api/key/devices/delete-all'` |
+| 5605–5657 | `api_user_transactions` | `key_actions` | `get '/api/user/transactions'` |
+| 5659–5684 | `api_keys_search` | `key_actions` | `post '/api/keys/search'` |
+| 5686–5688 | `_html_esc` | `public_pages` |  |
+| 5691–5698 | `_PUBLIC_FALLBACK_CSP` | `_core` |  |
+| 5699 | `_GIFT_CODE_RE` | `_core` |  |
+| 5702–5707 | `_public_fallback_response` | `public_pages` |  |
+| 5710–5718 | `_parse_public_referrer_id` | `public_pages` |  |
+| 5721–5725 | `_safe_public_gift_code` | `public_pages` |  |
+| 5728–5734 | `_telegram_bot_deeplink` | `public_pages` |  |
+| 5737–5740 | `_html_telegram_btn` | `public_pages` |  |
+| 5743–5772 | `_referral_fallback_html` | `public_pages` |  |
+| 5775–5819 | `web_referral_page` | `public_pages` | `get '/ref/{referrer_id}'` |
+| 5821–5844 | `_gift_fallback_html` | `public_pages` |  |
+| 5847–5912 | `web_gift_page` | `public_pages` | `get '/gift/{gift_code}'` |
+| 5914–5947 | `dynamic_route` | `public_pages` | `get '/{path_param}'` |

@@ -513,6 +513,7 @@ _LEGACY_FORWARDERS = (
     "create_payload_pending",
     "patch_pending_metadata",
     "claim_processed_payment",
+    "payment_fulfillment_claimed",
     "unclaim_processed_payment",
     "refund_payment_once",
     "reset_pending_transaction",

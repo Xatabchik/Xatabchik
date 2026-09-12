@@ -56,7 +56,7 @@ from shop_bot.data_manager.remnawave_repository import (
     redeem_promo_code, update_promo_code_status, record_key_from_payload, get_key_by_id,
     update_key, get_key_by_email,
     list_referral_payout_methods, add_referral_payout_method, delete_referral_payout_method,
-    get_referral_payout_method, get_pending_status,
+    get_referral_payout_method, get_pending_status, payment_fulfillment_claimed,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
 from shop_bot.data_manager.database import (

@@ -12,7 +12,16 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import (  # noqa: F401
+    insert_user,
+    issue_auth_token,
+    make_telegram_init_data,
+    temp_db,
+)
+
+# Stars доступны только из Telegram Mini App (см.
+# tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
+# подписанные init_data — как это делает webapp, открытый внутри Telegram.
 
 
 def _make_plan(database, host_name: str, price: float = 100.0) -> int:
@@ -211,8 +220,14 @@ def test_create_payment_second_user_gets_promo_unavailable(temp_db, monkeypatch)
         "action": "new",
         "promo_code": "LIMIT1WEB",
     }
-    resp_a = client.post("/api/create-payment", json={**body, "user_id": 11001, "token": token_a})
-    resp_b = client.post("/api/create-payment", json={**body, "user_id": 11002, "token": token_b})
+    resp_a = client.post("/api/create-payment", json={
+        **body, "user_id": 11001, "token": token_a,
+        "init_data": make_telegram_init_data(11001),
+    })
+    resp_b = client.post("/api/create-payment", json={
+        **body, "user_id": 11002, "token": token_b,
+        "init_data": make_telegram_init_data(11002),
+    })
     assert resp_a.json().get("ok") is True, resp_a.json()
     data_b = resp_b.json()
     assert data_b.get("ok") is False

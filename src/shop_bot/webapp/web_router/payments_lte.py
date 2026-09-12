@@ -103,6 +103,13 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
         if not user:
             return _unauthorized()
         user_id = int(user["telegram_id"])
+
+        method_error = _telegram_only_method_error(
+            (req.payment_method or "").strip(), user, req.init_data
+        )
+        if method_error:
+            return method_error
+
         key, plan = _owned_lte_key_and_plan(user_id, req.key_id)
         if not key or not plan:
             return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}

@@ -47,6 +47,10 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
         if method_id in ("pay_balance", "pay_referral_balance"):
             return {"ok": False, "error": "Нельзя пополнить баланс с внутреннего баланса"}
 
+        method_error = _telegram_only_method_error(method_id, user, req.init_data)
+        if method_error:
+            return method_error
+
         try:
             amount = Decimal(str(req.amount)).quantize(Decimal("0.01"))
         except Exception:
