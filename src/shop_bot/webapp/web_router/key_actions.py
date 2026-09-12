@@ -19,18 +19,7 @@ from shop_bot.webapp.web_router.models import (
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_user_keys
-
-
-import html
-
-
-from shop_bot.data_manager.remnawave_repository import get_key_by_id
-
-
-from shop_bot.modules import remnawave_api
 
 
 @app.get("/api/user-status")

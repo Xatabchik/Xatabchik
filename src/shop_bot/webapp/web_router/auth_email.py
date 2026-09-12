@@ -23,18 +23,9 @@ from shop_bot.webapp.web_router.models import (
 
 
 from fastapi import Request
-
-
 from datetime import datetime
-
-
 import uuid
-
-
 import asyncio
-
-
-import time
 
 
 async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool, str | None]:

@@ -15,18 +15,9 @@ from shop_bot.webapp.web_router.models import PendingActionCompleteRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 from datetime import datetime
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
-
-
-from decimal import Decimal
 
 
 def _apply_pending_referral(user_id: int, referrer_id: int) -> dict:

@@ -14,8 +14,6 @@ from shop_bot.webapp.web_router._app import app
 
 
 from fastapi import Request
-
-
 from datetime import datetime
 
 

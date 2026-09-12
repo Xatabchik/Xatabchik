@@ -18,11 +18,7 @@ from shop_bot.webapp.web_router._app import app
 
 
 from fastapi import Request
-
-
 from fastapi.responses import HTMLResponse
-
-
 from shop_bot.data_manager.remnawave_repository import (
     get_setting,
     get_user_keys,
@@ -33,23 +29,10 @@ from shop_bot.data_manager.remnawave_repository import (
     get_all_hosts,
     get_plans_for_host,
 )
-
-
 import os
-
-
 from datetime import datetime
-
-
-import html
-
-
 import asyncio
-
-
 import traceback
-
-
 from shop_bot.modules import remnawave_api
 
 

@@ -15,8 +15,6 @@ from shop_bot.webapp.web_router.models import ApplyPromoRequest
 
 
 from fastapi import Request
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
 
 

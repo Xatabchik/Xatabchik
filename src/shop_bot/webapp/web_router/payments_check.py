@@ -15,8 +15,6 @@ from shop_bot.webapp.web_router.models import CheckPaymentRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import (
     check_transaction_exists,
     payment_owned_by_user,

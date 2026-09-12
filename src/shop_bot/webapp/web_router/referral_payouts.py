@@ -14,11 +14,7 @@ from shop_bot.webapp.web_router._app import app
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
 
 

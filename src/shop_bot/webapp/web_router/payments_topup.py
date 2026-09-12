@@ -15,39 +15,20 @@ from shop_bot.webapp.web_router.models import CreateTopUpPaymentRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 import uuid
-
-
 import traceback
-
-
 from shop_bot.data_manager.remnawave_repository import create_payload_pending
-
-
 from decimal import Decimal, ROUND_HALF_UP
 
-
 from shop_bot.modules.platega_api import PlategaAPI
-
-
 from shop_bot.modules.heleket_api import create_heleket_payment_request
-
-
 from shop_bot.bot.keyboards import (
     create_payment_keyboard,
     create_cryptobot_payment_keyboard,
     create_yoomoney_payment_keyboard,
 )
-
-
 from shop_bot.bot.handlers import create_cryptobot_api_invoice
-
-
 from yookassa import Configuration as YookassaConfiguration, Payment as YookassaPayment
 
 

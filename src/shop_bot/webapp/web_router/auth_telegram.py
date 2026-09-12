@@ -20,27 +20,10 @@ from shop_bot.webapp.web_router.models import TelegramDirectAuthRequest, TokenRe
 
 
 from fastapi import Request
-
-
 from fastapi.responses import JSONResponse
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user
-
-
 import uuid
-
-
 import time
-
-
-import json
-
-
-import hashlib
-
-
-import hmac
 
 
 def validate_telegram_data(

@@ -6,29 +6,14 @@
 
 
 from typing import Any
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting, get_msk_time
-
-
 from datetime import datetime, timedelta
-
-
-import html
-
-
 import json
-
-
 from shop_bot.data_manager.remnawave_repository import (
     get_plan_by_id,
     get_key_by_id,
 )
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
-
-
 from shop_bot.data_manager.database import (
     format_next_traffic_reset_display,
     get_squad_by_class,

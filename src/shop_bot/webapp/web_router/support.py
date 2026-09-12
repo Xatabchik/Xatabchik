@@ -21,38 +21,16 @@ from shop_bot.webapp.web_router.models import (
 
 
 from fastapi import File, Form, Request, UploadFile
-
-
 from fastapi.responses import FileResponse, JSONResponse
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 import os
-
-
 from datetime import datetime
-
-
 import html
-
-
 import time
-
-
 from collections import deque
-
-
 from aiogram import Bot
-
-
 from aiogram.client.default import DefaultBotProperties
-
-
 from aiogram.enums import ParseMode
-
-
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 

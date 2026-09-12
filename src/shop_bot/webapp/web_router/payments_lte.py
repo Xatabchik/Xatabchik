@@ -15,55 +15,30 @@ from shop_bot.webapp.web_router.models import CreateLteTopUpPaymentRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 import uuid
-
-
 from aiogram import Bot
-
-
 from aiogram.client.default import DefaultBotProperties
-
-
 from aiogram.enums import ParseMode
-
-
 from shop_bot.data_manager.remnawave_repository import (
     create_payload_pending,
     deduct_from_balance,
     deduct_from_referral_balance,
 )
-
-
 from shop_bot.data_manager.database import (
     get_traffic_packages_for_plan,
     get_traffic_package_by_id,
 )
-
-
 from decimal import Decimal, ROUND_HALF_UP
 
-
 from shop_bot.modules.platega_api import PlategaAPI
-
-
 from shop_bot.modules.heleket_api import create_heleket_payment_request
-
-
 from shop_bot.bot.keyboards import (
     create_payment_keyboard,
     create_cryptobot_payment_keyboard,
     create_yoomoney_payment_keyboard,
 )
-
-
 from shop_bot.bot.handlers import create_cryptobot_api_invoice, process_successful_payment
-
-
 from yookassa import Configuration as YookassaConfiguration, Payment as YookassaPayment
 
 

@@ -6,11 +6,7 @@
 
 
 from fastapi.responses import JSONResponse
-
-
 import time
-
-
 from collections import deque
 
 

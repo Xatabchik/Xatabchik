@@ -18,20 +18,10 @@ from shop_bot.webapp.web_router._app import app
 
 
 from fastapi import Request
-
-
 from fastapi.responses import HTMLResponse, RedirectResponse
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting, get_webapp_settings
-
-
 import os
-
-
 from datetime import datetime
-
-
 import html
 
 

@@ -18,26 +18,13 @@ from shop_bot.webapp.web_router._core import limiter
 
 
 from fastapi import FastAPI, HTTPException
-
-
 from fastapi.staticfiles import StaticFiles
-
-
 import os
-
-
 from slowapi import _rate_limit_exceeded_handler
-
-
 from slowapi.errors import RateLimitExceeded
 
-
 app = FastAPI()
-
-
 app.state.limiter = limiter
-
-
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
@@ -53,18 +40,11 @@ async def _webapp_no_cache_middleware(request, call_next):
 
 
 ico_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "module", "ico")
-
-
 if os.path.exists(ico_dir):
     app.mount("/module/ico", StaticFiles(directory=ico_dir), name="ico")
 
-
 uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
-
-
 os.makedirs(uploads_dir, exist_ok=True)
-
-
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 

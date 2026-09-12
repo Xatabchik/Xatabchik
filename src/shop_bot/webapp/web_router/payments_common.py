@@ -6,29 +6,13 @@
 
 
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user
-
-
 from aiogram import Bot
-
-
 from aiogram.client.default import DefaultBotProperties
-
-
 from aiogram.enums import ParseMode
-
-
 from aiogram.types import LabeledPrice
-
-
 from shop_bot.data_manager.remnawave_repository import create_payload_pending
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
-
-
 from shop_bot.data_manager.database import get_seller_user
-
-
 from decimal import Decimal
 
 
@@ -178,11 +162,7 @@ async def _send_invoice_stars(user_id: int, title: str, description: str, payloa
 
 
 from shop_bot.modules.platega_api import PlategaAPI
-
-
 from shop_bot.modules.rollypay_api import RollyPayAPI
-
-
 from shop_bot.bot.handlers import process_successful_payment
 
 

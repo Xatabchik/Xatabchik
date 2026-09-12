@@ -15,26 +15,12 @@ from shop_bot.webapp.web_router.models import CreatePaymentRequest, PaymentMetho
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 import uuid
-
-
 from aiogram import Bot
-
-
 from aiogram.client.default import DefaultBotProperties
-
-
 from aiogram.enums import ParseMode
-
-
 import traceback
-
-
 from shop_bot.data_manager.remnawave_repository import (
     get_plan_by_id,
     deduct_from_balance,
@@ -42,39 +28,22 @@ from shop_bot.data_manager.remnawave_repository import (
     get_referral_balance,
     get_key_by_id,
 )
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
-
-
 from shop_bot.data_manager.database import (
     get_device_tiers,
     get_host,
 )
-
-
 from shop_bot.modules import remnawave_api
-
-
 from decimal import Decimal
 
-
 from shop_bot.modules.platega_api import PlategaAPI
-
-
 from shop_bot.modules.heleket_api import create_heleket_payment_request
-
-
 from shop_bot.bot.keyboards import (
     create_payment_keyboard,
     create_cryptobot_payment_keyboard,
     create_yoomoney_payment_keyboard,
 )
-
-
 from shop_bot.bot.handlers import create_cryptobot_api_invoice, process_successful_payment
-
-
 from yookassa import Configuration as YookassaConfiguration, Payment as YookassaPayment
 
 

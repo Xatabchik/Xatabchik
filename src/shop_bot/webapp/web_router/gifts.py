@@ -15,17 +15,8 @@ from shop_bot.webapp.web_router.models import GiftActivateRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 from datetime import datetime
-
-
-import shop_bot.data_manager.remnawave_repository as rw_repo
-
-
 from urllib.parse import quote
 
 

@@ -21,12 +21,6 @@ from shop_bot.webapp.web_router.models import (
 from fastapi import Request
 
 
-from shop_bot.data_manager.remnawave_repository import get_key_by_id
-
-
-from shop_bot.modules import remnawave_api
-
-
 @app.post("/api/key/devices")
 async def api_key_devices(req: KeyActionRequest, request: Request):
     try:

@@ -16,11 +16,7 @@ from shop_bot.webapp.web_router.models import DeviceTiersRequest, SyncTgRequest
 
 
 from fastapi import Request
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting
-
-
 from shop_bot.data_manager.database import (
     get_device_tiers,
     get_host,

@@ -8,12 +8,6 @@
 from shop_bot.data_manager.remnawave_repository import get_all_hosts, get_plans_for_host
 
 
-import html
-
-
-import re
-
-
 def _duration_label(months: int | None, duration_days: int | None) -> str:
     try:
         dd = int(duration_days or 0)

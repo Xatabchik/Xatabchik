@@ -6,14 +6,8 @@
 
 
 from fastapi import Request
-
-
 from fastapi.responses import JSONResponse
-
-
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user
-
-
 import shop_bot.data_manager.remnawave_repository as rw_repo
 
 

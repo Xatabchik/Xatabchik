@@ -15,21 +15,14 @@ from shop_bot.webapp.web_router.models import VerifyPlategaPaymentRequest
 
 
 from fastapi import Request
-
-
 from fastapi.responses import JSONResponse
-
-
 from shop_bot.data_manager.remnawave_repository import (
     get_pending_metadata,
     check_transaction_exists,
     payment_owned_by_user,
     get_pending_status,
 )
-
-
 from decimal import Decimal
-
 
 from shop_bot.modules.platega_fulfillment import (
     complete_pending_platega_payment,
