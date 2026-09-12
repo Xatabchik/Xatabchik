@@ -2291,6 +2291,8 @@
         let _paymentPollStartedAt = 0;
         let _paymentPollPid = null;
         let _paymentPollOnPaid = null;
+        let _paymentPollOnProcessing = null;
+        let _paymentPollProcessingShown = false;
         const PAYMENT_POLL_MIN_MS = 8000;
         const PAYMENT_POLL_MAX_MS = 20000;
         const PAYMENT_POLL_MAX_WAIT_MS = 40 * 60 * 1000;
@@ -3052,6 +3054,8 @@
             _paymentPollInFlight = false;
             _paymentPollPid = null;
             _paymentPollOnPaid = null;
+            _paymentPollOnProcessing = null;
+            _paymentPollProcessingShown = false;
             if (_paymentPollTimer) {
                 clearTimeout(_paymentPollTimer);
                 _paymentPollTimer = null;
@@ -3093,6 +3097,13 @@
                     if (onPaid) await onPaid(data);
                     return;
                 }
+                // Оплата уже принята, но услуга ещё выдаётся: /api/check-payment
+                // отвечает processing и держит paid: false. Без этой ветки окно
+                // продолжало бы писать «ожидаем оплату», как будто платежа не было.
+                if (data.ok && data.processing && _paymentPollOnProcessing && !_paymentPollProcessingShown) {
+                    _paymentPollProcessingShown = true;
+                    _paymentPollOnProcessing(data);
+                }
             } catch (e) {
                 console.error('Polling error:', e);
             } finally {
@@ -3103,12 +3114,13 @@
             _paymentPollTimer = setTimeout(_tickPaymentPoll, _paymentPollDelayMs);
         }
 
-        function startStatusPolling(pid, onPaid) {
+        function startStatusPolling(pid, onPaid, onProcessing) {
             if (!pid) return;
             _stopStatusPolling();
             _paymentPollStopped = false;
             _paymentPollPid = pid;
             _paymentPollOnPaid = onPaid || (async (data) => { showSuccessScreen(data); });
+            _paymentPollOnProcessing = onProcessing || null;
             _paymentPollDelayMs = PAYMENT_POLL_MIN_MS;
             _paymentPollStartedAt = Date.now();
             _paymentPollTimer = setTimeout(_tickPaymentPoll, PAYMENT_POLL_MIN_MS);
@@ -4732,6 +4744,23 @@
 
             titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">add_card</span> Пополнение баланса';
             contentEl.innerHTML = '<div class="flex justify-center py-5"><span class="material-symbols-rounded animate-spin text-xl text-primary">progress_activity</span></div>';
+
+            // Неоплаченный счёт восстанавливаем и досматриваем до конца — так же,
+            // как openPaymentModal восстанавливает счёт за ключ.
+            const pending = _readPendingTopUp();
+            if (pending) {
+                window._topUpAmount = pending.amount;
+                _renderTopUpWaiting(
+                    contentEl,
+                    pending.amount,
+                    pending.methodName,
+                    pending.paymentId,
+                    pending.paymentUrl,
+                    pending.isStars,
+                    pending.methodId
+                );
+                return;
+            }
             _renderTopUpAmountStep(contentEl);
         }
 
@@ -4911,18 +4940,63 @@
             }
         }
 
+        // Счёт на пополнение переживает перезагрузку Mini App — так же, как счёт
+        // за ключ (см. pendingPayment / restorePendingPayment). Без этого выход на
+        // страницу оплаты и возврат обратно терял платёж: окно открывалось на шаге
+        // ввода суммы, как будто оплаты не было.
+        const TOPUP_PENDING_KEY = 'pendingTopUp';
+        const TOPUP_PENDING_TTL_MS = 3600000;
+
+        function _rememberPendingTopUp(info) {
+            try {
+                localStorage.setItem(TOPUP_PENDING_KEY, JSON.stringify({ ...info, timestamp: Date.now() }));
+            } catch (e) { /* приватный режим — просто живём без восстановления */ }
+        }
+
+        function _forgetPendingTopUp() {
+            try { localStorage.removeItem(TOPUP_PENDING_KEY); } catch (e) { /* см. выше */ }
+        }
+
+        function _readPendingTopUp() {
+            try {
+                const stored = localStorage.getItem(TOPUP_PENDING_KEY);
+                if (!stored) return null;
+                const data = JSON.parse(stored);
+                if (!data || !data.paymentId || Date.now() - data.timestamp > TOPUP_PENDING_TTL_MS) {
+                    _forgetPendingTopUp();
+                    return null;
+                }
+                return data;
+            } catch (e) {
+                _forgetPendingTopUp();
+                return null;
+            }
+        }
+
+        function _cancelPendingTopUp() {
+            _stopStatusPolling();
+            _forgetPendingTopUp();
+            window._topUpPaymentId = null;
+            window._topUpPaymentUrl = null;
+            const contentEl = document.getElementById('action-modal-content');
+            if (contentEl) _renderTopUpAmountStep(contentEl);
+        }
+
         function _renderTopUpWaiting(contentEl, amount, methodName, paymentId, paymentUrl, isStars, methodId) {
             window._topUpPaymentUrl = paymentUrl || null;
             window._topUpPaymentId = paymentId || null;
             const showVerify = !isStars && _isPlategaMethodId(methodId) && !!paymentId;
+            if (paymentId) {
+                _rememberPendingTopUp({ paymentId, amount, methodName, methodId, isStars, paymentUrl });
+            }
             contentEl.innerHTML = `
                 <div class="flex flex-col items-center gap-4 py-4 text-center">
                     <div class="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-                        <span class="material-symbols-rounded text-primary text-2xl animate-pulse">${isStars ? 'star' : 'hourglass_top'}</span>
+                        <span id="topup-waiting-icon" class="material-symbols-rounded text-primary text-2xl animate-pulse">${isStars ? 'star' : 'hourglass_top'}</span>
                     </div>
                     <div>
-                        <div class="text-sm font-bold text-white mb-1">Ожидаем оплату</div>
-                        <div class="text-[11px] text-gray-400 leading-relaxed">
+                        <div id="topup-waiting-title" class="text-sm font-bold text-white mb-1">Ожидаем оплату</div>
+                        <div id="topup-waiting-desc" class="text-[11px] text-gray-400 leading-relaxed">
                             ${isStars
                                 ? 'Счёт Stars отправлен в бот. Оплатите его в Telegram — баланс обновится автоматически.'
                                 : `Оплатите <span class="text-white font-bold">${Number(amount).toFixed(2)} ₽</span> через <span class="text-white font-bold">${methodName}</span>. После оплаты окно обновится автоматически.`}
@@ -4941,12 +5015,78 @@
                     </button>` : ''}
                     <button onclick="closeActionModal()"
                         class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Закрыть</button>
+                    <button onclick="_cancelPendingTopUp()"
+                        class="w-full py-2 rounded-xl text-gray-500 text-[10px] font-bold hover:text-gray-300 transition-colors">Отменить счёт</button>
                 </div>
             `;
-            if (paymentId) _startTopUpPolling(paymentId);
+            if (paymentId) _startTopUpPolling(paymentId, amount);
             if (showVerify) {
                 setTimeout(() => { verifyPlategaTopUp({ silentPending: true }); }, 4000);
             }
+        }
+
+        function _markTopUpProcessing(message) {
+            const titleEl = document.getElementById('topup-waiting-title');
+            const descEl = document.getElementById('topup-waiting-desc');
+            const iconEl = document.getElementById('topup-waiting-icon');
+            if (titleEl) titleEl.textContent = 'Оплата получена';
+            if (descEl) descEl.textContent = message || 'Зачисляем на баланс — это займёт несколько секунд.';
+            if (iconEl) iconEl.textContent = 'autorenew';
+        }
+
+        function _renderTopUpSuccess(amount, data) {
+            const contentEl = document.getElementById('action-modal-content');
+            if (!contentEl) return;
+            const credited = Number(amount);
+            const balance = data && data.balance != null ? Number(data.balance) : null;
+            contentEl.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-4 text-center">
+                    <div class="relative success-pop">
+                        <div class="absolute inset-[-8px] bg-emerald-500/20 blur-xl rounded-full"></div>
+                        <div class="w-14 h-14 bg-gradient-to-br from-emerald-400 to-emerald-600 rounded-2xl flex items-center justify-center shadow-[0_8px_30px_rgba(16,185,129,0.3)] relative z-10 rotate-3">
+                            <span class="material-symbols-rounded text-2xl text-white">check</span>
+                        </div>
+                    </div>
+                    <div class="space-y-0.5">
+                        <div class="text-sm font-bold text-white">Баланс пополнен</div>
+                        <div class="text-[11px] text-gray-500 font-medium">Оплата подтверждена и зачислена</div>
+                    </div>
+                    <div class="w-full bg-[#141414] border border-white/[0.04] rounded-2xl p-4 space-y-3 text-left">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Зачислено</span>
+                            <span class="text-[11px] text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/10">${isNaN(credited) ? '—' : '+' + credited.toFixed(2) + ' ₽'}</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Текущий баланс</span>
+                            <span id="topup-success-balance" class="text-[11px] text-white font-bold">${balance == null ? '…' : balance.toFixed(2) + ' ₽'}</span>
+                        </div>
+                    </div>
+                    <button onclick="closeActionModal()"
+                        class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md active:scale-[0.98] transition-all">Готово</button>
+                </div>
+            `;
+        }
+
+        async function _refreshBalanceAfterTopUp() {
+            try {
+                if (typeof window._loadFinancePage === 'function') await window._loadFinancePage();
+            } catch (e) { /* обновление интерфейса не должно ломать показ успеха */ }
+            try {
+                if (typeof window._loadHomeStats === 'function') await window._loadHomeStats();
+            } catch (e) { /* см. выше */ }
+            try {
+                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const status = await resp.json();
+                if (status.ok && status.balance != null) {
+                    const balStr = Number(status.balance).toFixed(2) + ' ₽';
+                    const financeBal = document.getElementById('finance-balance');
+                    const homeBal = document.getElementById('home-balance');
+                    const successBal = document.getElementById('topup-success-balance');
+                    if (financeBal) financeBal.textContent = balStr;
+                    if (homeBal) homeBal.textContent = balStr;
+                    if (successBal) successBal.textContent = balStr;
+                }
+            } catch (e) { /* см. выше */ }
         }
 
         async function verifyPlategaTopUp(opts) {
@@ -4974,16 +5114,18 @@
                 }
                 if (data.status === 'confirmed') {
                     _stopStatusPolling();
+                    _forgetPendingTopUp();
+                    _renderTopUpSuccess(window._topUpAmount, data);
                     showNotification('Баланс пополнен!', 'success');
                     if (window.Telegram?.WebApp?.HapticFeedback) {
                         window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
                     }
-                    closeActionModal();
-                    if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
-                    if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
+                    await _refreshBalanceAfterTopUp();
                     return;
                 }
                 if (data.status === 'canceled') {
+                    _stopStatusPolling();
+                    _forgetPendingTopUp();
                     showNotification('Платёж отменён. Создайте новый счёт.', 'error');
                     return;
                 }
@@ -5008,26 +5150,19 @@
             else window.open(url, '_blank');
         }
 
-        function _startTopUpPolling(paymentId) {
+        function _startTopUpPolling(paymentId, amount) {
             startStatusPolling(paymentId, async (data) => {
-                showNotification(data.message || 'Баланс пополнен!', 'success');
+                // Результат показываем до обновления остального интерфейса: иначе
+                // ошибка в одном из обновлений оставляла окно на «ожидаем оплату».
+                _forgetPendingTopUp();
+                _renderTopUpSuccess(amount, data);
+                showNotification('Баланс пополнен!', 'success');
                 if (window.Telegram?.WebApp?.HapticFeedback) {
                     window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
                 }
-                closeActionModal();
-                if (typeof window._loadFinancePage === 'function') window._loadFinancePage();
-                if (typeof window._loadHomeStats === 'function') window._loadHomeStats();
-                try {
-                    const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
-                    const status = await resp.json();
-                    if (status.ok && status.balance != null) {
-                        const balStr = Number(status.balance).toFixed(2) + ' ₽';
-                        const financeBal = document.getElementById('finance-balance');
-                        const homeBal = document.getElementById('home-balance');
-                        if (financeBal) financeBal.textContent = balStr;
-                        if (homeBal) homeBal.textContent = balStr;
-                    }
-                } catch (e) { /* silent */ }
+                await _refreshBalanceAfterTopUp();
+            }, (data) => {
+                _markTopUpProcessing(data && data.message);
             });
         }
 
