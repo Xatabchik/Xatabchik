@@ -483,7 +483,9 @@ def test_cabinet_menu_uses_delete_self_not_my_bots():
 
 
 def test_partner_cabinet_keyboard_has_delete_under_withdraw():
-    src = Path("src/shop_bot/bot/handlers.py").read_text(encoding="utf-8")
+    # Клавиатура переехала в пакет user_router при разделении bot/handlers.py;
+    # проверяемые утверждения те же, изменился только путь к файлу.
+    src = Path("src/shop_bot/bot/user_router/franchise.py").read_text(encoding="utf-8")
     start = src.find("def _kb_partner_cabinet")
     end = src.find("def _kb_partner_withdraw")
     assert start != -1 and end > start
