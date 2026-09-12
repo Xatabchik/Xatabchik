@@ -37,6 +37,14 @@
             document.cookie = "auth_token=; max-age=0; path=/; SameSite=Lax";
         };
 
+        // Подписанные Telegram-данные текущей сессии Mini App. Пустая строка при
+        // входе из браузера (по email) — тогда сервер не предложит и не создаст
+        // способы оплаты, работающие только внутри Telegram (Stars). Подпись
+        // проверяет сервер по токену бота; самого токена здесь нет и быть не должно.
+        window.getTgInitData = function () {
+            return window.Telegram?.WebApp?.initData || '';
+        };
+
         // Pending action (подарок/реферальная ссылка, см. /gift/<code> и /ref/<id>):
         // токен снимается из URL один раз при загрузке страницы и запоминается для
         // отправки на /api/webapp/pending-actions/complete после того, как ниже будет
@@ -2782,7 +2790,7 @@
                 const response = await fetch('/api/payment-methods', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '' })
+                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '', init_data: window.getTgInitData() })
                 });
                 const data = await response.json();
                 if (data.ok) {
@@ -2875,12 +2883,14 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(isLte ? {
                         token: window.getAuthToken() || '',
+                        init_data: window.getTgInitData(),
                         payment_method: selectedMethod.id,
                         key_id: parseInt(currentPaymentData.keyId, 10),
                         package_id: parseInt(currentPaymentData.packageId, 10)
                     } : {
                         user_id: userId,
                         token: window.getAuthToken() || '',
+                        init_data: window.getTgInitData(),
                         payment_method: selectedMethod.id,
                         plan_id: parseInt(currentPaymentData.planId),
                         host_name: currentPaymentData.hostName,
@@ -4791,7 +4801,7 @@
                 const resp = await fetch('/api/payment-methods', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '' })
+                    body: JSON.stringify({ user_id: userId, token: window.getAuthToken() || '', init_data: window.getTgInitData() })
                 });
                 const data = await resp.json();
                 const methods = (data.ok ? (data.methods || []) : []).filter(m => m.id !== 'pay_balance' && m.id !== 'pay_referral_balance');
@@ -4855,6 +4865,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         token: token || undefined,
+                        init_data: window.getTgInitData(),
                         user_id: userId,
                         amount,
                         payment_method: methodId

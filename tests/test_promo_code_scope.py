@@ -16,7 +16,17 @@
    каким-то образом promo_code окажется в теле запроса с этим action).
 3. /api/create-topup-payment — модель запроса не содержит поля promo_code вовсе.
 """
-from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import (  # noqa: F401
+    insert_user,
+    issue_auth_token,
+    make_telegram_init_data,
+    temp_db,
+)
+
+# Stars доступны только из Telegram Mini App (см.
+# tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
+# подписанные init_data — как это делает webapp, открытый внутри Telegram.
+
 
 
 def _make_plan(database, host_name: str, price: float = 100.0) -> int:
@@ -111,6 +121,7 @@ def test_create_payment_stars_new_action_applies_promo_discount(temp_db, monkeyp
     resp = client.post("/api/create-payment", json={
         "user_id": 51004,
         "token": token,
+        "init_data": make_telegram_init_data(51004),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "new",
@@ -148,6 +159,7 @@ def test_create_payment_gift_action_also_applies_promo_discount(temp_db, monkeyp
     resp = client.post("/api/create-payment", json={
         "user_id": 51005,
         "token": token,
+        "init_data": make_telegram_init_data(51005),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "gift",
@@ -187,6 +199,7 @@ def test_create_payment_top_up_action_never_applies_promo_discount(temp_db, monk
     resp = client.post("/api/create-payment", json={
         "user_id": 51006,
         "token": token,
+        "init_data": make_telegram_init_data(51006),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
         "action": "top_up",

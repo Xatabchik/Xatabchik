@@ -2840,6 +2840,56 @@ async def api_device_tiers(req: DeviceTiersRequest):
         logger.error(f"API device-tiers error: {e}")
         return {"ok": False, "error": str(e)}
 
+# Способы оплаты, которые физически работают только внутри Telegram: инвойс Stars
+# доставляется сообщением в чат с ботом, а TON Connect — часть Telegram-потока.
+# Для сессии, открытой в браузере (вход по email), такой счёт создать нельзя.
+TELEGRAM_ONLY_PAYMENT_METHODS = ("pay_stars", "pay_tonconnect")
+
+TELEGRAM_ONLY_PAYMENT_ERROR = "Этот способ оплаты доступен только при входе через Telegram."
+
+
+def _is_telegram_webapp_context(user: dict, init_data: str | None) -> bool:
+    """True, только если запрос реально пришёл из Telegram Mini App этого юзера.
+
+    Достоверный признак ровно один — подписанные `init_data` (HMAC по токену
+    бота + проверка свежести auth_date, см. validate_telegram_data). Ни
+    persistent auth-токен, ни `telegram_id` вне synthetic-диапазона, ни наличие
+    username этого не доказывают: обычный Telegram-пользователь может войти в
+    webapp по email из браузера, и тогда писать ему инвойс в Telegram-чат не из
+    чего. Клиентские поля (`user_id`, «я в телеграме») подделываются, поэтому
+    здесь не используются вовсе.
+
+    Дополнительно требуем, чтобы Telegram-аккаунт из init_data совпадал с уже
+    авторизованным пользователем: иначе чужие валидные init_data позволили бы
+    создать счёт от имени владельца токена.
+    """
+    if not init_data:
+        return False
+    bot_token = get_setting("telegram_bot_token")
+    if not bot_token:
+        return False
+    tg_user = validate_telegram_data(init_data, bot_token)
+    if not tg_user or not tg_user.get("id"):
+        return False
+    try:
+        return int(tg_user["id"]) == int(user["telegram_id"])
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
+def _telegram_only_method_error(method_id: str, user: dict, init_data: str | None) -> dict | None:
+    """Отказ для Stars/TON вне подтверждённого Telegram-контекста, иначе None.
+
+    Вызывать в начале create-эндпоинтов: до создания pending-транзакции, до
+    списания баланса и до любого обращения к провайдеру.
+    """
+    if method_id not in TELEGRAM_ONLY_PAYMENT_METHODS:
+        return None
+    if _is_telegram_webapp_context(user, init_data):
+        return None
+    return {"ok": False, "error": TELEGRAM_ONLY_PAYMENT_ERROR}
+
+
 @app.post("/api/payment-methods")
 async def api_get_payment_methods(req: PaymentMethodsRequest, request: Request):
     user = _require_authenticated_user(
@@ -2872,13 +2922,16 @@ async def api_get_payment_methods(req: PaymentMethodsRequest, request: Request):
     elif (get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or ""):
         methods.append({"id": "pay_heleket", "name": "Криптовалюта", "icon": "currency_bitcoin"})
 
-    # 4. TON Connect
-    if (get_setting("ton_wallet_address") or "") and (get_setting("tonapi_key") or ""):
-        methods.append({"id": "pay_tonconnect", "name": "TON Connect", "icon": "wallet"})
+    # 4. TON Connect — в webapp намеренно не предлагаем: все три create-эндпоинта
+    # отвечают «TON Connect пока недоступен через WebApp», поток не реализован.
+    # Кнопка в списке была заведомо нерабочей, поэтому метод здесь не выдаём
+    # вовсе (в боте TON Connect остаётся как есть).
 
-    # 5. Telegram Stars
+    # 5. Telegram Stars — только из Telegram Mini App: инвойс уходит сообщением
+    # в чат с ботом, для браузерной (email) сессии его некуда доставить.
     if (get_setting("stars_enabled") or "false").strip().lower() == "true":
-        methods.append({"id": "pay_stars", "name": "Telegram Stars", "icon": "star"})
+        if _is_telegram_webapp_context(user, req.init_data):
+            methods.append({"id": "pay_stars", "name": "Telegram Stars", "icon": "star"})
 
     # 6. YooMoney
     if (get_setting("yoomoney_enabled") or "false").strip().lower() == "true":
@@ -2911,7 +2964,11 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
         user_id = int(user["telegram_id"])
         plan_id = req.plan_id
         method_id = req.payment_method
-        
+
+        method_error = _telegram_only_method_error(method_id, user, req.init_data)
+        if method_error:
+            return method_error
+
         plan = get_plan_by_id(plan_id)
         if not plan:
             return {"ok": False, "error": "Тариф не найден"}
@@ -3433,6 +3490,10 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
         if method_id in ("pay_balance", "pay_referral_balance"):
             return {"ok": False, "error": "Нельзя пополнить баланс с внутреннего баланса"}
 
+        method_error = _telegram_only_method_error(method_id, user, req.init_data)
+        if method_error:
+            return method_error
+
         try:
             amount = Decimal(str(req.amount)).quantize(Decimal("0.01"))
         except Exception:
@@ -3774,6 +3835,13 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
         if not user:
             return _unauthorized()
         user_id = int(user["telegram_id"])
+
+        method_error = _telegram_only_method_error(
+            (req.payment_method or "").strip(), user, req.init_data
+        )
+        if method_error:
+            return method_error
+
         key, plan = _owned_lte_key_and_plan(user_id, req.key_id)
         if not key or not plan:
             return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}
