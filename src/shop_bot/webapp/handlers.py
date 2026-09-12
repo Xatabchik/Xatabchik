@@ -75,6 +75,34 @@ def _create_payload_pending_or_error(payment_id, user_id, amount, meta):
         return {"ok": False, "error": "Не удалось создать платёж"}
     return None
 
+
+def _yookassa_receipt(item_description: str, price_str: str) -> dict | None:
+    """Чек для платежа YooKassa или None, если почта для чеков не настроена.
+
+    Магазину с включённой фискализацией (54-ФЗ) чек обязателен: без него
+    создание платежа падает с `Receipt is missing or illegal`. Почта берётся
+    из настройки `receipt_email` — той же, что использует бот. Если она не
+    заполнена, чек не формируется: магазинам без фискализации он не нужен.
+
+    `price_str` должен совпадать с `amount.value` самого платежа, иначе
+    YooKassa отклонит чек как несогласованный с суммой.
+    """
+    customer_email = get_setting("receipt_email")
+    if not customer_email or "@" not in str(customer_email):
+        return None
+    return {
+        "customer": {"email": customer_email},
+        "items": [{
+            "description": item_description,
+            "quantity": "1.00",
+            "amount": {"value": price_str, "currency": "RUB"},
+            "vat_code": "1",
+            "payment_subject": "service",
+            "payment_mode": "full_payment",
+        }],
+    }
+
+
 # In-memory storage for temporary auth tokens: {token: user_id}
 TEMP_AUTH_TOKENS = {}
 
@@ -2976,11 +3004,15 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             if pending_err:
                 return pending_err
             comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+            price_str = f"{final_price:.2f}"
             payload = {
-                "amount": {"value": f"{final_price:.2f}", "currency": "RUB"},
+                "amount": {"value": price_str, "currency": "RUB"},
                 "confirmation": {"type": "redirect", "return_url": f"https://t.me/{get_setting('telegram_bot_username')}"},
                 "capture": True, "description": comment, "metadata": meta
             }
+            receipt = _yookassa_receipt(f"Подписка на {_duration_label(months, duration_days)}", price_str)
+            if receipt:
+                payload["receipt"] = receipt
             try:
                 pay_obj = YookassaPayment.create(payload, pid)
                 pay_url = pay_obj.confirmation.confirmation_url
@@ -3433,20 +3465,7 @@ async def api_create_topup_payment(req: CreateTopUpPaymentRequest, request: Requ
             }
             create_payload_pending(pid, user_id, final_price, meta)
             price_str = f"{amount:.2f}"
-            receipt = None
-            customer_email = get_setting("receipt_email")
-            if customer_email and "@" in str(customer_email):
-                receipt = {
-                    "customer": {"email": customer_email},
-                    "items": [{
-                        "description": "Пополнение баланса",
-                        "quantity": "1.00",
-                        "amount": {"value": price_str, "currency": "RUB"},
-                        "vat_code": "1",
-                        "payment_subject": "service",
-                        "payment_mode": "full_payment",
-                    }],
-                }
+            receipt = _yookassa_receipt("Пополнение баланса", price_str)
             payload = {
                 "amount": {"value": price_str, "currency": "RUB"},
                 "confirmation": {"type": "redirect", "return_url": return_url},
@@ -3845,13 +3864,17 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
+            price_str = f"{price:.2f}"
             payload = {
-                "amount": {"value": f"{price:.2f}", "currency": "RUB"},
+                "amount": {"value": price_str, "currency": "RUB"},
                 "confirmation": {"type": "redirect", "return_url": return_url},
                 "capture": True,
                 "description": description,
                 "metadata": {"payment_id": pid},
             }
+            receipt = _yookassa_receipt(description, price_str)
+            if receipt:
+                payload["receipt"] = receipt
             try:
                 pay_obj = YookassaPayment.create(payload, pid)
                 pay_url = pay_obj.confirmation.confirmation_url
