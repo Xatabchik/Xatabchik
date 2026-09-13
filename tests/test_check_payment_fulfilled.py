@@ -223,6 +223,91 @@ def test_top_up_is_paid_only_after_balance_is_credited(temp_db, monkeypatch):
     assert data.get("balance") == 310.0
 
 
+# --- пополнение не зачислилось ------------------------------------------------
+
+
+def _recording_bot():
+    """Бот, запоминающий отправленные сообщения."""
+
+    class _RecordingBot:
+        id = 778
+
+        def __init__(self):
+            self.sent = []
+            self.session = self
+
+        async def send_message(self, *args, **kwargs):
+            text = kwargs.get("text")
+            if text is None and len(args) > 1:
+                text = args[1]
+            self.sent.append((args[0] if args else kwargs.get("chat_id"), text or ""))
+            return None
+
+        async def close(self):
+            return None
+
+    return _RecordingBot()
+
+
+def test_top_up_that_failed_to_credit_never_reports_paid(temp_db, monkeypatch):
+    """add_to_balance вернул False → ни записи 'paid' в ledger, ни paid: true.
+
+    Ветка top_up раньше шла дальше независимо от результата зачисления и всё
+    равно писала финальную запись в `transactions` со status='paid'. Вместе с
+    уже взятым idempotency-lock это давало /api/check-payment оба признака
+    выдачи, и Mini App показывал подтверждённую оплату при прежнем балансе.
+    """
+    from shop_bot.bot.user_router import fulfillment
+
+    database = temp_db
+    owner_token, _, _ = _seed(database, with_plan=False)
+    pid = "aaaa0000-0000-0000-0000-000000000006"
+    meta = _top_up_meta(pid)
+    _confirmed_invoice(database, payment_id=pid, meta=meta, amount=300.0)
+
+    monkeypatch.setattr(fulfillment, "add_to_balance", lambda *a, **k: False)
+
+    bot = _recording_bot()
+    fulfilled = asyncio.run(fulfillment.process_successful_payment(bot, meta))
+
+    assert float(database.get_user(OWNER_ID)["balance"]) == 10.0
+    data = _check({"payment_id": pid, "token": owner_token})
+    assert data.get("paid") is not True, data
+    assert data.get("message") != "Оплата успешно подтверждена", data
+    assert "balance" not in data, data
+    assert not database.check_transaction_exists(pid), (
+        "незачисленное пополнение попало в ledger как оплаченное"
+    )
+    assert float(database.get_user(OWNER_ID)["total_spent"] or 0) == 0.0
+
+    assert any("не удалось обновить баланс" in text for _, text in bot.sent), bot.sent
+    assert fulfilled is False
+
+
+def test_failed_top_up_stays_retryable_for_the_next_webhook(temp_db, monkeypatch):
+    """Компенсация снимает lock: повторная доставка вебхука зачисляет деньги."""
+    from shop_bot.bot.user_router import fulfillment
+
+    database = temp_db
+    owner_token, _, _ = _seed(database, with_plan=False)
+    pid = "aaaa0000-0000-0000-0000-000000000007"
+    meta = _top_up_meta(pid)
+    _confirmed_invoice(database, payment_id=pid, meta=meta, amount=300.0)
+
+    real_add_to_balance = fulfillment.add_to_balance
+    monkeypatch.setattr(fulfillment, "add_to_balance", lambda *a, **k: False)
+    asyncio.run(fulfillment.process_successful_payment(_recording_bot(), meta))
+    assert _check({"payment_id": pid, "token": owner_token}).get("paid") is not True
+
+    monkeypatch.setattr(fulfillment, "add_to_balance", real_add_to_balance)
+    asyncio.run(fulfillment.process_successful_payment(_recording_bot(), meta))
+
+    assert float(database.get_user(OWNER_ID)["balance"]) == 310.0
+    data = _check({"payment_id": pid, "token": owner_token})
+    assert data.get("paid") is True, data
+    assert data.get("balance") == 310.0
+
+
 # --- чужой payment_id ---------------------------------------------------------
 
 
