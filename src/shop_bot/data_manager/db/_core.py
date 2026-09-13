@@ -15,6 +15,7 @@ import secrets
 import time
 from typing import Any
 import os
+import re
 
 __all__ = (
     "logger",
@@ -25,6 +26,8 @@ __all__ = (
     "add_months",
     "_to_datetime_str",
     "_normalize_email",
+    "AUTH_EMAIL_MAX_LEN",
+    "normalize_auth_email",
     "_get_table_columns",
     "_ensure_unique_index",
     "_decrypt_row_secrets",
@@ -118,6 +121,30 @@ def _normalize_email(value: str | None) -> str | None:
         return None
     cleaned = value.strip().lower()
     return cleaned or None
+
+
+AUTH_EMAIL_MAX_LEN = 254
+# Только безопасный charset: без < > " ' ` \\ и управляющих. Плюс-адреса ок.
+_AUTH_EMAIL_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._%+-]{0,62}[a-z0-9])?@"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$",
+    re.IGNORECASE,
+)
+
+
+def normalize_auth_email(value) -> str | None:
+    """Нормализовать email входа/профиля. Невалидный или опасный ввод → None."""
+    if value is None:
+        return None
+    raw = str(value)
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in raw):
+        return None
+    cleaned = raw.strip().lower()
+    if not cleaned or len(cleaned) > AUTH_EMAIL_MAX_LEN:
+        return None
+    if not _AUTH_EMAIL_RE.fullmatch(cleaned):
+        return None
+    return cleaned
 
 
 def _get_table_columns(cursor: sqlite3.Cursor, table: str) -> set[str]:

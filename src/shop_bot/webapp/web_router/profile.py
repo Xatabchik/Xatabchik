@@ -78,13 +78,13 @@ async def api_user_profile_change_email_request(request: Request):
         return {"ok": False, "error": "Смена email доступна только для аккаунтов с входом по email"}
 
     password = str(data.get("password") or "")
-    new_email = str(data.get("new_email") or "").strip().lower()
 
     from shop_bot.data_manager import database
     if not database.verify_password(password, user.get("auth_pass")):
         return {"ok": False, "error": "Неверный пароль"}
 
-    if not new_email or not _EMAIL_FORMAT_RE.match(new_email):
+    new_email = database.normalize_auth_email(data.get("new_email"))
+    if not new_email:
         return {"ok": False, "error": "Некорректный формат email"}
     if new_email == (user.get("auth_email") or "").strip().lower():
         return {"ok": False, "error": "Это и есть ваш текущий email"}
