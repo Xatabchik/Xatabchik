@@ -4140,13 +4140,34 @@
 
         function _maskRequisite(value) {
             const s = String(value || '').trim();
+            if (!s) return '••••';
             const digits = s.replace(/\D/g, '');
-            if (!digits) return s;
-            const last4 = digits.slice(-4);
-            return '*'.repeat(Math.max(0, digits.length - 4)) + last4;
+            if (digits && /^[0-9 +\-().]+$/.test(s)) {
+                return '*'.repeat(Math.max(0, digits.length - 4)) + digits.slice(-4);
+            }
+            return '••••';
         }
         const _M_LABELS = { sbp: 'СБП', card: 'Номер карты', usdt_trc20: 'USDT TRC20' };
         const _M_ICONS  = { sbp: 'phone_android', card: 'credit_card', usdt_trc20: 'currency_bitcoin' };
+
+        function _payoutDom(tag, className, text) {
+            const el = document.createElement(tag);
+            if (className) el.className = className;
+            if (text != null) el.textContent = text;
+            return el;
+        }
+
+        function _payoutMethodLabel(m) {
+            const type = m && _M_LABELS[m.method_type] ? m.method_type : '';
+            const typeLabel = _M_LABELS[type] || 'Метод';
+            const bank = m && m.bank_name ? String(m.bank_name) : '';
+            return bank ? (typeLabel + ' · ' + bank) : typeLabel;
+        }
+
+        function _payoutRequisiteText(m) {
+            if (m && m.requisite_masked) return String(m.requisite_masked);
+            return _maskRequisite(m && m.requisite_value);
+        }
 
         function _openReferralActionModal(titleHtml) {
             const modal = document.getElementById('action-modal');
@@ -4290,34 +4311,58 @@
         function _renderWithdrawForm(contentEl, methods) {
             methods = (methods || []).filter((m) => m && m.type_enabled !== false);
             if (!methods.length) {
-                contentEl.innerHTML = '<div class="flex flex-col gap-3"><div class="text-center text-gray-500 text-[11px] py-3">Нет сохранённых методов получения.<br>Добавьте метод в разделе «Методы получения».</div>' +
-                    '<button onclick="openReferralMethodsModal()" class="w-full bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">add</span>Добавить метод</button></div>';
+                const wrap = _payoutDom('div', 'flex flex-col gap-3');
+                wrap.appendChild(_payoutDom('div', 'text-center text-gray-500 text-[11px] py-3', 'Нет сохранённых методов получения. Добавьте метод в разделе «Методы получения».'));
+                const addBtn = _payoutDom('button', 'w-full bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2');
+                addBtn.type = 'button';
+                addBtn.appendChild(_payoutDom('span', 'material-symbols-rounded text-sm', 'add'));
+                addBtn.appendChild(document.createTextNode('Добавить метод'));
+                addBtn.addEventListener('click', () => openReferralMethodsModal());
+                wrap.appendChild(addBtn);
+                contentEl.replaceChildren(wrap);
                 return;
             }
             window._withdrawSelectedId = methods[0].id;
-            let html = '<div class="flex flex-col gap-3">';
-            html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Метод получения</div>';
-            html += '<div id="withdraw-method-list" class="flex flex-col gap-1.5">';
+            const wrap = _payoutDom('div', 'flex flex-col gap-3');
+            wrap.appendChild(_payoutDom('div', 'text-[9px] text-gray-500 uppercase font-bold tracking-widest', 'Метод получения'));
+            const list = _payoutDom('div', 'flex flex-col gap-1.5');
+            list.id = 'withdraw-method-list';
             methods.forEach((m, i) => {
-                const label = (_M_LABELS[m.method_type] || m.method_type) + (m.bank_name ? ' · ' + m.bank_name : '');
                 const sel = i === 0;
-                html += `<button id="wm-${m.id}" onclick="_selectWithdrawMethod(${m.id})" class="flex items-center gap-3 p-3 border rounded-xl transition-all text-left w-full ${sel ? 'bg-primary/10 border-primary/30' : 'bg-white/5 border-white/5'}">
-                    <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${sel ? 'bg-primary/20' : 'bg-white/10'}">
-                        <span class="material-symbols-rounded text-sm ${sel ? 'text-primary' : 'text-gray-400'}">${_M_ICONS[m.method_type] || 'account_balance'}</span>
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <div class="text-[10px] font-bold text-white">${label}</div>
-                        <div class="text-[9px] text-gray-500 font-mono truncate">${_maskRequisite(m.requisite_value)}</div>
-                    </div>
-                </button>`;
+                const btn = _payoutDom('button', 'flex items-center gap-3 p-3 border rounded-xl transition-all text-left w-full ' + (sel ? 'bg-primary/10 border-primary/30' : 'bg-white/5 border-white/5'));
+                btn.type = 'button';
+                btn.id = 'wm-' + String(m.id);
+                btn.dataset.methodId = String(m.id);
+                const iconWrap = _payoutDom('div', 'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ' + (sel ? 'bg-primary/20' : 'bg-white/10'));
+                iconWrap.appendChild(_payoutDom('span', 'material-symbols-rounded text-sm ' + (sel ? 'text-primary' : 'text-gray-400'), _M_ICONS[m.method_type] || 'account_balance'));
+                const texts = _payoutDom('div', 'flex-1 min-w-0');
+                texts.appendChild(_payoutDom('div', 'text-[10px] font-bold text-white', _payoutMethodLabel(m)));
+                texts.appendChild(_payoutDom('div', 'text-[9px] text-gray-500 font-mono truncate', _payoutRequisiteText(m)));
+                btn.appendChild(iconWrap);
+                btn.appendChild(texts);
+                btn.addEventListener('click', () => _selectWithdrawMethod(m.id));
+                list.appendChild(btn);
             });
-            html += '</div>';
+            wrap.appendChild(list);
             const minW = window._referralMinWithdraw || 100;
-            html += `<div><div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Сумма (₽) · мин. ${minW.toFixed(0)} ₽</div>`;
-            html += `<input type="number" id="withdraw-amount-input" min="${minW}" step="1" placeholder="Например: ${minW.toFixed(0)}" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors"></div>`;
-            html += '<button id="withdraw-submit-btn" onclick="_submitWithdrawRequest()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">send</span>Отправить заявку</button>';
-            html += '</div>';
-            contentEl.innerHTML = html;
+            const amountBox = _payoutDom('div');
+            amountBox.appendChild(_payoutDom('div', 'text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5', 'Сумма (₽) · мин. ' + minW.toFixed(0) + ' ₽'));
+            const amountInput = _payoutDom('input', 'w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors');
+            amountInput.type = 'number';
+            amountInput.id = 'withdraw-amount-input';
+            amountInput.min = String(minW);
+            amountInput.step = '1';
+            amountInput.placeholder = 'Например: ' + minW.toFixed(0);
+            amountBox.appendChild(amountInput);
+            wrap.appendChild(amountBox);
+            const submitBtn = _payoutDom('button', 'w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2');
+            submitBtn.type = 'button';
+            submitBtn.id = 'withdraw-submit-btn';
+            submitBtn.appendChild(_payoutDom('span', 'material-symbols-rounded text-sm', 'send'));
+            submitBtn.appendChild(document.createTextNode('Отправить заявку'));
+            submitBtn.addEventListener('click', () => _submitWithdrawRequest());
+            wrap.appendChild(submitBtn);
+            contentEl.replaceChildren(wrap);
         }
 
         function _selectWithdrawMethod(id) {
@@ -4737,25 +4782,31 @@
                     _setReferralHasOpenWithdraw(d.withdrawals.some((w) => w && (w.status === 'new' || w.status === 'processing')));
                 }
                 if (!d.ok || !d.withdrawals || !d.withdrawals.length) {
-                    el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет заявок</div>';
+                    el.replaceChildren(_payoutDom('div', 'text-center text-[11px] text-gray-500 py-3', 'Нет заявок'));
                     return;
                 }
                 const _W_STATUS_LABELS = { new: 'Новая', processing: 'В обработке', paid: 'Выплачено', rejected: 'Отклонено' };
                 const _W_STATUS_COLORS = { new: 'text-yellow-400', processing: 'text-yellow-400', paid: 'text-emerald-400', rejected: 'text-red-400' };
-                let html = '<div class="flex flex-col gap-2">';
+                const wrap = _payoutDom('div', 'flex flex-col gap-2');
                 d.withdrawals.forEach(w => {
                     const statusColor = _W_STATUS_COLORS[w.status] || 'text-yellow-400';
                     const statusLabel = _W_STATUS_LABELS[w.status] || (w.status || '—');
-                    const methodLabel = (_M_LABELS[w.method_type] || w.method_type || '') + (w.bank_name ? ' · ' + w.bank_name : '');
-                    const rejectNote = (w.status === 'rejected' && w.reject_reason) ? (' — ' + w.reject_reason) : '';
-                    html += '<div class="glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3">' +
-                        '<div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0"><span class="material-symbols-rounded text-primary text-sm">' + (_M_ICONS[w.method_type] || 'payments') + '</span></div>' +
-                        '<div class="flex-1 overflow-hidden"><div class="text-[10px] font-bold text-white">' + (w.amount ? Number(w.amount).toFixed(0) + ' ₽' : '—') + (methodLabel ? ' · ' + methodLabel : '') + '</div>' +
-                        '<div class="text-[9px] text-gray-500 truncate">' + (w.created_at ? w.created_at.slice(0, 10) : '') + rejectNote + '</div></div>' +
-                        '<span class="text-[9px] ' + statusColor + ' font-bold uppercase shrink-0">' + statusLabel + '</span></div>';
+                    const row = _payoutDom('div', 'glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3');
+                    const iconWrap = _payoutDom('div', 'w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0');
+                    iconWrap.appendChild(_payoutDom('span', 'material-symbols-rounded text-primary text-sm', _M_ICONS[w.method_type] || 'payments'));
+                    const texts = _payoutDom('div', 'flex-1 overflow-hidden');
+                    const amount = w.amount ? Number(w.amount).toFixed(0) + ' ₽' : '—';
+                    const methodLabel = _payoutMethodLabel(w);
+                    texts.appendChild(_payoutDom('div', 'text-[10px] font-bold text-white', amount + (methodLabel ? ' · ' + methodLabel : '')));
+                    const meta = (w.created_at ? String(w.created_at).slice(0, 10) : '')
+                        + (w.status === 'rejected' && w.reject_reason ? ' — ' + w.reject_reason : '');
+                    texts.appendChild(_payoutDom('div', 'text-[9px] text-gray-500 truncate', meta));
+                    row.appendChild(iconWrap);
+                    row.appendChild(texts);
+                    row.appendChild(_payoutDom('span', 'text-[9px] ' + statusColor + ' font-bold uppercase shrink-0', statusLabel));
+                    wrap.appendChild(row);
                 });
-                html += '</div>';
-                el.innerHTML = html;
+                el.replaceChildren(wrap);
             } catch (e) {
                 el.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Ошибка загрузки</div>';
             }
@@ -5240,26 +5291,33 @@
                     return;
                 }
                 const methods = d.methods || [];
-                let html = '<div class="flex flex-col gap-2">';
-                if (!methods.length) html += '<div class="text-center text-gray-500 text-[11px] py-3">Пока нет сохранённых способов получения.<br>Нажмите «Добавить способ».</div>';
+                const wrap = _payoutDom('div', 'flex flex-col gap-2');
+                if (!methods.length) {
+                    wrap.appendChild(_payoutDom('div', 'text-center text-gray-500 text-[11px] py-3', 'Пока нет сохранённых способов получения. Нажмите «Добавить способ».'));
+                }
                 methods.forEach(m => {
-                    const label = (_M_LABELS[m.method_type] || m.method_type) + (m.bank_name ? ' · ' + m.bank_name : '');
-                    html += `<div class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl">
-                        <div class="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
-                            <span class="material-symbols-rounded text-primary text-sm">${_M_ICONS[m.method_type] || 'account_balance'}</span>
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <div class="text-[10px] font-bold text-white">${label}</div>
-                            <div class="text-[9px] text-gray-500 font-mono truncate">${_maskRequisite(m.requisite_value)}</div>
-                        </div>
-                        <button onclick="_deletePayoutMethod(${m.id})" class="w-7 h-7 flex items-center justify-center rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 active:scale-90 transition-all shrink-0">
-                            <span class="material-symbols-rounded text-sm">delete</span>
-                        </button>
-                    </div>`;
+                    const row = _payoutDom('div', 'flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl');
+                    const iconWrap = _payoutDom('div', 'w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0');
+                    iconWrap.appendChild(_payoutDom('span', 'material-symbols-rounded text-primary text-sm', _M_ICONS[m.method_type] || 'account_balance'));
+                    const texts = _payoutDom('div', 'flex-1 min-w-0');
+                    texts.appendChild(_payoutDom('div', 'text-[10px] font-bold text-white', _payoutMethodLabel(m)));
+                    texts.appendChild(_payoutDom('div', 'text-[9px] text-gray-500 font-mono truncate', _payoutRequisiteText(m)));
+                    const delBtn = _payoutDom('button', 'w-7 h-7 flex items-center justify-center rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 active:scale-90 transition-all shrink-0');
+                    delBtn.type = 'button';
+                    delBtn.appendChild(_payoutDom('span', 'material-symbols-rounded text-sm', 'delete'));
+                    delBtn.addEventListener('click', () => _deletePayoutMethod(m.id));
+                    row.appendChild(iconWrap);
+                    row.appendChild(texts);
+                    row.appendChild(delBtn);
+                    wrap.appendChild(row);
                 });
-                html += '<button onclick="_addReferralPayoutMethod()" class="w-full mt-2 bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">add</span>Добавить метод</button>';
-                html += '</div>';
-                contentEl.innerHTML = html;
+                const addBtn = _payoutDom('button', 'w-full mt-2 bg-primary/10 border border-primary/20 text-primary py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2');
+                addBtn.type = 'button';
+                addBtn.appendChild(_payoutDom('span', 'material-symbols-rounded text-sm', 'add'));
+                addBtn.appendChild(document.createTextNode('Добавить метод'));
+                addBtn.addEventListener('click', () => _addReferralPayoutMethod());
+                wrap.appendChild(addBtn);
+                contentEl.replaceChildren(wrap);
             } catch (e) {
                 contentEl.innerHTML = '<div class="text-center text-red-400 py-3 text-xs">Ошибка сети</div>';
             }
