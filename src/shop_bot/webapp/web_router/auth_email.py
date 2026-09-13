@@ -65,29 +65,32 @@ async def _issue_email_verification_code(user_id: int, email: str) -> tuple[bool
 async def api_email_register(request: Request, req: EmailAuthRequest):
     from shop_bot.data_manager import database
 
-    limited = _reject_if_email_auth_rate_limited(req.email)
+    email = database.normalize_auth_email(req.email)
+    limited = _reject_if_email_auth_rate_limited(email or req.email)
     if limited:
         return limited
+    if not email:
+        return {"ok": False, "error": "Некорректный формат email"}
 
     pw_err = _validate_password(req.password)
     if pw_err:
         return {"ok": False, "error": pw_err}
 
-    existing = database.get_user_by_email(req.email)
+    existing = database.get_user_by_email(email)
     if existing:
         # Тот же ответ, что у новой регистрации — иначе по «Email уже
         # зарегистрирован» можно перебирать занятые адреса.
-        return {"ok": True, "requires_verification": True, "email": req.email}
+        return {"ok": True, "requires_verification": True, "email": email}
 
-    user = database.create_user_by_email(req.email, req.password)
+    user = database.create_user_by_email(email, req.password)
     if not user:
         return {"ok": False, "error": "Ошибка при регистрации"}
 
-    ok, err = await _issue_email_verification_code(user['telegram_id'], req.email)
+    ok, err = await _issue_email_verification_code(user['telegram_id'], email)
     if not ok:
         return {"ok": False, "error": err}
 
-    return {"ok": True, "requires_verification": True, "email": req.email}
+    return {"ok": True, "requires_verification": True, "email": email}
 
 
 @app.post("/api/auth/email/verify")
