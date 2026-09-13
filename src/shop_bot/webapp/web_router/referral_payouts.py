@@ -28,9 +28,20 @@ async def api_referral_payout_methods_list(request: Request):
     if not user:
         return {"ok": False, "error": "Unauthorized"}
     try:
-        methods = rw_repo.list_referral_payout_methods(user.get("telegram_id"))
-        for method in methods:
-            method["type_enabled"] = _ref_method_type_enabled(method.get("method_type"))
+        raw_methods = rw_repo.list_referral_payout_methods(user.get("telegram_id"))
+        methods = []
+        for method in raw_methods:
+            kind = (method.get("method_type") or "").strip().lower()
+            methods.append({
+                "id": method.get("id"),
+                "method_type": kind if kind in rw_repo.REFERRAL_PAYOUT_METHOD_TYPES else None,
+                "bank_name": rw_repo.sanitize_payout_bank_name(method.get("bank_name")),
+                "requisite_masked": rw_repo.mask_referral_requisite(
+                    method.get("requisite_value"), method.get("method_type")
+                ),
+                "type_enabled": _ref_method_type_enabled(method.get("method_type")),
+                "created_at": method.get("created_at"),
+            })
     except Exception as e:
         logger.error(f"Failed to list referral payout methods: {e}")
         methods = []
@@ -54,9 +65,15 @@ async def api_referral_payout_methods_add(request: Request):
 
     method_type = (data.get("method_type") or "").strip()
     requisite_value = (data.get("requisite_value") or "").strip()
-    bank_name = (data.get("bank_name") or None)
+    bank_name = rw_repo.sanitize_payout_bank_name(data.get("bank_name"))
     if not method_type or not requisite_value:
         return {"ok": False, "error": "Заполните все поля"}
+    if method_type == "sbp":
+        if not bank_name:
+            return {"ok": False, "error": "Некорректное название банка"}
+        allowed = rw_repo.list_referral_sbp_banks()
+        if allowed and bank_name not in allowed:
+            return {"ok": False, "error": "Выберите банк из списка"}
 
     if not _ref_setting_is_true("referral_withdraw_enabled"):
         return {"ok": False, "error": "Вывод средств временно недоступен."}
@@ -88,8 +105,7 @@ async def api_referral_available_method_types(request: Request):
         {"type": "card",      "label": "Номер карты",  "icon": "credit_card",      "placeholder": "Номер карты (16 цифр)", "setting": "referral_withdraw_card_enabled"},
         {"type": "usdt_trc20","label": "USDT TRC20",   "icon": "currency_bitcoin", "placeholder": "TRC20 адрес кошелька", "setting": "referral_withdraw_usdt_enabled"},
     ]
-    raw_banks = get_setting("referral_withdraw_sbp_banks") or ""
-    sbp_banks = [b.strip() for b in raw_banks.split(",") if b.strip()]
+    sbp_banks = rw_repo.list_referral_sbp_banks()
     enabled = []
     for m in method_configs:
         if not _ref_setting_is_true(m["setting"]):
