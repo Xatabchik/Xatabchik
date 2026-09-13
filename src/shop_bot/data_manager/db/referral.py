@@ -28,6 +28,9 @@ __all__ = (
     "_REFERRAL_TRC20_RE",
     "_referral_setting_is_true",
     "validate_referral_payout_requisite",
+    "sanitize_payout_bank_name",
+    "mask_referral_requisite",
+    "list_referral_sbp_banks",
     "list_referral_payout_methods",
     "add_referral_payout_method",
     "delete_referral_payout_method",
@@ -420,11 +423,49 @@ def deduct_from_referral_balance(user_id: int, amount: float) -> bool:
 
 REFERRAL_PAYOUT_METHOD_TYPES = ("sbp", "card", "usdt_trc20")
 _REFERRAL_TRC20_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+_SAFE_PAYOUT_BANK_RE = re.compile(r"^[\w .()/-]{1,64}$", re.UNICODE)
 
 
 def _referral_setting_is_true(key: str, default: bool = False) -> bool:
     raw = str(get_setting(key) or ("true" if default else "false")).strip().lower()
     return raw in {"1", "true", "yes", "on", "y"}
+
+
+def list_referral_sbp_banks() -> list[str]:
+    raw = get_setting("referral_withdraw_sbp_banks") or ""
+    banks = []
+    for part in str(raw).split(","):
+        clean = sanitize_payout_bank_name(part)
+        if clean and clean not in banks:
+            banks.append(clean)
+    return banks
+
+
+def sanitize_payout_bank_name(bank_name: str | None) -> str | None:
+    """Оставить только безопасное имя банка. XSS/управляющие символы → None."""
+    raw = (bank_name or "").strip()
+    if not raw:
+        return None
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in raw):
+        return None
+    if any(ch in raw for ch in "<>\"'`\\"):
+        return None
+    if not _SAFE_PAYOUT_BANK_RE.fullmatch(raw):
+        return None
+    return raw
+
+
+def mask_referral_requisite(value: str | None, method_type: str | None = None) -> str:
+    """Маска для UI. Сырой невалидный текст не возвращается."""
+    s = str(value or "").strip()
+    kind = (method_type or "").strip().lower()
+    if kind == "usdt_trc20" and _REFERRAL_TRC20_RE.fullmatch(s):
+        return f"{s[:4]}…{s[-4:]}"
+    digits = "".join(ch for ch in s if ch.isdigit())
+    phone_or_card = bool(s) and all(ch.isdigit() or ch in " +()-." for ch in s)
+    if digits and phone_or_card:
+        return ("*" * max(0, len(digits) - 4)) + digits[-4:]
+    return "••••"
 
 
 def validate_referral_payout_requisite(
@@ -438,12 +479,17 @@ def validate_referral_payout_requisite(
     if not value:
         return False, "Реквизиты не могут быть пустыми."
     if method_type == "sbp":
+        bank = sanitize_payout_bank_name(bank_name)
         if not (bank_name or "").strip():
             return False, "Не указан банк для СБП."
+        if not bank:
+            return False, "Некорректное название банка."
         digits = "".join(ch for ch in value if ch.isdigit())
         if len(digits) < 10 or len(digits) > 15:
             return False, "Укажите номер телефона для СБП (10–15 цифр)."
         return True, ""
+    if (bank_name or "").strip():
+        return False, "Для этого способа банк не указывается."
     if method_type == "card":
         digits = "".join(ch for ch in value if ch.isdigit())
         if len(digits) < 16 or len(digits) > 19:
@@ -482,7 +528,7 @@ def add_referral_payout_method(user_id: int, method_type: str, requisite_value: 
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO referral_payout_methods (user_id, method_type, bank_name, requisite_value) VALUES (?, ?, ?, ?)",
-                (int(user_id), method_type, (bank_name or "").strip() or None, requisite_value),
+                (int(user_id), method_type, sanitize_payout_bank_name(bank_name), requisite_value),
             )
             conn.commit()
             return True, "Метод получения добавлен.", int(cur.lastrowid)
