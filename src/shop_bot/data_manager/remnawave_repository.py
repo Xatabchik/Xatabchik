@@ -734,6 +734,8 @@ _LEGACY_FORWARDERS = (
     "update_user_auth_token",
     "get_user_by_email",
     "create_user_by_email",
+    "normalize_auth_email",
+    "AUTH_EMAIL_MAX_LEN",
     "update_user_password",
     "hash_password",
     "verify_password",

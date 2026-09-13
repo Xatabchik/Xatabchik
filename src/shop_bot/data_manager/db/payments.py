@@ -1533,7 +1533,7 @@ def payment_owned_by_user(payment_id: str, user_id: int) -> bool:
 def set_pending_email(user_id: int, new_email: str) -> bool:
     """Сохранить новый email, ожидающий подтверждения кодом (смена почты из профиля).
     Текущий auth_email остаётся действующим для входа, пока код не подтверждён."""
-    norm = _normalize_email(new_email)
+    norm = normalize_auth_email(new_email)
     if not norm:
         return False
     try:
@@ -1580,6 +1580,8 @@ def finalize_pending_email_change(user_id: int) -> tuple[bool, str | None]:
             pending = row["pending_email"] if row else None
             if not pending:
                 return False, "Нет ожидающей смены email"
+            if not normalize_auth_email(pending):
+                return False, "Некорректный формат email"
 
             cur.execute(
                 "SELECT telegram_id FROM users WHERE auth_email = ? AND telegram_id != ?",

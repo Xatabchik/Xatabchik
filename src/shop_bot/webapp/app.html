@@ -5521,32 +5521,67 @@
             }
         }
 
-        function _renderProfileMain(contentEl, info) {
-            let html = '<div class="flex flex-col gap-3">';
-            html += `<div class="bg-black/20 rounded-xl p-3 border border-white/5">
-                <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Email</div>
-                <div class="text-[11px] text-gray-200 font-mono truncate">${info.auth_email || '—'}</div>
-            </div>`;
+        function _profileDom(tag, className, text) {
+            const el = document.createElement(tag);
+            if (className) el.className = className;
+            if (text != null) el.textContent = text;
+            return el;
+        }
 
+        function _profileIconBtn(className, iconName, label, onClick) {
+            const btn = _profileDom('button', className);
+            btn.type = 'button';
+            const icon = _profileDom('span', 'material-symbols-rounded text-sm', iconName);
+            btn.appendChild(icon);
+            btn.appendChild(document.createTextNode(label));
+            btn.addEventListener('click', onClick);
+            return btn;
+        }
+
+        function _renderProfileMain(contentEl, info) {
+            const wrap = _profileDom('div', 'flex flex-col gap-3');
+            const box = _profileDom('div', 'bg-black/20 rounded-xl p-3 border border-white/5');
+            box.appendChild(_profileDom('div', 'text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5', 'Email'));
+            box.appendChild(_profileDom('div', 'text-[11px] text-gray-200 font-mono truncate', info.auth_email || '—'));
+            wrap.appendChild(box);
+
+            const modalContent = () => document.getElementById('action-modal-content');
             if (info.pending_email) {
-                html += `<div class="flex items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2.5">
-                    <span class="material-symbols-rounded text-amber-400 text-sm shrink-0 mt-0.5">mail</span>
-                    <span class="text-[10px] text-amber-200/80 leading-relaxed">Ожидает подтверждения смена email на <b class="text-amber-200">${info.pending_email}</b>.</span>
-                </div>`;
-                html += `<button onclick="_renderProfileVerifyEmailCode(document.getElementById('action-modal-content'), '${info.pending_email}')" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                    <span class="material-symbols-rounded text-sm">pin</span>Ввести код подтверждения
-                </button>`;
-                html += `<button onclick="_cancelProfileEmailChange()" class="w-full bg-white/5 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all border border-white/5">Отменить смену email</button>`;
+                const banner = _profileDom('div', 'flex items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2.5');
+                banner.appendChild(_profileDom('span', 'material-symbols-rounded text-amber-400 text-sm shrink-0 mt-0.5', 'mail'));
+                const msg = _profileDom('span', 'text-[10px] text-amber-200/80 leading-relaxed');
+                msg.appendChild(document.createTextNode('Ожидает подтверждения смена email на '));
+                const pending = _profileDom('b', 'text-amber-200');
+                pending.textContent = info.pending_email;
+                msg.appendChild(pending);
+                msg.appendChild(document.createTextNode('.'));
+                banner.appendChild(msg);
+                wrap.appendChild(banner);
+                wrap.appendChild(_profileIconBtn(
+                    'w-full bg-amber-500 hover:bg-amber-600 text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2',
+                    'pin',
+                    'Ввести код подтверждения',
+                    () => _renderProfileVerifyEmailCode(modalContent(), info.pending_email)
+                ));
+                const cancelBtn = _profileDom('button', 'w-full bg-white/5 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all border border-white/5', 'Отменить смену email');
+                cancelBtn.type = 'button';
+                cancelBtn.addEventListener('click', () => _cancelProfileEmailChange());
+                wrap.appendChild(cancelBtn);
             } else {
-                html += `<button onclick="_renderProfileChangePassword(document.getElementById('action-modal-content'))" class="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5">
-                    <span class="material-symbols-rounded text-sm">lock_reset</span>Изменить пароль
-                </button>`;
-                html += `<button onclick="_renderProfileChangeEmailRequest(document.getElementById('action-modal-content'))" class="w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5">
-                    <span class="material-symbols-rounded text-sm">alternate_email</span>Изменить email
-                </button>`;
+                wrap.appendChild(_profileIconBtn(
+                    'w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5',
+                    'lock_reset',
+                    'Изменить пароль',
+                    () => _renderProfileChangePassword(modalContent())
+                ));
+                wrap.appendChild(_profileIconBtn(
+                    'w-full bg-white/5 text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2 border border-white/5',
+                    'alternate_email',
+                    'Изменить email',
+                    () => _renderProfileChangeEmailRequest(modalContent())
+                ));
             }
-            html += '</div>';
-            contentEl.innerHTML = html;
+            contentEl.replaceChildren(wrap);
         }
 
         function _renderProfileChangePassword(contentEl) {
@@ -5641,18 +5676,42 @@
         }
 
         function _renderProfileVerifyEmailCode(contentEl, pendingEmail) {
-            contentEl.innerHTML = `
-                <div class="flex flex-col gap-3">
-                    <div class="text-[10px] text-gray-400 leading-relaxed">Код отправлен на <b class="text-white">${pendingEmail}</b>. Введите его ниже, чтобы подтвердить смену email.</div>
-                    <input type="text" id="profile-email-code" maxlength="6" inputmode="numeric" placeholder="000000" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-center text-lg tracking-[0.3em] font-mono text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
-                    <button id="profile-email-verify-btn" onclick="_submitProfileVerifyEmailCode()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                        <span class="material-symbols-rounded text-sm">check</span>Подтвердить
-                    </button>
-                    <div class="flex items-center justify-between gap-2">
-                        <button onclick="_resendProfileEmailChangeCode()" class="flex-1 text-primary py-1.5 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-colors">Отправить код повторно</button>
-                        <button onclick="_cancelProfileEmailChange()" class="flex-1 text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Отменить</button>
-                    </div>
-                </div>`;
+            const wrap = _profileDom('div', 'flex flex-col gap-3');
+            const hint = _profileDom('div', 'text-[10px] text-gray-400 leading-relaxed');
+            hint.appendChild(document.createTextNode('Код отправлен на '));
+            const emailEl = _profileDom('b', 'text-white');
+            emailEl.textContent = pendingEmail || '';
+            hint.appendChild(emailEl);
+            hint.appendChild(document.createTextNode('. Введите его ниже, чтобы подтвердить смену email.'));
+            wrap.appendChild(hint);
+
+            const codeInput = _profileDom('input', 'w-full bg-black/40 border border-white/10 rounded-xl p-3 text-center text-lg tracking-[0.3em] font-mono text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors');
+            codeInput.type = 'text';
+            codeInput.id = 'profile-email-code';
+            codeInput.maxLength = 6;
+            codeInput.inputMode = 'numeric';
+            codeInput.placeholder = '000000';
+            wrap.appendChild(codeInput);
+
+            const verifyBtn = _profileDom('button', 'w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2');
+            verifyBtn.type = 'button';
+            verifyBtn.id = 'profile-email-verify-btn';
+            verifyBtn.appendChild(_profileDom('span', 'material-symbols-rounded text-sm', 'check'));
+            verifyBtn.appendChild(document.createTextNode('Подтвердить'));
+            verifyBtn.addEventListener('click', () => _submitProfileVerifyEmailCode());
+            wrap.appendChild(verifyBtn);
+
+            const row = _profileDom('div', 'flex items-center justify-between gap-2');
+            const resendBtn = _profileDom('button', 'flex-1 text-primary py-1.5 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-colors', 'Отправить код повторно');
+            resendBtn.type = 'button';
+            resendBtn.addEventListener('click', () => _resendProfileEmailChangeCode());
+            const cancelBtn = _profileDom('button', 'flex-1 text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors', 'Отменить');
+            cancelBtn.type = 'button';
+            cancelBtn.addEventListener('click', () => _cancelProfileEmailChange());
+            row.appendChild(resendBtn);
+            row.appendChild(cancelBtn);
+            wrap.appendChild(row);
+            contentEl.replaceChildren(wrap);
         }
 
         async function _submitProfileVerifyEmailCode() {
