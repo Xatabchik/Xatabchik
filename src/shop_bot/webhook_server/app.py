@@ -63,7 +63,7 @@ from shop_bot.data_manager.remnawave_repository import (
     bulk_close_open_tickets, bulk_delete_all_tickets, cleanup_ticket_media_ids,
     get_closed_tickets_count, get_all_tickets_count, update_host_subscription_url,
     update_host_url, update_host_name, update_host_ssh_settings, get_latest_speedtest, get_speedtests,
-    get_all_keys, get_keys_for_user, delete_key_by_id, update_key_comment, get_keys_paginated,
+    get_all_keys, get_keys_for_user, delete_key_by_id, normalize_key_comment, update_key_comment, get_keys_paginated,
     get_balance, adjust_user_balance, get_referrals_for_user,
     get_referral_balance, adjust_user_referral_balance,
     link_referrer_if_eligible, unlink_referral, unlink_all_referrals,
@@ -3517,7 +3517,11 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning(f"Не удалось проставить политику сброса трафика для ключа {key_id}", exc_info=True)
             if comment:
                 try:
-                    update_key_comment(key_id, comment)
+                    normalized, comment_error = normalize_key_comment(comment)
+                    if comment_error:
+                        logger.warning("Не удалось сохранить комментарий ключа %s: слишком длинный", key_id)
+                    elif normalized:
+                        update_key_comment(key_id, normalized)
                 except Exception:
                     logger.warning(f"Не удалось сохранить комментарий ключа {key_id}", exc_info=True)
 
@@ -3604,7 +3608,11 @@ def create_webhook_app(bot_controller_instance):
                 logger.warning(f"Не удалось проставить политику сброса трафика для подарочного ключа {key_id}", exc_info=True)
             if comment:
                 try:
-                    update_key_comment(key_id, comment)
+                    normalized, comment_error = normalize_key_comment(comment)
+                    if comment_error:
+                        logger.warning("Не удалось сохранить комментарий подарочного ключа %s: слишком длинный", key_id)
+                    elif normalized:
+                        update_key_comment(key_id, normalized)
                 except Exception:
                     logger.warning(f"Не удалось сохранить комментарий подарочного ключа {key_id}", exc_info=True)
 
@@ -4068,7 +4076,10 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/admin/keys/<int:key_id>/comment', methods=['POST'])
     @login_required
     def update_key_comment_route(key_id: int):
-        comment = (request.form.get('comment') or '').strip()
+        comment, error = normalize_key_comment(request.form.get('comment'))
+        if error:
+            flash(error, 'danger')
+            return redirect(request.referrer or url_for('admin_keys_page'))
         ok = update_key_comment(key_id, comment)
         flash('Комментарий обновлён.' if ok else 'Не удалось обновить комментарий.', 'success' if ok else 'danger')
         return redirect(request.referrer or url_for('admin_keys_page'))

@@ -6,6 +6,7 @@
 
 
 from typing import Any
+import html as html_lib
 from shop_bot.data_manager.remnawave_repository import get_setting, get_msk_time
 from datetime import datetime, timedelta
 import json
@@ -22,6 +23,16 @@ from shop_bot.data_manager.database import (
     resolve_lte_limit_bytes,
     squad_display_label,
 )
+
+
+def _esc_text(value) -> str:
+    """Экранировать значение для HTML-текста и атрибутов.
+
+    Старые заметки/имена в БД могут содержать разметку и кавычки — их нельзя
+    вставлять в карточку или в onclick как есть. Экранирование здесь не замена
+    нормализации ввода: вредоносная строка остаётся в базе, но становится текстом.
+    """
+    return html_lib.escape("" if value is None else str(value), quote=True)
 
 
 def _format_remaining_details(remaining: timedelta) -> str:
@@ -411,7 +422,7 @@ def _get_key_html(key: dict) -> str:
                 <div class="flex justify-between items-center h-6">
                     <div class="flex items-center gap-1.5 text-gray-500 dark:text-gray-400 text-sm">
                         <span class="material-symbols-rounded text-base">key</span>
-                        <span>{data['name']}</span>
+                        <span>{_esc_text(data.get('name'))}</span>
                     </div>
                     <div
                         class="bg-surface-highlight-dark/10 dark:bg-surface-highlight-dark px-2 py-0.5 rounded text-[10px] font-medium text-gray-600 dark:text-gray-300">
@@ -569,9 +580,17 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
     """Render the full key-card block (used for regular keys and, with an extra
     badge/CTA, for not-yet-activated gift keys so both share the same UI)."""
     data = _process_key_data(key)
+    kid = int(data["key_id"])
+    name = _esc_text(data.get("name"))
+    comment = _esc_text(data.get("comment_key") or "")
+    sub_url = _esc_text(data.get("sub_url") or "")
+    host_name = _esc_text(data.get("host_name") or "")
+    expire = _esc_text(data.get("expire_date_str") or "")
+    remaining = _esc_text(data.get("remaining_str") or "")
+    has_comment = bool(data.get("comment_key"))
 
     return f"""
-        <div class="glass-card border border-white/10 rounded-2xl relative overflow-hidden shadow-lg transition-all hover:border-primary/30 group mb-3">
+        <div class="glass-card border border-white/10 rounded-2xl relative overflow-hidden shadow-lg transition-all hover:border-primary/30 group mb-3" data-key-id="{kid}" data-key-name="{name}">
             <div class="absolute inset-0 bg-gradient-to-r from-primary/0 via-primary/5 to-primary/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 pointer-events-none"></div>
 
             <button class="key-toggle w-full p-3 flex items-center justify-between relative z-10 transition-colors hover:bg-white/5">
@@ -581,9 +600,9 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                     </div>
                     
                     <div class="text-left overflow-hidden">
-                        <div class="text-xs font-bold text-white group-hover:text-primary transition-colors truncate">{data['name']}</div>
+                        <div class="text-xs font-bold text-white group-hover:text-primary transition-colors truncate">{name}</div>
                         <div class="text-[9px] text-gray-500 font-medium uppercase tracking-wider truncate">
-                           До {data['expire_date_str']} ({data['remaining_str']})
+                           До {expire} ({remaining})
                         </div>
                     </div>
                 </div>
@@ -628,46 +647,46 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                             </div>
                         </div>
                         {f'''<div class="flex items-center gap-1.5 pt-1 opacity-90">
-                            <span class="text-amber-400/80 whitespace-nowrap">💰 {_html_esc(data.get("lte_label") or "LTE")}:</span>
+                            <span class="text-amber-400/80 whitespace-nowrap">💰 {_esc_text(data.get("lte_label") or "LTE")}:</span>
                             <span class="text-gray-300 font-mono whitespace-nowrap">{data["lte_info"]}</span>
                         </div>''' if data.get('show_lte') and data.get('lte_info') else ''}
                      </div>
                  
                      <!-- COMMENTS BLOCK -->
-                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
+                     <div id="comment-block-{kid}" class="{'hidden' if not has_comment else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
                          <span class="material-symbols-rounded text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
-                         <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
+                         <span id="comment-text-{kid}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{comment}</span>
                      </div>
 
                      <div class="flex items-center gap-2 bg-black/20 rounded-xl p-2 border border-white/5 group/copy hover:border-primary/30 transition-colors">
                          <div class="flex-1 min-w-0">
                              <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Ссылка</div>
-                             <div class="text-[10px] text-gray-300 font-mono truncate transition-colors group-hover/copy:text-white">{data['sub_url']}</div>
+                             <div class="text-[10px] text-gray-300 font-mono truncate transition-colors group-hover/copy:text-white">{sub_url}</div>
                          </div>
-                         <button onclick="copyKey(this, '{data['sub_url']}')" 
+                         <button type="button" data-key-action="copy-key" data-url="{sub_url}"
                             class="w-7 h-7 rounded-lg bg-white/5 text-white flex items-center justify-center hover:bg-white/10 transition-all active:scale-95 shrink-0 shadow-sm">
                              <span class="material-symbols-rounded text-sm">content_copy</span>
                          </button>
                      </div>
 
-                     <button onclick="openLinkSafe('{data['sub_url']}')"
+                     <button type="button" data-key-action="open-key" data-url="{sub_url}"
                         class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                          <span class="material-symbols-rounded text-sm">bolt</span>
                          <span>Подключить</span>
                      </button>
                      
                      <div class="grid grid-cols-3 gap-2 mt-1">
-                         <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
+                         <button type="button" data-key-action="devices" data-key-id="{kid}" data-host="{host_name}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
-                         <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
+                         <button type="button" data-key-action="rename" data-key-id="{kid}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">edit</span>
                              <span>Название</span>
                          </button>
-                         <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
+                         <button type="button" data-key-action="comment" data-key-id="{kid}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">edit_note</span>
                              <span>Заметка</span>
@@ -688,7 +707,7 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                      {f'''<button onclick="openLteTopup({data["key_id"]})"
                         class="w-full bg-amber-500/10 border border-amber-500/20 text-amber-300 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1 mt-1">
                          <span class="material-symbols-rounded text-sm">bolt</span>
-                         <span>Докупить {_html_esc(data.get("lte_label") or "LTE")}</span>
+                         <span>Докупить {_esc_text(data.get("lte_label") or "LTE")}</span>
                      </button>''' if data.get('show_lte_topup') else ''}
                      {extra_content_html}
                 </div>
@@ -735,9 +754,17 @@ def _get_setup_keys_html(keys: list) -> str:
         
         if data['days_left'] <= 0:
             continue
+        kid = int(data["key_id"])
+        name = _esc_text(data.get("name"))
+        comment = _esc_text(data.get("comment_key") or "")
+        sub_url = _esc_text(data.get("sub_url") or "")
+        host_name = _esc_text(data.get("host_name") or "")
+        expire = _esc_text(data.get("expire_date_str") or "")
+        remaining = _esc_text(data.get("remaining_str") or "")
+        has_comment = bool(data.get("comment_key"))
             
         html += f"""
-        <div class="glass-card border border-white/10 rounded-2xl relative overflow-hidden shadow-lg transition-all hover:border-primary/30 group mb-3">
+        <div class="glass-card border border-white/10 rounded-2xl relative overflow-hidden shadow-lg transition-all hover:border-primary/30 group mb-3" data-key-id="{kid}" data-key-name="{name}">
             <div class="absolute inset-0 bg-gradient-to-r from-primary/0 via-primary/5 to-primary/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 pointer-events-none"></div>
 
             <button class="key-toggle w-full p-3 flex items-center justify-between relative z-10 transition-colors hover:bg-white/5">
@@ -747,9 +774,9 @@ def _get_setup_keys_html(keys: list) -> str:
                     </div>
                     
                     <div class="text-left overflow-hidden">
-                        <div class="text-xs font-bold text-white group-hover:text-primary transition-colors truncate">{data['name']}</div>
+                        <div class="text-xs font-bold text-white group-hover:text-primary transition-colors truncate">{name}</div>
                         <div class="text-[9px] text-gray-500 font-medium uppercase tracking-wider truncate">
-                           До {data['expire_date_str']} ({data['remaining_str']})
+                           До {expire} ({remaining})
                         </div>
                     </div>
                 </div>
@@ -766,40 +793,40 @@ def _get_setup_keys_html(keys: list) -> str:
                  <div class="pb-3 pt-2 flex flex-col gap-2 border-t border-white/5">
                  
                      <!-- COMMENTS BLOCK -->
-                     <div id="comment-block-{data['key_id']}" class="{'hidden' if not data.get('comment_key') else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
+                     <div id="comment-block-{kid}" class="{'hidden' if not has_comment else 'flex'} items-start gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 mb-1 mt-1">
                          <span class="material-symbols-rounded text-amber-400/70 text-sm mt-0.5 shrink-0">sticky_note_2</span>
-                         <span id="comment-text-{data['key_id']}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{data.get('comment_key', '')}</span>
+                         <span id="comment-text-{kid}" class="text-[10px] text-amber-200/80 leading-relaxed break-words">{comment}</span>
                      </div>
 
                      <div class="flex items-center gap-2 bg-black/20 rounded-xl p-2 border border-white/5 group/copy hover:border-primary/30 transition-colors">
                          <div class="flex-1 min-w-0">
                              <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Ссылка</div>
-                             <div class="text-[10px] text-gray-300 font-mono truncate transition-colors group-hover/copy:text-white">{data['sub_url']}</div>
+                             <div class="text-[10px] text-gray-300 font-mono truncate transition-colors group-hover/copy:text-white">{sub_url}</div>
                          </div>
-                         <button onclick="copyKey(this, '{data['sub_url']}')" 
+                         <button type="button" data-key-action="copy-key" data-url="{sub_url}"
                             class="w-7 h-7 rounded-lg bg-white/5 text-white flex items-center justify-center hover:bg-white/10 transition-all active:scale-95 shrink-0 shadow-sm">
                              <span class="material-symbols-rounded text-sm">content_copy</span>
                          </button>
                      </div>
 
-                     <button onclick="openLinkSafe('{data['sub_url']}')"
+                     <button type="button" data-key-action="open-key" data-url="{sub_url}"
                         class="w-full bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                          <span class="material-symbols-rounded text-sm">bolt</span>
                          <span>Открыть инструкцию</span>
                      </button>
                      
                      <div class="grid grid-cols-3 gap-2 mt-1">
-                         <button onclick="openActionModal('devices', {data['key_id']}, '{data.get('host_name', '')}')"
+                         <button type="button" data-key-action="devices" data-key-id="{kid}" data-host="{host_name}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">devices</span>
                              <span>Устройства</span>
                          </button>
-                         <button onclick="openActionModal('rename', {data['key_id']}, '{data['user_key_name']}')"
+                         <button type="button" data-key-action="rename" data-key-id="{kid}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">edit</span>
                              <span>Название</span>
                          </button>
-                         <button onclick="openActionModal('comment', {data['key_id']}, '{data.get('comment_key', '')}')"
+                         <button type="button" data-key-action="comment" data-key-id="{kid}"
                              class="w-full bg-white/5 text-white py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1 border border-white/5 hover:border-white/10">
                              <span class="material-symbols-rounded text-sm">edit_note</span>
                              <span>Заметка</span>
@@ -823,6 +850,9 @@ def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, s
     for index, key in enumerate(keys):
         data = _process_key_data(key)
         host_name = key.get('host_name', '')
+        name = _esc_text(data.get("name"))
+        expire = _esc_text(data.get("expire_date_str") or "")
+        host_attr = _esc_text(host_name)
         
         is_selected = (index == 0)
         check_class = "text-primary" if is_selected else "text-transparent"
@@ -830,18 +860,18 @@ def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, s
         icon_color = "text-primary" if is_selected else "text-gray-500"
         
         if is_selected:
-            selected_text = f"{data['name']} • До {data['expire_date_str']}"
+            selected_text = f"{name} • До {expire}"
 
         options_html += f"""
         <button
             class="dropdown-option w-full p-2.5 flex items-center justify-between rounded-lg hover:bg-white/5 transition-colors"
-            data-key="#{data['key_id']}" data-name="{data['name']}" data-date="{data['expire_date_str']}" data-host="{host_name}" data-index="{index}">
+            data-key="#{data['key_id']}" data-name="{name}" data-date="{expire}" data-host="{host_attr}" data-index="{index}">
             <div class="flex items-center gap-2.5 overflow-hidden">
                 <span class="material-symbols-rounded {icon_color} text-sm shrink-0">key</span>
                 <div class="text-left overflow-hidden">
-                    <div class="text-xs font-bold {text_color} truncate">{data['name']}</div>
+                    <div class="text-xs font-bold {text_color} truncate">{name}</div>
                     <div class="flex items-center gap-2">
-                        <div class="text-[9px] text-gray-400">До {data['expire_date_str']}</div>
+                        <div class="text-[9px] text-gray-400">До {expire}</div>
                         <span class="text-[8px] {data['status_bg']} {data['status_color']} px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0">{data['status_text']}</span>
                     </div>
                 </div>

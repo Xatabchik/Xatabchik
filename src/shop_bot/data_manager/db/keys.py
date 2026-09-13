@@ -22,6 +22,8 @@ __all__ = (
     "resolve_key_period_start",
     "_finalize_vpn_key_indexes",
     "delete_key_by_id",
+    "KEY_COMMENT_MAX_LEN",
+    "normalize_key_comment",
     "update_key_comment",
     "update_key_name",
     "get_all_keys",
@@ -226,7 +228,33 @@ def delete_key_by_id(key_id: int) -> bool:
         logging.error(f"Не удалось удалить ключ по id {key_id}: {e}")
         return False
 
-def update_key_comment(key_id: int, comment: str) -> bool:
+KEY_COMMENT_MAX_LEN = 200
+
+
+def normalize_key_comment(raw) -> tuple[str | None, str | None]:
+    """Нормализовать заметку ключа перед записью.
+
+    Пустая строка, только пробелы или None — очистка (возвращает ``(None, None)``).
+    Слишком длинный текст не усекается: вызывающий должен показать ошибку,
+    иначе вредоносный префикс остался бы в базе. Сама нормализация не считает
+    текст безопасным для HTML — отображение обязано экранировать отдельно.
+
+    Returns:
+        ``(value, None)`` — можно писать в БД (``None`` значит стереть заметку);
+        ``(None, error)`` — писать нельзя.
+    """
+    if raw is None:
+        return None, None
+    text = str(raw).replace("\x00", "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return None, None
+    if len(text) > KEY_COMMENT_MAX_LEN:
+        return None, f"Заметка слишком длинная (макс. {KEY_COMMENT_MAX_LEN} символов)"
+    return text, None
+
+
+def update_key_comment(key_id: int, comment: str | None) -> bool:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()

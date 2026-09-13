@@ -100,7 +100,8 @@ def test_profile_keys_html_renders_newest_card_first():
         ]
     )
     assert html.find("Новый ключ") < html.find("Старый ключ")
-    assert 'onclick="openLinkSafe(\'https://sub.example/new\')"' in html
+    assert 'data-key-action="open-key"' in html
+    assert 'data-url="https://sub.example/new"' in html
     assert ">Подключить</span>" in html
 
 

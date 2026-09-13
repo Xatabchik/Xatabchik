@@ -97,12 +97,16 @@ async def api_key_comment(req: CommentRequest, request: Request):
         user_id = int(user["telegram_id"])
             
         from shop_bot.data_manager.remnawave_repository import get_key_by_id
-        from shop_bot.data_manager.database import update_key_comment
+        from shop_bot.data_manager.database import normalize_key_comment, update_key_comment
         key = get_key_by_id(req.key_id)
         if not key or key.get("user_id") != user_id:
             return {"ok": False, "error": "Ключ не найден"}
 
-        update_key_comment(req.key_id, req.comment)
+        comment, error = normalize_key_comment(req.comment)
+        if error:
+            return {"ok": False, "error": error}
+
+        update_key_comment(req.key_id, comment)
         return {"ok": True}
     except Exception as e:
         logger.error(f"Error updating comment: {e}")
