@@ -4,7 +4,13 @@
 
 Исходники: `src/shop_bot/webapp/app.html`, `src/shop_bot/webapp/login.html`, пакет `src/shop_bot/webapp/web_router/`. Замеры внешних ресурсов — 13 сентября 2026, живые ответы CDN. Тестовая база — `main` на коммите `e1ae3c7`, `python3 -m pytest -q` → **735 passed**.
 
-**Addendum 13 сентября 2026.** Stored XSS в заметке/имени ключа закрыт отдельным security PR [#145](https://github.com/Xatabchik/Xatabchik/pull/145) (`cursor/fix-key-comment-stored-xss-35c7`, `1038689`), **не** смешан с этим документом и **не** смешан с рефакторингом `app.html`. После мержа #145 baseline тестов станет **741 passed**. Повторный обход оставшихся цепочек — §2.1a. Этап 0 по-прежнему не содержит правок продукта.
+**Addendum 13 сентября 2026.** Security-блокеры вынесены в отдельные PR, **не** смешанные с этим документом и **не** смешанные с рефакторингом `app.html`:
+
+- [#145](https://github.com/Xatabchik/Xatabchik/pull/145) — X1–X4 карточка ключа (готово к ревью / мержу);
+- [#146](https://github.com/Xatabchik/Xatabchik/pull/146) — X10 `pending_email` / `auth_email`;
+- [#147](https://github.com/Xatabchik/Xatabchik/pull/147) — X14/X15 реквизиты и банк.
+
+После мержа #145+#146+#147 baseline тестов станет **747 passed** (735 на `e1ae3c7` + 6 + 6 + 6). Повторный обход — §2.1a; оставшиеся точки — **risk-register §2.1b**, системно закрываются на Этапе 5. **Этап 1 не начинать**, пока X10 и X14/X15 не влиты. Этап 0 по-прежнему не содержит правок продукта.
 
 ---
 
@@ -241,12 +247,12 @@ Regression: `tests/test_key_comment_stored_xss.py`. Payload (`<img…onerror>`, 
 | X7 | `gift_code` в `onclick="activateOwnGift('…')"` | `gifts.py:63`; клиентский fallback `app.html:4488` | система (UUID) | JS-строка, экранируется только `'` | нет (формат кода) | data-* в Этапе 5 |
 | X8 | `data.error` в `innerHTML` | `app.html:2659, 3430, 3812, 4000, 5201` | серверные строки | HTML | нет, пока error не станет user-text | `textContent` |
 | X9 | `m.name` методов оплаты | `app.html:2825–2831, 4861–4867` | конфиг методов | `innerHTML` + `onclick` (top-up экранирует только `'`) | нет при фиксированных именах | textContent / data-* |
-| X10 | `pending_email` / `auth_email` | `app.html:5528–5536` | пользователь | `innerHTML` + `onclick="…('${email}')"` | **да, формат слабый.** `_EMAIL_FORMAT_RE` = `[^@\s]+@…` (`_core.py:49`) пропускает `<`, `>`, `'`, `"`. Payload вида `<img src=x onerror=alert(1)>@evil.com` или `');alert(1);//@x.com` проходит валидатор и попадает в HTML/JS | отдельный маленький security PR: ужесточить regex + `textContent` / `data-email`. **Не смешивать с #145 и Этапом 0** |
+| X10 | `pending_email` / `auth_email` | `app.html:5528–5536` | пользователь | `innerHTML` + `onclick="…('${email}')"` | **закрывается [#146](https://github.com/Xatabchik/Xatabchik/pull/146):** `normalize_auth_email` + DOM `textContent`/`addEventListener`. Старые строки не исполняются | не смешивать с Этапом 0 / Этапом 1 |
 | X11 | чат поддержки | см. выше | — | `textContent` | нет | сохранить |
 | X12 | транзакции | см. выше | — | `escTx` | нет | общий `escapeHtml` в Этапе 2 |
 | X13 | баннер pending login | `login.html:255+` | сервер | `textContent` | нет | не менять на innerHTML |
-| **X14** | реквизиты `requisite_value` | запись: `referral_payouts.py:56–68` (только `strip`); показ: `_maskRequisite` → `innerHTML` (`app.html:4105–4110, 4274, 5217`) | **пользователь** | HTML | **да, если в значении нет цифр.** `_maskRequisite` тогда возвращает сырую строку. `<img src=x onerror=alert(1)>` как USDT/произвольный реквизит исполняется в своей сессии | отдельный security PR: валидация формата на backend + escape/`textContent`. Не в #145 |
-| **X15** | `bank_name` реквизита | API принимает любой `bank_name` (`referral_payouts.py:57`); UI подставляет из админского списка, но клиент не обязателен | **пользователь через API** | `${label}` в `innerHTML` (`app.html:4266–4273, 5210–5216`) | **да** — `bank_name=<img src=x onerror=alert(1)>` | тот же PR, что X14 |
+| **X14** | реквизиты `requisite_value` | запись: `referral_payouts.py:56–68` (только `strip`); показ: `_maskRequisite` → `innerHTML` (`app.html:4105–4110, 4274, 5217`) | **пользователь** | HTML | **закрывается [#147](https://github.com/Xatabchik/Xatabchik/pull/147):** маска, list без сырого value, textContent | не смешивать с Этапом 0 / Этапом 1 |
+| **X15** | `bank_name` реквизита | API принимает любой `bank_name` (`referral_payouts.py:57`); UI подставляет из админского списка, но клиент не обязателен | **пользователь через API** | `${label}` в `innerHTML` (`app.html:4266–4273, 5210–5216`) | **закрывается [#147](https://github.com/Xatabchik/Xatabchik/pull/147):** charset + allowlist СБП + textContent | тот же PR, что X14 |
 | X16 | user-agent / hwid устройств | `app.html:3694–3707` | VPN-клиент / панель | `innerHTML` без HTML-escape; в `onclick` только `.replace(/'/g, "\\'")` | потенциально: UA с `<` создаёт теги; `` ` `` / перевод строки / `</button>` ломают разметку. `'` в onclick экранирован, обратный слеш и newline — нет | data-* + textContent в пакете keys Этапа 5. Не доказано как user-API write в этом репо |
 | X17 | `host_name` / `plan_name` в покупке | `render_plans.py:106, 146–150, 160` | админ | атрибуты `data-host`, `data-plan-name`, `data-server` и текст без escape | да при враждебном имени (`"`, `<`) | escape атрибутов вместе с X5/X6 |
 | X18 | fallback-карточка подарка `{host_name}` | `gifts.py:77–86` | админский host | HTML без escape | как X17 | escape в `_get_gift_fallback_card_html` |
@@ -261,7 +267,35 @@ Regression: `tests/test_key_comment_stored_xss.py`. Payload (`<img…onerror>`, 
 
 Админка по-прежнему показывает заметку ключа через `textContent` (`admin_keys.html:1286–1293`) — Mini App XSS **не бьёт админа** этим полем.
 
-Итог для порядка работ: #145 не расширять. Следующий **доказанный** user-stored XSS вне карточки ключа — **X14+X15 (реквизиты)** и **X10 (email в профиле)**. Их имеет смысл закрыть отдельными минимальными security PR, не Этапами 1–7. Остальное — админ/конфиг или Этап 5 (`onclick` → listener).
+Итог для порядка работ: #145 / #146 / #147 не смешивать с Этапом 0 и не начинать Этап 1 до влива X10 и X14/X15. Остальные точки — risk-register §2.1b, закрываются системно на Этапе 5.
+
+### 2.1b Risk-register: закрыть на Этапе 5
+
+Не отдельные security PR. Общий приём Этапа 5: убрать inline `onclick`, данные только через `data-*` / состояние, текст через `textContent`. `core/dom.js` даёт общий `escapeHtml` ещё на Этапе 2 — новые `innerHTML` без него запрещены.
+
+| ID | Sink (снимок `e1ae3c7`) | Кто пишет | Почему не срочный PR | Как закрыть на Этапе 5 |
+|----|-------------------------|-----------|----------------------|------------------------|
+| X5 | `hosts.description` → `innerHTML` копия | админ | нужен враждебный админ | `textContent` при toggle info; не копировать HTML |
+| X6 | `panel_brand_title` / logo / icon, `str.replace` | админ | настройки панели | escape при подстановке; logo только `/uploads/…` |
+| X7 | `gift_code` в `onclick="activateOwnGift('…')"` | UUID | формат ограничен | `data-gift-code` + listener |
+| X8 | `data.error` в `innerHTML` | сервер | пока не user-text | `textContent` |
+| X9 | `m.name` методов оплаты в `innerHTML`/`onclick` | конфиг | фиксированные имена | `data-method-id` + textContent |
+| X11 | чат поддержки | пользователь | уже `textContent` | сохранить |
+| X12 | транзакции, локальный `escTx` | сервер | уже экранировано | перенести в `escapeHtml` |
+| X13 | login pending banner | сервер | уже `textContent` | не менять на innerHTML |
+| X16 | UA / hwid устройств в `innerHTML` + onclick | панель / клиент | нет user-API write в этом репо | `data-hwid` + textContent в пакете keys |
+| X17 | `host_name` / `plan_name` в data-* и тексте покупки | админ | админский каталог | escape атрибутов при SSR |
+| X18 | gift fallback `{host_name}` | админ | как X17 | escape в fallback-карточке |
+| X19 | gift links / `gift_share_text` в HTML+onclick | UUID + админ | UUID безопасен | `data-url` + escape share text |
+| X20 | referral `bot_link` / `webapp_link` / `share_text` | сервер / админ | собранные URL | `data-url` + listener |
+| X21 | `syncTelegram('{bot_username}')` | админ | настройка username | `data-username` |
+| X22 | LTE `JSON.stringify(p)` в `onclick='…'` | админские пакеты | `'` в JSON ломает кавычки | data-* + listener |
+| X23 | `methodName` в success `innerHTML` | конфиг | как X9 | textContent |
+| X24 | `iconData.html` | локальный SVG-словарь | константа | не расширять словарь сырым HTML |
+
+`card_html` остаётся доверенным HTML сервера до PR 6 (JSON-карточки). После #145 карточка ключа уже с `_esc_text`. Не возвращать сырые user-поля в `card_html` на Этапах 2–3.
+
+Не в этом регистре (отдельное backend-согласование, не Этап 5): владелец `key_id` на `extend`, отказ от клиентского `tier_price`, HttpOnly cookie, traceback 500.
 
 ### 2.2 IDOR
 
@@ -478,8 +512,9 @@ Store (не содержит секретов, цен как истины, пр�
 - проверка владельца `key_id` в `/api/create-payment` extend;
 - отказ принимать `req.tier_price` (считать только с `get_device_tiers`);
 - HttpOnly cookie + CSRF;
-- экранирование `comment_key`/`user_key_name` на сервере — **сделано отдельно:** PR [#145](https://github.com/Xatabchik/Xatabchik/pull/145), не в этом документе и не в Этапах 1–7. См. §2.1a;
-- доказанные остатки user-stored XSS (X10 email, X14/X15 реквизиты) — тоже отдельные security PR, не Этап 1;
+- экранирование `comment_key`/`user_key_name` — [#145](https://github.com/Xatabchik/Xatabchik/pull/145);
+- X10 email — [#146](https://github.com/Xatabchik/Xatabchik/pull/146); X14/X15 реквизиты — [#147](https://github.com/Xatabchik/Xatabchik/pull/147). **Этап 1 только после их мержа**;
+- остальные XSS-точки — §2.1b, пакет Этапа 5 (`onclick` → `addEventListener` / `data-*`);
 - traceback 500 на `GET /`.
 
 ---
@@ -565,12 +600,12 @@ Store (не содержит секретов, цен как истины, пр�
 
 ## 8. Решение, которое нужно от вас
 
-Код не меняю, пока не будет «да» по Этапу 0. Конкретно прошу согласовать:
+Код Mini App в этой ветке не меняю. Согласовано 13 сентября 2026:
 
-1. Порядок PR 1→2→3→4→5→7, а **PR 6 (JSON-карточки)** — после 3 и отдельно.
-2. ~~Между 0 и 1: маленький PR на escape карточки ключа~~ — **сделано** [#145](https://github.com/Xatabchik/Xatabchik/pull/145). Осталось согласовать отдельные PR на X10 (email) и X14/X15 (реквизиты) — да / нет / не сейчас.
-3. Иконки: subset Material Symbols (A) или SVG (B).
-4. `app.css` коммитить в репозиторий (деплой без Node) — да / собирать в Docker.
-5. Telegram SDK оставляем на `telegram.org` — да (рекомендация).
+1. Порядок PR 1→2→3→4→5→7; PR 6 (JSON-карточки) после 3 и отдельно.
+2. Security-блокеры отдельно: #145 (карточка ключа), #146 (X10 email), #147 (X14/X15 реквизиты). **Этап 1 не начинать до мержа X10 и X14/X15.** Остальное — §2.1b на Этапе 5.
+3. Иконки: subset Material Symbols (A) или SVG (B) — ещё жду выбор.
+4. `app.css` коммитить в репозиторий или собирать в Docker — ещё жду выбор.
+5. Telegram SDK оставляем на `telegram.org` — рекомендация, жду подтверждение.
 
-После «да» — Этап 1 отдельной веткой `cursor/webapp-local-assets-csp-35c7`.
+После закрытия X10/X14/X15 и «да» по 3–5 — Этап 1 веткой `cursor/webapp-local-assets-csp-35c7`.
