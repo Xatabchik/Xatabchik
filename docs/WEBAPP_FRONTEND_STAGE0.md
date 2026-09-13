@@ -1,8 +1,10 @@
 # Этап 0. Аудит и план: нативный модульный WebApp
 
-Документ фиксирует текущее состояние Mini App **до любых правок кода**. Код не менялся. План ниже — предложение; к Этапу 1 не приступать, пока этот документ не одобрен.
+Документ фиксирует состояние Mini App **на момент Этапа 0**. Исходный аудит кода не менял. План ниже — предложение; к Этапу 1 не приступать, пока этот документ не одобрен.
 
 Исходники: `src/shop_bot/webapp/app.html`, `src/shop_bot/webapp/login.html`, пакет `src/shop_bot/webapp/web_router/`. Замеры внешних ресурсов — 13 сентября 2026, живые ответы CDN. Тестовая база — `main` на коммите `e1ae3c7`, `python3 -m pytest -q` → **735 passed**.
+
+**Addendum 13 сентября 2026.** Stored XSS в заметке/имени ключа закрыт отдельным security PR [#145](https://github.com/Xatabchik/Xatabchik/pull/145) (`cursor/fix-key-comment-stored-xss-35c7`, `1038689`), **не** смешан с этим документом и **не** смешан с рефакторингом `app.html`. После мержа #145 baseline тестов станет **741 passed**. Повторный обход оставшихся цепочек — §2.1a. Этап 0 по-прежнему не содержит правок продукта.
 
 ---
 
@@ -158,7 +160,7 @@ Auth: `setAuthToken`, `getAuthToken`, `removeAuthToken`, `getTgInitData`. Нав
 
 Поддержка рендерит сообщения через `createElement` + `textContent` (`app.html:1176–1178`) — образец безопасного пути.
 
-Пользовательские поля, которые **сейчас** попадают в HTML без экранирования — §2.1.
+Пользовательские поля в HTML без экранирования: снимок аудита — §2.1; актуальный статус после #145 — §2.1a.
 
 ### 1.9 Клиент считает цену / права
 
@@ -197,9 +199,69 @@ Auth: `setAuthToken`, `getAuthToken`, `removeAuthToken`, `getTgInitData`. Нав
 | X12 | транзакции | `app.html:3823, 4657` | labels / provider id | БД | локальный `esc`/`escTx` | вынести в общий `escapeHtml` |
 | X13 | баннер pending на login | `login.html:255+` | `data.message` с сервера | сервер | проверить, что пишется в `textContent` (сейчас так) | не менять на innerHTML |
 
-Админка показывает заметку через `textContent` (`admin_keys.html:1286–1293`, `setKdNote`) — stored XSS из Mini App **не бьёт админа** этим полем. Риск X1/X2 — в первую очередь сессия самого пользователя и любой, кто откроет его Mini App (общий телефон, XSS + кража token).
+Админка показывает заметку через `textContent` (`admin_keys.html:1286–1293`, `setKdNote`) — stored XSS из Mini App **не бьёт админа** этим полем. Риск X1/X2 — в первую очередь сессия самого пользователя и любой, кто откроет его Mini App (общий телефон, XSS + кража token). **X1–X4 закрыты в #145** — актуальная таблица в §2.1a; строки выше — снимок аудита до фикса.
 
 `eval` / `new Function` / загрузка JS из API — нет. Строковых `setTimeout('…')` нет.
+
+### 2.1a Addendum: после #145 — что закрыто и что осталось
+
+PR [#145](https://github.com/Xatabchik/Xatabchik/pull/145) чинит **только** цепочку карточки ключа: ввод → хранение → SSR → inline handler. Рефакторинг `app.html` и Этапы 1–7 сюда не входят. Старые вредоносные строки в БД после фикса не исполняются: фронт не вставляет их в `innerHTML` как сырой текст и не кладёт в `onclick`.
+
+| Было | Статус после #145 | Как закрыто |
+|------|-------------------|-------------|
+| X1 `comment_key` | **закрыто** | `normalize_key_comment()` + лимит 200; пустое → `NULL` (очистка, не мусор); SSR `_esc_text` = `html.escape(..., quote=True)`; кнопка `data-key-action="comment"` + `data-key-id`; модалка читает `#comment-text-<id>.textContent` |
+| X2 `user_key_name` | **закрыто** | тот же `_esc_text` в карточке/setup/renew; rename читает `data-key-name` с карточки и пишет в `input.value` |
+| X3 `sub_url` в `copyKey` / `openLinkSafe` | **закрыто** | `data-url` + делегированный `click` на `[data-key-action]` |
+| X4 `host_name` на кнопке devices | **закрыто** на карточке ключа | `data-host` + escape текста. Имя хоста в **других** местах — ниже |
+
+Regression: `tests/test_key_comment_stored_xss.py`. Payload (`<img…onerror>`, `</span><script>`, `');alert(1);//`, кавычки, `\`, переносы, backticks) остаётся текстом, не создаёт тегов/атрибутов и не попадает в исполняемый inline JS. Auth token в HTML/`GET /` и в assert-сообщениях тестов не печатается.
+
+Ниже — повторная проверка полей из задания. **В #145 их нет**: либо нет доказанного user-writable XSS в том же классе sink, либо это другой экран и отдельный PR.
+
+#### Уже безопасно (не трогать в срочном PR)
+
+| Поле | Пишет | Sink | Вердикт |
+|------|-------|------|---------|
+| Текст тикета `msg.content` | пользователь / агент | `createElement` + `textContent` (`app.html:1176–1178`) | безопасно |
+| Тема тикета `t.subject` | пользователь, clip 64 | `name.textContent` / `header.textContent` (`app.html:1219, 1263`) | безопасно |
+| Промокод | пользователь | `input.value` / поле платежа, не HTML (`app.html:3545–3581`) | безопасно как текст |
+| Название тарифа в модалке оплаты | админ | `elName.textContent` (`app.html:2740`) | отображение безопасно |
+| Транзакции `action_label` / `status` / provider id | сервер | локальный `escTx` (`app.html:3823`) | экранировано (без `'` в onclick) |
+| Подписи кнопок Mini App | константы в HTML | — | не user-data |
+| `card_html` подарка после #145 | SSR той же `_get_key_card_html` | `g.card_html` → `innerHTML` (`app.html:4466`) | наследует escape карточки; fallback без user-comment |
+
+#### Оставшиеся цепочки (потенциал / доказанный риск вне #145)
+
+Доверие: **пользователь** = любой авторизованный; **админ** = компрометация панели/настроек; **панель** = Remnawave / чужой UA.
+
+| # | Путь | Файл:строки (на `e1ae3c7`, если не указано) | Кто пишет | Sink | Доказанный XSS сейчас? | Следующий шаг |
+|---|------|---------------------------------------------|-----------|------|------------------------|---------------|
+| X5 | `hosts.description` → hidden `#desc-content-*` → копия `innerHTML` | `render_plans.py:61, 160` → `app.html:1664, 1777, 1878, 1885` | админ | HTML как HTML | да, если админ враждебен | Этап 3: `textContent` или санитайз на сервере. Не в #145 |
+| X6 | `panel_brand_title`, `webapp_logo`, `webapp_icon` | `render_keys.py:77, 86–88, 111`; `app.html:11–13, 284` | админ | `str.replace` без escape в `<title>`, `<img src>`, текст | да при враждебных настройках | escape + ограничить logo/icon путём `/uploads/…`. Не в #145 |
+| X7 | `gift_code` в `onclick="activateOwnGift('…')"` | `gifts.py:63`; клиентский fallback `app.html:4488` | система (UUID) | JS-строка, экранируется только `'` | нет (формат кода) | data-* в Этапе 5 |
+| X8 | `data.error` в `innerHTML` | `app.html:2659, 3430, 3812, 4000, 5201` | серверные строки | HTML | нет, пока error не станет user-text | `textContent` |
+| X9 | `m.name` методов оплаты | `app.html:2825–2831, 4861–4867` | конфиг методов | `innerHTML` + `onclick` (top-up экранирует только `'`) | нет при фиксированных именах | textContent / data-* |
+| X10 | `pending_email` / `auth_email` | `app.html:5528–5536` | пользователь | `innerHTML` + `onclick="…('${email}')"` | **да, формат слабый.** `_EMAIL_FORMAT_RE` = `[^@\s]+@…` (`_core.py:49`) пропускает `<`, `>`, `'`, `"`. Payload вида `<img src=x onerror=alert(1)>@evil.com` или `');alert(1);//@x.com` проходит валидатор и попадает в HTML/JS | отдельный маленький security PR: ужесточить regex + `textContent` / `data-email`. **Не смешивать с #145 и Этапом 0** |
+| X11 | чат поддержки | см. выше | — | `textContent` | нет | сохранить |
+| X12 | транзакции | см. выше | — | `escTx` | нет | общий `escapeHtml` в Этапе 2 |
+| X13 | баннер pending login | `login.html:255+` | сервер | `textContent` | нет | не менять на innerHTML |
+| **X14** | реквизиты `requisite_value` | запись: `referral_payouts.py:56–68` (только `strip`); показ: `_maskRequisite` → `innerHTML` (`app.html:4105–4110, 4274, 5217`) | **пользователь** | HTML | **да, если в значении нет цифр.** `_maskRequisite` тогда возвращает сырую строку. `<img src=x onerror=alert(1)>` как USDT/произвольный реквизит исполняется в своей сессии | отдельный security PR: валидация формата на backend + escape/`textContent`. Не в #145 |
+| **X15** | `bank_name` реквизита | API принимает любой `bank_name` (`referral_payouts.py:57`); UI подставляет из админского списка, но клиент не обязателен | **пользователь через API** | `${label}` в `innerHTML` (`app.html:4266–4273, 5210–5216`) | **да** — `bank_name=<img src=x onerror=alert(1)>` | тот же PR, что X14 |
+| X16 | user-agent / hwid устройств | `app.html:3694–3707` | VPN-клиент / панель | `innerHTML` без HTML-escape; в `onclick` только `.replace(/'/g, "\\'")` | потенциально: UA с `<` создаёт теги; `` ` `` / перевод строки / `</button>` ломают разметку. `'` в onclick экранирован, обратный слеш и newline — нет | data-* + textContent в пакете keys Этапа 5. Не доказано как user-API write в этом репо |
+| X17 | `host_name` / `plan_name` в покупке | `render_plans.py:106, 146–150, 160` | админ | атрибуты `data-host`, `data-plan-name`, `data-server` и текст без escape | да при враждебном имени (`"`, `<`) | escape атрибутов вместе с X5/X6 |
+| X18 | fallback-карточка подарка `{host_name}` | `gifts.py:77–86` | админский host | HTML без escape | как X17 | escape в `_get_gift_fallback_card_html` |
+| X19 | `gift_code` / ссылки подарка / `gift_share_text` | `gifts.py:25–34, 47–63` | UUID + админский текст + собранный URL | HTML + `onclick` (только `'` → `\'`) | нет для UUID; да если admin `gift_share_text` / domain враждебны | data-url; escape share text |
+| X20 | реферальные `bot_link` / `webapp_link` / `share_text` | `app.html:4376–4418` | сервер (username, domain, админский текст) | `innerHTML` + `onclick="copyToClipboard('${link}')"` без escape | да при `'` в username/domain/share_text | encodeURI / data-* |
+| X21 | `syncTelegram('{bot_username}')` | `render_keys.py:490` (после #145: ~501) | админская настройка | inline JS | да при `'` в username | data-username |
+| X22 | LTE `pickLtePackage(${JSON.stringify(p)})` в `onclick='…'` | `app.html:2668–2669` | админские пакеты | JSON внутри single-quoted onclick: `JSON.stringify` не экранирует `'` | да, если в пакете есть `'` | data-* + listener |
+| X23 | `methodName` в success-описании | `app.html:3320` | имя метода | `innerHTML` | как X9 | textContent |
+| X24 | иконка метода `iconData.html` | `app.html:2850, 4864` | локальный словарь SVG | `innerHTML` | нет, если словарь константный | не расширять |
+
+`card_html` (`POST /api/user/gifts`, `POST /api/keys/search`, `refreshAppData`) остаётся **доверенным HTML с сервера**. После #145 карточка ключа в этом HTML уже с escape. Новый user-текст в `card_html` без `_esc_text` снова станет XSS — при Этапах 3/6 не возвращать сырые поля в разметку.
+
+Админка по-прежнему показывает заметку ключа через `textContent` (`admin_keys.html:1286–1293`) — Mini App XSS **не бьёт админа** этим полем.
+
+Итог для порядка работ: #145 не расширять. Следующий **доказанный** user-stored XSS вне карточки ключа — **X14+X15 (реквизиты)** и **X10 (email в профиле)**. Их имеет смысл закрыть отдельными минимальными security PR, не Этапами 1–7. Остальное — админ/конфиг или Этап 5 (`onclick` → listener).
 
 ### 2.2 IDOR
 
@@ -374,7 +436,7 @@ src/shop_bot/webapp/
 
 1. `login.js` отдельно — иначе entry app потянет платежный код на экран входа.
 2. `core/dom.js` обязателен с первого выноса JS: общий `escapeHtml`, запрет новых `innerHTML` без него.
-3. Карточки ключей: Этапы 2–3 оставляют server `card_html` как доверенную зону. Перевод на JSON+`key-card.js` — отдельный PR после Этапа 3, не смешивать с выносом скрипта.
+3. Карточки ключей: Этапы 2–3 оставляют server `card_html` как доверенную зону (после #145 — уже с `_esc_text`). Перевод на JSON+`key-card.js` — отдельный PR после Этапа 3, не смешивать с выносом скрипта.
 4. Раздача: `StaticFiles` на `/static` (новый mount). **Не** ставить root webapp. `/ticket_files` guard оставить. `app.js` не должен попасть под `no-store` всего HTML — для JS/CSS нужен cache + content hash или `?v=`.
 
 Store (не содержит секретов, цен как истины, прав):
@@ -416,7 +478,8 @@ Store (не содержит секретов, цен как истины, пр�
 - проверка владельца `key_id` в `/api/create-payment` extend;
 - отказ принимать `req.tier_price` (считать только с `get_device_tiers`);
 - HttpOnly cookie + CSRF;
-- экранирование `comment_key`/`user_key_name` на сервере — **рекомендую вставить маленьким PR между 0 и 1 или сразу после 1**: не меняет UX, закрывает X1/X2 до того, как мы начнём чаще делать `innerHTML` через search/refresh;
+- экранирование `comment_key`/`user_key_name` на сервере — **сделано отдельно:** PR [#145](https://github.com/Xatabchik/Xatabchik/pull/145), не в этом документе и не в Этапах 1–7. См. §2.1a;
+- доказанные остатки user-stored XSS (X10 email, X14/X15 реквизиты) — тоже отдельные security PR, не Этап 1;
 - traceback 500 на `GET /`.
 
 ---
@@ -458,7 +521,7 @@ Store (не содержит секретов, цен как истины, пр�
 - `tests/test_create_payment*.py` (несколько файлов)
 - `tests/test_webapp_router_split.py`
 
-После каждого этапа: то же число **735**, плюс новые статические тесты (CDN/eval/CSP) — тогда новое baseline фиксируется в отчёте PR.
+После каждого этапа: то же число **735** (или **741** после мержа #145), плюс новые статические тесты (CDN/eval/CSP) — тогда новое baseline фиксируется в отчёте PR.
 
 ### 7.2 Размер и сеть при первом открытии (сейчас)
 
@@ -505,7 +568,7 @@ Store (не содержит секретов, цен как истины, пр�
 Код не меняю, пока не будет «да» по Этапу 0. Конкретно прошу согласовать:
 
 1. Порядок PR 1→2→3→4→5→7, а **PR 6 (JSON-карточки)** — после 3 и отдельно.
-2. Между 0 и 1 (или сразу после 1): маленький backend-PR «экранировать `comment_key` / `user_key_name` / `sub_url` в `_get_key_card_html`» — да / нет / не сейчас.
+2. ~~Между 0 и 1: маленький PR на escape карточки ключа~~ — **сделано** [#145](https://github.com/Xatabchik/Xatabchik/pull/145). Осталось согласовать отдельные PR на X10 (email) и X14/X15 (реквизиты) — да / нет / не сейчас.
 3. Иконки: subset Material Symbols (A) или SVG (B).
 4. `app.css` коммитить в репозиторий (деплой без Node) — да / собирать в Docker.
 5. Telegram SDK оставляем на `telegram.org` — да (рекомендация).
