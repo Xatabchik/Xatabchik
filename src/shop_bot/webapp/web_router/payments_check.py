@@ -67,8 +67,8 @@ def _payment_service_delivered(payment_id: str) -> bool:
     process_successful_payment, уже ПОСЛЕ создания/продления ключа, зачисления
     баланса или применения докупки (все пять action: покупка/продление ключа,
     top_up, traffic_gb_topup, lte_gb_topup, main_traffic_reset). На путях сбоя
-    (_abort_key_fulfillment / _abort_topup_fulfillment) до неё дело не доходит,
-    и строка остаётся в status='pending'.
+    (_abort_key_fulfillment / _abort_topup_fulfillment / _abort_balance_topup)
+    до неё дело не доходит, и строка остаётся в status='pending'.
 
     Само по себе ``pending_transactions.status == 'paid'`` для этого негодно:
     оно означает только «подтверждение платежа принято», выставляется до

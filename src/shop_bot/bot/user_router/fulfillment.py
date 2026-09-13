@@ -199,6 +199,73 @@ async def _deliver_to_user(bot: Bot, user_id: int, text: str, *, edit=None, **kw
         return False
 
 
+async def _abort_balance_topup(
+    bot: Bot,
+    *,
+    payment_id: str,
+    user_id: int,
+    price: float,
+    payment_method: str | None,
+) -> None:
+    """Компенсация, когда оплаченное пополнение не легло на баланс.
+
+    `add_to_balance` вернул False или упал — денег на балансе нет. Раньше
+    обработка всё равно шла дальше и писала в `transactions` финальную запись со
+    status='paid'. Именно её `/api/check-payment` считает признаком оказанной
+    услуги, поэтому Mini App показывал «оплата подтверждена», хотя баланс
+    остался прежним.
+
+    Финальной записи в этой ветке теперь нет, а idempotency-lock снимается и
+    pending возвращается в состояние 'pending': повторная доставка вебхука
+    провайдером сможет зачислить пополнение заново. До этого момента
+    `/api/check-payment` честно отвечает «оплата не подтверждена».
+
+    Возврат средств тут намеренно не делается: `refund_payment_once` зачисляет
+    их на тот самый баланс, обновить который только что не удалось.
+    """
+    try:
+        unclaim_processed_payment(payment_id)
+    except Exception as e:
+        logger.error(f"top_up: не удалось снять idempotency-lock с {payment_id}: {e}")
+    try:
+        rw_repo.reset_pending_transaction(payment_id)
+    except Exception as e:
+        logger.error(f"top_up: не удалось вернуть {payment_id} в состояние pending: {e}")
+
+    logger.error(
+        "TOPUP_BALANCE_ROLLBACK payment_id=%s user_id=%s amount=%s method=%s",
+        payment_id,
+        user_id,
+        price,
+        payment_method,
+    )
+
+    await _deliver_to_user(
+        bot,
+        user_id,
+        "⚠️ Оплата получена, но не удалось обновить баланс. Обратитесь в поддержку.",
+        reply_markup=keyboards.create_support_keyboard(),
+    )
+
+    admin_text = (
+        "🚨 Оплата получена, но баланс не пополнен\n"
+        f"👤 ID: {user_id}\n"
+        f"🧾 payment_id: {payment_id}\n"
+        f"💰 Сумма: {float(price):.2f} RUB\n"
+        f"💳 Метод: {payment_method or 'Unknown'}\n"
+        "Зачисление не записано как оплаченное — ждём повторный вебхук или ручную сверку."
+    )
+    try:
+        admin_ids = list(rw_repo.get_admin_ids() or [])
+    except Exception:
+        admin_ids = []
+    for aid in admin_ids:
+        try:
+            await bot.send_message(int(aid), admin_text)
+        except Exception:
+            continue
+
+
 async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
     """Обработать успешную оплату и выдать услугу.
 
@@ -653,7 +720,21 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         except Exception as e:
             logger.error(f"💥 Ошибка при пополнении баланса для пользователя {user_id}: {e}", exc_info=True)
             ok = False
-        
+
+        if not ok:
+            # Ничего из «последствий успешного пополнения» ниже выполнять нельзя:
+            # ни статистику, ни финальную запись в transactions (её
+            # /api/check-payment считает признаком оказанной услуги), ни
+            # реферальное вознаграждение за незачисленные деньги.
+            await _abort_balance_topup(
+                bot,
+                payment_id=payment_id,
+                user_id=user_id,
+                price=float(price),
+                payment_method=payment_method,
+            )
+            return False
+
         # Обновляем total_spent при пополнении баланса (учитываем как инвестицию в сервис)
         try:
             update_user_stats(user_id, float(price), 0)  # Добавляем потраченные деньги, 0 месяцев
@@ -770,27 +851,18 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 gifts_count = len(rw_repo.get_user_inactive_gifts(user_id) or [])
             except Exception:
                 gifts_count = 0
-            if ok:
-                await _deliver_to_user(
-                    bot,
-                    user_id,
-                    (
-                        f"✅ Оплата получена!\n"
-                        f"💼 Баланс пополнен на {float(price):.2f} RUB.\n"
-                        f"Текущий баланс: {current_balance:.2f} RUB."
-                    ),
-                    reply_markup=keyboards.create_profile_keyboard(gifts_count=gifts_count)
-                )
-            else:
-                await _deliver_to_user(
-                    bot,
-                    user_id,
-                    (
-                        "⚠️ Оплата получена, но не удалось обновить баланс. "
-                        "Обратитесь в поддержку."
-                    ),
-                    reply_markup=keyboards.create_support_keyboard()
-                )
+            # Сюда попадаем только при успешном зачислении: провал уходит выше в
+            # _abort_balance_topup, который и сообщает пользователю о проблеме.
+            await _deliver_to_user(
+                bot,
+                user_id,
+                (
+                    f"✅ Оплата получена!\n"
+                    f"💼 Баланс пополнен на {float(price):.2f} RUB.\n"
+                    f"Текущий баланс: {current_balance:.2f} RUB."
+                ),
+                reply_markup=keyboards.create_profile_keyboard(gifts_count=gifts_count)
+            )
         except Exception as e:
             logger.error(f"Failed to send top-up notification to user {user_id}: {e}")
         
@@ -803,7 +875,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     await bot.send_message(admin_id, f"📥 Пополнение: пользователь {user_id}, сумма {float(price):.2f} RUB")
         except Exception:
             pass
-        return
+        return True
 
     # Сообщение «обрабатываю запрос» — вспомогательное, и недоступность чата не
     # должна отменять выдачу: платёж уже принят, а claim_processed_payment выше
