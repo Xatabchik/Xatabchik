@@ -4973,7 +4973,12 @@
             }
         }
 
-        function _cancelPendingTopUp() {
+        // Отслеживание счёта прекращается только на клиенте: счёт у провайдера
+        // остаётся действующим, и если пользователь всё-таки оплатит уже открытую
+        // страницу, вебхук обработает платёж и баланс пополнится. Поэтому кнопка
+        // и называется «вернуться к вводу суммы», а не «отменить счёт» — иначе
+        // она обещала бы отмену, которой здесь нет.
+        function _stopTrackingTopUp() {
             _stopStatusPolling();
             _forgetPendingTopUp();
             window._topUpPaymentId = null;
@@ -5015,8 +5020,8 @@
                     </button>` : ''}
                     <button onclick="closeActionModal()"
                         class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Закрыть</button>
-                    <button onclick="_cancelPendingTopUp()"
-                        class="w-full py-2 rounded-xl text-gray-500 text-[10px] font-bold hover:text-gray-300 transition-colors">Отменить счёт</button>
+                    <button onclick="_stopTrackingTopUp()"
+                        class="w-full py-2 rounded-xl text-gray-500 text-[10px] font-bold hover:text-gray-300 transition-colors">Вернуться к вводу суммы</button>
                 </div>
             `;
             if (paymentId) _startTopUpPolling(paymentId, amount);

@@ -48,7 +48,7 @@ def test_unfinished_topup_invoice_is_restored_when_the_window_opens():
     # Шаг ввода суммы остаётся поведением по умолчанию — только если счёта нет.
     assert opener.index("_readPendingTopUp()") < opener.index("_renderTopUpAmountStep(contentEl)")
 
-    reader = _body("function _readPendingTopUp(", "function _cancelPendingTopUp(")
+    reader = _body("function _readPendingTopUp(", "function _stopTrackingTopUp(")
     assert "TOPUP_PENDING_TTL_MS" in reader, "просроченный счёт должен отбрасываться"
     assert "!data.paymentId" in reader
 
@@ -85,14 +85,18 @@ def test_window_says_the_payment_arrived_while_the_service_is_still_running():
     assert "topup-waiting-title" in marker
 
 
-def test_pending_topup_invoice_can_be_abandoned():
-    cancel = _body("function _cancelPendingTopUp(", "function _renderTopUpWaiting(")
-    assert "_forgetPendingTopUp()" in cancel
-    assert "_stopStatusPolling()" in cancel
-    assert "_renderTopUpAmountStep(contentEl)" in cancel
+def test_tracking_of_an_abandoned_invoice_can_be_stopped():
+    stop = _body("function _stopTrackingTopUp(", "function _renderTopUpWaiting(")
+    assert "_forgetPendingTopUp()" in stop
+    assert "_stopStatusPolling()" in stop
+    assert "_renderTopUpAmountStep(contentEl)" in stop
 
     waiting = _body("function _renderTopUpWaiting(", "function _markTopUpProcessing(")
-    assert "_cancelPendingTopUp()" in waiting, "из окна ожидания нет выхода к новому счёту"
+    assert "_stopTrackingTopUp()" in waiting, "из окна ожидания нет выхода к новому счёту"
+    # Кнопка не должна обещать отмену: счёт у провайдера остаётся действующим и
+    # поздняя оплата по нему по-прежнему будет обработана вебхуком.
+    assert "Отменить счёт" not in HTML
+    assert "Вернуться к вводу суммы" in waiting
 
 
 def test_platega_verification_also_ends_on_the_result_screen():
