@@ -605,6 +605,8 @@ _LEGACY_FORWARDERS = (
     "update_host_ssh_settings",
     "update_host_subscription_url",
     "update_host_url",
+    "KEY_COMMENT_MAX_LEN",
+    "normalize_key_comment",
     "update_key_comment",
     "update_key_fields",
     "update_key_host",

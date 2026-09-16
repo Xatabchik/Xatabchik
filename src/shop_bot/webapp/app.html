@@ -1588,6 +1588,29 @@
         document.querySelectorAll('.key-toggle').forEach(button => {
             button.addEventListener('click', () => toggleKeyCard(button));
         });
+        // Карточки ключей приходят с сервера (SSR, поиск, подарки). Текст заметки
+        // и имени в onclick больше не кладётся: обработчик читает data-* и
+        // #comment-text-<id>.textContent, поэтому старый вредоносный payload
+        // в БД не становится исполняемым JS.
+        document.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-key-action]');
+            if (!btn) return;
+            const action = btn.getAttribute('data-key-action');
+            const keyId = parseInt(btn.getAttribute('data-key-id') || '', 10);
+            const url = btn.getAttribute('data-url') || '';
+            const host = btn.getAttribute('data-host') || '';
+            if (action === 'copy-key') {
+                if (typeof copyKey === 'function') copyKey(btn, url);
+            } else if (action === 'open-key') {
+                if (typeof openLinkSafe === 'function') openLinkSafe(url);
+            } else if (action === 'devices' && keyId) {
+                openActionModal('devices', keyId, host);
+            } else if (action === 'rename' && keyId) {
+                openActionModal('rename', keyId);
+            } else if (action === 'comment' && keyId) {
+                openActionModal('comment', keyId);
+            }
+        });
         // Dropdown Logic
         const dropdownTrigger = document.getElementById('dropdown-trigger');
         const keyDropdown = document.getElementById('key-dropdown');
@@ -3436,21 +3459,30 @@
             } else if (type === 'comment') {
                 titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">edit_note</span> Заметка к ключу';
 
+                const storedCommentEl = document.getElementById('comment-text-' + keyId);
+                const storedComment = storedCommentEl ? storedCommentEl.textContent : '';
+
                 contentEl.innerHTML = `
                     <div class="flex flex-col gap-3">
                         <div class="flex gap-2 w-full">
-                            <button id="comment-delete-btn" onclick="saveComment(${keyId}, true)" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
+                            <button id="comment-delete-btn" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
                                 <span class="material-symbols-rounded text-sm">delete</span>
                             </button>
-                            <button id="comment-save-btn" onclick="saveComment(${keyId})" class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                            <button id="comment-save-btn" class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                                 <span class="material-symbols-rounded text-sm">save</span>
                                 Сохранить заметку
                             </button>
                         </div>
-                        <textarea id="action-comment-input" style="outline: none !important; box-shadow: none !important; -webkit-tap-highlight-color: transparent !important; -webkit-appearance: none; border-color: rgba(255,255,255,0.1) !important;" class="w-full h-28 bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-0 focus:ring-transparent focus:border-white/10 transition-colors resize-none" placeholder="Введите заметку к ключу...">${extraData}</textarea>
+                        <textarea id="action-comment-input" style="outline: none !important; box-shadow: none !important; -webkit-tap-highlight-color: transparent !important; -webkit-appearance: none; border-color: rgba(255,255,255,0.1) !important;" class="w-full h-28 bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-0 focus:ring-transparent focus:border-white/10 transition-colors resize-none" placeholder="Введите заметку к ключу..."></textarea>
                         <p class="text-[9px] text-gray-600 text-center">Заметка отображается в карточке ключа после сохранения</p>
                     </div>
                 `;
+                const commentInput = document.getElementById('action-comment-input');
+                if (commentInput) commentInput.value = storedComment;
+                const deleteBtn = document.getElementById('comment-delete-btn');
+                const saveBtn = document.getElementById('comment-save-btn');
+                if (deleteBtn) deleteBtn.addEventListener('click', () => saveComment(keyId, true));
+                if (saveBtn) saveBtn.addEventListener('click', () => saveComment(keyId));
             }
         }
 
@@ -3616,21 +3648,21 @@
                 });
 
                 titleEl.innerHTML = '<span class="material-symbols-rounded text-primary text-sm mr-1">edit</span> Название ключа';
-                const currentName = extraData || '';
+                const nameCard = document.querySelector('[data-key-id="' + String(keyId) + '"]');
+                const currentName = nameCard ? (nameCard.getAttribute('data-key-name') || '') : (extraData || '');
                 contentEl.innerHTML = `
                     <div class="flex flex-col gap-3">
                         <div class="text-[10px] text-gray-500 font-medium px-1">Введите название (макс. 30 символов). Оставьте пустым — удалить название.</div>
                         <input type="text" id="action-rename-input" maxlength="30"
                             enterkeyhint="done"
                             class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white focus:border-white/20 transition-all outline-none"
-                            placeholder="Напр: Рабочий VPN"
-                            value="${currentName.replace(/"/g, '&quot;')}">
-                        <div id="action-rename-counter" class="text-[9px] text-gray-600 text-right px-1">${currentName.length}/30</div>
+                            placeholder="Напр: Рабочий VPN">
+                        <div id="action-rename-counter" class="text-[9px] text-gray-600 text-right px-1">0/30</div>
                         <div class="flex gap-2 w-full">
-                            <button onclick="renameKey(${keyId}, true)" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
+                            <button id="action-rename-delete-btn" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
                                 <span class="material-symbols-rounded text-sm">delete</span>
                             </button>
-                            <button onclick="renameKey(${keyId})" id="action-rename-btn"
+                            <button id="action-rename-btn"
                                 class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                                 <span class="material-symbols-rounded text-sm">save</span>
                                 Сохранить
@@ -3641,10 +3673,14 @@
                 const inp = document.getElementById('action-rename-input');
                 const counter = document.getElementById('action-rename-counter');
                 if (inp) {
+                    inp.value = currentName;
+                    if (counter) counter.textContent = inp.value.length + '/30';
                     inp.addEventListener('input', () => { counter.textContent = inp.value.length + '/30'; });
                     inp.addEventListener('keydown', (e) => {
                         if (e.key === 'Enter') { e.preventDefault(); renameKey(keyId); }
                     });
+                    document.getElementById('action-rename-delete-btn')?.addEventListener('click', () => renameKey(keyId, true));
+                    document.getElementById('action-rename-btn')?.addEventListener('click', () => renameKey(keyId));
                     // scroll save button into view after virtual keyboard opens
                     inp.addEventListener('focus', () => {
                         setTimeout(() => {
