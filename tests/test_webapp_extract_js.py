@@ -20,9 +20,6 @@ BRIDGE_NAMES = (
     "toggleSettingsMenu",
     "openEditProfileModal",
     "setPurchaseMode",
-    "onKeysSearchInput",
-    "clearKeysSearch",
-    "switchKeysTab",
     "openTopUpModal",
     "openActionModal",
     "requestReferralWithdraw",
@@ -71,7 +68,6 @@ BRIDGE_NAMES = (
     "goToRenewKey",
     "toggleKeyAutoRenew",
     "openLteTopup",
-    "copyKey",
 )
 
 
@@ -153,6 +149,9 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="navigateTo(' in html
     assert 'onclick="openTopUpModal()"' in html
     assert 'onclick="copyKey' not in html  # copy goes through data-key-action
+    assert 'oninput="onKeysSearchInput()' not in html
+    assert 'onclick="clearKeysSearch()' not in html
+    assert 'onclick="switchKeysTab(' not in html
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
