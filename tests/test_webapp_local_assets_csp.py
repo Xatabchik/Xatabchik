@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
@@ -22,6 +24,20 @@ PAGE_FILES = (
 )
 TELEGRAM_SDK = "https://telegram.org/js/telegram-web-app.js"
 LOCAL_CSS = "/static/css/app.css"
+CSS_HREF_RE = re.compile(r"/static/css/app\.css\?v=([0-9a-f]{12})")
+
+
+def _css_content_hash() -> str:
+    return hashlib.sha256((WEBAPP / "static" / "css" / "app.css").read_bytes()).hexdigest()[:12]
+
+
+def _expected_css_href() -> str:
+    return f"{LOCAL_CSS}?v={_css_content_hash()}"
+
+
+def _max_age(header: str) -> int | None:
+    match = re.search(r"max-age=(\d+)", header)
+    return int(match.group(1)) if match else None
 
 
 def _assert_no_cdn(text: str) -> None:
@@ -47,7 +63,11 @@ def test_source_html_has_no_tailwind_cdn_or_google_fonts():
     for path in PAGE_FILES:
         text = path.read_text(encoding="utf-8")
         _assert_no_cdn(text)
-        assert LOCAL_CSS in text
+        assert (
+            "{{ app_css_href }}" in text
+            or "APP_CSS_HREF" in text
+            or LOCAL_CSS in text
+        ), f"{path} не ссылается на локальный CSS"
 
 
 def test_app_and_login_keep_telegram_sdk_on_telegram_origin():
@@ -64,7 +84,7 @@ def test_login_page_serves_local_css_and_csp(temp_db, app_client):
     assert resp.status_code == 200
     _assert_no_cdn(resp.text)
     assert TELEGRAM_SDK in resp.text
-    assert LOCAL_CSS in resp.text
+    assert _expected_css_href() in resp.text
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
     assert "no-store" in resp.headers.get("cache-control", "")
 
@@ -80,7 +100,7 @@ def test_authed_app_page_serves_local_css_and_csp(temp_db, app_client):
     assert token not in resp.text
     _assert_no_cdn(resp.text)
     assert TELEGRAM_SDK in resp.text
-    assert LOCAL_CSS in resp.text
+    assert _expected_css_href() in resp.text
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
 
 
@@ -94,7 +114,7 @@ def test_banned_page_has_no_cdn_and_has_csp(temp_db, app_client):
     assert resp.status_code == 403
     assert token not in resp.text
     _assert_no_cdn(resp.text)
-    assert LOCAL_CSS in resp.text
+    assert _expected_css_href() in resp.text
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
 
 
@@ -105,7 +125,6 @@ def test_local_css_and_fonts_are_served(temp_db, app_client):
     assert "bg-background-dark" in css.text
     assert "Material Symbols Rounded" in css.text
     assert "font-family: 'Inter'" in css.text or "font-family:'Inter'" in css.text
-    assert "public" in css.headers.get("cache-control", "")
     assert css.headers.get("x-content-type-options", "").lower() == "nosniff"
     fonts = list((WEBAPP / "static" / "fonts").glob("*.woff2"))
     assert fonts, "нет локальных woff2"
@@ -116,9 +135,35 @@ def test_local_css_and_fonts_are_served(temp_db, app_client):
     assert font_resp.headers.get("x-content-type-options", "").lower() == "nosniff"
 
 
-def test_font_checksums_match_committed_woff2():
-    import hashlib
+def test_static_cache_control_differs_for_css_and_hashed_fonts(temp_db, app_client):
+    """CSS со стабильным путём нельзя кэшировать сутки; шрифты с hash — можно."""
+    expected = _expected_css_href()
+    login = app_client.get("/")
+    assert CSS_HREF_RE.search(login.text)
+    assert expected in login.text
 
+    css = app_client.get(LOCAL_CSS)
+    css_versioned = app_client.get(LOCAL_CSS, params={"v": _css_content_hash()})
+    assert css.status_code == 200
+    assert css_versioned.status_code == 200
+    assert css.content == css_versioned.content
+    css_cc = css.headers.get("cache-control", "").lower()
+    assert _max_age(css_versioned.headers.get("cache-control", "")) == 0
+    assert _max_age(css_cc) == 0
+    assert "must-revalidate" in css_cc
+    assert "immutable" not in css_cc
+    assert "86400" not in css_cc
+
+    fonts = list((WEBAPP / "static" / "fonts").glob("*.woff2"))
+    assert any(re.search(r"[0-9a-f]{8,}", p.name) for p in fonts)
+    font_resp = app_client.get(f"/static/fonts/{fonts[0].name}")
+    font_cc = font_resp.headers.get("cache-control", "").lower()
+    assert font_resp.status_code == 200
+    assert _max_age(font_cc) == 31536000
+    assert "immutable" in font_cc
+
+
+def test_font_checksums_match_committed_woff2():
     fonts_dir = WEBAPP / "static" / "fonts"
     manifest = (fonts_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     listed = {}

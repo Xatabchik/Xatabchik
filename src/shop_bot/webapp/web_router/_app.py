@@ -19,6 +19,7 @@ from shop_bot.webapp.web_router._core import limiter
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+import hashlib
 import os
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -33,8 +34,22 @@ async def _webapp_no_cache_middleware(request, call_next):
     response = await call_next(request)
     path = request.url.path
     if path.startswith("/static/"):
-        response.headers.setdefault("Cache-Control", "public, max-age=86400")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if response.status_code == 200:
+            # app.css — стабильный путь: WebView может игнорировать ?v= и
+            # сутки держать stale. Шрифты уже с hash в имени — immutable.
+            if path.startswith("/static/fonts/") and path.endswith(".woff2"):
+                response.headers["Cache-Control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            elif path.startswith("/static/css/") or path.endswith(".css"):
+                response.headers["Cache-Control"] = (
+                    "public, max-age=0, must-revalidate"
+                )
+            else:
+                response.headers.setdefault(
+                    "Cache-Control", "public, max-age=0, must-revalidate"
+                )
         return response
     content_type = response.headers.get("content-type", "")
     if path == "/" or content_type.startswith("text/html"):
@@ -59,6 +74,16 @@ static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# HTML — no-store, поэтому новый ?v= после смены файла попадёт в WebView.
+# Имя APP_CSS_HREF уходит в шаблоны через _link_namespace().
+_APP_CSS_FILE = os.path.join(static_dir, "css", "app.css")
+_APP_CSS_HASH = ""
+APP_CSS_HREF = "/static/css/app.css"
+if os.path.isfile(_APP_CSS_FILE):
+    with open(_APP_CSS_FILE, "rb") as _css_fh:
+        _APP_CSS_HASH = hashlib.sha256(_css_fh.read()).hexdigest()[:12]
+    APP_CSS_HREF = f"/static/css/app.css?v={_APP_CSS_HASH}"
+
 
 def _hidden_not_found() -> None:
     """Как несуществующий URL: стандартный FastAPI 404, без Unauthorized."""
@@ -75,5 +100,6 @@ __all__ = [
     "ico_dir",
     "uploads_dir",
     "static_dir",
+    "APP_CSS_HREF",
     "_hidden_not_found",
 ]

@@ -47,7 +47,7 @@ def _render_banned_page(webapp_settings: dict):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{title}</title>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="{APP_CSS_HREF}">
     <style>
         body {{ font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }}
         .glass {{ background: rgba(30, 30, 30, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.05); }}
