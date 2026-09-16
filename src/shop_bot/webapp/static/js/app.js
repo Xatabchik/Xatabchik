@@ -734,7 +734,7 @@ document.addEventListener('click', (event) => {
     const url = btn.getAttribute('data-url') || '';
     const host = btn.getAttribute('data-host') || '';
     if (action === 'copy-key') {
-        if (typeof copyKey === 'function') copyKey(btn, url);
+        copyKey(btn, url);
     } else if (action === 'open-key') {
         if (typeof openLinkSafe === 'function') openLinkSafe(url);
     } else if (action === 'devices' && keyId) {
@@ -2902,6 +2902,12 @@ async function performKeysSearch(q) {
     }
 }
 
+// Keys page search/tabs: bound here instead of inline oninput/onclick in app.html.
+document.getElementById('keys-search-input')?.addEventListener('input', onKeysSearchInput);
+document.getElementById('keys-search-clear')?.addEventListener('click', clearKeysSearch);
+document.getElementById('keys-tab-btn-personal')?.addEventListener('click', () => switchKeysTab('personal'));
+document.getElementById('keys-tab-btn-gifts')?.addEventListener('click', () => switchKeysTab('gifts'));
+
 let secretSequence = '';
 const TARGET_SEQUENCE = '3350';
 
@@ -4701,9 +4707,6 @@ async function _cancelProfileEmailChange() {
 window.toggleSettingsMenu = toggleSettingsMenu;
 window.openEditProfileModal = openEditProfileModal;
 window.setPurchaseMode = setPurchaseMode;
-window.onKeysSearchInput = onKeysSearchInput;
-window.clearKeysSearch = clearKeysSearch;
-window.switchKeysTab = switchKeysTab;
 window.openTopUpModal = openTopUpModal;
 window.openActionModal = openActionModal;
 window.requestReferralWithdraw = requestReferralWithdraw;
@@ -4752,7 +4755,6 @@ window.syncTelegram = syncTelegram;
 window.goToRenewKey = goToRenewKey;
 window.toggleKeyAutoRenew = toggleKeyAutoRenew;
 window.openLteTopup = openLteTopup;
-window.copyKey = copyKey;
 
 // DOM is parsed: this file is loaded with defer. initApp originally ran
 // on DOMContentLoaded at the end of the first inline script, after the

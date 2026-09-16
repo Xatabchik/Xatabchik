@@ -348,19 +348,18 @@
             <div class="relative">
                 <span class="material-symbols-rounded absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-lg pointer-events-none">search</span>
                 <input type="search" id="keys-search-input" placeholder="Поиск по названию, email или UUID" autocomplete="off"
-                    oninput="onKeysSearchInput()"
                     class="w-full bg-black/30 border border-white/10 rounded-xl py-2.5 pl-10 pr-9 text-xs text-white placeholder-gray-500 focus:border-white/20 outline-none transition-all">
-                <button id="keys-search-clear" onclick="clearKeysSearch()"
+                <button type="button" id="keys-search-clear"
                     class="hidden absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors">
                     <span class="material-symbols-rounded text-base">close</span>
                 </button>
             </div>
             <div id="keys-tabs" class="flex items-center gap-1 bg-white/5 rounded-xl p-1">
-                <button id="keys-tab-btn-personal" onclick="switchKeysTab('personal')"
+                <button type="button" id="keys-tab-btn-personal"
                     class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all bg-white/10 text-white">
                     Личные ключи
                 </button>
-                <button id="keys-tab-btn-gifts" onclick="switchKeysTab('gifts')"
+                <button type="button" id="keys-tab-btn-gifts"
                     class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all text-gray-400">
                     <span class="material-symbols-rounded text-[12px] align-middle mr-0.5">card_giftcard</span>Подарочные
                 </button>
