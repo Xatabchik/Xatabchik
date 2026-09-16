@@ -69,6 +69,24 @@ _PUBLIC_FALLBACK_CSP = (
     "base-uri 'none'; "
     "form-action 'none'"
 )
+
+# Этап 1: CSP на Mini App / login / banned. Inline JS и <style> ещё в HTML,
+# поэтому script-src/style-src временно с 'unsafe-inline'. Tailwind CDN и
+# Google Fonts убраны — font-src только 'self'. Telegram SDK не вендорим.
+# web.telegram.org открывает Mini App в iframe — frame-ancestors не 'none'.
+_WEBAPP_PAGE_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://telegram.org 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; "
+    "img-src 'self' https: data:; "
+    "connect-src 'self' https://telegram.org https://web.telegram.org; "
+    "frame-src 'self' https://telegram.org https://web.telegram.org; "
+    "frame-ancestors 'self' https://web.telegram.org https://k.telegram.org; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
 _GIFT_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -105,5 +123,6 @@ __all__ = [
     "_EMAIL_FORMAT_RE",
     "_REFERRAL_LINK_MESSAGES",
     "_PUBLIC_FALLBACK_CSP",
+    "_WEBAPP_PAGE_CSP",
     "_GIFT_CODE_RE",
 ]

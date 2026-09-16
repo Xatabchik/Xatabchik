@@ -1,0 +1,13 @@
+{
+  "name": "xatabchik-webapp-assets",
+  "private": true,
+  "description": "Воспроизводимая сборка локального CSS Mini App. Версии совпадают с бывшим CDN: tailwind 3.4.17, forms 0.5.10, typography 0.5.16.",
+  "scripts": {
+    "build": "tailwindcss -c tailwind.config.js -i ./input.css -o ../../src/shop_bot/webapp/static/css/app.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/forms": "0.5.10",
+    "@tailwindcss/typography": "0.5.16",
+    "tailwindcss": "3.4.17"
+  }
+}

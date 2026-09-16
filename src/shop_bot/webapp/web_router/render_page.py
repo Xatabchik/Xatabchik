@@ -47,26 +47,7 @@ def _render_banned_page(webapp_settings: dict):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>{title}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,-50..200&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {{
-            darkMode: 'class',
-            theme: {{
-                extend: {{
-                    colors: {{
-                        primary: '#10b981',
-                        surface: {{
-                            dark: '#121212',
-                            card: '#1e1e1e',
-                            highlight: '#2a2a2a'
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    </script>
+    <link rel="stylesheet" href="/static/css/app.css">
     <style>
         body {{ font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }}
         .glass {{ background: rgba(30, 30, 30, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.05); }}

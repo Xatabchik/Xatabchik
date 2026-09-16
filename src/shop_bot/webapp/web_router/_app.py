@@ -31,11 +31,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.middleware("http")
 async def _webapp_no_cache_middleware(request, call_next):
     response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
     content_type = response.headers.get("content-type", "")
-    if request.url.path == "/" or content_type.startswith("text/html"):
+    if path == "/" or content_type.startswith("text/html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+        if "content-security-policy" not in response.headers:
+            # Имя из _core через _link_namespace(), не значением: на импорте не нужно.
+            response.headers["Content-Security-Policy"] = _WEBAPP_PAGE_CSP
     return response
 
 
@@ -46,6 +54,10 @@ if os.path.exists(ico_dir):
 uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 def _hidden_not_found() -> None:
@@ -62,5 +74,6 @@ __all__ = [
     "_webapp_no_cache_middleware",
     "ico_dir",
     "uploads_dir",
+    "static_dir",
     "_hidden_not_found",
 ]
