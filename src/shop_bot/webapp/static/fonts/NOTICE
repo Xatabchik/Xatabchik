@@ -1,0 +1,10 @@
+Inter (variable latin/cyrillic subsets)
+  License: SIL Open Font License 1.1
+  Source: https://rsms.me/inter / https://github.com/rsms/inter
+
+Material Symbols Rounded (ligature subset used by Mini App)
+  License: Apache License 2.0
+  Source: https://fonts.google.com/icons
+
+Файлы скачаны tools/webapp_assets/build.py и зафиксированы в SHA256SUMS.
+Telegram Web App SDK на telegram.org не вендорится.

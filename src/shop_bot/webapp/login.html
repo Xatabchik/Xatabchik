@@ -12,7 +12,7 @@
     <link rel="icon" type="image/x-icon" href="{{ webapp_icon }}">
     <title>Загрузка...</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,-50..200&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ app_css_href }}" />
     <style>
         .material-symbols-rounded {
             font-family: 'Material Symbols Rounded';
@@ -28,23 +28,6 @@
             user-select: none;
         }
     </style>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: "#10b981",
-                        "background-dark": "#0a0a0a",
-                    },
-                    animation: {
-                        'spin-slow': 'spin 3s linear infinite',
-                        'pulse-fast': 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-                    }
-                }
-            }
-        }
-    </script>
     <style>
         body {
             background-color: #0a0a0a;

@@ -25,3 +25,6 @@ test
 
 # Вложения тикетов — только локально, не в git и не как static
 ticket_files/
+
+# Сборка локальных CSS/шрифтов Mini App (артефакты коммитятся в static/)
+tools/webapp_assets/node_modules/

@@ -379,6 +379,8 @@ def test_static_paths_still_resolve_to_the_webapp_directory():
 
     assert Path(facade.ico_dir).resolve() == webapp / "module" / "ico"
     assert Path(facade.uploads_dir).resolve() == webapp / "uploads"
+    assert Path(facade.static_dir).resolve() == webapp / "static"
+    assert (webapp / "static" / "css" / "app.css").is_file()
     assert not (PKG_DIR / "uploads").exists(), "каталог загрузок создан в подпакете"
     for name in ("app.html", "login.html"):
         assert (webapp / name).exists(), f"{name} должен лежать рядом с фасадом"
@@ -416,6 +418,7 @@ def test_route_table_consists_of_endpoints_plus_the_usual_extras():
         ("Route", "/redoc"),
         ("Mount", "/module/ico"),
         ("Mount", "/uploads"),
+        ("Mount", "/static"),
     }, f"изменился состав служебных маршрутов и монтирований: {sorted(extras)}"
 
     endpoints = [r for r in routes if type(r).__name__ == "APIRoute"]
