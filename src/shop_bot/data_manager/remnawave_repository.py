@@ -707,6 +707,7 @@ _LEGACY_FORWARDERS = (
     "delete_partner_requisite",
 
     # Referral program: payout methods & withdrawal requests
+    "REFERRAL_PAYOUT_METHOD_TYPES",
     "list_referral_payout_methods",
     "add_referral_payout_method",
     "delete_referral_payout_method",
@@ -718,6 +719,9 @@ _LEGACY_FORWARDERS = (
     "get_referral_withdrawable_stats",
     "format_referral_withdrawal_admin_notice",
     "validate_referral_payout_requisite",
+    "sanitize_payout_bank_name",
+    "mask_referral_requisite",
+    "list_referral_sbp_banks",
     "is_referral_withdraw_method_type_enabled",
     "has_open_referral_withdrawal_request",
     "create_webapp_auth_request",

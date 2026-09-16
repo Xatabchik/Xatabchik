@@ -88,8 +88,10 @@ async def api_referral_list_withdrawals(request: Request):
             "amount": r.get("amount"),
             "status": r.get("status"),
             "method_type": r.get("method_type"),
-            "bank_name": r.get("bank_name"),
-            "requisite_value": r.get("requisite_value"),
+            "bank_name": rw_repo.sanitize_payout_bank_name(r.get("bank_name")),
+            "requisite_masked": rw_repo.mask_referral_requisite(
+                r.get("requisite_value"), r.get("method_type")
+            ),
             "reject_reason": r.get("reject_reason"),
             "created_at": r.get("created_at"),
             "processed_at": r.get("processed_at"),
