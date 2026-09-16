@@ -37,13 +37,19 @@ async def _webapp_no_cache_middleware(request, call_next):
     if path.startswith("/static/"):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         if response.status_code == 200:
-            # app.css — стабильный путь: WebView может игнорировать ?v= и
-            # сутки держать stale. Шрифты уже с hash в имени — immutable.
+            # Шрифты уже с hash в имени — immutable. CSS/JS — стабильный путь.
             if path.startswith("/static/fonts/") and path.endswith(".woff2"):
                 response.headers["Cache-Control"] = (
                     "public, max-age=31536000, immutable"
                 )
-            elif path.startswith("/static/css/") or path.endswith(".css"):
+            elif (
+                path.startswith("/static/css/")
+                or path.endswith(".css")
+                or path.startswith("/static/js/")
+                or path.endswith(".js")
+            ):
+                # app.js / app.css — стабильный путь: WebView может игнорировать
+                # ?v= и сутки держать stale. Шрифты уже с hash в имени.
                 response.headers["Cache-Control"] = (
                     "public, max-age=0, must-revalidate"
                 )
@@ -76,7 +82,7 @@ if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # HTML — no-store, поэтому новый ?v= после смены файла попадёт в WebView.
-# Имя APP_CSS_HREF уходит в шаблоны через _link_namespace().
+# Имена APP_CSS_HREF / APP_JS_HREF уходят в шаблоны через _link_namespace().
 _APP_CSS_FILE = os.path.join(static_dir, "css", "app.css")
 _APP_CSS_HASH = ""
 APP_CSS_HREF = "/static/css/app.css"
@@ -84,6 +90,14 @@ if os.path.isfile(_APP_CSS_FILE):
     with open(_APP_CSS_FILE, "rb") as _css_fh:
         _APP_CSS_HASH = hashlib.sha256(_css_fh.read()).hexdigest()[:12]
     APP_CSS_HREF = f"/static/css/app.css?v={_APP_CSS_HASH}"
+
+_APP_JS_FILE = os.path.join(static_dir, "js", "app.js")
+_APP_JS_HASH = ""
+APP_JS_HREF = "/static/js/app.js"
+if os.path.isfile(_APP_JS_FILE):
+    with open(_APP_JS_FILE, "rb") as _js_fh:
+        _APP_JS_HASH = hashlib.sha256(_js_fh.read()).hexdigest()[:12]
+    APP_JS_HREF = f"/static/js/app.js?v={_APP_JS_HASH}"
 
 
 def _hidden_not_found() -> None:
@@ -102,5 +116,6 @@ __all__ = [
     "uploads_dir",
     "static_dir",
     "APP_CSS_HREF",
+    "APP_JS_HREF",
     "_hidden_not_found",
 ]

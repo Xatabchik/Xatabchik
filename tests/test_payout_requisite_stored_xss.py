@@ -183,7 +183,7 @@ def test_list_does_not_leak_other_users_methods(temp_db):
 
 
 def test_frontend_payout_renderers_use_textcontent_not_innerhtml_interpolation():
-    html = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+    html = Path("src/shop_bot/webapp/static/js/app.js").read_text(encoding="utf-8")
     withdraw_fn = html[html.index("function _renderWithdrawForm"): html.index("function _selectWithdrawMethod")]
     assert "${_maskRequisite" not in withdraw_fn
     assert "${label}" not in withdraw_fn

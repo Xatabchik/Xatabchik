@@ -24,7 +24,9 @@ PAGE_FILES = (
 )
 TELEGRAM_SDK = "https://telegram.org/js/telegram-web-app.js"
 LOCAL_CSS = "/static/css/app.css"
+LOCAL_JS = "/static/js/app.js"
 CSS_HREF_RE = re.compile(r"/static/css/app\.css\?v=([0-9a-f]{12})")
+JS_HREF_RE = re.compile(r"/static/js/app\.js\?v=([0-9a-f]{12})")
 
 
 def _css_content_hash() -> str:
@@ -33,6 +35,14 @@ def _css_content_hash() -> str:
 
 def _expected_css_href() -> str:
     return f"{LOCAL_CSS}?v={_css_content_hash()}"
+
+
+def _js_content_hash() -> str:
+    return hashlib.sha256((WEBAPP / "static" / "js" / "app.js").read_bytes()).hexdigest()[:12]
+
+
+def _expected_js_href() -> str:
+    return f"{LOCAL_JS}?v={_js_content_hash()}"
 
 
 def _max_age(header: str) -> int | None:
@@ -76,7 +86,14 @@ def test_app_and_login_keep_telegram_sdk_on_telegram_origin():
     assert TELEGRAM_SDK in app_html
     assert TELEGRAM_SDK in login_html
     static_js = list((WEBAPP / "static").rglob("*.js"))
-    assert static_js == [], "Этап 1 не вендорит JS, в том числе Telegram SDK"
+    assert static_js, "Этап 2: Mini App JS лежит в /static/js/"
+    assert all("telegram-web-app" not in p.name for p in static_js)
+    assert (WEBAPP / "static" / "js" / "app.js").is_file()
+    assert "{{ app_js_href }}" in app_html
+    assert 'src="{{ app_js_href }}" defer>' in app_html
+    _assert_no_cdn(app_html)
+    for path in static_js:
+        _assert_no_cdn(path.read_text(encoding="utf-8"))
 
 
 def test_login_page_serves_local_css_and_csp(temp_db, app_client):
@@ -85,6 +102,7 @@ def test_login_page_serves_local_css_and_csp(temp_db, app_client):
     _assert_no_cdn(resp.text)
     assert TELEGRAM_SDK in resp.text
     assert _expected_css_href() in resp.text
+    assert _expected_js_href() not in resp.text
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
     assert "no-store" in resp.headers.get("cache-control", "")
 
@@ -101,6 +119,8 @@ def test_authed_app_page_serves_local_css_and_csp(temp_db, app_client):
     _assert_no_cdn(resp.text)
     assert TELEGRAM_SDK in resp.text
     assert _expected_css_href() in resp.text
+    assert _expected_js_href() in resp.text
+    assert JS_HREF_RE.search(resp.text)
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
 
 
@@ -161,6 +181,27 @@ def test_static_cache_control_differs_for_css_and_hashed_fonts(temp_db, app_clie
     assert font_resp.status_code == 200
     assert _max_age(font_cc) == 31536000
     assert "immutable" in font_cc
+
+
+def test_local_js_entrypoint_is_served_without_long_cache(temp_db, app_client):
+    expected = _expected_js_href()
+    js = app_client.get(LOCAL_JS)
+    js_versioned = app_client.get(LOCAL_JS, params={"v": _js_content_hash()})
+    assert js.status_code == 200
+    assert js_versioned.status_code == 200
+    assert js.content == js_versioned.content
+    assert "function telegramVersionAtLeast(" in js.text
+    assert "function openTopUpModal(" in js.text
+    assert "Temporary compatibility bridge" in js.text
+    ctype = js.headers.get("content-type", "")
+    assert "javascript" in ctype or "ecmascript" in ctype
+    js_cc = js.headers.get("cache-control", "").lower()
+    assert _max_age(js_versioned.headers.get("cache-control", "")) == 0
+    assert _max_age(js_cc) == 0
+    assert "must-revalidate" in js_cc
+    assert "immutable" not in js_cc
+    assert js.headers.get("x-content-type-options", "").lower() == "nosniff"
+    assert expected.endswith(_js_content_hash())
 
 
 def test_font_checksums_match_committed_woff2():
