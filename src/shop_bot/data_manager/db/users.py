@@ -741,7 +741,7 @@ def create_user_by_email(email: str, password: str) -> dict | None:
     Пароль сохраняется в виде хэша (см. hash_password/verify_password).
     Аккаунт создаётся неподтверждённым (email_verified=0) до прохождения проверки кода.
     """
-    norm = _normalize_email(email)
+    norm = normalize_auth_email(email)
     if not norm:
         return None
     try:

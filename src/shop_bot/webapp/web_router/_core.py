@@ -46,7 +46,12 @@ PASSWORD_RESET_TTL_SECONDS = 600
 EMAIL_RESEND_COOLDOWN_SECONDS = 60
 EMAIL_CODE_TTL_SECONDS = 600
 
-_EMAIL_FORMAT_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Совпадает с database.normalize_auth_email: без < > " ' ` и управляющих.
+_EMAIL_FORMAT_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._%+-]{0,62}[a-z0-9])?@"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$",
+    re.IGNORECASE,
+)
 
 _REFERRAL_LINK_MESSAGES = {
     "linked": "Вы стали участником реферальной программы!",
