@@ -32,6 +32,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.middleware("http")
 async def _webapp_no_cache_middleware(request, call_next):
     response = await call_next(request)
+    response.headers["Referrer-Policy"] = "no-referrer"
     path = request.url.path
     if path.startswith("/static/"):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

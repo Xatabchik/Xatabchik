@@ -303,16 +303,15 @@ async def _render_main_page(user_id: int):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, user_id: int | None = None, token: str | None = None):
     try:
-        # 1. Authorize by Token only (query param / cookie). Never trust bare
-        # user_id from the query string — that was an IDOR (CWE-639): anyone
-        # could open /?user_id=<victim> and get a rendered session for them.
-        resolved_user_id = None
-        if token:
-            from shop_bot.data_manager import database
-            user = database.get_user_by_auth_token(token)
-            if user:
-                resolved_user_id = user['telegram_id']
-        user_id = resolved_user_id
+        # 1. Legacy /?token= must not stay in the URL (access logs, history, Referer).
+        # Valid token → existing auth_token cookie, then 303 to a clean URL.
+        # Invalid token → strip query, do not create a session.
+        # Never trust bare user_id from the query string (CWE-639).
+        if "token" in request.query_params:
+            return _legacy_auth_token_redirect(request, token)
+
+        resolved = _resolve_user_from_request_token({}, request)
+        user_id = int(resolved["telegram_id"]) if resolved else None
 
         # 2. If no valid token, serve login.html
         if user_id is None:

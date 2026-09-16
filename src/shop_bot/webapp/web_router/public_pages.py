@@ -248,30 +248,8 @@ async def web_gift_page(gift_code: str, request: Request):
 async def dynamic_route(request: Request, path_param: str):
     try:
         if path_param.startswith("token="):
-            token = path_param.split("=")[1]
-            from shop_bot.data_manager import database
-            user = database.get_user_by_auth_token(token)
-            if user:
-                webapp_settings = get_webapp_settings()
-                if user.get('is_banned'):
-                    return _render_banned_page(webapp_settings)
-                return await _render_main_page(user['telegram_id'])
-            else:
-                 # Token not valid or expired -> Render Login Page
-                 p = os.path.join(os.path.dirname(os.path.dirname(__file__)), "login.html")
-                 if os.path.exists(p):
-                     with open(p, "r", encoding="utf-8") as f:
-                         content = f.read()
-                     
-                     webapp_settings = get_webapp_settings()
-                     context = {
-                        "webapp_logo": webapp_settings.get("webapp_logo") or "",
-                        "webapp_icon": webapp_settings.get("webapp_icon") or ""
-                     }
-                     content = _process_template_placeholders(content, 0, webapp_settings, context)
-                     return HTMLResponse(content=content)
-                 else:
-                     return HTMLResponse(content="<h1>Login page not found</h1>", status_code=404)
+            token = path_param.split("=", 1)[1]
+            return _legacy_auth_token_redirect(request, token)
         
         # Pass through to 404 naturally or handle other dynamic routes
         return HTMLResponse(content="<h1>404 Not Found</h1>", status_code=404)
