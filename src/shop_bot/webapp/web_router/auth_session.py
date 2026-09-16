@@ -6,9 +6,13 @@
 
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from shop_bot.data_manager.remnawave_repository import get_setting, get_user
 import shop_bot.data_manager.remnawave_repository as rw_repo
+from urllib.parse import urlencode
+
+_AUTH_COOKIE_NAME = "auth_token"
+_AUTH_COOKIE_MAX_AGE = 31536000
 
 
 def _resolve_user_from_request_token(data: dict, request: Request) -> dict | None:
@@ -85,6 +89,46 @@ def _require_authenticated_user(
     return user
 
 
+def _root_url_without_auth_token(request: Request) -> str:
+    """Корень Mini App без persistent token (и без user_id) в query string."""
+    pairs = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key not in {"token", "user_id"}
+    ]
+    if not pairs:
+        return "/"
+    return "/?" + urlencode(pairs)
+
+
+def _set_webapp_auth_cookie(response, token: str) -> None:
+    """Тот же auth_token cookie, что ставит JS: path=/, SameSite=Lax, не HttpOnly."""
+    response.set_cookie(
+        key=_AUTH_COOKIE_NAME,
+        value=token,
+        max_age=_AUTH_COOKIE_MAX_AGE,
+        path="/",
+        httponly=False,
+        samesite="lax",
+    )
+
+
+def _legacy_auth_token_redirect(request: Request, token: str | None):
+    """Legacy /?token= и /token=: cookie при валидном токене, 303 на URL без token."""
+    response = RedirectResponse(url=_root_url_without_auth_token(request), status_code=303)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    token = (token or "").strip()
+    if not token:
+        return response
+    try:
+        user = rw_repo.get_user_by_auth_token(token)
+    except Exception:
+        user = None
+    if user:
+        _set_webapp_auth_cookie(response, token)
+    return response
+
+
 # __all__ — имена, которые пакет раскладывает по остальным модулям, чтобы
 # обращение по имени внутри функций разрешалось как до разделения
 # (см. __init__.py). Значение берётся из текущей привязки модуля, поэтому
@@ -94,4 +138,5 @@ __all__ = [
     "_resolve_authenticated_user",
     "_unauthorized",
     "_require_authenticated_user",
+    "_legacy_auth_token_redirect",
 ]

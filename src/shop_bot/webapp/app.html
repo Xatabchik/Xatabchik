@@ -46,6 +46,21 @@
             return window.Telegram?.WebApp?.initData || '';
         };
 
+        window.authHeaders = function (extra) {
+            const headers = extra ? Object.assign({}, extra) : {};
+            const token = window.getAuthToken();
+            if (token) {
+                headers['Authorization'] = 'Bearer ' + token;
+            }
+            return headers;
+        };
+
+        window.apiFetch = function (url, options) {
+            const opts = options ? Object.assign({}, options) : {};
+            opts.headers = window.authHeaders(opts.headers);
+            return fetch(url, opts);
+        };
+
         // Pending action (подарок/реферальная ссылка, см. /gift/<code> и /ref/<id>):
         // токен снимается из URL один раз при загрузке страницы и запоминается для
         // отправки на /api/webapp/pending-actions/complete после того, как ниже будет
@@ -900,6 +915,49 @@
             document.documentElement.classList.add('dark')
         }
 
+        // --- Telegram WebApp version-safe helpers ---
+        // setHeaderColor / setBackgroundColor / HapticFeedback: Bot API 6.1+.
+        // isVersionAtLeast itself is 6.1+; on 6.0 the missing method means skip.
+        function telegramVersionAtLeast(minVersion) {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) return false;
+            try {
+                if (typeof tg.isVersionAtLeast === 'function') {
+                    return !!tg.isVersionAtLeast(minVersion);
+                }
+            } catch (e) { }
+            return false;
+        }
+
+        function safeTelegramAppearance(options) {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) return;
+            const opts = options || {};
+            try {
+                if (!telegramVersionAtLeast('6.1')) return;
+                if (opts.header && typeof tg.setHeaderColor === 'function') {
+                    tg.setHeaderColor(opts.header);
+                }
+                if (opts.background && typeof tg.setBackgroundColor === 'function') {
+                    tg.setBackgroundColor(opts.background);
+                }
+            } catch (error) {
+                console.warn('Telegram appearance API unavailable');
+            }
+        }
+
+        function safeTelegramHaptic(kind) {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) return;
+            try {
+                if (!telegramVersionAtLeast('6.1')) return;
+                if (tg.HapticFeedback && typeof tg.HapticFeedback.notificationOccurred === 'function') {
+                    tg.HapticFeedback.notificationOccurred(kind);
+                }
+            } catch (e) { }
+        }
+        // --- end Telegram WebApp version-safe helpers ---
+
         if (window.Telegram?.WebApp) {
             try {
                 const tgApp = Telegram.WebApp;
@@ -908,8 +966,7 @@
                 }
                 tgApp.ready();
                 tgApp.expand();
-                tgApp.setHeaderColor('#0a0a0a');
-                tgApp.setBackgroundColor('#0a0a0a');
+                safeTelegramAppearance({ header: '#0a0a0a', background: '#0a0a0a' });
             } catch (e) { }
         }
 
@@ -1006,9 +1063,7 @@
             const hex = '#' + [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map(c => c.toString(16).padStart(2, '0')).join('');
             if (meta.content !== hex) {
                 meta.content = hex;
-                if (window.Telegram?.WebApp?.setHeaderColor) {
-                    try { window.Telegram.WebApp.setHeaderColor(hex); } catch (e) { }
-                }
+                safeTelegramAppearance({ header: hex });
             }
         }
 
@@ -2698,7 +2753,7 @@
             changePaymentStep('lte-packages');
 
             try {
-                const resp = await fetch('/api/lte-packages?key_id=' + encodeURIComponent(keyId) + '&token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const resp = await window.apiFetch('/api/lte-packages?key_id=' + encodeURIComponent(keyId));
                 const data = await resp.json();
                 if (!data.ok) {
                     if (list) list.innerHTML = `<div class="text-center text-red-400 py-4 text-xs font-bold">${data.error || 'Недоступно'}</div>`;
@@ -3173,10 +3228,7 @@
 
         async function refreshAppData() {
             try {
-                const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const token = window.getAuthToken() || '';
-                const url = `/?token=${encodeURIComponent(token)}`;
-                const response = await fetch(url);
+                const response = await window.apiFetch('/');
                 if (!response.ok) return;
                 const htmlStr = await response.text();
 
@@ -3248,7 +3300,7 @@
             // Запрашиваем актуальный ключ пользователя
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const resp = await window.apiFetch('/api/user-status');
                 const status = await resp.json();
 
                 if (status.ok && status.keys?.length) {
@@ -3274,10 +3326,7 @@
 
             changePaymentStep('success');
 
-            // Вибрация успеха если в TG
-            if (window.Telegram?.WebApp?.HapticFeedback) {
-                window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-            }
+            safeTelegramHaptic('success');
 
             // Обновляем UI без перезагрузки страницы
             await refreshAppData();
@@ -3869,7 +3918,7 @@
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const res = await fetch(`/api/user/transactions?token=${encodeURIComponent(window.getAuthToken() || '')}&page=${_txPage}&per_page=10`);
+                const res = await window.apiFetch('/api/user/transactions?page=' + _txPage + '&per_page=10');
                 const data = await res.json();
 
                 if (!data.ok) {
@@ -4707,7 +4756,7 @@
         window._loadHomeStats = async function () {
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const resp = await window.apiFetch('/api/user-status');
                 const data = await resp.json();
                 const balEl = document.getElementById('home-balance');
                 if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
@@ -4743,7 +4792,7 @@
         window._loadFinancePage = async function () {
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const resp = await window.apiFetch('/api/user-status');
                 const data = await resp.json();
                 const balEl = document.getElementById('finance-balance');
                 if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
@@ -4753,7 +4802,7 @@
             if (!prevEl) return;
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-                const res = await fetch('/api/user/transactions?token=' + encodeURIComponent(window.getAuthToken() || '') + '&page=1&per_page=3');
+                const res = await window.apiFetch('/api/user/transactions?page=1&per_page=3');
                 const data = await res.json();
                 if (data.ok && data.transactions && data.transactions.length) {
                     let html = '<div class="flex flex-col gap-2">';
@@ -5195,7 +5244,7 @@
                 if (typeof window._loadHomeStats === 'function') await window._loadHomeStats();
             } catch (e) { /* см. выше */ }
             try {
-                const resp = await fetch('/api/user-status?token=' + encodeURIComponent(window.getAuthToken() || ''));
+                const resp = await window.apiFetch('/api/user-status');
                 const status = await resp.json();
                 if (status.ok && status.balance != null) {
                     const balStr = Number(status.balance).toFixed(2) + ' ₽';
@@ -5237,9 +5286,7 @@
                     _forgetPendingTopUp();
                     _renderTopUpSuccess(window._topUpAmount, data);
                     showNotification('Баланс пополнен!', 'success');
-                    if (window.Telegram?.WebApp?.HapticFeedback) {
-                        window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-                    }
+                    safeTelegramHaptic('success');
                     await _refreshBalanceAfterTopUp();
                     return;
                 }
@@ -5277,9 +5324,7 @@
                 _forgetPendingTopUp();
                 _renderTopUpSuccess(amount, data);
                 showNotification('Баланс пополнен!', 'success');
-                if (window.Telegram?.WebApp?.HapticFeedback) {
-                    window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-                }
+                safeTelegramHaptic('success');
                 await _refreshBalanceAfterTopUp();
             }, (data) => {
                 _markTopUpProcessing(data && data.message);

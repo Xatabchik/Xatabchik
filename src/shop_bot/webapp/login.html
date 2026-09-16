@@ -772,7 +772,7 @@
 
             const savedToken = getAuthToken();
             if (savedToken) {
-                window.location.href = appendPendingToken("/?token=" + savedToken);
+                window.location.href = appendPendingToken("/");
                 return;
             }
 
@@ -805,7 +805,7 @@
 
             async function loginWithToken(token) {
                 setAuthToken(token);
-                window.location.href = appendPendingToken("/?token=" + token);
+                window.location.href = appendPendingToken("/");
             }
 
             async function tryTelegramAuth() {
