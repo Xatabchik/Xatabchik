@@ -7,6 +7,7 @@
     <meta name="robots" content="noindex, nofollow" />
     <meta name="theme-color" id="dynamic-theme-color" content="#0a0a0a">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="{{ panel_brand_title }}">
     <link rel="apple-touch-icon" href="{{ webapp_icon }}">
@@ -2295,23 +2296,72 @@
         const RENDERED_USER_ID = parseInt("{{ user_id }}") || 0;
         window._currentUserId = RENDERED_USER_ID || null;
 
-        function showNotification(message, type = 'info') {
-            if (window.Telegram?.WebApp?.showAlert) {
-                window.Telegram.WebApp.showAlert(message);
-                return;
+        function telegramPopupSupported() {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) return false;
+            try {
+                if (typeof tg.isVersionAtLeast === 'function') {
+                    return !!tg.isVersionAtLeast('6.2');
+                }
+            } catch (e) {
+                return false;
             }
+            const parts = String(tg.version || '0').split('.');
+            const major = parseInt(parts[0], 10) || 0;
+            const minor = parseInt(parts[1], 10) || 0;
+            return major > 6 || (major === 6 && minor >= 2);
+        }
+
+        function showLocalToast(message, type) {
             const container = document.getElementById('toast-container');
+            if (!container || typeof document.createElement !== 'function') return;
             const toast = document.createElement('div');
             toast.className = `px-6 py-3 rounded-2xl text-sm font-bold shadow-2xl transition-all duration-300 translate-y-10 opacity-0 pointer-events-auto border border-white/10 ${type === 'error' ? 'bg-red-500/90 text-white' : 'bg-white text-black'}`;
             toast.textContent = message;
             container.appendChild(toast);
-            requestAnimationFrame(() => {
-                toast.classList.remove('translate-y-10', 'opacity-0');
-            });
+            const reveal = () => {
+                if (toast.classList) toast.classList.remove('translate-y-10', 'opacity-0');
+            };
+            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(reveal);
+            else reveal();
             setTimeout(() => {
-                toast.classList.add('opacity-0', 'translate-y-2');
-                setTimeout(() => toast.remove(), 300);
+                if (toast.classList) toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => { if (toast.remove) toast.remove(); }, 300);
             }, 3000);
+        }
+
+        function safeTelegramPopup(message, type) {
+            const text = String(message == null ? '' : message);
+            const fallback = () => { showLocalToast(text, type); };
+            try {
+                const tg = window.Telegram && window.Telegram.WebApp;
+                if (!telegramPopupSupported() || !tg) {
+                    fallback();
+                    return;
+                }
+                let result;
+                if (typeof tg.showPopup === 'function') {
+                    result = tg.showPopup({ message: text });
+                } else if (typeof tg.showAlert === 'function') {
+                    result = tg.showAlert(text);
+                } else {
+                    fallback();
+                    return;
+                }
+                if (result && typeof result.then === 'function') {
+                    result.then(undefined, fallback);
+                }
+            } catch (e) {
+                fallback();
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            try {
+                safeTelegramPopup(message, type);
+            } catch (e) {
+                try { showLocalToast(message, type); } catch (e2) { /* feedback UI не ломает действие */ }
+            }
         }
 
         let activeTierData = { purchase: { tiers: [], selected: 0, deviceCount: 1, tierPrice: 0 }, renew: { tiers: [], selected: 0, deviceCount: 1, tierPrice: 0 } };
@@ -3257,7 +3307,7 @@
                             btn.classList.remove('text-green-500');
                         }, 2000);
                     }
-                    window.Telegram?.WebApp?.showAlert('Ссылка скопирована!');
+                    showNotification('Ссылка скопирована!');
                 });
             }
         }
@@ -3495,13 +3545,14 @@
 
         async function saveComment(keyId, isDelete = false) {
             const inputEl = document.getElementById('action-comment-input');
-            const comment = isDelete ? "" : inputEl.value;
+            const comment = isDelete ? "" : (inputEl ? inputEl.value : "");
 
             const btn = isDelete ? document.getElementById('comment-delete-btn') : document.getElementById('comment-save-btn');
-
-            const originalContent = btn.innerHTML;
-            btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
-            btn.disabled = true;
+            const originalContent = btn ? btn.innerHTML : '';
+            if (btn) {
+                btn.innerHTML = '<span class="material-symbols-rounded animate-spin text-sm">progress_activity</span>';
+                btn.disabled = true;
+            }
 
             try {
                 const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
@@ -3513,7 +3564,7 @@
                 const data = await res.json();
 
                 if (data.ok) {
-                    showNotification('Комментарий сохранен!', 'info');
+                    showNotification(isDelete ? 'Заметка удалена' : 'Комментарий сохранен!', 'info');
                     closeActionModal();
 
                     const commentBlocks = document.querySelectorAll(`[id="comment-block-${keyId}"]`);
@@ -3535,13 +3586,14 @@
                     }
                 } else {
                     showNotification(data.error || 'Ошибка', 'error');
-                    btn.innerHTML = originalContent;
-                    btn.disabled = false;
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
-                btn.innerHTML = originalContent;
-                btn.disabled = false;
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalContent;
+                }
             }
         }
 
@@ -3750,6 +3802,7 @@
                 ? document.querySelector('#action-modal-content .bg-red-500\\/10')
                 : document.getElementById('action-rename-btn');
             const newName = isDelete ? '' : (document.getElementById('action-rename-input')?.value || '').trim();
+            const originalContent = btn ? btn.innerHTML : '';
 
             if (btn) {
                 btn.disabled = true;
@@ -3770,11 +3823,14 @@
                     setTimeout(() => window.location.reload(), 700);
                 } else {
                     showNotification(data.error || 'Ошибка', 'error');
-                    if (btn) { btn.disabled = false; btn.innerHTML = isDelete ? '<span class="material-symbols-rounded text-sm">delete</span>' : '<span class="material-symbols-rounded text-sm">save</span> Сохранить'; }
                 }
             } catch (e) {
                 showNotification('Ошибка сети', 'error');
-                if (btn) { btn.disabled = false; }
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalContent;
+                }
             }
         }
 
