@@ -717,16 +717,25 @@ function toggleKeyCard(button) {
     }
     if (icon) icon.classList.toggle('expanded');
 }
-window.toggleKeyCard = toggleKeyCard;
-
-document.querySelectorAll('.key-toggle').forEach(button => {
-    button.addEventListener('click', () => toggleKeyCard(button));
-});
 // Карточки ключей приходят с сервера (SSR, поиск, подарки). Текст заметки
 // и имени в onclick больше не кладётся: обработчик читает data-* и
 // #comment-text-<id>.textContent, поэтому старый вредоносный payload
 // в БД не становится исполняемым JS.
+// Accordion (.key-toggle) и save/delete заметки — тоже делегирование, без
+// повторного forEach после search/gifts и без window.toggleKeyCard.
 document.addEventListener('click', (event) => {
+    const toggle = event.target.closest('.key-toggle');
+    if (toggle) {
+        toggleKeyCard(toggle);
+        return;
+    }
+    const noteSave = event.target.closest('#comment-save-btn');
+    const noteDelete = event.target.closest('#comment-delete-btn');
+    if (noteSave || noteDelete) {
+        const noteKeyId = parseInt((noteSave || noteDelete).getAttribute('data-key-id') || '', 10);
+        if (noteKeyId) saveComment(noteKeyId, Boolean(noteDelete));
+        return;
+    }
     const btn = event.target.closest('[data-key-action]');
     if (!btn) return;
     const action = btn.getAttribute('data-key-action');
@@ -2026,11 +2035,6 @@ async function refreshAppData() {
         // so re-scan it and reset client-side pagination state.
         if (typeof initProfileKeysPagination === 'function') initProfileKeysPagination();
 
-        // Re-bind accordion events
-        document.querySelectorAll('#setup-keys-list-container .key-toggle, #profile-keys-list-container .key-toggle').forEach(button => {
-            button.addEventListener('click', () => toggleKeyCard(button));
-        });
-
         // Re-bind renew keys dropdown option clicks
         const newDropdownOptions = document.querySelectorAll('#renew-keys-dropdown-container .dropdown-option');
 
@@ -2308,10 +2312,10 @@ async function openActionModal(type, keyId, extraData = '') {
         contentEl.innerHTML = `
             <div class="flex flex-col gap-3">
                 <div class="flex gap-2 w-full">
-                    <button id="comment-delete-btn" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
+                    <button type="button" id="comment-delete-btn" data-key-id="${keyId}" class="w-12 bg-red-500/10 text-red-500 py-2.5 rounded-xl flex items-center justify-center hover:bg-red-500/20 active:scale-[0.98] transition-all shrink-0">
                         <span class="material-symbols-rounded text-sm">delete</span>
                     </button>
-                    <button id="comment-save-btn" class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                    <button type="button" id="comment-save-btn" data-key-id="${keyId}" class="flex-1 bg-white text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider shadow-[0_4px_15px_rgba(255,255,255,0.1)] hover:shadow-[0_6px_20px_rgba(255,255,255,0.2)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                         <span class="material-symbols-rounded text-sm">save</span>
                         Сохранить заметку
                     </button>
@@ -2322,10 +2326,6 @@ async function openActionModal(type, keyId, extraData = '') {
         `;
         const commentInput = document.getElementById('action-comment-input');
         if (commentInput) commentInput.value = storedComment;
-        const deleteBtn = document.getElementById('comment-delete-btn');
-        const saveBtn = document.getElementById('comment-save-btn');
-        if (deleteBtn) deleteBtn.addEventListener('click', () => saveComment(keyId, true));
-        if (saveBtn) saveBtn.addEventListener('click', () => saveComment(keyId));
     }
 }
 
@@ -2892,11 +2892,6 @@ async function performKeysSearch(q) {
         // Server reuses the same key-card renderer as the main "Мои ключи" list,
         // so results come with full buttons/actions already wired up.
         resultsEl.innerHTML = `<div class="mt-1">${data.html}</div>`;
-
-        // Re-bind accordion (expand/collapse) events for the newly injected cards.
-        resultsEl.querySelectorAll('.key-toggle').forEach(button => {
-            button.addEventListener('click', () => toggleKeyCard(button));
-        });
     } catch (e) {
         if (resultsEl) resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
     }
@@ -3440,11 +3435,6 @@ function renderGiftsPage() {
     const pageGifts = s.gifts.slice(start, start + GIFTS_PAGE_SIZE);
 
     content.innerHTML = pageGifts.map(_giftCardHtml).join('');
-
-    // Re-bind accordion toggles for the freshly-inserted full key cards
-    content.querySelectorAll('.key-toggle').forEach(button => {
-        button.addEventListener('click', () => toggleKeyCard(button));
-    });
 
     if (paginationEl) {
         if (totalPages > 1) {
