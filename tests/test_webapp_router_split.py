@@ -381,6 +381,7 @@ def test_static_paths_still_resolve_to_the_webapp_directory():
     assert Path(facade.uploads_dir).resolve() == webapp / "uploads"
     assert Path(facade.static_dir).resolve() == webapp / "static"
     assert (webapp / "static" / "css" / "app.css").is_file()
+    assert (webapp / "static" / "js" / "app.js").is_file()
     assert not (PKG_DIR / "uploads").exists(), "каталог загрузок создан в подпакете"
     for name in ("app.html", "login.html"):
         assert (webapp / name).exists(), f"{name} должен лежать рядом с фасадом"

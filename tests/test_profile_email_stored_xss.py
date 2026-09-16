@@ -125,7 +125,7 @@ def test_old_stored_pending_is_not_promoted_to_auth_email(temp_db):
 
 
 def test_frontend_does_not_interpolate_email_into_html_or_onclick():
-    html = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+    html = Path("src/shop_bot/webapp/static/js/app.js").read_text(encoding="utf-8")
     start = html.index("function _renderProfileMain")
     end = html.index("function _renderProfileChangePassword")
     profile_fn = html[start:end]

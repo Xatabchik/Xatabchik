@@ -281,9 +281,9 @@ def test_create_payment_stores_platega_transaction_id(temp_db, monkeypatch):
 
 
 def test_app_html_has_platega_verify_controls():
-    from pathlib import Path
+    from webapp_frontend_src import mini_app_frontend_source
 
-    html = (Path(__file__).resolve().parents[1] / "src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+    html = mini_app_frontend_source()
     assert "Проверить оплату" in html
     assert "/api/webapp/payments/" in html
     assert "verifyPlategaPayment" in html

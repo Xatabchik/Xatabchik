@@ -70,10 +70,12 @@ _PUBLIC_FALLBACK_CSP = (
     "form-action 'none'"
 )
 
-# Этап 1: CSP на Mini App / login / banned. Inline JS и <style> ещё в HTML,
-# поэтому script-src/style-src временно с 'unsafe-inline'. Tailwind CDN и
-# Google Fonts убраны — font-src только 'self'. Telegram SDK не вендорим.
-# web.telegram.org открывает Mini App в iframe — frame-ancestors не 'none'.
+# Этап 2: основная логика Mini App в /static/js/app.js ('self'). В HTML
+# остаётся короткий head-bootstrap (token/URL/apiFetch) и Telegram SDK,
+# плюс <style> — поэтому script-src/style-src пока с 'unsafe-inline'.
+# Tailwind CDN и Google Fonts убраны — font-src только 'self'. Telegram SDK
+# не вендорим. web.telegram.org открывает Mini App в iframe — frame-ancestors
+# не 'none'.
 _WEBAPP_PAGE_CSP = (
     "default-src 'self'; "
     "script-src 'self' https://telegram.org 'unsafe-inline'; "

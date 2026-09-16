@@ -22,7 +22,9 @@
 """
 from pathlib import Path
 
-HTML = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+from webapp_frontend_src import mini_app_frontend_source
+
+HTML = mini_app_frontend_source()
 
 
 def _body(start: str, end: str) -> str:

@@ -277,9 +277,9 @@ def test_create_lte_topup_yookassa_includes_receipt(temp_db, monkeypatch):
 
 
 def test_webapp_html_has_lte_packages_step():
-    from pathlib import Path
+    from webapp_frontend_src import mini_app_frontend_source
 
-    html = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+    html = mini_app_frontend_source()
     assert 'id="payment-step-lte-packages"' in html
     assert "openLteTopup" in html
     assert "/api/create-lte-topup-payment" in html

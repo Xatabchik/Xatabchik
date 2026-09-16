@@ -219,7 +219,7 @@ def test_comment_api_stores_payload_but_page_escapes_it(temp_db, monkeypatch):
 
 
 def test_frontend_does_not_interpolate_comment_into_html_or_onclick():
-    html = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+    html = Path("src/shop_bot/webapp/static/js/app.js").read_text(encoding="utf-8")
     comment_fn = html[html.index("type === 'comment'"): html.index("function formatCooldownRemaining")]
     assert "${extraData}" not in comment_fn
     assert "storedCommentEl.textContent" in comment_fn

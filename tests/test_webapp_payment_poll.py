@@ -1,7 +1,7 @@
 """Окно ожидания оплаты не молотит /api/check-payment каждые 3 секунды."""
-from pathlib import Path
+from webapp_frontend_src import mini_app_frontend_source
 
-HTML = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+HTML = mini_app_frontend_source()
 
 
 def test_waiting_window_does_not_poll_every_3s():

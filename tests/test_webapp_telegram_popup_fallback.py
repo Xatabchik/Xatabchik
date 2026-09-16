@@ -10,7 +10,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-HTML = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+from webapp_frontend_src import mini_app_frontend_source, mini_app_html
+
+HTML = mini_app_frontend_source()
+APP_HTML = mini_app_html()
 LOGIN = Path("src/shop_bot/webapp/login.html").read_text(encoding="utf-8")
 NODE = shutil.which("node")
 
@@ -23,7 +26,7 @@ def _body(start: str, end: str) -> str:
 
 
 def test_mobile_web_app_capable_meta_exists_without_html_refactor():
-    for text in (HTML, LOGIN):
+    for text in (APP_HTML, LOGIN):
         assert 'name="apple-mobile-web-app-capable"' in text
         assert 'name="mobile-web-app-capable"' in text
         assert 'content="yes"' in text
@@ -85,7 +88,7 @@ def _run_node(script: str) -> dict:
 def test_unsupported_telegram_api_uses_local_toast_and_does_not_throw():
     result = _run_node(r"""
 const fs = require('fs');
-const html = fs.readFileSync('src/shop_bot/webapp/app.html', 'utf8');
+const html = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 function sliceFn(start, end) {
   const a = html.indexOf(start);
   const b = html.indexOf(end, a);
@@ -132,7 +135,7 @@ console.log(JSON.stringify({ toasts, calls, supported: telegramPopupSupported() 
 def test_supported_telegram_popup_is_used_and_rejected_promise_falls_back():
     result = _run_node(r"""
 const fs = require('fs');
-const html = fs.readFileSync('src/shop_bot/webapp/app.html', 'utf8');
+const html = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 function sliceFn(start, end) {
   const a = html.indexOf(start);
   const b = html.indexOf(end, a);
@@ -190,7 +193,7 @@ setTimeout(() => {
 def test_save_comment_and_rename_reset_loading_in_finally_when_popup_throws():
     result = _run_node(r"""
 const fs = require('fs');
-const html = fs.readFileSync('src/shop_bot/webapp/app.html', 'utf8');
+const html = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 function sliceFn(start, end) {
   const a = html.indexOf(start);
   const b = html.indexOf(end, a);

@@ -40,8 +40,10 @@ from conftest import (  # noqa: F401
     register_and_verify_email_user,
     temp_db,
 )
+from webapp_frontend_src import mini_app_frontend_source, mini_app_html
 
-HTML = Path("src/shop_bot/webapp/app.html").read_text(encoding="utf-8")
+HTML = mini_app_html()
+FRONTEND = mini_app_frontend_source()
 LOGIN = Path("src/shop_bot/webapp/login.html").read_text(encoding="utf-8")
 NODE = shutil.which("node")
 
@@ -89,7 +91,7 @@ def _run_node(script: str) -> dict:
 
 def _appearance_helpers() -> str:
     return _extract_html_fn(
-        HTML,
+        FRONTEND,
         "function telegramVersionAtLeast(",
         "// --- end Telegram WebApp version-safe helpers ---",
     )
@@ -106,19 +108,19 @@ def test_appearance_helpers_gate_header_and_background_on_6_1():
     assert "try" in helper
     assert "catch" in helper
     # Прямые вызовы только внутри helper, не из UI-init / updateThemeColor.
-    assert "tgApp.setHeaderColor" not in HTML
-    assert "tgApp.setBackgroundColor" not in HTML
-    assert "WebApp.setHeaderColor" not in HTML
-    assert "safeTelegramAppearance(" in HTML
-    assert "safeTelegramHaptic(" in HTML
+    assert "tgApp.setHeaderColor" not in FRONTEND
+    assert "tgApp.setBackgroundColor" not in FRONTEND
+    assert "WebApp.setHeaderColor" not in FRONTEND
+    assert "safeTelegramAppearance(" in FRONTEND
+    assert "safeTelegramHaptic(" in FRONTEND
 
 
 def test_frontend_haptic_goes_through_version_guard():
     helper = _appearance_helpers()
     assert "HapticFeedback" in helper
     assert "notificationOccurred" in helper
-    assert "WebApp.HapticFeedback.notificationOccurred" not in HTML
-    assert HTML.count("safeTelegramHaptic(") >= 3
+    assert "WebApp.HapticFeedback.notificationOccurred" not in FRONTEND
+    assert FRONTEND.count("safeTelegramHaptic(") >= 3
 
 
 def test_telegram_6_0_skips_appearance_and_does_not_throw():
@@ -192,17 +194,17 @@ console.log(JSON.stringify({{ calls, threw }}));
 # --- Token must not live in URL ---------------------------------------------
 
 def test_frontend_does_not_put_auth_token_in_api_or_root_query():
-    app_api = _API_TOKEN_QS.findall(HTML)
+    app_api = _API_TOKEN_QS.findall(FRONTEND)
     login_api = _API_TOKEN_QS.findall(LOGIN)
-    app_root = _ROOT_TOKEN_NAV.findall(HTML)
+    app_root = _ROOT_TOKEN_NAV.findall(FRONTEND)
     login_root = _ROOT_TOKEN_NAV.findall(LOGIN)
     assert app_api == []
     assert login_api == []
     assert app_root == []
     assert login_root == []
-    assert "apiFetch(" in HTML
-    assert "Authorization" in HTML
-    assert "Bearer " in HTML
+    assert "apiFetch(" in FRONTEND
+    assert "Authorization" in FRONTEND
+    assert "Bearer " in FRONTEND
     assert 'appendPendingToken("/")' in LOGIN or 'appendPendingToken(\'/\')' in LOGIN
 
 

@@ -1,0 +1,24 @@
+"""Общий снимок фронтенда Mini App: шаблон + статический entrypoint."""
+from __future__ import annotations
+
+from pathlib import Path
+
+WEBAPP = Path("src/shop_bot/webapp")
+APP_HTML = WEBAPP / "app.html"
+APP_JS = WEBAPP / "static" / "js" / "app.js"
+TELEGRAM_JS = WEBAPP / "static" / "js" / "telegram.js"
+UI_JS = WEBAPP / "static" / "js" / "ui.js"
+API_JS = WEBAPP / "static" / "js" / "api.js"
+
+
+def mini_app_html() -> str:
+    return APP_HTML.read_text(encoding="utf-8")
+
+
+def mini_app_js() -> str:
+    return APP_JS.read_text(encoding="utf-8")
+
+
+def mini_app_frontend_source() -> str:
+    """HTML + app.js: структурные тесты, которые раньше читали только app.html."""
+    return mini_app_html() + "\n" + mini_app_js()
