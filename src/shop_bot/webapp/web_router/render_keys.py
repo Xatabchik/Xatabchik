@@ -98,6 +98,7 @@ def _process_template_placeholders(html: str, user_id: int, webapp_settings: dic
         "{{ webapp_icon }}": context_data.get("webapp_icon", ""),
         "{{ app_css_href }}": APP_CSS_HREF,
         "{{ app_js_href }}": APP_JS_HREF,
+        "{{ store_js_href }}": STORE_JS_HREF,
         "{{ logo_hidden }}": "hidden" if not context_data.get("webapp_logo") else "",
         "{{ user_id }}": str(user_id),
         "{{ bot_username }}": bot_username,
@@ -532,7 +533,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
                         </div>
                         <div class="text-right">
                             <div class="text-[10px] text-gray-500 uppercase font-black tracking-widest">Баланс</div>
-                            <div class="text-lg font-black text-primary tracking-tighter">{balance_str}</div>
+                            <div id="home-balance" data-balance-display class="text-lg font-black text-primary tracking-tighter">{balance_str}</div>
                         </div>
                     </div>
 

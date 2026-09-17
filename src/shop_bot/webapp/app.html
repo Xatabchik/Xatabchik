@@ -93,6 +93,7 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="{{ app_css_href }}" />
     {{ tg_fullscreen_css }}
+    <script src="{{ store_js_href }}" defer></script>
     <script src="{{ app_js_href }}" defer></script>
     <style>
         html,
@@ -676,7 +677,7 @@
                 </div>
                 <div class="relative z-10 flex flex-col gap-1">
                     <div class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Ваш баланс</div>
-                    <div id="finance-balance" class="text-3xl font-black text-white">—</div>
+                    <div id="finance-balance" data-balance-display class="text-3xl font-black text-white">—</div>
                     <div class="text-[10px] text-gray-500 mt-1">Для оплаты подписки и других услуг</div>
                 </div>
             </div>

@@ -62,7 +62,7 @@ def test_paid_topup_shows_the_result_instead_of_silently_closing():
     assert "_forgetPendingTopUp()" in polling
     # Результат рисуется раньше обновления остального интерфейса, чтобы сбой в
     # обновлении не оставил окно на «ожидаем оплату».
-    assert polling.index("_renderTopUpSuccess(") < polling.index("_refreshBalanceAfterTopUp()")
+    assert polling.index("_renderTopUpSuccess(") < polling.index("_refreshBalanceAfterTopUp(data)")
 
 
 def test_success_screen_shows_credited_amount_and_new_balance():
@@ -105,3 +105,4 @@ def test_platega_verification_also_ends_on_the_result_screen():
     verify = _body("async function verifyPlategaTopUp(", "function _reopenTopUpPaymentLink(")
     assert "_renderTopUpSuccess(window._topUpAmount, data)" in verify
     assert "_forgetPendingTopUp()" in verify
+    assert "_refreshBalanceAfterTopUp(data)" in verify

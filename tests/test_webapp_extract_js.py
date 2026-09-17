@@ -8,6 +8,7 @@ from webapp_frontend_src import (
     API_JS,
     APP_HTML,
     APP_JS,
+    STORE_JS,
     TELEGRAM_JS,
     UI_JS,
     mini_app_frontend_source,
@@ -44,7 +45,9 @@ def test_app_html_no_longer_contains_monolithic_body_javascript():
     assert "function openTopUpModal" not in html
     assert "function telegramVersionAtLeast" not in html
     assert "function initApp" not in html
+    assert 'src="{{ store_js_href }}" defer>' in html
     assert 'src="{{ app_js_href }}" defer>' in html
+    assert html.index('src="{{ store_js_href }}" defer>') < html.index('src="{{ app_js_href }}" defer>')
     assert 'type="module"' not in html
     assert "cdn.tailwindcss.com" not in html
     assert "eval(" not in html
@@ -53,6 +56,7 @@ def test_app_html_no_longer_contains_monolithic_body_javascript():
 
 def test_entrypoint_and_helper_modules_exist_and_are_local():
     assert APP_JS.is_file()
+    assert STORE_JS.is_file()
     assert TELEGRAM_JS.is_file()
     assert UI_JS.is_file()
     assert API_JS.is_file()

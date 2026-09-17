@@ -82,7 +82,7 @@ if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # HTML — no-store, поэтому новый ?v= после смены файла попадёт в WebView.
-# Имена APP_CSS_HREF / APP_JS_HREF уходят в шаблоны через _link_namespace().
+# Имена APP_CSS_HREF / APP_JS_HREF / STORE_JS_HREF уходят в шаблоны через _link_namespace().
 _APP_CSS_FILE = os.path.join(static_dir, "css", "app.css")
 _APP_CSS_HASH = ""
 APP_CSS_HREF = "/static/css/app.css"
@@ -91,13 +91,19 @@ if os.path.isfile(_APP_CSS_FILE):
         _APP_CSS_HASH = hashlib.sha256(_css_fh.read()).hexdigest()[:12]
     APP_CSS_HREF = f"/static/css/app.css?v={_APP_CSS_HASH}"
 
-_APP_JS_FILE = os.path.join(static_dir, "js", "app.js")
-_APP_JS_HASH = ""
-APP_JS_HREF = "/static/js/app.js"
-if os.path.isfile(_APP_JS_FILE):
-    with open(_APP_JS_FILE, "rb") as _js_fh:
-        _APP_JS_HASH = hashlib.sha256(_js_fh.read()).hexdigest()[:12]
-    APP_JS_HREF = f"/static/js/app.js?v={_APP_JS_HASH}"
+
+def _static_js_href(filename: str) -> str:
+    path = os.path.join(static_dir, "js", filename)
+    href = f"/static/js/{filename}"
+    if os.path.isfile(path):
+        with open(path, "rb") as js_fh:
+            digest = hashlib.sha256(js_fh.read()).hexdigest()[:12]
+        href = f"{href}?v={digest}"
+    return href
+
+
+APP_JS_HREF = _static_js_href("app.js")
+STORE_JS_HREF = _static_js_href("store.js")
 
 
 def _hidden_not_found() -> None:
@@ -117,5 +123,6 @@ __all__ = [
     "static_dir",
     "APP_CSS_HREF",
     "APP_JS_HREF",
+    "STORE_JS_HREF",
     "_hidden_not_found",
 ]
