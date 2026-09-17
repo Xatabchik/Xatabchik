@@ -1493,32 +1493,29 @@
 | 235–236 | `_get_inactive_usage_reminder_interval_seconds` | function | **нет** |
 | 239–249 | `_parse_origin_meta_from_description` | function | **нет** |
 | 252–267 | `_try_int` | function | **нет** |
-| 270–314 | `_resolve_hwid_device_limit_for_key` | function | есть: Определить допустимый лимит устройств для ключа. |
-| 317–347 | `_extract_device_ids` | function | **нет** |
-| 350–476 | `check_device_limit_violations` | function | есть: Проверяет превышение лимитов привязанных HWID устройств и уведомляет админов. |
-| 479–589 | `check_traffic_boost_resets` | function | есть: Ежемесячный сброс трафика ключа до базовых значений тарифа. |
-| 592–917 | `enforce_dual_traffic_limits` | function | есть: Двухуровневый учёт трафика (основной пул + независимый LTE-пул на premium-нодах). |
-| 920–1004 | `_legacy_check_traffic_boost_resets` | function | есть: Откатывает докупленный буст трафика после ежемесячного сброса лимита на сервере (устаревшая эвристик |
-| 1007–1100 | `check_inactive_usage_reminders` | function | есть: Если после выдачи ключа у пользователя не было подключенных устройств/трафика — напоминать с заданны |
-| 1103–1265 | `sync_keys_with_panels` | function | **нет** |
-| 1268–1281 | `_maybe_sync_keys_with_panels` | function | есть: sync_keys_with_panels is expensive (list all users on each host). |
-| 1284–1300 | `_maybe_enforce_dual_traffic_limits` | function | есть: Учёт двух пулов трафика (основной + LTE) — интервал настраивается через bot_settings.dual_limit_inte |
-| 1303–1321 | `_notify_auto_renew_success` | function | **нет** |
-| 1324–1343 | `_notify_auto_renew_no_balance` | function | **нет** |
-| 1346–1440 | `check_auto_renewals` | function | **нет** |
-| 1443–1482 | `check_broadcast_campaigns` | function | есть: Send queued broadcast campaigns to inactive subscribers. |
-| 1489–1498 | `_ticket_files_present` | function | есть: Дешёвая проверка: нет каталога или он пуст — TTL не запускаем. |
-| 1501–1518 | `_maybe_purge_closed_ticket_media` | function | есть: TTL вложений. Отдельный task не создаём; если файлов нет — сразу выход. |
-| 1521–1528 | `_maybe_auto_close_idle_tickets` | function | есть: После ответа админа пользователь молчит N дней — закрываем тикет. SQL сразу, Telegram в фоне. |
-| 1531–1573 | `periodic_subscription_check` | function | **нет** |
-| 1576–1586 | `_maybe_sync_keys_with_panels` | function | есть: Sync with Remnawave panels is expensive; throttle to reduce bot latency. |
-| 1588–1597 | `_maybe_run_periodic_speedtests` | function | **нет** |
-| 1599–1627 | `_run_speedtests_for_all_hosts` | function | **нет** |
-| 1629–1655 | `_run_speedtests_for_all_ssh_targets` | function | **нет** |
-| 1659–1739 | `_maybe_collect_resource_metrics` | function | есть: Периодический сбор метрик (локально + SSH на хостах) и отправка алертов при превышении порогов. |
-| 1742–1770 | `_maybe_run_daily_backup` | function | есть: Ежедневный автобэкап базы и отправка админам. Интервал задаётся в настройках backup_interval_days. |
-| 1773–1870 | `_maybe_alert` | function | **нет** |
-| 1873–1933 | `_send_alert` | function | есть: Отправка алерта админам |
+| 270–381 | `check_traffic_boost_resets` | function | есть: Ежемесячный сброс трафика ключа до базовых значений тарифа. |
+| 383–708 | `enforce_dual_traffic_limits` | function | есть: Двухуровневый учёт трафика (основной пул + независимый LTE-пул на premium-нодах). |
+| 711–795 | `_legacy_check_traffic_boost_resets` | function | есть: Откатывает докупленный буст трафика после ежемесячного сброса лимита на сервере (устаревшая эвристик |
+| 798–891 | `check_inactive_usage_reminders` | function | есть: Если после выдачи ключа у пользователя не было подключенных устройств/трафика — напоминать с заданны |
+| 894–1056 | `sync_keys_with_panels` | function | **нет** |
+| 1059–1072 | `_maybe_sync_keys_with_panels` | function | есть: sync_keys_with_panels is expensive (list all users on each host). |
+| 1075–1091 | `_maybe_enforce_dual_traffic_limits` | function | есть: Учёт двух пулов трафика (основной + LTE) — интервал настраивается через bot_settings.dual_limit_inte |
+| 1094–1112 | `_notify_auto_renew_success` | function | **нет** |
+| 1115–1134 | `_notify_auto_renew_no_balance` | function | **нет** |
+| 1137–1231 | `check_auto_renewals` | function | **нет** |
+| 1234–1273 | `check_broadcast_campaigns` | function | есть: Send queued broadcast campaigns to inactive subscribers. |
+| 1280–1289 | `_ticket_files_present` | function | есть: Дешёвая проверка: нет каталога или он пуст — TTL не запускаем. |
+| 1292–1309 | `_maybe_purge_closed_ticket_media` | function | есть: TTL вложений. Отдельный task не создаём; если файлов нет — сразу выход. |
+| 1312–1319 | `_maybe_auto_close_idle_tickets` | function | есть: После ответа админа пользователь молчит N дней — закрываем тикет. SQL сразу, Telegram в фоне. |
+| 1322–1363 | `periodic_subscription_check` | function | **нет** |
+| 1366–1376 | `_maybe_sync_keys_with_panels` | function | есть: Sync with Remnawave panels is expensive; throttle to reduce bot latency. |
+| 1378–1387 | `_maybe_run_periodic_speedtests` | function | **нет** |
+| 1389–1417 | `_run_speedtests_for_all_hosts` | function | **нет** |
+| 1419–1445 | `_run_speedtests_for_all_ssh_targets` | function | **нет** |
+| 1449–1529 | `_maybe_collect_resource_metrics` | function | есть: Периодический сбор метрик (локально + SSH на хостах) и отправка алертов при превышении порогов. |
+| 1532–1560 | `_maybe_run_daily_backup` | function | есть: Ежедневный автобэкап базы и отправка админам. Интервал задаётся в настройках backup_interval_days. |
+| 1563–1660 | `_maybe_alert` | function | **нет** |
+| 1663–1723 | `_send_alert` | function | есть: Отправка алерта админам |
 
 ## `src/shop_bot/data_manager/backup_manager.py`
 

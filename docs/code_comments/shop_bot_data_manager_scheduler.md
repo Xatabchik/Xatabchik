@@ -130,47 +130,9 @@
 """Привести к int: None/пусто→None; bool/int/float; строка через float(запятая→точка); ошибка→None."""
 ```
 
-## `_resolve_hwid_device_limit_for_key` (270–314)
+Фоновой проверки HWID-лимита и рассылки админам о превышении устройств в scheduler нет. Лимит соблюдает Remnawave; список устройств бот и Mini App берут live по действию пользователя.
 
-**Docstring в коде:** есть
-
-```
-Определить допустимый лимит устройств для ключа.
-
-Приоритет:
-  1) Remnawave поле hwidDeviceLimit (если есть)
-  2) План из vpn_keys.description (origin meta -> plan_id)
-  3) Настройка trial_device_limit (для триала)
-```
-
-Лимит учитывается только если `> 0`. Триал: `meta.is_trial` или `tag == "trial"`.
-
-## `_extract_device_ids` (317–347)
-
-**Docstring в коде:** нет
-
-```
-"""Список уникальных id устройств из list/dict (deviceId/id/uuid/hwid/…); dict → рекурсия в devices/items/data/response."""
-```
-
-## `check_device_limit_violations` (350–476)
-
-**Docstring в коде:** есть
-
-```
-Проверяет превышение лимитов привязанных HWID устройств и уведомляет админов.
-```
-
-Нет admin_ids → выход. Просроченные ключи пропускаются. Cooldown 6 ч, если `devices_count <= last_count`. HTML-сообщение админам; статистика в `key_usage_monitor`.
-
-| Строки | Блок | Зачем |
-|--------|------|--------|
-| 392–394 | нет лимита | continue |
-| 421–428 | count ≤ limit | сброс overlimit_* если были |
-| 432–433 | count ≤ last и cooldown | не слать снова |
-| 461–472 | send + update overlimit |
-
-## `check_traffic_boost_resets` (479–589)
+## `check_traffic_boost_resets` (270–381)
 
 **Docstring в коде:** есть
 
@@ -359,7 +321,7 @@ TTL вложений. Отдельный task не создаём; если фа
 
 Обёртка `idle_close.maybe_auto_close_idle_tickets`.
 
-## `periodic_subscription_check` (1531–1573)
+## `periodic_subscription_check` (1322–1363)
 
 **Docstring в коде:** нет
 
@@ -374,7 +336,7 @@ TTL вложений. Отдельный task не создаём; если фа
 | 1537–1541 | всегда | sync, dual limits, ticket purge/close |
 | 1544 | speedtest SSH-цели | |
 | 1548–1553 | bot | backup, resource metrics |
-| 1555–1563 | running+bot | expiry, autorenew, broadcast, inactive, hwid, monthly reset |
+| 1346–1353 | running+bot | expiry, autorenew, broadcast, inactive, monthly reset |
 
 ## `_maybe_sync_keys_with_panels` (1576–1586)
 
