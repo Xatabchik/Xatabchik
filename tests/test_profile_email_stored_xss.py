@@ -135,7 +135,8 @@ def test_frontend_does_not_interpolate_email_into_html_or_onclick():
     assert "onclick=" not in profile_fn
     assert "innerHTML" not in profile_fn
     assert "textContent" in profile_fn
-    assert "addEventListener" in profile_fn
+    assert "_profileIconBtn(" in profile_fn
+    assert "setAttribute('data-profile-action', 'cancel-email')" in profile_fn
     assert "replaceChildren" in profile_fn
 
     verify_start = html.index("function _renderProfileVerifyEmailCode")
@@ -145,4 +146,5 @@ def test_frontend_does_not_interpolate_email_into_html_or_onclick():
     assert "onclick=" not in verify_fn
     assert "innerHTML" not in verify_fn
     assert "textContent" in verify_fn
-    assert "addEventListener" in verify_fn
+    assert "setAttribute('data-profile-action', 'verify-email')" in verify_fn
+    assert "setAttribute('data-profile-action', 'cancel-email')" in verify_fn

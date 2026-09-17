@@ -38,8 +38,9 @@ def test_settings_menu_has_no_inline_handlers():
     assert "openEditProfileModal();" in js
     assert "async function _submitProfileChangePassword(" in js
     assert "function _renderProfileChangeEmailRequest(" in js
-    assert "window._submitProfileChangePassword = _submitProfileChangePassword;" in js
-    assert "window._submitProfileChangeEmailRequest = _submitProfileChangeEmailRequest;" in js
+    assert "closest('[data-profile-action]')" in js
+    assert 'data-profile-action="submit-password"' in js
+    assert 'data-profile-action="submit-email-request"' in js
 
 
 def test_removed_settings_menu_bridges_are_gone():
@@ -302,6 +303,7 @@ waitUntil(() => profileInfoPosts.length > 0).then(() => {
     toggleBridge: /window\.toggleSettingsMenu = toggleSettingsMenu;/.test(src),
     profileBridge: /window\.openEditProfileModal = openEditProfileModal;/.test(src),
     passwordBridge: /window\._submitProfileChangePassword = _submitProfileChangePassword;/.test(src),
+    payBridge: /window\.processPayment = processPayment;/.test(src),
   }));
 });
 """
@@ -329,4 +331,5 @@ waitUntil(() => profileInfoPosts.length > 0).then(() => {
     assert result["afterProfile"]["profileInfo"] >= 1
     assert result["toggleBridge"] is False
     assert result["profileBridge"] is False
-    assert result["passwordBridge"] is True
+    assert result["passwordBridge"] is False
+    assert result["payBridge"] is True

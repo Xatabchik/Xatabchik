@@ -743,7 +743,28 @@ function toggleKeyCard(button) {
 // повторного forEach после search/gifts и без window.toggleKeyCard.
 // Модалка устройств: hwid/host читаются из data-*, не из onclick (тот же
 // приём, что #145 для заметок). Пагинация и «удалить все» — data-device-action.
+// Формы пароля/email профиля пересобираются innerHTML на каждом шаге:
+// data-profile-action без секретов в атрибутах, значения читаются из input.value.
 document.addEventListener('click', (event) => {
+    const profileBtn = event.target.closest('[data-profile-action]');
+    if (profileBtn) {
+        if (profileBtn.disabled) return;
+        const profileAction = profileBtn.getAttribute('data-profile-action');
+        if (profileAction === 'submit-password') {
+            _submitProfileChangePassword();
+        } else if (profileAction === 'submit-email-request') {
+            _submitProfileChangeEmailRequest();
+        } else if (profileAction === 'back-profile') {
+            _loadProfileMain(document.getElementById('action-modal-content'));
+        } else if (profileAction === 'cancel-email') {
+            _cancelProfileEmailChange();
+        } else if (profileAction === 'verify-email') {
+            _submitProfileVerifyEmailCode();
+        } else if (profileAction === 'resend-email') {
+            _resendProfileEmailChangeCode();
+        }
+        return;
+    }
     const toggle = event.target.closest('.key-toggle');
     if (toggle) {
         toggleKeyCard(toggle);
@@ -2252,7 +2273,7 @@ function toggleSettingsMenu(e) {
 }
 
 // Меню «⋯» на главной: открыть/закрыть, Обновить, Профиль.
-// Password/email формы внутри openEditProfileModal не трогаем — только вход из меню.
+// Формы пароля/email внутри модалки — data-profile-action + делегирование.
 document.getElementById('menu-dots-btn')?.addEventListener('click', toggleSettingsMenu);
 document.getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload());
 document.getElementById('edit-profile-btn-menu')?.addEventListener('click', () => {
@@ -4565,7 +4586,7 @@ function _renderProfileMain(contentEl, info) {
         ));
         const cancelBtn = _profileDom('button', 'w-full bg-white/5 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all border border-white/5', 'Отменить смену email');
         cancelBtn.type = 'button';
-        cancelBtn.addEventListener('click', () => _cancelProfileEmailChange());
+        cancelBtn.setAttribute('data-profile-action', 'cancel-email');
         wrap.appendChild(cancelBtn);
     } else {
         wrap.appendChild(_profileIconBtn(
@@ -4599,10 +4620,10 @@ function _renderProfileChangePassword(contentEl) {
                 <div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">Повторите новый пароль</div>
                 <input type="password" id="profile-new-password-confirm" autocomplete="new-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
             </div>
-            <button id="profile-password-submit-btn" onclick="_submitProfileChangePassword()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+            <button type="button" id="profile-password-submit-btn" data-profile-action="submit-password" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                 <span class="material-symbols-rounded text-sm">check</span>Сохранить
             </button>
-            <button onclick="_loadProfileMain(document.getElementById('action-modal-content'))" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
+            <button type="button" data-profile-action="back-profile" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
         </div>`;
 }
 
@@ -4642,10 +4663,10 @@ function _renderProfileChangeEmailRequest(contentEl) {
                 <input type="password" id="profile-email-password" autocomplete="current-password" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
             </div>
             <div class="text-[9px] text-gray-500 leading-relaxed">На новый адрес придёт код подтверждения. Текущий email продолжит работать для входа, пока код не будет подтверждён.</div>
-            <button id="profile-email-request-btn" onclick="_submitProfileChangeEmailRequest()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+            <button type="button" id="profile-email-request-btn" data-profile-action="submit-email-request" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                 <span class="material-symbols-rounded text-sm">send</span>Отправить код
             </button>
-            <button onclick="_loadProfileMain(document.getElementById('action-modal-content'))" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
+            <button type="button" data-profile-action="back-profile" class="w-full text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors">Назад</button>
         </div>`;
 }
 
@@ -4698,16 +4719,16 @@ function _renderProfileVerifyEmailCode(contentEl, pendingEmail) {
     verifyBtn.id = 'profile-email-verify-btn';
     verifyBtn.appendChild(_profileDom('span', 'material-symbols-rounded text-sm', 'check'));
     verifyBtn.appendChild(document.createTextNode('Подтвердить'));
-    verifyBtn.addEventListener('click', () => _submitProfileVerifyEmailCode());
+    verifyBtn.setAttribute('data-profile-action', 'verify-email');
     wrap.appendChild(verifyBtn);
 
     const row = _profileDom('div', 'flex items-center justify-between gap-2');
     const resendBtn = _profileDom('button', 'flex-1 text-primary py-1.5 text-[10px] font-bold uppercase tracking-wider hover:opacity-80 transition-colors', 'Отправить код повторно');
     resendBtn.type = 'button';
-    resendBtn.addEventListener('click', () => _resendProfileEmailChangeCode());
+    resendBtn.setAttribute('data-profile-action', 'resend-email');
     const cancelBtn = _profileDom('button', 'flex-1 text-gray-500 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:text-gray-300 transition-colors', 'Отменить');
     cancelBtn.type = 'button';
-    cancelBtn.addEventListener('click', () => _cancelProfileEmailChange());
+    cancelBtn.setAttribute('data-profile-action', 'cancel-email');
     row.appendChild(resendBtn);
     row.appendChild(cancelBtn);
     wrap.appendChild(row);
@@ -4793,9 +4814,6 @@ window._selectPayoutBankByIndex = _selectPayoutBankByIndex;
 window._submitPayoutMethod = _submitPayoutMethod;
 window._renderPayoutTypeStep = _renderPayoutTypeStep;
 window._renderPayoutBankStep = _renderPayoutBankStep;
-window._submitProfileChangePassword = _submitProfileChangePassword;
-window._loadProfileMain = _loadProfileMain;
-window._submitProfileChangeEmailRequest = _submitProfileChangeEmailRequest;
 window.syncTelegram = syncTelegram;
 window.goToRenewKey = goToRenewKey;
 window.toggleKeyAutoRenew = toggleKeyAutoRenew;
