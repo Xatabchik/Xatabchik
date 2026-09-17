@@ -90,7 +90,8 @@ def test_note_save_delete_and_key_toggle_event_binding_in_node():
     script = r"""
 const fs = require('fs');
 const vm = require('vm');
-const src = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
+    const src = fs.readFileSync('src/shop_bot/webapp/static/js/store.js', 'utf8')
+      + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 
 function classList(initial) {
   const set = new Set(String(initial || '').split(/\s+/).filter(Boolean));

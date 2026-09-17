@@ -1,4 +1,4 @@
-/* Mini App Store — Phase 3 (balance + keyNames + gifts/keysListHtml).
+/* Mini App Store — Phase 4 (balance + keyNames + gifts/keysListHtml + keyComments).
  *
  * Classic deferred script (not type=module), loaded before app.js.
  * Object + subscribers, без reducers / middleware / внешних библиотек.
@@ -6,7 +6,7 @@
  */
 
 const store = {
-    state: { balance: null, keyNames: {}, gifts: null, keysListHtml: null },
+    state: { balance: null, keyNames: {}, gifts: null, keysListHtml: null, keyComments: {} },
     listeners: new Set(),
     subscribe(fn) {
         this.listeners.add(fn);
@@ -173,6 +173,49 @@ async function refreshKeyName(keyId, options) {
     return true;
 }
 
+function applyKeyCommentsToDom(state) {
+    const comments = state && state.keyComments;
+    if (!comments) return;
+    const ids = Object.keys(comments);
+    for (let i = 0; i < ids.length; i++) {
+        const keyId = ids[i];
+        const entry = comments[keyId];
+        if (!entry) continue;
+        _applyOneKeyCommentToDom(keyId, entry);
+    }
+}
+
+function _applyOneKeyCommentToDom(keyId, entry) {
+    const idStr = String(keyId);
+    const text = entry.text == null ? '' : String(entry.text);
+    const hasComment = Boolean(entry.hasComment);
+    const texts = document.querySelectorAll('[id="comment-text-' + idStr + '"]');
+    for (let i = 0; i < texts.length; i++) {
+        texts[i].textContent = text;
+    }
+    const blocks = document.querySelectorAll('[id="comment-block-' + idStr + '"]');
+    for (let j = 0; j < blocks.length; j++) {
+        const el = blocks[j];
+        if (!el || !el.classList) continue;
+        if (!hasComment) {
+            el.classList.add('hidden');
+            el.classList.remove('flex');
+        } else {
+            el.classList.remove('hidden');
+            el.classList.add('flex');
+        }
+    }
+}
+
+store.subscribe(applyKeyCommentsToDom);
+
+function setKeyComment(keyId, text) {
+    const raw = text == null ? '' : String(text);
+    const next = Object.assign({}, store.state.keyComments || {});
+    next[String(keyId)] = { text: raw, hasComment: raw !== '' };
+    store.setState({ keyComments: next });
+}
+
 const GIFTS_EMPTY_HTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
 
 function _giftsWithoutCode(list, giftCode) {
@@ -275,6 +318,7 @@ function applyGiftsAndKeysToDom(state) {
             if (typeof initProfileKeysPagination === 'function') initProfileKeysPagination();
         }
         applyKeyNamesToDom(state);
+        applyKeyCommentsToDom(state);
     }
 }
 

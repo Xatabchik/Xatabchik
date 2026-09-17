@@ -43,9 +43,9 @@ def test_gift_activation_uses_store_instead_of_reload():
     assert "await refreshAfterGiftActivation({ giftCode: giftCode })" in activate
     assert "await refreshAfterGiftActivation({ giftCode: giftCode })" in url_block
     assert "await refreshAfterGiftActivation({ giftCode: d.gift_code || '' })" in pending
-    assert js.count("location.reload()") == 2
+    assert js.count("location.reload()") == 1
     assert "getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload())" in js
-    assert "setTimeout(() => window.location.reload(), 500)" in js
+    assert "setTimeout(() => window.location.reload(), 500)" not in js
 
 
 def test_refresh_after_gift_activation_updates_both_slices_without_reload():
