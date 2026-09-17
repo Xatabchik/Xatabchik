@@ -94,7 +94,7 @@ def test_tracking_of_an_abandoned_invoice_can_be_stopped():
     assert "_renderTopUpAmountStep(contentEl)" in stop
 
     waiting = _body("function _renderTopUpWaiting(", "function _markTopUpProcessing(")
-    assert "_stopTrackingTopUp()" in waiting, "из окна ожидания нет выхода к новому счёту"
+    assert 'data-topup-action="stop-tracking"' in waiting, "из окна ожидания нет выхода к новому счёту"
     # Кнопка не должна обещать отмену: счёт у провайдера остаётся действующим и
     # поздняя оплата по нему по-прежнему будет обработана вебхуком.
     assert "Отменить счёт" not in HTML

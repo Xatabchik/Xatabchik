@@ -48,8 +48,8 @@ def test_removed_settings_menu_bridges_are_gone():
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
     assert "window.openActionModal = openActionModal;" in js
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
 
 
 def test_served_home_page_settings_menu_has_listeners_not_onclick(temp_db, app_client):
@@ -332,4 +332,4 @@ waitUntil(() => profileInfoPosts.length > 0).then(() => {
     assert result["toggleBridge"] is False
     assert result["profileBridge"] is False
     assert result["passwordBridge"] is False
-    assert result["payBridge"] is True
+    assert result["payBridge"] is False

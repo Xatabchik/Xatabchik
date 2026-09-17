@@ -38,8 +38,8 @@ def test_profile_credentials_have_no_inline_handlers():
     assert 'type="password" id="profile-current-password"' in js
     assert 'type="password" id="profile-new-password"' in js
     assert 'type="password" id="profile-email-password"' in js
-    assert "onclick=\"openTopUpModal()\"" in html
-    assert "window.processPayment = processPayment;" in js
+    assert "onclick=\"openTopUpModal()\"" not in html
+    assert "window.processPayment = processPayment;" not in js
 
 
 def test_removed_profile_credential_bridges_are_gone():
@@ -47,8 +47,8 @@ def test_removed_profile_credential_bridges_are_gone():
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
     assert "window._cancelProfileEmailChange = _cancelProfileEmailChange;" not in js
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
     assert "window.setPurchaseMode = setPurchaseMode;" in js
 
 
@@ -431,4 +431,4 @@ waitUntil(() => notifications.some((n) => n && n.includes('совпадают'))
     assert result["createBridge"] is False
     assert result["emailBridge"] is False
     assert result["loadBridge"] is False
-    assert result["payBridge"] is True
+    assert result["payBridge"] is False

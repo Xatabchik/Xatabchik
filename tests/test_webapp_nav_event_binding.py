@@ -37,8 +37,9 @@ def test_bottom_nav_has_no_inline_navigate_handlers():
 def test_removed_navigate_bridge_is_gone():
     js = mini_app_js()
     assert "window.navigateTo = navigateTo;" not in js
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
+    assert "window.setPurchaseMode = setPurchaseMode;" in js
 
 
 def test_served_page_nav_has_listeners_not_onclick(temp_db, app_client):
@@ -315,4 +316,4 @@ console.log(JSON.stringify({
     assert result["navBridge"] is False
     assert result["referralBridge"] is False
     assert result["methodsBridge"] is False
-    assert result["payBridge"] is True
+    assert result["payBridge"] is False

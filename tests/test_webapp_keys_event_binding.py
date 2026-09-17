@@ -55,8 +55,9 @@ def test_removed_keys_handler_bridges_are_gone():
     js = mini_app_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
+    assert "window.setPurchaseMode = setPurchaseMode;" in js
 
 
 def test_served_keys_page_has_listeners_not_inline_handlers(temp_db, app_client):

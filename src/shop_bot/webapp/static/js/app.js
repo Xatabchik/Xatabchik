@@ -747,7 +747,81 @@ function toggleKeyCard(button) {
 // data-profile-action без секретов в атрибутах, значения читаются из input.value.
 // Реферальные выплаты: шаги тип → банк → реквизиты тоже innerHTML, поэтому
 // data-payout-action. Реквизиты только из input.value, не из data-*.
+// Платежи/top-up: статичная модалка ключа — data-payment-action; мастер
+// пополнения каждый шаг пишет innerHTML — data-topup-action. Сумма и
+// промокод из input.value, URL оплаты из window._topUpPaymentUrl /
+// activePaymentUrl, не из data-*.
 document.addEventListener('click', (event) => {
+    const topupBtn = event.target.closest('[data-topup-action]');
+    if (topupBtn) {
+        if (topupBtn.disabled) return;
+        const topupAction = topupBtn.getAttribute('data-topup-action');
+        const topupContent = document.getElementById('action-modal-content');
+        if (topupAction === 'preset-amount') {
+            const input = document.getElementById('topup-amount-input');
+            if (input) input.value = topupBtn.getAttribute('data-topup-amount') || '';
+        } else if (topupAction === 'continue') {
+            _topUpContinueToMethods();
+        } else if (topupAction === 'back-amount') {
+            if (topupContent) _renderTopUpAmountStep(topupContent);
+        } else if (topupAction === 'submit-method') {
+            const idx = parseInt(topupBtn.getAttribute('data-topup-index') || '', 10);
+            const methods = window._topUpMethodsVisible || [];
+            const picked = methods[idx];
+            if (picked && picked.id) _submitTopUpPayment(picked.id, picked.name);
+        } else if (topupAction === 'reopen-link') {
+            _reopenTopUpPaymentLink();
+        } else if (topupAction === 'verify') {
+            verifyPlategaTopUp();
+        } else if (topupAction === 'close') {
+            closeActionModal();
+        } else if (topupAction === 'stop-tracking') {
+            _stopTrackingTopUp();
+        }
+        return;
+    }
+    const paymentBtn = event.target.closest('[data-payment-action]');
+    if (paymentBtn) {
+        if (paymentBtn.disabled) return;
+        const paymentAction = paymentBtn.getAttribute('data-payment-action');
+        if (paymentAction === 'close') {
+            closePaymentModal();
+        } else if (paymentAction === 'close-home') {
+            closePaymentModal();
+            window.location.hash = '';
+        } else if (paymentAction === 'open-methods') {
+            openMethodsList();
+        } else if (paymentAction === 'apply-promo') {
+            applyDiscountPromo();
+        } else if (paymentAction === 'process') {
+            processPayment();
+        } else if (paymentAction === 'step-confirm') {
+            changePaymentStep('confirm');
+        } else if (paymentAction === 'go-link') {
+            goToPaymentLink();
+        } else if (paymentAction === 'verify') {
+            verifyPlategaPayment();
+        } else if (paymentAction === 'cancel') {
+            cancelPayment();
+        } else if (paymentAction === 'copy-key') {
+            copySuccessKey();
+        } else if (paymentAction === 'connect-key') {
+            const keyEl = document.getElementById('success-key');
+            const keyText = ((keyEl && keyEl.textContent) || '').trim();
+            if (typeof window.openLinkSafe === 'function') window.openLinkSafe(keyText);
+        } else if (paymentAction === 'confirm-method') {
+            const idx = parseInt(paymentBtn.getAttribute('data-payment-index') || '', 10);
+            const methods = window._paymentMethodsVisible || [];
+            const picked = methods[idx];
+            if (picked) confirmMethod(picked.id, picked.name, picked.icon);
+        } else if (paymentAction === 'pick-lte') {
+            const idx = parseInt(paymentBtn.getAttribute('data-payment-index') || '', 10);
+            const st = window._ltePackageState || {};
+            const pkg = (st.packages || [])[idx];
+            if (pkg) pickLtePackage(pkg, st.keyId, st.lteLabel);
+        }
+        return;
+    }
     const payoutBtn = event.target.closest('[data-payout-action]');
     if (payoutBtn) {
         if (payoutBtn.disabled) return;
@@ -1637,8 +1711,9 @@ async function openLteTopup(keyId) {
             if (list) list.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">Пакеты не настроены</div>';
             return;
         }
-        list.innerHTML = data.packages.map(p => `
-            <button type="button" onclick='pickLtePackage(${JSON.stringify(p)}, ${parseInt(keyId, 10)}, ${JSON.stringify(lteLabel)})'
+        window._ltePackageState = { packages: data.packages, keyId: parseInt(keyId, 10), lteLabel };
+        list.innerHTML = data.packages.map((p, idx) => `
+            <button type="button" data-payment-action="pick-lte" data-payment-index="${idx}"
                 class="w-full p-3 flex items-center gap-3 bg-[#141414] hover:bg-[#1A1A1A] active:scale-[0.99] transition-all rounded-xl border border-white/[0.04] hover:border-amber-500/30 group">
                 <div class="w-8 h-8 rounded-lg flex items-center justify-center bg-amber-500/10 border border-amber-500/20 text-amber-300">
                     <span class="material-symbols-rounded text-sm">bolt</span>
@@ -1783,18 +1858,25 @@ function renderPaymentMethods(methods, container) {
         container.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Методы недоступны</div>';
         return;
     }
-    let html = '<div class="flex flex-col gap-1.5">';
-    methods.forEach(m => {
+    const visible = methods.filter((m) => {
         if ((m.id === 'pay_balance' || m.id === 'pay_referral_balance') && currentPaymentData) {
             const price = parseFloat(currentPaymentData.price || 0);
             const bal = parseFloat(m.balance || 0);
-            if (bal < price) return;
+            if (bal < price) return false;
         }
-
+        return true;
+    });
+    window._paymentMethodsVisible = visible;
+    if (!visible.length) {
+        container.innerHTML = '<div class="text-center text-gray-500 py-3 text-xs">Методы недоступны</div>';
+        return;
+    }
+    let html = '<div class="flex flex-col gap-1.5">';
+    visible.forEach((m, idx) => {
         const iconData = getMethodIconSvg(m.id);
 
         html += `
-        <button onclick="confirmMethod('${m.id}', '${m.name}', '${m.icon}')" 
+        <button type="button" data-payment-action="confirm-method" data-payment-index="${idx}"
             class="w-full p-2.5 flex items-center gap-3 bg-[#141414] hover:bg-[#1A1A1A] active:scale-[0.99] transition-all rounded-xl border border-white/[0.04] hover:border-primary/20 group">
             <div class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors border border-white/[0.04] ${iconData.classes}">
                 ${iconData.html}
@@ -2280,7 +2362,7 @@ function restorePendingPayment() {
             if (descEl) {
                 descEl.innerHTML = `Оплатите счет в сервисе ${data.methodName} <span class="material-symbols-rounded text-[10px]">open_in_new</span>`;
                 descEl.className = "text-[10px] text-gray-400 font-medium leading-relaxed max-w-[200px] cursor-pointer hover:text-white transition-colors border-b border-transparent hover:border-gray-500";
-                descEl.onclick = goToPaymentLink;
+                descEl.setAttribute('data-payment-action', 'go-link');
             }
 
             changePaymentStep('waiting');
@@ -2308,6 +2390,7 @@ document.getElementById('edit-profile-btn-menu')?.addEventListener('click', () =
 });
 document.getElementById('withdraw-request-btn')?.addEventListener('click', requestReferralWithdraw);
 document.getElementById('referral-methods-btn')?.addEventListener('click', openReferralMethodsModal);
+document.getElementById('topup-finance-btn')?.addEventListener('click', openTopUpModal);
 
 document.addEventListener('click', (e) => {
     const menu = document.getElementById('settings-menu');
@@ -3823,11 +3906,11 @@ function _renderTopUpAmountStep(contentEl) {
             </div>
             <div class="flex gap-2">
                 ${[100, 300, 500, 1000].map(v =>
-                    `<button type="button" onclick="document.getElementById('topup-amount-input').value=${v}"
+                    `<button type="button" data-topup-action="preset-amount" data-topup-amount="${v}"
                         class="flex-1 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-bold text-gray-300 hover:border-primary/30 hover:text-white active:scale-[0.98] transition-all">${v} ₽</button>`
                 ).join('')}
             </div>
-            <button id="topup-continue-btn" onclick="_topUpContinueToMethods()"
+            <button id="topup-continue-btn" type="button" data-topup-action="continue"
                 class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                 <span class="material-symbols-rounded text-base">arrow_forward</span>
                 <span>Выбрать способ оплаты</span>
@@ -3887,11 +3970,12 @@ async function _topUpContinueToMethods() {
 }
 
 function _renderTopUpMethodsStep(contentEl, amount, methods) {
+    window._topUpMethodsVisible = methods || [];
     if (!methods.length) {
         contentEl.innerHTML = `
             <div class="flex flex-col gap-3">
                 <div class="text-center text-gray-500 text-[11px] py-3">Нет доступных способов оплаты</div>
-                <button onclick="_renderTopUpAmountStep(document.getElementById('action-modal-content'))"
+                <button type="button" data-topup-action="back-amount"
                     class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Назад</button>
             </div>`;
         return;
@@ -3900,11 +3984,10 @@ function _renderTopUpMethodsStep(contentEl, amount, methods) {
     html += `<div class="text-[11px] text-gray-400 px-1">К пополнению: <span class="text-white font-bold">${amount.toFixed(2)} ₽</span></div>`;
     html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Способ оплаты</div>';
     html += '<div class="flex flex-col gap-1.5">';
-    methods.forEach(m => {
+    methods.forEach((m, idx) => {
         const iconData = getMethodIconSvg(m.id);
-        const safeName = String(m.name || '').replace(/'/g, "\\'");
         html += `
-        <button onclick="_submitTopUpPayment('${m.id}', '${safeName}')"
+        <button type="button" data-topup-action="submit-method" data-topup-index="${idx}"
             class="w-full p-2.5 flex items-center gap-3 bg-[#141414] hover:bg-[#1A1A1A] active:scale-[0.99] transition-all rounded-xl border border-white/[0.04] hover:border-primary/20 group">
             <div class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors border border-white/[0.04] ${iconData.classes}">
                 ${iconData.html}
@@ -3917,7 +4000,7 @@ function _renderTopUpMethodsStep(contentEl, amount, methods) {
         </button>`;
     });
     html += '</div>';
-    html += `<button onclick="_renderTopUpAmountStep(document.getElementById('action-modal-content'))"
+    html += `<button type="button" data-topup-action="back-amount"
         class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1">
         <span class="material-symbols-rounded text-sm">arrow_back</span> Изменить сумму
     </button>`;
@@ -4054,19 +4137,19 @@ function _renderTopUpWaiting(contentEl, amount, methodName, paymentId, paymentUr
                 </div>
             </div>
             ${paymentUrl && !isStars ? `
-            <button onclick="_reopenTopUpPaymentLink()"
+            <button type="button" data-topup-action="reopen-link"
                 class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                 <span class="material-symbols-rounded text-base">open_in_new</span>
                 <span>Открыть оплату</span>
             </button>` : ''}
             ${showVerify ? `
-            <button id="verify-platega-topup-btn" type="button" onclick="verifyPlategaTopUp()"
+            <button id="verify-platega-topup-btn" type="button" data-topup-action="verify"
                 class="w-full bg-primary text-white py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                 Проверить оплату
             </button>` : ''}
-            <button onclick="closeActionModal()"
+            <button type="button" data-topup-action="close"
                 class="w-full bg-white/5 border border-white/10 text-gray-300 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider">Закрыть</button>
-            <button onclick="_stopTrackingTopUp()"
+            <button type="button" data-topup-action="stop-tracking"
                 class="w-full py-2 rounded-xl text-gray-500 text-[10px] font-bold hover:text-gray-300 transition-colors">Вернуться к вводу суммы</button>
         </div>
     `;
@@ -4112,7 +4195,7 @@ function _renderTopUpSuccess(amount, data) {
                     <span id="topup-success-balance" class="text-[11px] text-white font-bold">${balance == null ? '…' : balance.toFixed(2) + ' ₽'}</span>
                 </div>
             </div>
-            <button onclick="closeActionModal()"
+            <button type="button" data-topup-action="close"
                 class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md active:scale-[0.98] transition-all">Готово</button>
         </div>
     `;
@@ -4809,31 +4892,13 @@ async function _cancelProfileEmailChange() {
 
 // Temporary compatibility bridge for legacy inline handlers in app.html.
 window.setPurchaseMode = setPurchaseMode;
-window.openTopUpModal = openTopUpModal;
 window.openActionModal = openActionModal;
-window.closePaymentModal = closePaymentModal;
-window.openMethodsList = openMethodsList;
-window.applyDiscountPromo = applyDiscountPromo;
-window.processPayment = processPayment;
-window.changePaymentStep = changePaymentStep;
-window.goToPaymentLink = goToPaymentLink;
-window.verifyPlategaPayment = verifyPlategaPayment;
-window.cancelPayment = cancelPayment;
-window.copySuccessKey = copySuccessKey;
 window.closeActionModal = closeActionModal;
-window.pickLtePackage = pickLtePackage;
-window.confirmMethod = confirmMethod;
 window.loadTransactions = loadTransactions;
 window.changeProfileKeysPage = changeProfileKeysPage;
 window.copyToClipboard = copyToClipboard;
 window.activateOwnGift = activateOwnGift;
 window.changeGiftsPage = changeGiftsPage;
-window._topUpContinueToMethods = _topUpContinueToMethods;
-window._renderTopUpAmountStep = _renderTopUpAmountStep;
-window._submitTopUpPayment = _submitTopUpPayment;
-window._reopenTopUpPaymentLink = _reopenTopUpPaymentLink;
-window.verifyPlategaTopUp = verifyPlategaTopUp;
-window._stopTrackingTopUp = _stopTrackingTopUp;
 window.syncTelegram = syncTelegram;
 window.goToRenewKey = goToRenewKey;
 window.toggleKeyAutoRenew = toggleKeyAutoRenew;

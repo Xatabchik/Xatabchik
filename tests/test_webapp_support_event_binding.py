@@ -44,8 +44,8 @@ def test_support_chat_has_no_inline_handlers():
     assert "getElementById('support-close-btn')?.addEventListener('click', closeSupportTicket)" in js
     assert "getElementById('support-reset-btn')?.addEventListener('click', resetSupportChat)" in js
     assert "getElementById('support-attach-btn')?.addEventListener('click', () => {" in js
-    assert "onclick=\"openTopUpModal()\"" in html
-    assert "window.processPayment = processPayment;" in js
+    assert "onclick=\"openTopUpModal()\"" not in html
+    assert "window.processPayment = processPayment;" not in js
     # Сообщения чата — createElement, без onclick; список тикетов уже точечный listener при render.
     assert "container.replaceChildren()" in js
     assert "btn.addEventListener('click', () => openSupportTicket(t.ticket_id))" in js
@@ -55,8 +55,8 @@ def test_removed_support_handler_bridges_are_gone():
     js = mini_app_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
     assert "window.setPurchaseMode = setPurchaseMode;" in js
 
 
@@ -462,4 +462,4 @@ waitUntil(() => fetches.some((f) => f.url.includes('/api/support/create')) && !c
     assert result["sendBridge"] is False
     assert result["closeBridge"] is False
     assert result["resetBridge"] is False
-    assert result["payBridge"] is True
+    assert result["payBridge"] is False

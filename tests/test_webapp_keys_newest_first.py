@@ -118,9 +118,12 @@ def test_keys_page_html_has_connect_cta_and_no_setup_teaser():
     success_end = html.index('id="toast-container"')
     success_chunk = html[success_start:success_end]
     assert 'id="success-connect-btn"' in success_chunk
-    assert "openLinkSafe" in success_chunk
+    assert 'data-payment-action="connect-key"' in success_chunk
     assert "Подключить" in success_chunk
     assert "Как подключиться" not in success_chunk
+    js = Path("src/shop_bot/webapp/static/js/app.js").read_text(encoding="utf-8")
+    assert "paymentAction === 'connect-key'" in js
+    assert "window.openLinkSafe(keyText)" in js
 
 
 def test_keys_page_renders_newest_key_first(temp_db, monkeypatch):
