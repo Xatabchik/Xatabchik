@@ -680,6 +680,13 @@ function navigateTo(tab) {
     window.location.hash = (tab === 'home') ? '' : tab;
 }
 
+// Нижнее меню: те же пять вкладок, без inline onclick.
+document.getElementById('nav-keys')?.addEventListener('click', () => navigateTo('keys'));
+document.getElementById('nav-finance')?.addEventListener('click', () => navigateTo('finance'));
+document.getElementById('nav-home')?.addEventListener('click', () => navigateTo('home'));
+document.getElementById('nav-referral')?.addEventListener('click', () => navigateTo('referral'));
+document.getElementById('nav-support')?.addEventListener('click', () => navigateTo('support'));
+
 function handleHashChange() {
     const hash = window.location.hash.replace('#', '');
     if (_MAIN_HASHES.includes(hash)) _lastMainHash = hash;
@@ -4752,7 +4759,6 @@ window.closeSupportTicket = closeSupportTicket;
 window.createSupportTicket = createSupportTicket;
 window.sendSupportMessage = sendSupportMessage;
 window.resetSupportChat = resetSupportChat;
-window.navigateTo = navigateTo;
 window.closePaymentModal = closePaymentModal;
 window.openMethodsList = openMethodsList;
 window.applyDiscountPromo = applyDiscountPromo;
