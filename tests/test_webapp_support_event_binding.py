@@ -57,7 +57,7 @@ def test_removed_support_handler_bridges_are_gone():
         assert f"window.{name} = {name};" not in js, name
     assert "window.openTopUpModal = openTopUpModal;" in js
     assert "window.processPayment = processPayment;" in js
-    assert "window._submitProfileChangePassword = _submitProfileChangePassword;" in js
+    assert "window.setPurchaseMode = setPurchaseMode;" in js
 
 
 def test_served_page_support_has_listeners_not_onclick(temp_db, app_client):

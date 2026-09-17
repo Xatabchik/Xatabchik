@@ -51,9 +51,6 @@ BRIDGE_NAMES = (
     "_submitPayoutMethod",
     "_renderPayoutTypeStep",
     "_renderPayoutBankStep",
-    "_submitProfileChangePassword",
-    "_loadProfileMain",
-    "_submitProfileChangeEmailRequest",
     "syncTelegram",
     "goToRenewKey",
     "toggleKeyAutoRenew",
@@ -150,6 +147,9 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="sendSupportMessage' not in html
     assert 'onclick="closeSupportTicket' not in html
     assert 'onclick="resetSupportChat' not in html
+    assert 'onclick="_submitProfileChangePassword' not in html
+    assert 'onclick="_submitProfileChangeEmailRequest' not in html
+    assert 'onclick="_loadProfileMain' not in html
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
