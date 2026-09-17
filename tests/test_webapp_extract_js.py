@@ -41,9 +41,6 @@ BRIDGE_NAMES = (
     "closeActionModal",
     "pickLtePackage",
     "confirmMethod",
-    "deleteDevice",
-    "renderDeviceModalPage",
-    "deleteAllDevices",
     "loadTransactions",
     "changeProfileKeysPage",
     "copyToClipboard",
@@ -152,6 +149,10 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'oninput="onKeysSearchInput()' not in html
     assert 'onclick="clearKeysSearch()' not in html
     assert 'onclick="switchKeysTab(' not in html
+    assert 'onclick="deleteDevice' not in html
+    assert 'onclick="deleteAllDevices' not in html
+    assert 'onclick="deleteDevice' not in js
+    assert 'onclick="deleteAllDevices' not in js
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
