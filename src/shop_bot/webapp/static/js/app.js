@@ -713,7 +713,9 @@ function toggleKeyCard(button) {
         content.style.maxHeight = '0px';
     } else {
         content.classList.add('expanded');
-        content.style.maxHeight = content.scrollHeight + 'px';
+        content.style.maxHeight = '';
+        const height = content.scrollHeight;
+        content.style.maxHeight = (height || 2000) + 'px';
     }
     if (icon) icon.classList.toggle('expanded');
 }
