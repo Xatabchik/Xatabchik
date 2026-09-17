@@ -25,8 +25,10 @@ PAGE_FILES = (
 TELEGRAM_SDK = "https://telegram.org/js/telegram-web-app.js"
 LOCAL_CSS = "/static/css/app.css"
 LOCAL_JS = "/static/js/app.js"
+STORE_JS = "/static/js/store.js"
 CSS_HREF_RE = re.compile(r"/static/css/app\.css\?v=([0-9a-f]{12})")
 JS_HREF_RE = re.compile(r"/static/js/app\.js\?v=([0-9a-f]{12})")
+STORE_HREF_RE = re.compile(r"/static/js/store\.js\?v=([0-9a-f]{12})")
 
 
 def _css_content_hash() -> str:
@@ -41,8 +43,16 @@ def _js_content_hash() -> str:
     return hashlib.sha256((WEBAPP / "static" / "js" / "app.js").read_bytes()).hexdigest()[:12]
 
 
+def _store_content_hash() -> str:
+    return hashlib.sha256((WEBAPP / "static" / "js" / "store.js").read_bytes()).hexdigest()[:12]
+
+
 def _expected_js_href() -> str:
     return f"{LOCAL_JS}?v={_js_content_hash()}"
+
+
+def _expected_store_href() -> str:
+    return f"{STORE_JS}?v={_store_content_hash()}"
 
 
 def _max_age(header: str) -> int | None:
@@ -120,7 +130,10 @@ def test_authed_app_page_serves_local_css_and_csp(temp_db, app_client):
     assert TELEGRAM_SDK in resp.text
     assert _expected_css_href() in resp.text
     assert _expected_js_href() in resp.text
+    assert _expected_store_href() in resp.text
     assert JS_HREF_RE.search(resp.text)
+    assert STORE_HREF_RE.search(resp.text)
+    assert resp.text.index("/static/js/store.js") < resp.text.index("/static/js/app.js")
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
 
 
@@ -202,6 +215,27 @@ def test_local_js_entrypoint_is_served_without_long_cache(temp_db, app_client):
     assert "immutable" not in js_cc
     assert js.headers.get("x-content-type-options", "").lower() == "nosniff"
     assert expected.endswith(_js_content_hash())
+
+
+def test_store_js_is_served_without_long_cache(temp_db, app_client):
+    expected = _expected_store_href()
+    js = app_client.get(STORE_JS)
+    js_versioned = app_client.get(STORE_JS, params={"v": _store_content_hash()})
+    assert js.status_code == 200
+    assert js_versioned.status_code == 200
+    assert js.content == js_versioned.content
+    assert "subscribe(fn)" in js.text
+    assert "setState(patch)" in js.text
+    assert "async function refreshBalance(" in js.text
+    assert "window.store =" not in js.text
+    assert "window.refreshBalance =" not in js.text
+    ctype = js.headers.get("content-type", "")
+    assert "javascript" in ctype or "ecmascript" in ctype
+    js_cc = js.headers.get("cache-control", "").lower()
+    assert _max_age(js_versioned.headers.get("cache-control", "")) == 0
+    assert _max_age(js_cc) == 0
+    assert "must-revalidate" in js_cc
+    assert expected.endswith(_store_content_hash())
 
 
 def test_font_checksums_match_committed_woff2():

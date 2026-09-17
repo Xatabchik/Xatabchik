@@ -6,7 +6,7 @@
  *
  * API client (apiFetch / authHeaders / getAuthToken) stays in the <head>
  * bootstrap of app.html: it must run before first paint to strip ?token=
- * from the URL. This file is the only additional Mini App script.
+ * from the URL. store.js (Phase 1) loads immediately before this file.
  *
  * Logical splits for later PRs (helpers also live in sibling files):
  *   telegram.js — Bot API version / appearance / haptic
@@ -3789,11 +3789,7 @@ async function activateOwnGift(giftCode, btnEl) {
 
 window._loadHomeStats = async function () {
     try {
-        const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-        const resp = await window.apiFetch('/api/user-status');
-        const data = await resp.json();
-        const balEl = document.getElementById('home-balance');
-        if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
+        await refreshBalance({ silent: true });
     } catch (e) { /* silent */ }
     try {
         const token = window.getAuthToken();
@@ -3825,11 +3821,7 @@ window._loadKeysPage = async function () {
 
 window._loadFinancePage = async function () {
     try {
-        const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
-        const resp = await window.apiFetch('/api/user-status');
-        const data = await resp.json();
-        const balEl = document.getElementById('finance-balance');
-        if (balEl && data.ok && data.balance != null) balEl.textContent = data.balance.toFixed(2) + ' ₽';
+        await refreshBalance({ silent: true });
     } catch (e) { /* silent */ }
 
     const prevEl = document.getElementById('finance-transactions-preview');
@@ -4261,7 +4253,7 @@ function _renderTopUpSuccess(amount, data) {
                 </div>
                 <div class="flex items-center justify-between">
                     <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Текущий баланс</span>
-                    <span id="topup-success-balance" class="text-[11px] text-white font-bold">${balance == null ? '…' : balance.toFixed(2) + ' ₽'}</span>
+                    <span id="topup-success-balance" data-balance-display class="text-[11px] text-white font-bold">${balance == null ? '…' : balance.toFixed(2) + ' ₽'}</span>
                 </div>
             </div>
             <button type="button" data-topup-action="close"
@@ -4270,25 +4262,15 @@ function _renderTopUpSuccess(amount, data) {
     `;
 }
 
-async function _refreshBalanceAfterTopUp() {
+async function _refreshBalanceAfterTopUp(paidData) {
     try {
-        if (typeof window._loadFinancePage === 'function') await window._loadFinancePage();
+        await refreshBalance({ fallbackBalance: paidData && paidData.balance });
     } catch (e) { /* обновление интерфейса не должно ломать показ успеха */ }
     try {
-        if (typeof window._loadHomeStats === 'function') await window._loadHomeStats();
+        if (typeof window._loadFinancePage === 'function') await window._loadFinancePage();
     } catch (e) { /* см. выше */ }
     try {
-        const resp = await window.apiFetch('/api/user-status');
-        const status = await resp.json();
-        if (status.ok && status.balance != null) {
-            const balStr = Number(status.balance).toFixed(2) + ' ₽';
-            const financeBal = document.getElementById('finance-balance');
-            const homeBal = document.getElementById('home-balance');
-            const successBal = document.getElementById('topup-success-balance');
-            if (financeBal) financeBal.textContent = balStr;
-            if (homeBal) homeBal.textContent = balStr;
-            if (successBal) successBal.textContent = balStr;
-        }
+        if (typeof window._loadHomeStats === 'function') await window._loadHomeStats();
     } catch (e) { /* см. выше */ }
 }
 
@@ -4321,7 +4303,7 @@ async function verifyPlategaTopUp(opts) {
             _renderTopUpSuccess(window._topUpAmount, data);
             showNotification('Баланс пополнен!', 'success');
             safeTelegramHaptic('success');
-            await _refreshBalanceAfterTopUp();
+            await _refreshBalanceAfterTopUp(data);
             return;
         }
         if (data.status === 'canceled') {
@@ -4359,7 +4341,7 @@ function _startTopUpPolling(paymentId, amount) {
         _renderTopUpSuccess(amount, data);
         showNotification('Баланс пополнен!', 'success');
         safeTelegramHaptic('success');
-        await _refreshBalanceAfterTopUp();
+        await _refreshBalanceAfterTopUp(data);
     }, (data) => {
         _markTopUpProcessing(data && data.message);
     });
