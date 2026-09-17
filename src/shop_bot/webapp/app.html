@@ -764,7 +764,7 @@
                     Служба заботы</h1>
             </div>
             <div class="flex-1 flex justify-end items-center pr-2 gap-2">
-                <button id="support-close-btn" type="button" onclick="closeSupportTicket()"
+                <button type="button" id="support-close-btn"
                     class="hidden text-[10px] font-bold text-red-300 bg-red-500/10 border border-red-500/20 px-2 py-1 rounded-lg hover:bg-red-500/20">
                     Закрыть
                 </button>
@@ -807,7 +807,7 @@
                 <input type="text" id="support-subject-input" placeholder="Например: Не работает VPN" maxlength="64"
                     class="w-full bg-black/40 text-white rounded-xl border border-white/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors placeholder:text-gray-600">
 
-                <button id="support-create-btn" onclick="createSupportTicket()"
+                <button type="button" id="support-create-btn"
                     class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-[13px] shadow-md hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-1">
                     <span class="material-symbols-rounded text-sm">chat</span>
                     <span>Начать чат</span>
@@ -849,7 +849,7 @@
                 class="shrink-0 p-3 bg-[#121212] border-t border-white/5 relative z-20 pb-safe">
                 <div class="flex items-end gap-2 max-w-full relative">
                     <input type="file" id="support-file-input" class="hidden" accept="image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf">
-                    <button id="support-attach-btn" type="button" onclick="document.getElementById('support-file-input').click()"
+                    <button type="button" id="support-attach-btn"
                         class="w-[42px] h-[42px] shrink-0 bg-white/5 text-gray-300 rounded-full flex items-center justify-center border border-white/10 hover:bg-white/10 active:scale-95 transition-all"
                         title="Файл (jpeg, png, webp, PDF)">
                         <span class="material-symbols-rounded text-xl">attach_file</span>
@@ -858,7 +858,7 @@
                         class="flex-1 bg-white/5 text-white rounded-[1.25rem] border border-white/10 px-4 py-3 text-[13px] focus:outline-none focus:border-primary/50 transition-colors placeholder:text-gray-500 resize-none max-h-24 custom-scrollbar leading-tight"
                         oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"></textarea>
 
-                    <button id="support-send-btn" onclick="sendSupportMessage()"
+                    <button type="button" id="support-send-btn"
                         class="w-[42px] h-[42px] shrink-0 bg-primary/20 text-primary rounded-full flex items-center justify-center hover:bg-primary/30 active:scale-95 transition-all">
                         <span class="material-symbols-rounded text-xl ml-0.5">send</span>
                     </button>
@@ -869,7 +869,7 @@
             <div id="support-closed-area"
                 class="shrink-0 p-4 bg-red-500/10 border-t border-red-500/20 text-center hidden">
                 <p class="text-xs text-red-400 font-medium">Это обращение закрыто.</p>
-                <button onclick="resetSupportChat()"
+                <button type="button" id="support-reset-btn"
                     class="mt-2 text-[10px] text-white bg-white/10 px-3 py-1.5 rounded-lg border border-white/10 hover:bg-white/20 transition-all font-bold">
                     Создать новое обращение
                 </button>

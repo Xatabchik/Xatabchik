@@ -31,15 +31,12 @@ def test_bottom_nav_has_no_inline_navigate_handlers():
     assert "getElementById('nav-support')?.addEventListener('click', () => navigateTo('support'))" in js
     assert "function handleHashChange(" in js
     assert "window.addEventListener('hashchange', handleHashChange)" in js
-    assert "onclick=\"closeSupportTicket()\"" in html
-    assert "onclick=\"createSupportTicket()\"" in html
-    assert "onclick=\"sendSupportMessage()\"" in html
+    assert "getElementById('support-create-btn')?.addEventListener('click', createSupportTicket)" in js
 
 
 def test_removed_navigate_bridge_is_gone():
     js = mini_app_js()
     assert "window.navigateTo = navigateTo;" not in js
-    assert "window.resetSupportChat = resetSupportChat;" in js
     assert "window.openTopUpModal = openTopUpModal;" in js
     assert "window.processPayment = processPayment;" in js
 
@@ -282,7 +279,7 @@ console.log(JSON.stringify({
   afterSupport,
   afterHome,
   navBridge: /window\.navigateTo = navigateTo;/.test(src),
-  supportBridge: /window\.resetSupportChat = resetSupportChat;/.test(src),
+  referralBridge: /window\.requestReferralWithdraw = requestReferralWithdraw;/.test(src),
   payBridge: /window\.processPayment = processPayment;/.test(src),
 }));
 """
@@ -315,5 +312,5 @@ console.log(JSON.stringify({
     assert result["afterHome"]["supportHidden"] is True
     assert result["afterHome"]["homeActive"] is True
     assert result["navBridge"] is False
-    assert result["supportBridge"] is True
+    assert result["referralBridge"] is True
     assert result["payBridge"] is True

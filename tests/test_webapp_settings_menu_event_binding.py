@@ -47,8 +47,8 @@ def test_removed_settings_menu_bridges_are_gone():
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
     assert "window.openActionModal = openActionModal;" in js
-    assert "window.resetSupportChat = resetSupportChat;" in js
     assert "window.openTopUpModal = openTopUpModal;" in js
+    assert "window.processPayment = processPayment;" in js
 
 
 def test_served_home_page_settings_menu_has_listeners_not_onclick(temp_db, app_client):
