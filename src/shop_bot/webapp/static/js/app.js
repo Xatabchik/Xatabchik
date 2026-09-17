@@ -613,6 +613,15 @@ document.getElementById('support-file-input')?.addEventListener('change', functi
     e.target.value = '';
     if (file) uploadSupportFile(file);
 });
+// Кнопки саппорта статичны в app.html (не пересоздаются при polling).
+// Сообщения чата рендерятся через createElement без onclick — delegation не нужна.
+document.getElementById('support-create-btn')?.addEventListener('click', createSupportTicket);
+document.getElementById('support-send-btn')?.addEventListener('click', sendSupportMessage);
+document.getElementById('support-close-btn')?.addEventListener('click', closeSupportTicket);
+document.getElementById('support-reset-btn')?.addEventListener('click', resetSupportChat);
+document.getElementById('support-attach-btn')?.addEventListener('click', () => {
+    document.getElementById('support-file-input')?.click();
+});
 
 
 function _updateBottomNav(activePage) {
@@ -4755,10 +4764,6 @@ window.openTopUpModal = openTopUpModal;
 window.openActionModal = openActionModal;
 window.requestReferralWithdraw = requestReferralWithdraw;
 window.openReferralMethodsModal = openReferralMethodsModal;
-window.closeSupportTicket = closeSupportTicket;
-window.createSupportTicket = createSupportTicket;
-window.sendSupportMessage = sendSupportMessage;
-window.resetSupportChat = resetSupportChat;
 window.closePaymentModal = closePaymentModal;
 window.openMethodsList = openMethodsList;
 window.applyDiscountPromo = applyDiscountPromo;

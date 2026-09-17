@@ -22,10 +22,6 @@ BRIDGE_NAMES = (
     "openActionModal",
     "requestReferralWithdraw",
     "openReferralMethodsModal",
-    "closeSupportTicket",
-    "createSupportTicket",
-    "sendSupportMessage",
-    "resetSupportChat",
     "closePaymentModal",
     "openMethodsList",
     "applyDiscountPromo",
@@ -150,6 +146,10 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="deleteAllDevices' not in html
     assert 'onclick="toggleSettingsMenu' not in html
     assert 'onclick="openEditProfileModal' not in html
+    assert 'onclick="createSupportTicket' not in html
+    assert 'onclick="sendSupportMessage' not in html
+    assert 'onclick="closeSupportTicket' not in html
+    assert 'onclick="resetSupportChat' not in html
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
