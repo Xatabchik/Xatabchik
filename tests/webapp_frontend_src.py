@@ -10,6 +10,7 @@ TELEGRAM_JS = WEBAPP / "static" / "js" / "telegram.js"
 UI_JS = WEBAPP / "static" / "js" / "ui.js"
 API_JS = WEBAPP / "static" / "js" / "api.js"
 STORE_JS = WEBAPP / "static" / "js" / "store.js"
+TRANSACTIONS_JS = WEBAPP / "static" / "js" / "transactions.js"
 
 
 def mini_app_html() -> str:
@@ -24,6 +25,10 @@ def mini_app_store_js() -> str:
     return STORE_JS.read_text(encoding="utf-8")
 
 
+def mini_app_transactions_js() -> str:
+    return TRANSACTIONS_JS.read_text(encoding="utf-8")
+
+
 def mini_app_frontend_source() -> str:
-    """HTML + app.js: структурные тесты, которые раньше читали только app.html."""
-    return mini_app_html() + "\n" + mini_app_js()
+    """HTML + domain JS + app.js: структурные тесты, которые раньше читали только app.html."""
+    return mini_app_html() + "\n" + mini_app_transactions_js() + "\n" + mini_app_js()

@@ -82,7 +82,8 @@ if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # HTML — no-store, поэтому новый ?v= после смены файла попадёт в WebView.
-# Имена APP_CSS_HREF / APP_JS_HREF / STORE_JS_HREF уходят в шаблоны через _link_namespace().
+# Имена APP_CSS_HREF / APP_JS_HREF / STORE_JS_HREF / TRANSACTIONS_JS_HREF
+# уходят в шаблоны через _link_namespace().
 _APP_CSS_FILE = os.path.join(static_dir, "css", "app.css")
 _APP_CSS_HASH = ""
 APP_CSS_HREF = "/static/css/app.css"
@@ -104,6 +105,7 @@ def _static_js_href(filename: str) -> str:
 
 APP_JS_HREF = _static_js_href("app.js")
 STORE_JS_HREF = _static_js_href("store.js")
+TRANSACTIONS_JS_HREF = _static_js_href("transactions.js")
 
 
 def _hidden_not_found() -> None:
@@ -124,5 +126,6 @@ __all__ = [
     "APP_CSS_HREF",
     "APP_JS_HREF",
     "STORE_JS_HREF",
+    "TRANSACTIONS_JS_HREF",
     "_hidden_not_found",
 ]

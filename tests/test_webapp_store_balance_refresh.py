@@ -44,6 +44,9 @@ def test_store_js_is_minimal_pubsub_and_linked_before_app_js():
     assert "window.refreshBalance =" not in js
     assert 'src="{{ store_js_href }}" defer>' in html
     assert html.index('src="{{ store_js_href }}" defer>') < html.index(
+        'src="{{ transactions_js_href }}" defer>'
+    )
+    assert html.index('src="{{ transactions_js_href }}" defer>') < html.index(
         'src="{{ app_js_href }}" defer>'
     )
     assert 'type="module"' not in html

@@ -26,9 +26,11 @@ TELEGRAM_SDK = "https://telegram.org/js/telegram-web-app.js"
 LOCAL_CSS = "/static/css/app.css"
 LOCAL_JS = "/static/js/app.js"
 STORE_JS = "/static/js/store.js"
+TRANSACTIONS_JS = "/static/js/transactions.js"
 CSS_HREF_RE = re.compile(r"/static/css/app\.css\?v=([0-9a-f]{12})")
 JS_HREF_RE = re.compile(r"/static/js/app\.js\?v=([0-9a-f]{12})")
 STORE_HREF_RE = re.compile(r"/static/js/store\.js\?v=([0-9a-f]{12})")
+TRANSACTIONS_HREF_RE = re.compile(r"/static/js/transactions\.js\?v=([0-9a-f]{12})")
 
 
 def _css_content_hash() -> str:
@@ -53,6 +55,14 @@ def _expected_js_href() -> str:
 
 def _expected_store_href() -> str:
     return f"{STORE_JS}?v={_store_content_hash()}"
+
+
+def _transactions_content_hash() -> str:
+    return hashlib.sha256((WEBAPP / "static" / "js" / "transactions.js").read_bytes()).hexdigest()[:12]
+
+
+def _expected_transactions_href() -> str:
+    return f"{TRANSACTIONS_JS}?v={_transactions_content_hash()}"
 
 
 def _max_age(header: str) -> int | None:
@@ -131,9 +141,12 @@ def test_authed_app_page_serves_local_css_and_csp(temp_db, app_client):
     assert _expected_css_href() in resp.text
     assert _expected_js_href() in resp.text
     assert _expected_store_href() in resp.text
+    assert _expected_transactions_href() in resp.text
     assert JS_HREF_RE.search(resp.text)
     assert STORE_HREF_RE.search(resp.text)
-    assert resp.text.index("/static/js/store.js") < resp.text.index("/static/js/app.js")
+    assert TRANSACTIONS_HREF_RE.search(resp.text)
+    assert resp.text.index("/static/js/store.js") < resp.text.index("/static/js/transactions.js")
+    assert resp.text.index("/static/js/transactions.js") < resp.text.index("/static/js/app.js")
     _assert_webapp_csp(resp.headers.get("content-security-policy", ""))
 
 

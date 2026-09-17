@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from webapp_frontend_src import mini_app_html, mini_app_js
+from webapp_frontend_src import mini_app_html, mini_app_js, mini_app_transactions_js
 
 NODE = shutil.which("node")
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,7 +84,8 @@ def test_leftover_static_elements_have_no_inline_handlers():
     assert "setAttribute('data-auto-renew'" in js
     assert "onclick=" not in html
     assert "getElementById('purchase-mode-self')?.addEventListener('click', () => setPurchaseMode('new'))" in js
-    assert "getElementById('finance-tx-all-btn')?.addEventListener('click', () => openActionModal('transactions', null))" in js
+    assert "getElementById('finance-tx-all-btn')?.addEventListener('click', () => openActionModal('transactions', null))" not in js
+    assert "getElementById('finance-tx-all-btn')?.addEventListener('click', () => openActionModal('transactions', null))" in mini_app_transactions_js()
     assert "Temporary compatibility bridge" not in js
 
 
@@ -150,7 +151,8 @@ def test_leftover_event_binding_in_node():
     script = r"""
 const fs = require('fs');
 const vm = require('vm');
-const src = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
+const src = fs.readFileSync('src/shop_bot/webapp/static/js/transactions.js', 'utf8')
+  + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 
 function classList(initial) {
   const set = new Set(String(initial || '').split(/\s+/).filter(Boolean));
