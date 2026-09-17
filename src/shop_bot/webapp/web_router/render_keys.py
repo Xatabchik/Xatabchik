@@ -860,7 +860,9 @@ def _get_setup_keys_html(keys: list) -> str:
 
 
 def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, str, str]:
-    keys = _personal_keys(keys)
+    # Продление — отдельная страница, не вкладка «Личные». Неактивированный
+    # подарок остаётся vpn_keys владельца: его можно продлить с карточки
+    # на вкладке «Подарочные» (goToRenewKey ищет option по data-key).
     if not keys:
         return "", "Нет активных ключей", _get_no_key_html()
         

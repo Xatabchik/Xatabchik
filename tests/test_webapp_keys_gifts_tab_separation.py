@@ -99,6 +99,50 @@ def test_personal_keys_helper_uses_existing_gift_tag():
     assert [k["key_id"] for k in personal] == [1, 4, 5]
 
 
+def test_renew_html_includes_unactivated_gift_keys(temp_db):
+    from shop_bot.webapp.handlers import _get_renew_keys_html
+
+    keys = [
+        {
+            "key_id": 11,
+            "tag": "",
+            "user_key_name": "Обычный ключ",
+            "host_name": "TabHost",
+            "expiry_date": "2029-12-01 12:00:00",
+            "created_at": "2026-01-01 12:00:00",
+            "subscription_url": "https://sub.example/a",
+            "email": "a@bot.local",
+        },
+        {
+            "key_id": 12,
+            "tag": "user_gift",
+            "user_key_name": "Неактивированный подарок",
+            "host_name": "TabHost",
+            "expiry_date": "2029-12-01 12:00:00",
+            "created_at": "2026-01-01 12:00:00",
+            "subscription_url": "https://sub.example/b",
+            "email": "b@bot.local",
+        },
+        {
+            "key_id": 13,
+            "tag": "gift",
+            "user_key_name": "Старый тег gift",
+            "host_name": "TabHost",
+            "expiry_date": "2029-12-01 12:00:00",
+            "created_at": "2026-01-01 12:00:00",
+            "subscription_url": "https://sub.example/c",
+            "email": "c@bot.local",
+        },
+    ]
+    options, selected, plans = _get_renew_keys_html(keys)
+    assert 'data-key="#11"' in options
+    assert 'data-key="#12"' in options
+    assert 'data-key="#13"' in options
+    assert "Неактивированный подарок" in options
+    assert "Старый тег gift" in options
+    assert selected
+
+
 def test_tabs_split_ordinary_unactivated_and_self_activated(temp_db, monkeypatch):
     from shop_bot.data_manager import database
     from shop_bot.modules import remnawave_api
@@ -142,6 +186,18 @@ def test_tabs_split_ordinary_unactivated_and_self_activated(temp_db, monkeypatch
     assert "Обычный ключ" in names
     assert "Активированный подарок" in names
     assert "Неактивированный подарок" not in names
+
+    # Продление — не вкладка «Личные»: в dropdown должны быть все три ключа,
+    # иначе «Продлить» на карточке неактивированного подарка не находит option.
+    renew_start = page.text.index('id="renew-keys-dropdown-container"')
+    renew_end = page.text.index('id="renew-plans-grid-container"')
+    renew = page.text[renew_start:renew_end]
+    assert f'data-key="#{ordinary_id}"' in renew
+    assert f'data-key="#{unact_key_id}"' in renew
+    assert f'data-key="#{act_key_id}"' in renew
+    assert "Неактивированный подарок" in renew
+    assert "Обычный ключ" in renew
+    assert "Активированный подарок" in renew
 
 
 def test_each_tab_paginates_separately(temp_db, monkeypatch):

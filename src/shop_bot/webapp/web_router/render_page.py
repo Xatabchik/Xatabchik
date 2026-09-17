@@ -265,9 +265,9 @@ async def _render_main_page(user_id: int):
             if active_keys:
                 key_section = _get_key_html(active_keys[0])
             
-            # Личные / продление / настройка: только обычные ключи и уже
-            # активированные подарки (tag снят). Неактивированные user_gift
-            # остаются на вкладке «Подарочные».
+            # Личные и настройка: обычные ключи + уже активированные подарки.
+            # Продление включает и неактивированные user_gift — иначе кнопка
+            # «Продлить» на вкладке «Подарочные» не находит option в dropdown.
             renew_keys_options, renew_selected_key, renew_plans_html_data = _get_renew_keys_html(keys_by_expiry, user_id)
             renew_selected_display = renew_selected_key
             
