@@ -1,4 +1,4 @@
-/* Mini App Store — Phase 2 (balance + keyNames).
+/* Mini App Store — Phase 3 (balance + keyNames + gifts/keysListHtml).
  *
  * Classic deferred script (not type=module), loaded before app.js.
  * Object + subscribers, без reducers / middleware / внешних библиотек.
@@ -6,7 +6,7 @@
  */
 
 const store = {
-    state: { balance: null, keyNames: {} },
+    state: { balance: null, keyNames: {}, gifts: null, keysListHtml: null },
     listeners: new Set(),
     subscribe(fn) {
         this.listeners.add(fn);
@@ -170,5 +170,182 @@ async function refreshKeyName(keyId, options) {
     const nextNames = Object.assign({}, store.state.keyNames || {});
     nextNames[String(keyId)] = next;
     store.setState({ keyNames: nextNames });
+    return true;
+}
+
+const GIFTS_EMPTY_HTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
+
+function _giftsWithoutCode(list, giftCode) {
+    if (!Array.isArray(list)) return null;
+    const want = String(giftCode || '');
+    if (!want) return list.slice();
+    return list.filter((g) => g && String(g.gift_code) !== want);
+}
+
+function _keyNamesFromUserStatus(payload) {
+    if (!payload || payload.ok === false || !Array.isArray(payload.keys)) return null;
+    const names = {};
+    for (let i = 0; i < payload.keys.length; i++) {
+        const key = payload.keys[i];
+        if (!key || key.key_id == null || key.name == null) continue;
+        const name = String(key.name).trim();
+        if (name) names[String(key.key_id)] = name;
+    }
+    return names;
+}
+
+function _keysListHtmlFromPage(htmlStr) {
+    if (!htmlStr || typeof DOMParser === 'undefined') return null;
+    try {
+        const doc = new DOMParser().parseFromString(String(htmlStr), 'text/html');
+        const el = doc.getElementById('profile-keys-list-container');
+        return el ? el.innerHTML : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function _stripGiftActionsFrom(container) {
+    if (!container || !container.querySelectorAll) return;
+    const btns = container.querySelectorAll('[data-gift-action]');
+    for (let i = 0; i < btns.length; i++) {
+        const btn = btns[i];
+        const block = btn.closest('.mt-3') || btn.parentElement;
+        if (block && block.parentElement) block.parentElement.removeChild(block);
+    }
+}
+
+function _fallbackKeysHtmlFromGiftCard(giftCode) {
+    const container = document.getElementById('profile-keys-list-container');
+    if (!container) return null;
+    const list = (store.state && Array.isArray(store.state.gifts) && store.state.gifts)
+        || (typeof window !== 'undefined' && window._giftsState && window._giftsState.gifts)
+        || [];
+    const want = String(giftCode || '');
+    let gift = null;
+    for (let i = 0; i < list.length; i++) {
+        if (list[i] && String(list[i].gift_code) === want) { gift = list[i]; break; }
+    }
+    if (!gift || !gift.card_html) return null;
+    const current = container.innerHTML || '';
+    if (current.indexOf('data-key-id') < 0 && current.indexOf('Нет активных ключей') >= 0) {
+        return gift.card_html;
+    }
+    return gift.card_html + current;
+}
+
+let _appliedGiftsRef = undefined;
+let _appliedKeysListHtml = undefined;
+
+function applyGiftsAndKeysToDom(state) {
+    if (Array.isArray(state.gifts) && state.gifts !== _appliedGiftsRef) {
+        _appliedGiftsRef = state.gifts;
+        const prevPage = (typeof window !== 'undefined' && window._giftsState && window._giftsState.page) || 0;
+        if (typeof window !== 'undefined') {
+            window._giftsState = { gifts: state.gifts, page: prevPage };
+        }
+        const loading = document.getElementById('gifts-loading');
+        const content = document.getElementById('gifts-content');
+        if (loading) loading.style.display = 'none';
+        if (content) {
+            content.classList.remove('hidden');
+            if (!state.gifts.length) {
+                content.innerHTML = GIFTS_EMPTY_HTML;
+                const paginationEl = document.getElementById('gifts-pagination');
+                if (paginationEl) {
+                    paginationEl.classList.add('hidden');
+                    paginationEl.innerHTML = '';
+                }
+            } else if (typeof renderGiftsPage === 'function') {
+                const pageSize = (typeof GIFTS_PAGE_SIZE === 'number') ? GIFTS_PAGE_SIZE : 5;
+                const totalPages = Math.max(1, Math.ceil(state.gifts.length / pageSize));
+                if (typeof window !== 'undefined') {
+                    window._giftsState.page = Math.min(prevPage, totalPages - 1);
+                }
+                renderGiftsPage();
+            }
+        }
+    }
+    if (state.keysListHtml != null && state.keysListHtml !== _appliedKeysListHtml) {
+        _appliedKeysListHtml = state.keysListHtml;
+        const el = document.getElementById('profile-keys-list-container');
+        if (el) {
+            el.innerHTML = state.keysListHtml;
+            _stripGiftActionsFrom(el);
+            if (typeof initProfileKeysPagination === 'function') initProfileKeysPagination();
+        }
+        applyKeyNamesToDom(state);
+    }
+}
+
+store.subscribe(applyGiftsAndKeysToDom);
+
+async function refreshAfterGiftActivation(options) {
+    const opts = options || {};
+    const giftCode = opts.giftCode;
+    const fetcher = (typeof apiFetch === 'function')
+        ? apiFetch
+        : (window.apiFetch || fetch);
+    let gifts = null;
+    let names = null;
+    let keysHtml = null;
+    try {
+        const token = (typeof window !== 'undefined' && window.getAuthToken)
+            ? window.getAuthToken()
+            : '';
+        const userId = (typeof window !== 'undefined' && window._currentUserId)
+            || (typeof RENDERED_USER_ID !== 'undefined' ? RENDERED_USER_ID : null);
+        const giftsReq = fetcher('/api/user/gifts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token || '', user_id: userId }),
+        });
+        const statusReq = fetcher('/api/user-status');
+        const pageReq = fetcher('/');
+        const results = await Promise.all([giftsReq, statusReq, pageReq]);
+        try {
+            const giftsData = await results[0].json();
+            if (giftsData && giftsData.ok && Array.isArray(giftsData.gifts)) {
+                gifts = giftsData.gifts;
+                if (typeof window !== 'undefined' && giftsData.share_text) {
+                    window._giftShareText = giftsData.share_text;
+                }
+            }
+        } catch (e) { gifts = null; }
+        try {
+            const statusData = await results[1].json();
+            names = _keyNamesFromUserStatus(statusData);
+        } catch (e) { names = null; }
+        try {
+            const pageHtml = await results[2].text();
+            keysHtml = _keysListHtmlFromPage(pageHtml);
+        } catch (e) { keysHtml = null; }
+    } catch (e) {
+        gifts = null;
+        names = null;
+        keysHtml = null;
+    }
+    if (gifts == null && giftCode) {
+        const current = (store.state && store.state.gifts)
+            || (typeof window !== 'undefined' && window._giftsState && window._giftsState.gifts);
+        const filtered = _giftsWithoutCode(current, giftCode);
+        if (filtered) gifts = filtered;
+    }
+    if (keysHtml == null && giftCode) {
+        keysHtml = _fallbackKeysHtmlFromGiftCard(giftCode);
+    }
+    if (gifts == null && names == null && keysHtml == null) {
+        if (!opts.silent && typeof showNotification === 'function') {
+            showNotification('Не удалось обновить список ключей', 'error');
+        }
+        return false;
+    }
+    const patch = {};
+    if (gifts != null) patch.gifts = gifts;
+    if (names) {
+        patch.keyNames = Object.assign({}, store.state.keyNames || {}, names);
+    }
+    if (keysHtml != null) patch.keysListHtml = keysHtml;
+    store.setState(patch);
     return true;
 }

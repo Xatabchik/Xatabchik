@@ -3749,13 +3749,17 @@ async function loadUserGifts() {
         if (loading) loading.style.display = 'none';
         if (!d.ok || !content) return;
         content.classList.remove('hidden');
+        window._giftShareText = d.share_text || '';
+        if (typeof store !== 'undefined' && store.setState) {
+            store.setState({ gifts: d.gifts || [] });
+            return;
+        }
         if (!d.gifts || !d.gifts.length) {
             content.innerHTML = '<div class="text-center text-[11px] text-gray-500 py-3">Нет неактивированных подарков.<br>Купить подарок можно на странице покупки.</div>';
             if (paginationEl) { paginationEl.classList.add('hidden'); paginationEl.innerHTML = ''; }
             return;
         }
         window._giftsState = { gifts: d.gifts, page: 0 };
-        window._giftShareText = d.share_text || '';
         renderGiftsPage();
     } catch (e) {
         console.error('Gifts error:', e);
@@ -3776,14 +3780,17 @@ async function activateOwnGift(giftCode, btnEl) {
         const d = await resp.json();
         showNotification(d.ok ? (d.message || 'Подарок активирован!') : (d.error || 'Ошибка активации'), d.ok ? 'success' : 'error');
         if (d.ok) {
-            setTimeout(() => window.location.reload(), 1200);
-        } else if (btnEl) {
-            btnEl.disabled = false;
-            btnEl.innerHTML = '<span class="material-symbols-rounded text-sm">redeem</span><span>Активировать себе</span>';
+            if (typeof refreshAfterGiftActivation === 'function') {
+                await refreshAfterGiftActivation({ giftCode: giftCode });
+            }
         }
     } catch (e) {
         showNotification('Ошибка сети', 'error');
-        if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = '<span class="material-symbols-rounded text-sm">redeem</span><span>Активировать себе</span>'; }
+    } finally {
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = '<span class="material-symbols-rounded text-sm">redeem</span><span>Активировать себе</span>';
+        }
     }
 }
 
@@ -4625,7 +4632,9 @@ async function toggleKeyAutoRenew(keyId, currentEnabled, btnEl) {
             });
             const d = await r.json();
             showNotification(d.ok ? (d.message || 'Подарок активирован!') : (d.error || 'Ошибка активации'), d.ok ? 'success' : 'error');
-            if (d.ok) setTimeout(() => location.reload(), 1800);
+            if (d.ok && typeof refreshAfterGiftActivation === 'function') {
+                await refreshAfterGiftActivation({ giftCode: giftCode });
+            }
         } catch (e) { /* silent */ }
     });
 })();
@@ -4652,7 +4661,9 @@ window.addEventListener('appReady', async () => {
             showNotification(d.message, d.ok ? 'success' : 'error');
         }
         if (d.ok && d.action_type === 'gift' && d.status === 'activated') {
-            setTimeout(() => location.reload(), 1800);
+            if (typeof refreshAfterGiftActivation === 'function') {
+                await refreshAfterGiftActivation({ giftCode: d.gift_code || '' });
+            }
         }
     } catch (e) { /* тихо игнорируем — страница уже загружена и рабочая */ }
 });

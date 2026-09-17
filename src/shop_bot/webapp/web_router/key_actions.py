@@ -34,7 +34,7 @@ async def api_user_status(request: Request, token: str | None = None):
         keys = get_user_keys(user_id)
         formatted_keys = []
         if keys:
-            keys = _sort_keys_newest_first(keys)
+            keys = _sort_keys_newest_first(_personal_keys(keys))
             formatted_keys = [_process_key_data(k) for k in keys]
         
         return {"ok": True, "keys": formatted_keys, "balance": float(user.get("balance") or 0.0)}

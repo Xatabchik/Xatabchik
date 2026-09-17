@@ -737,7 +737,23 @@ def _sort_keys_newest_first(keys: list) -> list:
     return sorted(keys, key=_key_created_sort_tuple, reverse=True)
 
 
+def _is_unactivated_gift_key(key: dict | None) -> bool:
+    """Неактивированный подарок: vpn_keys.tag остаётся user_gift/gift.
+
+    После активации backend снимает тег (tag=""), и ключ становится обычным
+    личным ключом того, кто его активировал.
+    """
+    tag = str((key or {}).get("tag") or "").strip().lower()
+    return tag in ("user_gift", "gift")
+
+
+def _personal_keys(keys: list | None) -> list:
+    """Вкладка «Личные»: обычные ключи + уже активированные подарочные."""
+    return [k for k in (keys or []) if not _is_unactivated_gift_key(k)]
+
+
 def _get_profile_keys_html(keys: list) -> str:
+    keys = _personal_keys(keys)
     if not keys:
         return _get_no_key_html()
 
@@ -748,6 +764,7 @@ def _get_profile_keys_html(keys: list) -> str:
 
 
 def _get_setup_keys_html(keys: list) -> str:
+    keys = _personal_keys(keys)
     if not keys:
         return _get_no_key_html()
         
@@ -843,6 +860,9 @@ def _get_setup_keys_html(keys: list) -> str:
 
 
 def _get_renew_keys_html(keys: list, user_id: int | None = None) -> tuple[str, str, str]:
+    # Продление — отдельная страница, не вкладка «Личные». Неактивированный
+    # подарок остаётся vpn_keys владельца: его можно продлить с карточки
+    # на вкладке «Подарочные» (goToRenewKey ищет option по data-key).
     if not keys:
         return "", "Нет активных ключей", _get_no_key_html()
         
@@ -928,6 +948,8 @@ __all__ = [
     "_get_key_card_html",
     "_key_created_sort_tuple",
     "_sort_keys_newest_first",
+    "_is_unactivated_gift_key",
+    "_personal_keys",
     "_get_profile_keys_html",
     "_get_setup_keys_html",
     "_get_renew_keys_html",
