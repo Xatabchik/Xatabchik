@@ -725,6 +725,8 @@ function toggleKeyCard(button) {
 // в БД не становится исполняемым JS.
 // Accordion (.key-toggle) и save/delete заметки — тоже делегирование, без
 // повторного forEach после search/gifts и без window.toggleKeyCard.
+// Модалка устройств: hwid/host читаются из data-*, не из onclick (тот же
+// приём, что #145 для заметок). Пагинация и «удалить все» — data-device-action.
 document.addEventListener('click', (event) => {
     const toggle = event.target.closest('.key-toggle');
     if (toggle) {
@@ -736,6 +738,30 @@ document.addEventListener('click', (event) => {
     if (noteSave || noteDelete) {
         const noteKeyId = parseInt((noteSave || noteDelete).getAttribute('data-key-id') || '', 10);
         if (noteKeyId) saveComment(noteKeyId, Boolean(noteDelete));
+        return;
+    }
+    const deviceBtn = event.target.closest('[data-device-action]');
+    if (deviceBtn) {
+        if (deviceBtn.disabled) return;
+        const deviceAction = deviceBtn.getAttribute('data-device-action');
+        const deviceKeyId = parseInt(deviceBtn.getAttribute('data-key-id') || '', 10);
+        const deviceId = deviceBtn.getAttribute('data-device-id') || '';
+        const deviceHost = deviceBtn.getAttribute('data-host') || '';
+        if (deviceAction === 'delete' && deviceKeyId) {
+            deleteDevice(deviceKeyId, deviceId, deviceHost, deviceBtn);
+        } else if (deviceAction === 'delete-all' && deviceKeyId) {
+            deleteAllDevices(deviceKeyId, deviceHost);
+        } else if (deviceAction === 'page-prev' || deviceAction === 'page-next') {
+            const state = window._deviceModalState;
+            if (!state) return;
+            const totalPages = Math.ceil((state.devices || []).length / 5);
+            if (deviceAction === 'page-prev') {
+                state.page = Math.max(0, state.page - 1);
+            } else {
+                state.page = Math.min(Math.max(totalPages - 1, 0), state.page + 1);
+            }
+            renderDeviceModalPage();
+        }
         return;
     }
     const btn = event.target.closest('[data-key-action]');
@@ -2293,9 +2319,9 @@ async function openActionModal(type, keyId, extraData = '') {
 
                 const cooldown = data.delete_cooldown || { allowed: true, remaining_sec: 0 };
                 const canDeleteDevice = cooldown.allowed !== false;
-                const PER_PAGE = 5;
 
-                // Store state globally so pagination buttons can access it
+                // Состояние страницы модалки: renderDeviceModalPage читает его
+                // при делегированных data-device-action (не через inline onclick).
                 window._deviceModalState = { devices: data.devices, keyId, hostName: extraData, cooldown, canDelete: canDeleteDevice, page: 0 };
                 renderDeviceModalPage();
             } else {
@@ -2336,6 +2362,15 @@ function formatCooldownRemaining(seconds) {
     const hours = Math.floor(total / 3600);
     const minutes = Math.floor((total % 3600) / 60);
     return `${hours}ч ${minutes}м`;
+}
+
+function escapeHtmlAttr(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 async function deleteDevice(keyId, deviceId, hostName, btnEl) {
@@ -2579,15 +2614,18 @@ function renderDeviceModalPage() {
         const createdDate = d.createdAt ? new Date(d.createdAt).toLocaleDateString() : '';
         const disabledAttrs = s.canDelete ? '' : 'disabled';
         const disabledClass = s.canDelete ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' : 'bg-white/5 text-gray-600 cursor-not-allowed';
-        const safeDeviceId = (deviceId || '').replace(/'/g, "\\'");
-        const safeHost = (s.hostName || '').replace(/'/g, "\\'");
+        const attrDeviceId = escapeHtmlAttr(deviceId);
+        const attrHost = escapeHtmlAttr(s.hostName);
+        const attrKeyId = escapeHtmlAttr(s.keyId);
+        const textName = escapeHtmlAttr(deviceName);
+        const textId = escapeHtmlAttr(deviceId);
         html += `
             <div class="flex items-center justify-between p-3 bg-white/5 border border-white/5 rounded-xl">
                 <div class="flex flex-col gap-1 overflow-hidden">
-                    <div class="text-xs text-white font-mono truncate">${deviceName}</div>
-                    ${createdDate ? `<div class="text-[9px] text-gray-500 font-mono truncate">${deviceId} • ${createdDate}</div>` : `<div class="text-[9px] text-gray-500 font-mono truncate">${deviceId}</div>`}
+                    <div class="text-xs text-white font-mono truncate">${textName}</div>
+                    ${createdDate ? `<div class="text-[9px] text-gray-500 font-mono truncate">${textId} • ${createdDate}</div>` : `<div class="text-[9px] text-gray-500 font-mono truncate">${textId}</div>`}
                 </div>
-                <button ${disabledAttrs} onclick="deleteDevice(${s.keyId}, '${safeDeviceId}', '${safeHost}', this)" class="w-8 h-8 rounded-lg ${disabledClass} flex items-center justify-center transition-colors shrink-0">
+                <button type="button" ${disabledAttrs} data-device-action="delete" data-key-id="${attrKeyId}" data-device-id="${attrDeviceId}" data-host="${attrHost}" class="w-8 h-8 rounded-lg ${disabledClass} flex items-center justify-center transition-colors shrink-0">
                     <span class="material-symbols-rounded text-sm">delete</span>
                 </button>
             </div>
@@ -2596,12 +2634,12 @@ function renderDeviceModalPage() {
 
     if (totalPages > 1) {
         html += `<div class="flex items-center justify-between mt-1 px-1">
-            <button onclick="window._deviceModalState.page = Math.max(0, window._deviceModalState.page - 1); renderDeviceModalPage();" ${s.page === 0 ? 'disabled' : ''}
+            <button type="button" data-device-action="page-prev" ${s.page === 0 ? 'disabled' : ''}
                 class="w-8 h-8 rounded-xl bg-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                 <span class="material-symbols-rounded text-sm">chevron_left</span>
             </button>
             <span class="text-[10px] text-gray-500">${s.page + 1} / ${totalPages} (${s.devices.length} устр.)</span>
-            <button onclick="window._deviceModalState.page = Math.min(${totalPages - 1}, window._deviceModalState.page + 1); renderDeviceModalPage();" ${s.page >= totalPages - 1 ? 'disabled' : ''}
+            <button type="button" data-device-action="page-next" ${s.page >= totalPages - 1 ? 'disabled' : ''}
                 class="w-8 h-8 rounded-xl bg-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                 <span class="material-symbols-rounded text-sm">chevron_right</span>
             </button>
@@ -2609,7 +2647,7 @@ function renderDeviceModalPage() {
     }
 
     if (s.canDelete && s.devices.length > 1) {
-        html += `<button id="delete-all-devices-btn" onclick="deleteAllDevices(${s.keyId}, '${(s.hostName || '').replace(/'/g, "\\'")}')"
+        html += `<button type="button" id="delete-all-devices-btn" data-device-action="delete-all" data-key-id="${escapeHtmlAttr(s.keyId)}" data-host="${escapeHtmlAttr(s.hostName)}"
             class="w-full mt-1 bg-red-500/10 text-red-400 border border-red-500/20 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-red-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5">
             <span class="material-symbols-rounded text-sm">delete_sweep</span>
             Удалить все устройства
@@ -4720,9 +4758,6 @@ window.copySuccessKey = copySuccessKey;
 window.closeActionModal = closeActionModal;
 window.pickLtePackage = pickLtePackage;
 window.confirmMethod = confirmMethod;
-window.deleteDevice = deleteDevice;
-window.renderDeviceModalPage = renderDeviceModalPage;
-window.deleteAllDevices = deleteAllDevices;
 window.loadTransactions = loadTransactions;
 window.changeProfileKeysPage = changeProfileKeysPage;
 window.copyToClipboard = copyToClipboard;
