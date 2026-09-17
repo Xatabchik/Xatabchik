@@ -66,9 +66,9 @@ def test_rename_uses_store_keynames_instead_of_reload():
     assert "await refreshKeyName(keyId, { fallbackName: newName })" in rename
     assert "Название обновлено!" in rename
     assert "Название удалено" in rename
-    assert js.count("location.reload()") == 2
+    assert js.count("location.reload()") == 1
     assert "getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload())" in js
-    assert "setTimeout(() => window.location.reload(), 500)" in js
+    assert "setTimeout(() => window.location.reload(), 500)" not in js
     assert "setTimeout(() => window.location.reload(), 1200)" not in js
     assert "setTimeout(() => location.reload(), 1800)" not in js
 

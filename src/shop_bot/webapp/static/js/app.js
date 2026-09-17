@@ -2650,23 +2650,8 @@ async function saveComment(keyId, isDelete = false) {
         if (data.ok) {
             showNotification(isDelete ? 'Заметка удалена' : 'Комментарий сохранен!', 'info');
             closeActionModal();
-
-            const commentBlocks = document.querySelectorAll(`[id="comment-block-${keyId}"]`);
-            const commentTexts = document.querySelectorAll(`[id="comment-text-${keyId}"]`);
-
-            if (commentBlocks.length > 0 && commentTexts.length > 0) {
-                commentTexts.forEach(el => el.textContent = comment);
-                commentBlocks.forEach(el => {
-                    if (!comment) {
-                        el.classList.add('hidden');
-                        el.classList.remove('flex');
-                    } else {
-                        el.classList.remove('hidden');
-                        el.classList.add('flex');
-                    }
-                });
-            } else {
-                setTimeout(() => window.location.reload(), 500);
+            if (typeof setKeyComment === 'function') {
+                setKeyComment(keyId, comment);
             }
         } else {
             showNotification(data.error || 'Ошибка', 'error');
@@ -3160,6 +3145,9 @@ async function performKeysSearch(q) {
         // Server reuses the same key-card renderer as the main "Мои ключи" list,
         // so results come with full buttons/actions already wired up.
         resultsEl.innerHTML = `<div class="mt-1">${data.html}</div>`;
+        if (typeof applyKeyCommentsToDom === 'function' && typeof store !== 'undefined') {
+            applyKeyCommentsToDom(store.state);
+        }
     } catch (e) {
         if (resultsEl) resultsEl.innerHTML = '<div class="text-center text-red-400 text-xs py-2">Ошибка сети</div>';
     }
