@@ -2235,6 +2235,15 @@ function toggleSettingsMenu(e) {
     menu.classList.toggle('hidden');
 }
 
+// Меню «⋯» на главной: открыть/закрыть, Обновить, Профиль.
+// Password/email формы внутри openEditProfileModal не трогаем — только вход из меню.
+document.getElementById('menu-dots-btn')?.addEventListener('click', toggleSettingsMenu);
+document.getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload());
+document.getElementById('edit-profile-btn-menu')?.addEventListener('click', () => {
+    toggleSettingsMenu();
+    openEditProfileModal();
+});
+
 document.addEventListener('click', (e) => {
     const menu = document.getElementById('settings-menu');
     const btn = document.getElementById('menu-dots-btn');
@@ -4734,8 +4743,6 @@ async function _cancelProfileEmailChange() {
 }
 
 // Temporary compatibility bridge for legacy inline handlers in app.html.
-window.toggleSettingsMenu = toggleSettingsMenu;
-window.openEditProfileModal = openEditProfileModal;
 window.setPurchaseMode = setPurchaseMode;
 window.openTopUpModal = openTopUpModal;
 window.openActionModal = openActionModal;
