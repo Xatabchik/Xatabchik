@@ -745,7 +745,33 @@ function toggleKeyCard(button) {
 // приём, что #145 для заметок). Пагинация и «удалить все» — data-device-action.
 // Формы пароля/email профиля пересобираются innerHTML на каждом шаге:
 // data-profile-action без секретов в атрибутах, значения читаются из input.value.
+// Реферальные выплаты: шаги тип → банк → реквизиты тоже innerHTML, поэтому
+// data-payout-action. Реквизиты только из input.value, не из data-*.
 document.addEventListener('click', (event) => {
+    const payoutBtn = event.target.closest('[data-payout-action]');
+    if (payoutBtn) {
+        if (payoutBtn.disabled) return;
+        const payoutAction = payoutBtn.getAttribute('data-payout-action');
+        const payoutContent = document.getElementById('action-modal-content');
+        if (payoutAction === 'back-methods') {
+            _loadReferralPayoutMethods(payoutContent);
+        } else if (payoutAction === 'select-type') {
+            const typeIdx = parseInt(payoutBtn.getAttribute('data-payout-index') || '', 10);
+            const methods = (window._payoutMethodState && window._payoutMethodState.methods) || [];
+            const picked = methods[typeIdx];
+            if (picked && picked.type) _selectPayoutType(picked.type);
+        } else if (payoutAction === 'select-bank') {
+            const bankIdx = parseInt(payoutBtn.getAttribute('data-payout-index') || '', 10);
+            _selectPayoutBankByIndex(bankIdx);
+        } else if (payoutAction === 'submit-method') {
+            _submitPayoutMethod();
+        } else if (payoutAction === 'back-type') {
+            _renderPayoutTypeStep(payoutContent);
+        } else if (payoutAction === 'back-bank') {
+            _renderPayoutBankStep(payoutContent);
+        }
+        return;
+    }
     const profileBtn = event.target.closest('[data-profile-action]');
     if (profileBtn) {
         if (profileBtn.disabled) return;
@@ -2280,6 +2306,8 @@ document.getElementById('edit-profile-btn-menu')?.addEventListener('click', () =
     toggleSettingsMenu();
     openEditProfileModal();
 });
+document.getElementById('withdraw-request-btn')?.addEventListener('click', requestReferralWithdraw);
+document.getElementById('referral-methods-btn')?.addEventListener('click', openReferralMethodsModal);
 
 document.addEventListener('click', (e) => {
     const menu = document.getElementById('settings-menu');
@@ -4282,7 +4310,7 @@ async function _addReferralPayoutMethod() {
         const d = await resp.json();
         if (!d.ok || !d.methods?.length) {
             contentEl.innerHTML = '<div class="flex flex-col gap-3"><div class="text-center text-gray-500 py-3 text-[11px]">Администратор не настроил способы вывода</div>' +
-                `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button></div>`;
+                `<button type="button" data-payout-action="back-methods" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button></div>`;
             return;
         }
         window._payoutMethodState = { methods: d.methods, sbpBanks: d.sbp_banks || [], type: null, bank: null };
@@ -4296,15 +4324,15 @@ function _renderPayoutTypeStep(contentEl) {
     const { methods } = window._payoutMethodState;
     let html = '<div class="flex flex-col gap-2">';
     html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1">Выберите способ</div>';
-    methods.forEach(m => {
-        html += `<button onclick="_selectPayoutType('${m.type}')" class="flex items-center gap-3 p-3.5 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
+    methods.forEach((m, idx) => {
+        html += `<button type="button" data-payout-action="select-type" data-payout-index="${idx}" class="flex items-center gap-3 p-3.5 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
             <div class="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center shrink-0">
                 <span class="material-symbols-rounded text-primary text-sm">${m.icon}</span>
             </div>
             <span class="text-sm font-bold text-white">${m.label}</span>
         </button>`;
     });
-    html += `<button onclick="_loadReferralPayoutMethods(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
+    html += `<button type="button" data-payout-action="back-methods" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
     html += '</div>';
     contentEl.innerHTML = html;
 }
@@ -4329,14 +4357,14 @@ function _renderPayoutBankStep(contentEl) {
     let html = '<div class="flex flex-col gap-2">';
     html += '<div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1">Выберите банк</div>';
     sbpBanks.forEach((bank, idx) => {
-        html += `<button onclick="_selectPayoutBankByIndex(${idx})" class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
+        html += `<button type="button" data-payout-action="select-bank" data-payout-index="${idx}" class="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98] transition-all text-left w-full">
             <div class="w-8 h-8 bg-white/10 rounded-lg flex items-center justify-center shrink-0">
                 <span class="material-symbols-rounded text-gray-400 text-sm">account_balance</span>
             </div>
             <span class="text-sm font-bold text-white">${String(bank).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>
         </button>`;
     });
-    html += `<button onclick="_renderPayoutTypeStep(document.getElementById('action-modal-content'))" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
+    html += `<button type="button" data-payout-action="back-type" class="w-full mt-1 bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
     html += '</div>';
     contentEl.innerHTML = html;
 }
@@ -4353,7 +4381,7 @@ function _renderPayoutRequisiteStep(contentEl) {
     const placeholders = { sbp: '+7 900 000 00 00', card: 'Номер карты (16 цифр)', usdt_trc20: 'TRC20 адрес кошелька' };
     const hints = { sbp: 'Номер телефона СБП', card: 'Полный номер карты', usdt_trc20: 'Адрес кошелька TRC20' };
     const labelText = (_M_LABELS[type] || type) + (bank ? ' · ' + bank : '');
-    const backFn = (type === 'sbp' && window._payoutMethodState.sbpBanks.length) ? '_renderPayoutBankStep' : '_renderPayoutTypeStep';
+    const backAction = (type === 'sbp' && window._payoutMethodState.sbpBanks.length) ? 'back-bank' : 'back-type';
     let html = '<div class="flex flex-col gap-3">';
     html += `<div class="flex items-center gap-2 p-2.5 bg-primary/5 border border-primary/15 rounded-xl">
         <span class="material-symbols-rounded text-primary text-sm">${_M_ICONS[type] || 'payment'}</span>
@@ -4362,8 +4390,8 @@ function _renderPayoutRequisiteStep(contentEl) {
     html += `<div><div class="text-[9px] text-gray-500 uppercase font-bold tracking-widest mb-1.5">${hints[type] || 'Реквизиты'}</div>
         <input id="payout-requisite-input" type="text" placeholder="${placeholders[type] || ''}" class="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-primary/50 transition-colors">
     </div>`;
-    html += `<button id="payout-save-btn" onclick="_submitPayoutMethod()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">save</span>Сохранить</button>`;
-    html += `<button onclick="${backFn}(document.getElementById('action-modal-content'))" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
+    html += `<button type="button" id="payout-save-btn" data-payout-action="submit-method" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">save</span>Сохранить</button>`;
+    html += `<button type="button" data-payout-action="${backAction}" class="w-full bg-white/5 border border-white/5 text-gray-400 py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2"><span class="material-symbols-rounded text-sm">arrow_back</span>Назад</button>`;
     html += '</div>';
     contentEl.innerHTML = html;
     document.getElementById('payout-requisite-input')?.focus();
@@ -4783,8 +4811,6 @@ async function _cancelProfileEmailChange() {
 window.setPurchaseMode = setPurchaseMode;
 window.openTopUpModal = openTopUpModal;
 window.openActionModal = openActionModal;
-window.requestReferralWithdraw = requestReferralWithdraw;
-window.openReferralMethodsModal = openReferralMethodsModal;
 window.closePaymentModal = closePaymentModal;
 window.openMethodsList = openMethodsList;
 window.applyDiscountPromo = applyDiscountPromo;
@@ -4808,12 +4834,6 @@ window._submitTopUpPayment = _submitTopUpPayment;
 window._reopenTopUpPaymentLink = _reopenTopUpPaymentLink;
 window.verifyPlategaTopUp = verifyPlategaTopUp;
 window._stopTrackingTopUp = _stopTrackingTopUp;
-window._loadReferralPayoutMethods = _loadReferralPayoutMethods;
-window._selectPayoutType = _selectPayoutType;
-window._selectPayoutBankByIndex = _selectPayoutBankByIndex;
-window._submitPayoutMethod = _submitPayoutMethod;
-window._renderPayoutTypeStep = _renderPayoutTypeStep;
-window._renderPayoutBankStep = _renderPayoutBankStep;
 window.syncTelegram = syncTelegram;
 window.goToRenewKey = goToRenewKey;
 window.toggleKeyAutoRenew = toggleKeyAutoRenew;

@@ -721,13 +721,13 @@
                 Загрузка...
             </div>
             <div id="referral-info-content" class="hidden flex flex-col gap-2"></div>
-            <button id="withdraw-request-btn" onclick="requestReferralWithdraw()"
+            <button id="withdraw-request-btn" type="button"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:active:scale-100 disabled:grayscale">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
                 <span class="material-symbols-rounded text-lg">payments</span>
                 <span id="withdraw-request-btn-label">Запросить вывод</span>
             </button>
-            <button id="referral-methods-btn" onclick="openReferralMethodsModal()"
+            <button id="referral-methods-btn" type="button"
                 class="w-full glass-card border border-white/10 rounded-xl p-3 flex items-center gap-3 hover:bg-white/5 active:scale-[0.98] transition-all">
                 <div class="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center shrink-0">
                     <span class="material-symbols-rounded text-primary text-sm">account_balance</span>

@@ -280,6 +280,7 @@ console.log(JSON.stringify({
   afterHome,
   navBridge: /window\.navigateTo = navigateTo;/.test(src),
   referralBridge: /window\.requestReferralWithdraw = requestReferralWithdraw;/.test(src),
+  methodsBridge: /window\.openReferralMethodsModal = openReferralMethodsModal;/.test(src),
   payBridge: /window\.processPayment = processPayment;/.test(src),
 }));
 """
@@ -312,5 +313,6 @@ console.log(JSON.stringify({
     assert result["afterHome"]["supportHidden"] is True
     assert result["afterHome"]["homeActive"] is True
     assert result["navBridge"] is False
-    assert result["referralBridge"] is True
+    assert result["referralBridge"] is False
+    assert result["methodsBridge"] is False
     assert result["payBridge"] is True
