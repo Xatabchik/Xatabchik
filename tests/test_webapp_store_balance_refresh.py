@@ -22,7 +22,6 @@ KEYS = Path("src/shop_bot/webapp/web_router/render_keys.py")
 REMAINING_RELOAD_MARKERS = (
     "getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload())",
     "setTimeout(() => window.location.reload(), 500)",
-    "setTimeout(() => window.location.reload(), 700)",
     "setTimeout(() => window.location.reload(), 1200)",
     "setTimeout(() => location.reload(), 1800)",
 )
@@ -62,8 +61,8 @@ def test_store_js_is_minimal_pubsub_and_linked_before_app_js():
 
 def test_other_location_reload_sites_were_not_migrated():
     js = mini_app_js()
-    assert js.count("location.reload()") == 6
-    assert "setTimeout(() => window.location.reload(), 700)" in js
+    assert js.count("location.reload()") == 5
+    assert "setTimeout(() => window.location.reload(), 700)" not in js
     assert "setTimeout(() => window.location.reload(), 1200)" in js
 
 

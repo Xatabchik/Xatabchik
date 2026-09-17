@@ -2907,7 +2907,9 @@ async function renameKey(keyId, isDelete = false) {
         if (data.ok) {
             showNotification(isDelete ? 'Название удалено' : 'Название обновлено!', 'success');
             closeActionModal();
-            setTimeout(() => window.location.reload(), 700);
+            if (typeof refreshKeyName === 'function') {
+                await refreshKeyName(keyId, { fallbackName: newName });
+            }
         } else {
             showNotification(data.error || 'Ошибка', 'error');
         }
