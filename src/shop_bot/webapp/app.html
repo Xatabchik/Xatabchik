@@ -329,17 +329,17 @@
         </header>
         <main class="flex flex-col gap-4">
             <div class="grid grid-cols-3 gap-2">
-                <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('new'),50);"
+                <button type="button" id="keys-buy-btn"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
                     <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-primary transition-colors">add_card</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Купить</span>
                 </button>
-                <button onclick="window.location.hash='bay'; setTimeout(()=>setPurchaseMode('gift'),50);"
+                <button type="button" id="keys-gift-btn"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
                     <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-amber-400 transition-colors">card_giftcard</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Подарок</span>
                 </button>
-                <button onclick="window.location.hash='rebay'"
+                <button type="button" id="keys-renew-shortcut-btn"
                     class="glass-card border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 active:scale-[0.97] transition-all group">
                     <span class="material-symbols-rounded text-xl text-gray-400 group-hover:text-primary transition-colors">autorenew</span>
                     <span class="text-[10px] font-bold text-gray-400 group-hover:text-white transition-colors">Продлить</span>
@@ -423,8 +423,7 @@
                                 <div id="server-info-block"
                                     class="text-[10px] text-gray-400 leading-relaxed overflow-hidden"
                                     style="white-space: pre-line; max-height: 3.25em;"></div>
-                                <button id="server-info-toggle" class="text-[9px] text-primary font-bold mt-1 hidden"
-                                    onclick="toggleInfoBlock()">Развернуть ▼</button>
+                                <button type="button" id="server-info-toggle" class="text-[9px] text-primary font-bold mt-1 hidden">Развернуть ▼</button>
                             </div>
                         </div>
                     </div>
@@ -480,11 +479,11 @@
         <footer class="py-6 relative z-10 flex flex-col gap-2">
             <!-- Gift / Self toggle -->
             <div class="flex items-center gap-1 bg-white/5 rounded-xl p-1 mb-1">
-                <button id="purchase-mode-self" onclick="setPurchaseMode('new')"
+                <button type="button" id="purchase-mode-self"
                     class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all bg-white/10 text-white">
                     Для себя
                 </button>
-                <button id="purchase-mode-gift" onclick="setPurchaseMode('gift')"
+                <button type="button" id="purchase-mode-gift"
                     class="flex-1 py-2 rounded-lg text-[11px] font-bold transition-all text-gray-400">
                     <span class="material-symbols-rounded text-[12px] align-middle mr-0.5">card_giftcard</span>Подарок
                 </button>
@@ -537,8 +536,7 @@
                                 <div id="renew-info-block"
                                     class="text-[10px] text-gray-400 leading-relaxed overflow-hidden"
                                     style="white-space: pre-line; max-height: 3.25em;"></div>
-                                <button id="renew-info-toggle" class="text-[9px] text-primary font-bold mt-1 hidden"
-                                    onclick="toggleRenewInfoBlock()">Развернуть ▼</button>
+                                <button type="button" id="renew-info-toggle" class="text-[9px] text-primary font-bold mt-1 hidden">Развернуть ▼</button>
                             </div>
                         </div>
                     </div>
@@ -692,7 +690,7 @@
             <div class="flex flex-col gap-3">
                 <div class="flex items-center justify-between px-1">
                     <div class="text-[10px] text-gray-500 uppercase font-bold tracking-widest">История транзакций</div>
-                    <button onclick="openActionModal('transactions', null)" class="text-[9px] text-primary font-bold hover:text-primary/70 transition-colors">Все →</button>
+                    <button type="button" id="finance-tx-all-btn" class="text-[9px] text-primary font-bold hover:text-primary/70 transition-colors">Все →</button>
                 </div>
                 <div id="finance-transactions-preview" class="flex flex-col gap-2">
                     <div class="text-center text-[11px] text-gray-500 py-3">Загрузка...</div>
@@ -1208,7 +1206,7 @@
     <div id="action-modal" class="fixed inset-0 z-[220] hidden items-end sm:items-center justify-center">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-black/60 backdrop-blur-md transition-opacity duration-300 opacity-0 pointer-events-none"
-            id="action-backdrop" onclick="closeActionModal()"></div>
+            id="action-backdrop" data-action-modal="close"></div>
 
         <!-- Modal Card -->
         <div class="relative w-full max-w-[380px] mx-auto sm:mb-0 mb-0 bg-[#121212] rounded-t-[2rem] sm:rounded-[2rem] border border-white/5 shadow-2xl transform translate-y-full transition-transform duration-300 overflow-hidden ring-1 ring-white/5 flex flex-col max-h-[85vh]"
@@ -1220,7 +1218,7 @@
                     <span class="w-1 h-4 bg-primary rounded-full"></span>
                     Действие
                 </h3>
-                <button onclick="closeActionModal()"
+                <button type="button" id="action-modal-close-btn" data-action-modal="close"
                     class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors active:scale-90">
                     <span class="material-symbols-rounded text-lg">close</span>
                 </button>

@@ -5,7 +5,13 @@
 """
 
 
+import html as html_lib
+
 from shop_bot.data_manager.remnawave_repository import get_all_hosts, get_plans_for_host
+
+
+def _esc_attr(value) -> str:
+    return html_lib.escape("" if value is None else str(value), quote=True)
 
 
 def _duration_label(months: int | None, duration_days: int | None) -> str:
@@ -101,13 +107,12 @@ def _build_plans_grid_html(host_name: str, user_id: int | None, container_id: st
             span_class = " col-span-2" if is_last_odd else ""
 
             html += f"""
-            <button
+            <button type="button"
                 class="plan-btn glass-card border border-white/10 rounded-2xl p-3.5 flex flex-col items-center justify-center text-center transition-all active:scale-95 hover:border-primary/40 hover:bg-white/5 group{span_class}"
-                data-host="{plan.get('_purchase_host_name', host_name)}" data-plan-id="{plan['plan_id']}" data-price="{final_price}" data-plan-name="{plan.get('plan_name', '')}"
-                data-months="{months or 0}" data-duration-days="{duration_days or 0}"
-                onclick="selectPlan(this)">
+                data-host="{_esc_attr(plan.get('_purchase_host_name', host_name))}" data-plan-id="{_esc_attr(plan['plan_id'])}" data-price="{final_price}" data-plan-name="{_esc_attr(plan.get('plan_name', ''))}"
+                data-months="{months or 0}" data-duration-days="{duration_days or 0}">
                 <span
-                    class="plan-label text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-0.5 group-hover:text-gray-300 transition-colors">{duration_label}</span>
+                    class="plan-label text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-0.5 group-hover:text-gray-300 transition-colors">{_esc_attr(duration_label)}</span>
                 <div class="flex items-baseline gap-0.5">
                     <span class="plan-price text-xl font-bold text-white">{final_price}</span>
                     <span class="text-xs font-medium text-gray-400">₽</span>
@@ -141,13 +146,13 @@ def _get_servers_and_plans_html(user_id: int | None = None):
         icon_color = "text-primary" if is_selected else "text-gray-500"
         
         server_options_html += f"""
-        <button
+        <button type="button"
             class="server-option w-full p-2.5 flex items-center justify-between rounded-lg hover:bg-white/5 transition-colors"
-            data-server="{host_name}" data-index="{index}" onclick="selectServer(this)">
+            data-server="{_esc_attr(host_name)}" data-index="{index}">
             <div class="flex items-center gap-2.5">
                 <span class="material-symbols-rounded {icon_color} text-sm">public</span>
                 <div class="text-left">
-                    <div class="text-xs font-bold {text_color}">{host_name}</div>
+                    <div class="text-xs font-bold {text_color}">{_esc_attr(host_name)}</div>
                 </div>
             </div>
             <span class="material-symbols-rounded {check_class} text-xs server-selected-icon">check</span>

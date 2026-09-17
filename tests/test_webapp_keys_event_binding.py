@@ -57,7 +57,7 @@ def test_removed_keys_handler_bridges_are_gone():
         assert f"window.{name} = {name};" not in js, name
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
-    assert "window.setPurchaseMode = setPurchaseMode;" in js
+    assert "window.setPurchaseMode = setPurchaseMode;" not in js
 
 
 def test_served_keys_page_has_listeners_not_inline_handlers(temp_db, app_client):

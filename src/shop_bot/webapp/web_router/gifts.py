@@ -18,17 +18,21 @@ from fastapi import Request
 from shop_bot.data_manager.remnawave_repository import get_setting
 from datetime import datetime
 from urllib.parse import quote
+import html as html_lib
+
+
+def _esc_gift(value) -> str:
+    return html_lib.escape("" if value is None else str(value), quote=True)
 
 
 def _gift_link_row_html(label: str, link: str, share_text: str) -> str:
     """Одна строка со ссылкой активации подарка: текст ссылки + копировать + поделиться."""
-    safe_link = link.replace("'", "\\'")
     return f"""
     <div class="flex flex-col gap-1 min-w-0">
-        <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">{label}</div>
+        <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">{_esc_gift(label)}</div>
         <div class="flex items-center gap-2 min-w-0">
-            <div class="flex-1 min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">{link}</div>
-            <button onclick="copyToClipboard('{safe_link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+            <div class="flex-1 min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">{_esc_gift(link)}</div>
+            <button type="button" data-copy-action="clipboard" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
                 <span class="material-symbols-rounded text-sm">content_copy</span>
             </button>
             <a href="https://t.me/share/url?url={quote(link, safe='')}&text={quote(share_text, safe='')}" target="_blank"
@@ -60,7 +64,7 @@ def _get_gift_action_block_html(gift_code: str, webapp_link: str, telegram_link:
              </div>
              {links_html}
              <div class="mt-3 pt-2 border-t border-dashed border-white/10">
-                 <button onclick="activateOwnGift('{gift_code}', this)"
+                 <button type="button" data-gift-action="activate" data-gift-code="{_esc_gift(gift_code)}"
                      class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                      <span class="material-symbols-rounded text-sm">redeem</span>
                      <span>Активировать себе</span>

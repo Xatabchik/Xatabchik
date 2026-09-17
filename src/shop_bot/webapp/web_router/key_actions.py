@@ -187,8 +187,7 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
         keys = search_user_keys_by_email(user_id, q)
         found_keys = keys[:20]
         # Reuse the same card renderer as the main "Мои ключи" list so search
-        # results get full parity: same buttons, same onclick wiring (extend,
-        # rename, comment, devices, auto-renew, copy link, etc.).
+        # results get full parity: same buttons, same data-* event wiring.
         html = _get_profile_keys_html(found_keys) if found_keys else ""
 
         return {"ok": True, "html": html, "total": len(found_keys)}

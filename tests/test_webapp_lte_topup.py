@@ -72,7 +72,9 @@ def test_lte_card_shows_used_over_limit_and_topup_button(temp_db):
     assert "💰 LTE:" in html
     assert "0 ГБ / 25 ГБ" in html
     assert "Докупить LTE" in html
-    assert f"openLteTopup({key_id})" in html
+    assert f'data-key-action="lte-topup"' in html
+    assert f'data-key-id="{key_id}"' in html
+    assert f"openLteTopup({key_id})" not in html
 
 
 def test_lte_card_uses_squad_label_instead_of_lte(temp_db):

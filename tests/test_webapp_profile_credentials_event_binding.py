@@ -49,7 +49,7 @@ def test_removed_profile_credential_bridges_are_gone():
     assert "window._cancelProfileEmailChange = _cancelProfileEmailChange;" not in js
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
-    assert "window.setPurchaseMode = setPurchaseMode;" in js
+    assert "window.setPurchaseMode = setPurchaseMode;" not in js
 
 
 def test_served_page_profile_credentials_use_delegation(temp_db, app_client):

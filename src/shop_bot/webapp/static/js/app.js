@@ -1,8 +1,8 @@
 /* Mini App frontend entrypoint.
  *
- * Loaded as a classic deferred script from app.html (not type=module) so
- * legacy inline onclick/oninput handlers keep working via function globals
- * and the explicit window.* bridges at the bottom of this file.
+ * Loaded as a classic deferred script from app.html (not type=module).
+ * Inline onclick handlers were removed in Stage 2 (#153–#163); clicks go
+ * through addEventListener and document-level data-* delegation.
  *
  * API client (apiFetch / authHeaders / getAuthToken) stays in the <head>
  * bootstrap of app.html: it must run before first paint to strip ?token=
@@ -751,6 +751,10 @@ function toggleKeyCard(button) {
 // пополнения каждый шаг пишет innerHTML — data-topup-action. Сумма и
 // промокод из input.value, URL оплаты из window._topUpPaymentUrl /
 // activePaymentUrl, не из data-*.
+// Leftover #152: универсальная модалка/транзакции/подарки/копирование —
+// data-action-modal, data-tx-action, data-gifts-page, data-copy-action
+// (текст из соседнего .font-mono, не из data-*). SSR-карточки ключей —
+// data-key-action renew/auto-renew/lte-topup; планы — .plan-btn.
 document.addEventListener('click', (event) => {
     const topupBtn = event.target.closest('[data-topup-action]');
     if (topupBtn) {
@@ -865,6 +869,58 @@ document.addEventListener('click', (event) => {
         }
         return;
     }
+    const actionModalBtn = event.target.closest('[data-action-modal]');
+    if (actionModalBtn) {
+        if (actionModalBtn.disabled) return;
+        const modalAction = actionModalBtn.getAttribute('data-action-modal');
+        if (modalAction === 'close') closeActionModal();
+        else if (modalAction === 'transactions') openActionModal('transactions', null);
+        return;
+    }
+    const txBtn = event.target.closest('[data-tx-action]');
+    if (txBtn) {
+        if (txBtn.disabled) return;
+        const txAction = txBtn.getAttribute('data-tx-action');
+        if (txAction === 'page-prev') loadTransactions(_txPage - 1);
+        else if (txAction === 'page-next') loadTransactions(_txPage + 1);
+        return;
+    }
+    const profileKeysBtn = event.target.closest('[data-profile-keys-page]');
+    if (profileKeysBtn) {
+        if (profileKeysBtn.disabled) return;
+        const delta = parseInt(profileKeysBtn.getAttribute('data-profile-keys-page') || '', 10);
+        if (delta) changeProfileKeysPage(delta);
+        return;
+    }
+    const giftsPageBtn = event.target.closest('[data-gifts-page]');
+    if (giftsPageBtn) {
+        if (giftsPageBtn.disabled) return;
+        const delta = parseInt(giftsPageBtn.getAttribute('data-gifts-page') || '', 10);
+        if (delta) changeGiftsPage(delta);
+        return;
+    }
+    const copyBtn = event.target.closest('[data-copy-action="clipboard"]');
+    if (copyBtn) {
+        const prev = copyBtn.previousElementSibling;
+        copyToClipboard(((prev && prev.textContent) || '').trim(), copyBtn);
+        return;
+    }
+    const giftAct = event.target.closest('[data-gift-action="activate"]');
+    if (giftAct) {
+        if (giftAct.disabled) return;
+        activateOwnGift(giftAct.getAttribute('data-gift-code') || '', giftAct);
+        return;
+    }
+    const syncBtn = event.target.closest('[data-sync-telegram]');
+    if (syncBtn) {
+        syncTelegram(syncBtn.getAttribute('data-bot-username') || '');
+        return;
+    }
+    const planBtn = event.target.closest('.plan-btn');
+    if (planBtn) {
+        selectPlan(planBtn);
+        return;
+    }
     const toggle = event.target.closest('.key-toggle');
     if (toggle) {
         toggleKeyCard(toggle);
@@ -917,13 +973,18 @@ document.addEventListener('click', (event) => {
         openActionModal('rename', keyId);
     } else if (action === 'comment' && keyId) {
         openActionModal('comment', keyId);
+    } else if (action === 'renew' && keyId) {
+        goToRenewKey(keyId);
+    } else if (action === 'auto-renew' && keyId) {
+        toggleKeyAutoRenew(keyId, btn.getAttribute('data-auto-renew') === 'true', btn);
+    } else if (action === 'lte-topup' && keyId) {
+        openLteTopup(keyId);
     }
 });
 // Dropdown Logic
 const dropdownTrigger = document.getElementById('dropdown-trigger');
 const keyDropdown = document.getElementById('key-dropdown');
 const dropdownArrow = document.getElementById('dropdown-arrow');
-const dropdownOptions = document.querySelectorAll('.dropdown-option');
 const displaySelectedKey = document.getElementById('display-selected-key');
 
 function setKeyDropdownOpen(open) {
@@ -949,11 +1010,15 @@ dropdownTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleDropdown();
 });
-keyDropdown.addEventListener('click', (e) => e.stopPropagation());
+keyDropdown.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const option = e.target.closest('.dropdown-option');
+    if (option) selectRenewKey(option);
+});
 document.addEventListener('click', () => {
     setKeyDropdownOpen(false);
 });
-window.selectRenewKey = function (option, skipToggle = false) {
+function selectRenewKey(option, skipToggle = false) {
     const keyNum = option.getAttribute('data-key');
     if (!keyNum) return;
     window.selectedKeyId = keyNum.replace('#', '');
@@ -1021,10 +1086,6 @@ window.selectRenewKey = function (option, skipToggle = false) {
         toggleDropdown();
     }
 };
-
-dropdownOptions.forEach(option => {
-    option.addEventListener('click', () => window.selectRenewKey(option));
-});
 // Server Dropdown Logic
 const serverDropdownTrigger = document.getElementById('server-dropdown-trigger');
 const serverDropdown = document.getElementById('server-dropdown');
@@ -1057,14 +1118,18 @@ serverDropdownTrigger.addEventListener('click', (e) => {
     toggleServerDropdown();
 });
 
-serverDropdown.addEventListener('click', (e) => e.stopPropagation());
+serverDropdown.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opt = e.target.closest('.server-option');
+    if (opt) selectServer(opt);
+});
 
 document.addEventListener('click', () => {
     setServerDropdownOpen(false);
 });
 
 // Global function to handle server selection
-window.selectServer = function (element) {
+function selectServer(element) {
     const serverName = element.getAttribute('data-server');
     const serverIndex = element.getAttribute('data-index');
 
@@ -1126,7 +1191,7 @@ window.selectServer = function (element) {
     loadDeviceTiers(serverName, 'purchase');
 };
 
-window.selectPlan = function (element) {
+function selectPlan(element) {
     const isRenewPage = !!element.closest('#renew-page');
     const pageScope = isRenewPage ? '#renew-page' : '#purchase-page';
     document.querySelectorAll(pageScope + ' .plan-btn').forEach(btn => {
@@ -1184,18 +1249,18 @@ function updateInfoToggleGeneric(blockId, toggleId) {
     toggle.textContent = 'Развернуть ▼';
 }
 
-window.toggleInfoBlock = function () {
+function toggleInfoBlock() {
     toggleInfoGeneric('server-info-block', 'server-info-toggle');
-};
-window.updateInfoToggle = function () {
+}
+function updateInfoToggle() {
     updateInfoToggleGeneric('server-info-block', 'server-info-toggle');
-};
-window.toggleRenewInfoBlock = function () {
+}
+function toggleRenewInfoBlock() {
     toggleInfoGeneric('renew-info-block', 'renew-info-toggle');
-};
-window.updateRenewInfoToggle = function () {
+}
+function updateRenewInfoToggle() {
     updateInfoToggleGeneric('renew-info-block', 'renew-info-toggle');
-};
+}
 
 function initApp() {
     const firstServer = document.querySelector('.server-option[data-index="0"]');
@@ -1218,8 +1283,8 @@ function initApp() {
     updateRenewInfoToggle();
 
     const firstKey = document.querySelector('.dropdown-option[data-index="0"]');
-    if (firstKey && typeof window.selectRenewKey === 'function') {
-        window.selectRenewKey(firstKey, true);
+    if (firstKey && typeof selectRenewKey === 'function') {
+        selectRenewKey(firstKey, true);
     }
 
     const firstServerEl = document.querySelector('.server-option[data-index="0"]');
@@ -2208,25 +2273,15 @@ async function refreshAppData() {
         // so re-scan it and reset client-side pagination state.
         if (typeof initProfileKeysPagination === 'function') initProfileKeysPagination();
 
-        // Re-bind renew keys dropdown option clicks
         const newDropdownOptions = document.querySelectorAll('#renew-keys-dropdown-container .dropdown-option');
 
-        newDropdownOptions.forEach(option => {
-            option.addEventListener('click', () => {
-                if (typeof window.selectRenewKey === 'function') {
-                    window.selectRenewKey(option);
-                }
-            });
-        });
-
-        // Выбираем ключ заново (тот же самый или первый доступный)
         if (newDropdownOptions.length > 0) {
             let keyToSelect = Array.from(newDropdownOptions).find(o => {
                 const kid = o.getAttribute('data-key');
                 return kid && kid.replace('#', '') === window.selectedKeyId;
             }) || newDropdownOptions[0];
-            if (keyToSelect && typeof window.selectRenewKey === 'function') {
-                window.selectRenewKey(keyToSelect, true);
+            if (keyToSelect && typeof selectRenewKey === 'function') {
+                selectRenewKey(keyToSelect, true);
             }
         }
 
@@ -2391,6 +2446,20 @@ document.getElementById('edit-profile-btn-menu')?.addEventListener('click', () =
 document.getElementById('withdraw-request-btn')?.addEventListener('click', requestReferralWithdraw);
 document.getElementById('referral-methods-btn')?.addEventListener('click', openReferralMethodsModal);
 document.getElementById('topup-finance-btn')?.addEventListener('click', openTopUpModal);
+document.getElementById('purchase-mode-self')?.addEventListener('click', () => setPurchaseMode('new'));
+document.getElementById('purchase-mode-gift')?.addEventListener('click', () => setPurchaseMode('gift'));
+document.getElementById('server-info-toggle')?.addEventListener('click', toggleInfoBlock);
+document.getElementById('renew-info-toggle')?.addEventListener('click', toggleRenewInfoBlock);
+document.getElementById('finance-tx-all-btn')?.addEventListener('click', () => openActionModal('transactions', null));
+document.getElementById('keys-buy-btn')?.addEventListener('click', () => {
+    window.location.hash = 'bay';
+    setTimeout(() => setPurchaseMode('new'), 50);
+});
+document.getElementById('keys-gift-btn')?.addEventListener('click', () => {
+    window.location.hash = 'bay';
+    setTimeout(() => setPurchaseMode('gift'), 50);
+});
+document.getElementById('keys-renew-shortcut-btn')?.addEventListener('click', () => { window.location.hash = 'rebay'; });
 
 document.addEventListener('click', (e) => {
     const menu = document.getElementById('settings-menu');
@@ -2937,12 +3006,12 @@ async function loadTransactions(page) {
         if (data.total > 10) {
             const totalPages = Math.ceil(data.total / 10);
             html += `<div class="flex items-center justify-between mt-2 px-1">
-                <button onclick="loadTransactions(${_txPage - 1})" ${_txPage <= 1 ? 'disabled' : ''}
+                <button type="button" data-tx-action="page-prev" ${_txPage <= 1 ? 'disabled' : ''}
                     class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                     <span class="material-symbols-rounded text-sm">chevron_left</span>
                 </button>
                 <span class="text-[10px] text-gray-500">${_txPage} / ${totalPages} (${data.total})</span>
-                <button onclick="loadTransactions(${_txPage + 1})" ${!data.has_more ? 'disabled' : ''}
+                <button type="button" data-tx-action="page-next" ${!data.has_more ? 'disabled' : ''}
                     class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                     <span class="material-symbols-rounded text-sm">chevron_right</span>
                 </button>
@@ -3007,12 +3076,12 @@ function renderProfileKeysPage() {
         paginationEl.classList.remove('hidden');
         paginationEl.innerHTML = `
             <div class="flex items-center justify-between px-1">
-                <button onclick="changeProfileKeysPage(-1)" ${_profileKeysPage === 0 ? 'disabled' : ''}
+                <button type="button" data-profile-keys-page="-1" ${_profileKeysPage === 0 ? 'disabled' : ''}
                     class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                     <span class="material-symbols-rounded text-sm">chevron_left</span>
                 </button>
                 <span class="text-[10px] text-gray-500">${_profileKeysPage + 1} / ${totalPages} (${cards.length})</span>
-                <button onclick="changeProfileKeysPage(1)" ${_profileKeysPage >= totalPages - 1 ? 'disabled' : ''}
+                <button type="button" data-profile-keys-page="1" ${_profileKeysPage >= totalPages - 1 ? 'disabled' : ''}
                     class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                     <span class="material-symbols-rounded text-sm">chevron_right</span>
                 </button>
@@ -3246,7 +3315,7 @@ function _renderWithdrawSubmitted(contentEl, amount, requestId) {
                 'Мы обработаем её в ближайшее время.<br>' +
                 'Пока заявка на рассмотрении, новую отправить нельзя.' +
             '</div>' +
-            '<button onclick="closeActionModal()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
+            '<button type="button" data-action-modal="close" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
         '</div>';
 }
 
@@ -3260,7 +3329,7 @@ function _renderWithdrawAlreadyOpen(contentEl) {
             '<div class="text-[11px] text-gray-400 leading-relaxed">' +
                 'У вас есть незакрытая заявка на вывод. Дождитесь её обработки — одновременно можно подать только одну заявку.' +
             '</div>' +
-            '<button onclick="closeActionModal()" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
+            '<button type="button" data-action-modal="close" class="w-full bg-white text-black py-3 rounded-xl font-bold text-[11px] uppercase tracking-wider shadow-md hover:bg-gray-100 active:scale-[0.98] transition-all">Понятно</button>' +
         '</div>';
 }
 
@@ -3524,8 +3593,8 @@ async function loadReferralInfo() {
             <div>
                 <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Ссылка в Telegram</div>
                 <div class="flex items-center gap-2">
-                    <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${botLink}</div>
-                    <button onclick="copyToClipboard('${botLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
+                    <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${escapeHtmlAttr(botLink)}</div>
+                    <button type="button" data-copy-action="clipboard" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
                         <span class="material-symbols-rounded text-sm">content_copy</span>
                     </button>
                     <a href="https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent(shareText)}" target="_blank"
@@ -3538,8 +3607,8 @@ async function loadReferralInfo() {
             <div>
                 <div class="text-[9px] text-gray-500 uppercase font-bold tracking-wider mb-1">Ссылка на сайт</div>
                 <div class="flex items-center gap-2">
-                    <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${webLink}</div>
-                    <button onclick="copyToClipboard('${webLink}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
+                    <div class="flex-1 bg-black/30 rounded-lg px-3 py-2 text-[10px] text-gray-300 font-mono truncate">${escapeHtmlAttr(webLink)}</div>
+                    <button type="button" data-copy-action="clipboard" class="shrink-0 bg-primary/20 text-primary rounded-lg p-2 hover:bg-primary/30 active:scale-95 transition-all">
                         <span class="material-symbols-rounded text-sm">content_copy</span>
                     </button>
                     <a href="https://t.me/share/url?url=${encodeURIComponent(webLink)}&text=${encodeURIComponent(shareText)}" target="_blank"
@@ -3578,8 +3647,8 @@ function _giftLinkRowHtml(label, link, shareText) {
         <div class="flex flex-col gap-1 min-w-0">
             <div class="text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5">${label}</div>
             <div class="flex items-center gap-2 min-w-0">
-                <div class="flex-1 min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${link}</div>
-                <button onclick="copyToClipboard('${link}', this)" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
+                <div class="flex-1 min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate">${escapeHtmlAttr(link)}</div>
+                <button type="button" data-copy-action="clipboard" class="shrink-0 bg-primary/20 text-primary rounded-lg p-1.5 hover:bg-primary/30 active:scale-95 transition-all">
                     <span class="material-symbols-rounded text-sm">content_copy</span>
                 </button>
                 <a href="https://t.me/share/url?url=${encodeURIComponent(link)}&text=${text}" target="_blank"
@@ -3613,7 +3682,7 @@ function _giftCardHtml(g) {
             ${_giftLinkRowHtml('Ссылка активации (в приложении)', webappLink, shareText)}
             ${_giftLinkRowHtml('Ссылка активации (в Telegram)', telegramLink, shareText)}
             <div class="mt-3 pt-2 border-t border-dashed border-white/10">
-                <button onclick="activateOwnGift('${g.gift_code}', this)" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
+                <button type="button" data-gift-action="activate" data-gift-code="${escapeHtmlAttr(g.gift_code)}" class="w-full bg-amber-500 hover:bg-amber-600 text-black py-2.5 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                     <span class="material-symbols-rounded text-sm">redeem</span>
                     <span>Активировать себе</span>
                 </button>
@@ -3638,12 +3707,12 @@ function renderGiftsPage() {
             paginationEl.classList.remove('hidden');
             paginationEl.innerHTML = `
                 <div class="flex items-center justify-between px-1">
-                    <button onclick="changeGiftsPage(-1)" ${s.page === 0 ? 'disabled' : ''}
-                        class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
-                        <span class="material-symbols-rounded text-sm">chevron_left</span>
-                    </button>
+                    <button type="button" data-gifts-page="-1" ${s.page === 0 ? 'disabled' : ''}
+                    class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
+                    <span class="material-symbols-rounded text-sm">chevron_left</span>
+                </button>
                     <span class="text-[10px] text-gray-500">${s.page + 1} / ${totalPages} (${s.gifts.length})</span>
-                    <button onclick="changeGiftsPage(1)" ${s.page >= totalPages - 1 ? 'disabled' : ''}
+                    <button type="button" data-gifts-page="1" ${s.page >= totalPages - 1 ? 'disabled' : ''}
                         class="w-9 h-9 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 hover:bg-white/10 disabled:opacity-30">
                         <span class="material-symbols-rounded text-sm">chevron_right</span>
                     </button>
@@ -4512,8 +4581,8 @@ function goToRenewKey(keyId) {
     window.location.hash = 'rebay';
     setTimeout(() => {
         const option = document.querySelector(`#renew-keys-dropdown-container .dropdown-option[data-key="#${keyId}"]`);
-        if (option && typeof window.selectRenewKey === 'function') {
-            window.selectRenewKey(option, true);
+        if (option && typeof selectRenewKey === 'function') {
+            selectRenewKey(option, true);
         }
     }, 150);
 }
@@ -4531,7 +4600,7 @@ async function toggleKeyAutoRenew(keyId, currentEnabled, btnEl) {
         });
         const d = await resp.json();
         if (d.ok) {
-            btnEl.setAttribute('onclick', `toggleKeyAutoRenew(${keyId}, ${newState}, this)`);
+            btnEl.setAttribute('data-auto-renew', newState ? 'true' : 'false');
             const icon = btnEl.querySelector('.material-symbols-rounded');
             const label = btnEl.querySelector('.auto-renew-label');
             if (newState) {
@@ -4889,20 +4958,6 @@ async function _cancelProfileEmailChange() {
     } catch (e) { /* игнорируем сетевые ошибки при отмене */ }
     _loadProfileMain(document.getElementById('action-modal-content'));
 }
-
-// Temporary compatibility bridge for legacy inline handlers in app.html.
-window.setPurchaseMode = setPurchaseMode;
-window.openActionModal = openActionModal;
-window.closeActionModal = closeActionModal;
-window.loadTransactions = loadTransactions;
-window.changeProfileKeysPage = changeProfileKeysPage;
-window.copyToClipboard = copyToClipboard;
-window.activateOwnGift = activateOwnGift;
-window.changeGiftsPage = changeGiftsPage;
-window.syncTelegram = syncTelegram;
-window.goToRenewKey = goToRenewKey;
-window.toggleKeyAutoRenew = toggleKeyAutoRenew;
-window.openLteTopup = openLteTopup;
 
 // DOM is parsed: this file is loaded with defer. initApp originally ran
 // on DOMContentLoaded at the end of the first inline script, after the

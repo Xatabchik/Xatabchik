@@ -47,7 +47,7 @@ def test_removed_settings_menu_bridges_are_gone():
     js = mini_app_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
-    assert "window.openActionModal = openActionModal;" in js
+    assert "window.openActionModal = openActionModal;" not in js
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
 

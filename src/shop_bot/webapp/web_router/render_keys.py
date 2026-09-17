@@ -500,7 +500,7 @@ def _get_profile_card_html(user: dict | None, referral_count: int, keys_count: i
     if isinstance(user_id, int) and str(user_id).startswith("999"):
          bot_username = get_setting("telegram_bot_username") or "bot"
          sync_btn_html = f'''
-                    <button onclick="syncTelegram('{bot_username}')" class="mt-2 w-full bg-[#0088cc]/20 hover:bg-[#0088cc]/30 text-[#00aaff] border border-[#0088cc]/30 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
+                    <button type="button" data-sync-telegram="1" data-bot-username="{_esc_text(bot_username)}" class="mt-2 w-full bg-[#0088cc]/20 hover:bg-[#0088cc]/30 text-[#00aaff] border border-[#0088cc]/30 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-sm">
                         <span class="material-symbols-rounded text-base">sync</span>
                         <span>Синхронизировать с Telegram</span>
                     </button>
@@ -695,18 +695,18 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                          </button>
                      </div>
                      <div class="grid grid-cols-2 gap-2 mt-1">
-                         <button onclick="goToRenewKey({data['key_id']})"
+                         <button type="button" data-key-action="renew" data-key-id="{kid}"
                              class="w-full bg-primary/10 border border-primary/20 text-primary py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-primary/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1">
                              <span class="material-symbols-rounded text-sm">autorenew</span>
                              <span>Продлить</span>
                          </button>
-                         <button id="auto-renew-btn-{data['key_id']}" onclick="toggleKeyAutoRenew({data['key_id']}, {'true' if data['auto_renew'] else 'false'}, this)"
+                         <button type="button" id="auto-renew-btn-{kid}" data-key-action="auto-renew" data-key-id="{kid}" data-auto-renew="{'true' if data['auto_renew'] else 'false'}"
                              class="w-full py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-1 border {'border-primary/30 text-primary bg-primary/10' if data['auto_renew'] else 'border-white/5 text-white bg-white/5 hover:bg-white/10'}">
                              <span class="material-symbols-rounded text-sm">{'update' if data['auto_renew'] else 'pause_circle'}</span>
                              <span class="auto-renew-label">{'Авто: ВКЛ' if data['auto_renew'] else 'Авто: ВЫКЛ'}</span>
                          </button>
                      </div>
-                     {f'''<button onclick="openLteTopup({data["key_id"]})"
+                     {f'''<button type="button" data-key-action="lte-topup" data-key-id="{kid}"
                         class="w-full bg-amber-500/10 border border-amber-500/20 text-amber-300 py-2 rounded-xl font-bold text-[10px] uppercase tracking-wider hover:bg-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1 mt-1">
                          <span class="material-symbols-rounded text-sm">bolt</span>
                          <span>Докупить {_esc_text(data.get("lte_label") or "LTE")}</span>
