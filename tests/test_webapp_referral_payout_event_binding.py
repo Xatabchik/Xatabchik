@@ -49,18 +49,19 @@ def test_referral_payout_have_no_inline_handlers():
     assert "'back-bank'" in js
     assert "getElementById('withdraw-request-btn')?.addEventListener('click', requestReferralWithdraw)" in js
     assert "getElementById('referral-methods-btn')?.addEventListener('click', openReferralMethodsModal)" in js
-    assert 'onclick="openTopUpModal()"' in html
-    assert "window.processPayment = processPayment;" in js
+    assert 'onclick="openTopUpModal()"' not in html
+    assert "window.processPayment = processPayment;" not in js
 
 
 def test_removed_referral_payout_bridges_are_gone():
     js = mini_app_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
-    assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.processPayment = processPayment;" in js
+    assert "window.openTopUpModal = openTopUpModal;" not in js
+    assert "window.processPayment = processPayment;" not in js
+    assert "window.closePaymentModal = closePaymentModal;" not in js
     assert "window.setPurchaseMode = setPurchaseMode;" in js
-    assert "window.closePaymentModal = closePaymentModal;" in js
+    assert "window.openActionModal = openActionModal;" in js
 
 
 def test_served_page_referral_payout_use_delegation(temp_db, app_client):
@@ -447,4 +448,4 @@ waitUntil(() => notifications.some((n) => n && String(n).includes('Минима�
     assert result["methodsBridge"] is False
     assert result["typeBridge"] is False
     assert result["submitBridge"] is False
-    assert result["payBridge"] is True
+    assert result["payBridge"] is False

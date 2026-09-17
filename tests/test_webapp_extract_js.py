@@ -18,31 +18,13 @@ from webapp_frontend_src import (
 WEBAPP = Path("src/shop_bot/webapp")
 BRIDGE_NAMES = (
     "setPurchaseMode",
-    "openTopUpModal",
     "openActionModal",
-    "closePaymentModal",
-    "openMethodsList",
-    "applyDiscountPromo",
-    "processPayment",
-    "changePaymentStep",
-    "goToPaymentLink",
-    "verifyPlategaPayment",
-    "cancelPayment",
-    "copySuccessKey",
     "closeActionModal",
-    "pickLtePackage",
-    "confirmMethod",
     "loadTransactions",
     "changeProfileKeysPage",
     "copyToClipboard",
     "activateOwnGift",
     "changeGiftsPage",
-    "_topUpContinueToMethods",
-    "_renderTopUpAmountStep",
-    "_submitTopUpPayment",
-    "_reopenTopUpPaymentLink",
-    "verifyPlategaTopUp",
-    "_stopTrackingTopUp",
     "syncTelegram",
     "goToRenewKey",
     "toggleKeyAutoRenew",
@@ -126,7 +108,10 @@ def test_inline_onclick_names_still_present_in_templates():
     keys = (WEBAPP / "web_router" / "render_keys.py").read_text(encoding="utf-8")
     plans = (WEBAPP / "web_router" / "render_plans.py").read_text(encoding="utf-8")
     assert 'onclick="navigateTo(' not in html
-    assert 'onclick="openTopUpModal()"' in html
+    assert 'onclick="openTopUpModal()"' not in html
+    assert 'onclick="processPayment()"' not in html
+    assert 'onclick="closePaymentModal()"' not in html
+    assert 'onclick="requestReferralWithdraw()' not in html
     assert 'onclick="copyKey' not in html  # copy goes through data-key-action
     assert 'oninput="onKeysSearchInput()' not in html
     assert 'onclick="clearKeysSearch()' not in html

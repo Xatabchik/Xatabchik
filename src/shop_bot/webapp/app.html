@@ -682,7 +682,7 @@
                     <div class="text-[10px] text-gray-500 mt-1">Для оплаты подписки и других услуг</div>
                 </div>
             </div>
-            <button onclick="openTopUpModal()"
+            <button id="topup-finance-btn" type="button"
                 class="w-full bg-white dark:bg-gray-200 text-gray-900 dark:text-black py-3.5 px-4 rounded-xl font-bold text-sm shadow-md hover:scale-[1.02] active:scale-[0.98] transition-transform flex items-center justify-center gap-2 group relative overflow-hidden">
                 <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
                 <span class="material-symbols-rounded text-lg">add_card</span>
@@ -984,7 +984,7 @@
 
     <div id="payment-modal" class="fixed inset-0 z-[210] hidden items-end sm:items-center justify-center">
         <div class="fixed inset-0 bg-black/70 backdrop-blur-xl transition-opacity duration-300 opacity-0 pointer-events-none"
-            id="payment-backdrop" onclick="closePaymentModal()"></div>
+            id="payment-backdrop" data-payment-action="close"></div>
 
         <div class="relative w-full max-w-[400px] mx-auto sm:mb-0 mb-0 bg-[#0D0D0D] rounded-t-[1.75rem] sm:rounded-[1.75rem] border border-white/[0.06] shadow-[0_-8px_40px_rgba(0,0,0,0.5)] transform translate-y-full transition-transform duration-300 overflow-hidden"
             id="payment-card">
@@ -1004,7 +1004,7 @@
                         </div>
                         <h3 class="text-[13px] font-bold text-white tracking-tight">Подтверждение</h3>
                     </div>
-                    <button onclick="closePaymentModal()"
+                    <button type="button" data-payment-action="close"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
                         <span class="material-symbols-rounded text-[16px]">close</span>
                     </button>
@@ -1026,7 +1026,7 @@
                     </div>
                 </div>
 
-                <button id="method-selector-btn" onclick="openMethodsList()"
+                <button id="method-selector-btn" type="button" data-payment-action="open-methods"
                     class="w-full bg-[#141414] rounded-xl p-3 border border-white/[0.04] flex items-center justify-between hover:border-primary/20 active:scale-[0.99] transition-all group">
                     <div class="flex items-center gap-3">
                         <div id="method-icon-container"
@@ -1053,13 +1053,13 @@
                     </div>
                     <input type="text" id="confirm-promo-input" placeholder="Промокод..."
                         class="bg-transparent border-none text-white text-[11px] p-0 focus:ring-0 w-full placeholder-gray-600 font-bold">
-                    <button id="apply-promo-btn" onclick="applyDiscountPromo()"
+                    <button id="apply-promo-btn" type="button" data-payment-action="apply-promo"
                         class="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-all">
                         Применить
                     </button>
                 </div>
 
-                <button id="final-pay-btn" onclick="processPayment()" disabled
+                <button id="final-pay-btn" type="button" data-payment-action="process" disabled
                     class="w-full bg-white/[0.03] text-gray-600 py-3 rounded-xl font-bold text-[11px] uppercase tracking-[0.12em] transition-all flex items-center justify-center gap-2 pointer-events-none border border-white/[0.04]">
                     <span id="final-pay-btn-text">Выберите способ оплаты</span>
                 </button>
@@ -1074,7 +1074,7 @@
                         </div>
                         <h3 class="text-[13px] font-bold text-white tracking-tight">Докупка LTE</h3>
                     </div>
-                    <button onclick="closePaymentModal()"
+                    <button type="button" data-payment-action="close"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
                         <span class="material-symbols-rounded text-[16px]">close</span>
                     </button>
@@ -1086,7 +1086,7 @@
             <div id="payment-step-select"
                 class="p-5 pb-6 hidden flex-col gap-4 h-full max-h-[70vh] flex flex-col relative z-10">
                 <div class="flex items-center justify-between shrink-0">
-                    <button onclick="changePaymentStep('confirm')"
+                    <button type="button" data-payment-action="step-confirm"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
                         <span class="material-symbols-rounded text-[16px]">arrow_back</span>
                     </button>
@@ -1101,7 +1101,7 @@
             <div id="payment-step-waiting"
                 class="p-6 pb-7 hidden flex-col items-center text-center gap-5 relative z-10">
                 <div class="absolute top-4 right-4">
-                    <button onclick="closePaymentModal()"
+                    <button type="button" data-payment-action="close"
                         class="w-7 h-7 rounded-full bg-white/[0.04] flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition-all">
                         <span class="material-symbols-rounded text-[16px]">close</span>
                     </button>
@@ -1127,16 +1127,16 @@
                 </div>
 
                 <div class="w-full flex flex-col gap-2.5 mt-1">
-                    <button id="redirect-pay-btn" onclick="goToPaymentLink()"
+                    <button id="redirect-pay-btn" type="button" data-payment-action="go-link"
                         class="w-full bg-white text-black py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                         <span>Перейти к оплате</span>
                         <span class="material-symbols-rounded text-sm">open_in_new</span>
                     </button>
-                    <button id="verify-platega-pay-btn" type="button" onclick="verifyPlategaPayment()"
+                    <button id="verify-platega-pay-btn" type="button" data-payment-action="verify"
                         class="hidden w-full bg-primary text-white py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                         Проверить оплату
                     </button>
-                    <button onclick="cancelPayment()"
+                    <button type="button" data-payment-action="cancel"
                         class="text-[11px] text-gray-600 hover:text-gray-300 transition-colors py-1.5 font-medium">
                         Отменить
                     </button>
@@ -1173,7 +1173,7 @@
                         <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Ваш ключ
                             доступа</span>
                         <div class="flex items-center gap-2.5 bg-black/30 p-2.5 rounded-xl border border-white/[0.04] cursor-pointer hover:border-primary/20 transition-all group active:scale-[0.99]"
-                            onclick="copySuccessKey()">
+                            data-payment-action="copy-key">
                             <div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
                                 <span class="material-symbols-rounded text-sm text-primary">key</span>
                             </div>
@@ -1186,14 +1186,12 @@
                 </div>
 
                 <div class="w-full flex flex-col gap-2.5">
-                    <button id="success-connect-btn"
-                        onclick="openLinkSafe((document.getElementById('success-key').textContent || '').trim())"
+                    <button id="success-connect-btn" type="button" data-payment-action="connect-key"
                         class="w-full bg-white text-black py-3 rounded-xl font-bold text-[12px] uppercase tracking-[0.08em] shadow-[0_4px_20px_rgba(255,255,255,0.12)] hover:shadow-[0_6px_25px_rgba(255,255,255,0.18)] active:scale-[0.98] transition-all flex items-center justify-center gap-2">
                         <span class="material-symbols-rounded text-sm">bolt</span>
                         <span>Подключить</span>
                     </button>
-                    <button
-                        onclick="closePaymentModal(); window.location.hash = '';"
+                    <button type="button" data-payment-action="close-home"
                         class="w-full py-2.5 rounded-xl text-gray-500 text-[11px] font-bold hover:text-gray-300 transition-colors">
                         Закрыть
                     </button>
