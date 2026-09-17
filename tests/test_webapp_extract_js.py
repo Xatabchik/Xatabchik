@@ -20,8 +20,6 @@ BRIDGE_NAMES = (
     "setPurchaseMode",
     "openTopUpModal",
     "openActionModal",
-    "requestReferralWithdraw",
-    "openReferralMethodsModal",
     "closePaymentModal",
     "openMethodsList",
     "applyDiscountPromo",
@@ -45,12 +43,6 @@ BRIDGE_NAMES = (
     "_reopenTopUpPaymentLink",
     "verifyPlategaTopUp",
     "_stopTrackingTopUp",
-    "_loadReferralPayoutMethods",
-    "_selectPayoutType",
-    "_selectPayoutBankByIndex",
-    "_submitPayoutMethod",
-    "_renderPayoutTypeStep",
-    "_renderPayoutBankStep",
     "syncTelegram",
     "goToRenewKey",
     "toggleKeyAutoRenew",
@@ -150,6 +142,8 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="_submitProfileChangePassword' not in html
     assert 'onclick="_submitProfileChangeEmailRequest' not in html
     assert 'onclick="_loadProfileMain' not in html
+    assert 'onclick="requestReferralWithdraw()' not in html
+    assert 'onclick="openReferralMethodsModal()' not in html
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
