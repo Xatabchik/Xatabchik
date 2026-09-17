@@ -18,7 +18,6 @@
 | `check_auto_renewals` | каждый тик | Ключи с `auto_renew`, списать баланс, продлить на панели | `get_keys_for_auto_renew`, `create_or_update_key_on_host` |
 | `check_broadcast_campaigns` | каждый тик | Плановые рассылки неактивным | `get_pending_broadcast_recipients`, `handle_send_exception` |
 | `check_inactive_usage_reminders` | каждый тик | Ключ без трафика — напомнить | `key_usage_monitor` |
-| `check_device_limit_violations` | каждый тик | HWID больше лимита — админам | `get_hwid_devices_for_user` |
 | `check_traffic_boost_resets` | каждый тик | Месячный сброс основного пула / boost | `apply_key_monthly_reset_fields`, Remnawave reset |
 | `_maybe_enforce_dual_traffic_limits` | `dual_limit_interval_sec` (по умолчанию 120 с) | LTE: снять/вернуть сквад, disable | `enforce_dual_traffic_limits` → `remnawave_api` |
 | `_maybe_sync_keys_with_panels` | 30 мин | Сверить ключи с `list_users`, orphan/missing | `remnawave_api.list_users` |
@@ -27,6 +26,8 @@
 | `_maybe_collect_resource_metrics` | `monitoring_interval_sec` | CPU/RAM/диск панели и SSH-хостов, алерты | `resource_monitor`, `insert_resource_metric` |
 | `_maybe_auto_close_idle_tickets` | каждый тик | Автозакрытие тикетов | `idle_close.maybe_auto_close_idle_tickets` |
 | `_maybe_purge_closed_ticket_media` | 1 ч | Удалить вложения закрытых тикетов старше TTL | `ticket_media.purge_expired_closed_ticket_media` |
+
+HWID-устройства планировщик **не** опрашивает: лимит соблюдает Remnawave. Список и удаление устройств — только по запросу пользователя (карточка ключа в Telegram-боте, Mini App `POST /api/key/devices`). Фонового обхода `/api/hwid/devices/<id>` нет.
 
 Публичная точка входа одна: `periodic_subscription_check`. Остальные функции — внутренние шаги цикла (в каталоге они перечислены с префиксом `_` и без).
 
