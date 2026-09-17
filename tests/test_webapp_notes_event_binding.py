@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from webapp_frontend_src import mini_app_html, mini_app_js
+from webapp_frontend_src import mini_app_html, mini_app_js, mini_app_keys_page_js
 
 NODE = shutil.which("node")
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,7 @@ REMOVED_BRIDGES = (
 def test_note_cards_have_no_inline_note_handlers():
     html = mini_app_html()
     js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     keys = KEYS.read_text(encoding="utf-8")
     assert 'onclick="saveComment' not in html
     assert 'onclick="saveNote' not in html
@@ -32,7 +33,8 @@ def test_note_cards_have_no_inline_note_handlers():
     assert 'onclick="saveComment' not in js
     assert 'data-key-action="comment"' in keys
     assert "class=\"key-toggle" in keys
-    assert "closest('.key-toggle')" in js
+    assert "closest('.key-toggle')" in keys_js
+    assert "closest('.key-toggle')" not in js
     assert "closest('#comment-save-btn')" in js
     assert "closest('#comment-delete-btn')" in js
     assert "saveComment(noteKeyId, Boolean(noteDelete))" in js
@@ -40,12 +42,15 @@ def test_note_cards_have_no_inline_note_handlers():
     assert 'id="comment-delete-btn" data-key-id="${keyId}"' in js
     assert "addEventListener('click', () => saveComment" not in js
     assert "querySelectorAll('.key-toggle').forEach" not in js
+    assert "querySelectorAll('.key-toggle').forEach" not in keys_js
 
 
 def test_removed_note_handler_bridges_are_gone():
     js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
+        assert f"window.{name} = {name};" not in keys_js, name
     assert "window.openActionModal = openActionModal;" not in js
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
@@ -80,9 +85,13 @@ def test_served_keys_page_notes_use_data_action_not_onclick(temp_db, app_client)
     assert 'onclick="saveComment' not in html
     assert 'onclick="toggleKeyCard' not in html
     js = app_client.get("/static/js/app.js")
+    keys_js = app_client.get("/static/js/keys-page.js")
     assert js.status_code == 200
+    assert keys_js.status_code == 200
     assert "closest('#comment-save-btn')" in js.text
+    assert "closest('.key-toggle')" in keys_js.text
     assert "window.toggleKeyCard = toggleKeyCard;" not in js.text
+    assert "window.toggleKeyCard = toggleKeyCard;" not in keys_js.text
 
 
 def test_note_save_delete_and_key_toggle_event_binding_in_node():
@@ -91,6 +100,7 @@ def test_note_save_delete_and_key_toggle_event_binding_in_node():
 const fs = require('fs');
 const vm = require('vm');
     const src = fs.readFileSync('src/shop_bot/webapp/static/js/store.js', 'utf8')
+      + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/keys-page.js', 'utf8')
       + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 
 function classList(initial) {

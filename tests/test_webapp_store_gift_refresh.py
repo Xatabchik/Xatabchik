@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from conftest import insert_gift_key, insert_user, issue_auth_token
-from webapp_frontend_src import STORE_JS, mini_app_js, mini_app_store_js
+from webapp_frontend_src import STORE_JS, mini_app_js, mini_app_keys_page_js, mini_app_store_js
 
 NODE = shutil.which("node")
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,14 +29,16 @@ def _body(src: str, start: str, end: str) -> str:
 def test_gift_activation_uses_store_instead_of_reload():
     store = mini_app_store_js()
     js = mini_app_js()
-    activate = _body(js, "async function activateOwnGift(", "// ── Загрузка данных для страниц новой навигации")
-    url_block = _body(js, "// ── Auto-activate gift from URL param", "// ── Единый сценарий pending action")
+    keys_js = mini_app_keys_page_js()
+    activate = _body(keys_js, "async function activateOwnGift(", "window._loadKeysPage = async function")
+    url_block = _body(keys_js, "// ── Auto-activate gift from URL param", "document.addEventListener('click'")
     pending = _body(js, "// ── Единый сценарий pending action", "// ── Профиль: смена пароля")
     assert "async function refreshAfterGiftActivation(" in store
     assert "function applyGiftsAndKeysToDom(" in store
     assert "store.subscribe(applyGiftsAndKeysToDom)" in store
     assert "window.refreshAfterGiftActivation =" not in store
     assert "window.refreshAfterGiftActivation =" not in js
+    assert "window.refreshAfterGiftActivation =" not in keys_js
     assert "location.reload()" not in activate
     assert "location.reload()" not in url_block
     assert "location.reload()" not in pending
@@ -46,6 +48,7 @@ def test_gift_activation_uses_store_instead_of_reload():
     assert js.count("location.reload()") == 1
     assert "getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload())" in js
     assert "setTimeout(() => window.location.reload(), 500)" not in js
+    assert "setTimeout(() => window.location.reload(), 500)" not in keys_js
 
 
 def test_refresh_after_gift_activation_updates_both_slices_without_reload():
@@ -261,15 +264,21 @@ def test_three_gift_entry_points_call_shared_refresh_without_reload():
 const fs = require('fs');
 const vm = require('vm');
 const appSrc = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
+const keysSrc = fs.readFileSync('src/shop_bot/webapp/static/js/keys-page.js', 'utf8');
 const storeSrc = fs.readFileSync('src/shop_bot/webapp/static/js/store.js', 'utf8');
-function slice(start, end) {
+function sliceApp(start, end) {
   const a = appSrc.indexOf(start);
   const b = appSrc.indexOf(end, a);
   return appSrc.slice(a, b);
 }
-const activateSrc = slice('async function activateOwnGift(', '// ── Загрузка данных для страниц новой навигации');
-const urlSrc = slice('(function checkGiftParam()', '// ── Единый сценарий pending action');
-const pendingSrc = slice("window.addEventListener('appReady', async () => {\n    const pendingToken", '// ── Профиль: смена пароля');
+function sliceKeys(start, end) {
+  const a = keysSrc.indexOf(start);
+  const b = keysSrc.indexOf(end, a);
+  return keysSrc.slice(a, b);
+}
+const activateSrc = sliceKeys('async function activateOwnGift(', 'window._loadKeysPage = async function');
+const urlSrc = sliceKeys('(function checkGiftParam()', 'document.addEventListener(\'click\'');
+const pendingSrc = sliceApp("window.addEventListener('appReady', async () => {\n    const pendingToken", '// ── Профиль: смена пароля');
 
 let reloads = 0;
 const calls = [];

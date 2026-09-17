@@ -100,6 +100,7 @@ def _process_template_placeholders(html: str, user_id: int, webapp_settings: dic
         "{{ app_js_href }}": APP_JS_HREF,
         "{{ store_js_href }}": STORE_JS_HREF,
         "{{ transactions_js_href }}": TRANSACTIONS_JS_HREF,
+        "{{ keys_page_js_href }}": KEYS_PAGE_JS_HREF,
         "{{ logo_hidden }}": "hidden" if not context_data.get("webapp_logo") else "",
         "{{ user_id }}": str(user_id),
         "{{ bot_username }}": bot_username,

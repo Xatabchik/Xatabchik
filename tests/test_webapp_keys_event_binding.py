@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from webapp_frontend_src import mini_app_html, mini_app_js
+from webapp_frontend_src import mini_app_html, mini_app_js, mini_app_keys_page_js
 
 NODE = shutil.which("node")
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +21,7 @@ REMOVED_BRIDGES = (
 def test_keys_search_tabs_have_no_inline_handlers():
     html = mini_app_html()
     js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     assert 'id="keys-search-input"' in html
     assert 'id="keys-search-clear"' in html
     assert 'id="keys-tab-btn-personal"' in html
@@ -32,10 +33,11 @@ def test_keys_search_tabs_have_no_inline_handlers():
     assert "onKeysSearchInput()" not in html
     assert "clearKeysSearch()" not in html
     assert "switchKeysTab(" not in html
-    assert "getElementById('keys-search-input')?.addEventListener('input', onKeysSearchInput)" in js
-    assert "getElementById('keys-search-clear')?.addEventListener('click', clearKeysSearch)" in js
-    assert "getElementById('keys-tab-btn-personal')?.addEventListener('click', () => switchKeysTab('personal'))" in js
-    assert "getElementById('keys-tab-btn-gifts')?.addEventListener('click', () => switchKeysTab('gifts'))" in js
+    assert "getElementById('keys-search-input')?.addEventListener('input', onKeysSearchInput)" in keys_js
+    assert "getElementById('keys-search-clear')?.addEventListener('click', clearKeysSearch)" in keys_js
+    assert "getElementById('keys-tab-btn-personal')?.addEventListener('click', () => switchKeysTab('personal'))" in keys_js
+    assert "getElementById('keys-tab-btn-gifts')?.addEventListener('click', () => switchKeysTab('gifts'))" in keys_js
+    assert "getElementById('keys-search-input')?.addEventListener('input', onKeysSearchInput)" not in js
 
 
 def test_copy_key_stays_on_data_key_action_delegation():
@@ -53,8 +55,10 @@ def test_copy_key_stays_on_data_key_action_delegation():
 
 def test_removed_keys_handler_bridges_are_gone():
     js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
+        assert f"window.{name} = {name};" not in keys_js, name
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
     assert "window.setPurchaseMode = setPurchaseMode;" not in js
@@ -76,9 +80,13 @@ def test_served_keys_page_has_listeners_not_inline_handlers(temp_db, app_client)
     assert "clearKeysSearch()" not in html
     assert "switchKeysTab(" not in html
     assert "/static/js/app.js?v=" in html
+    assert "/static/js/keys-page.js?v=" in html
     js = app_client.get("/static/js/app.js")
+    keys_js = app_client.get("/static/js/keys-page.js")
     assert js.status_code == 200
-    assert "addEventListener('input', onKeysSearchInput)" in js.text
+    assert keys_js.status_code == 200
+    assert "addEventListener('input', onKeysSearchInput)" in keys_js.text
+    assert "addEventListener('input', onKeysSearchInput)" not in js.text
     assert "copyKey(btn, url)" in js.text
 
 
@@ -87,7 +95,8 @@ def test_keys_search_tabs_and_copy_key_event_binding_in_node():
     script = r"""
 const fs = require('fs');
 const vm = require('vm');
-const src = fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
+const src = fs.readFileSync('src/shop_bot/webapp/static/js/keys-page.js', 'utf8')
+  + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 
 function classList(initial) {
   const set = new Set(String(initial || '').split(/\s+/).filter(Boolean));
@@ -222,7 +231,7 @@ sandbox.globalThis = sandbox;
 
 let threw = null;
 try {
-  vm.runInNewContext(src, sandbox, { filename: 'app.js' });
+  vm.runInNewContext(src, sandbox, { filename: 'keys-page+app.js' });
 } catch (e) {
   threw = e && e.stack ? e.stack : String(e);
 }
