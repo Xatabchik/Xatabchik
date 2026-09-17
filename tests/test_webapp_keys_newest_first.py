@@ -148,8 +148,11 @@ def test_keys_page_renders_newest_key_first(temp_db, monkeypatch):
     container_end = body.index('id="profile-keys-pagination"')
     list_html = body[container_start:container_end]
     assert list_html.find("Новый ключ") < list_html.find("Старый ключ")
-    assert f"goToRenewKey({new_id})" in list_html
-    assert f"goToRenewKey({old_id})" in list_html
+    assert f'data-key-action="renew"' in list_html
+    assert f'data-key-id="{new_id}"' in list_html
+    assert f'data-key-id="{old_id}"' in list_html
+    assert f"goToRenewKey({new_id})" not in list_html
+    assert f"goToRenewKey({old_id})" not in list_html
 
     assert "Настройка подключения" not in body
     assert "Инструкции для ваших устройств" not in body

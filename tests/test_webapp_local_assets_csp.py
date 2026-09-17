@@ -192,7 +192,7 @@ def test_local_js_entrypoint_is_served_without_long_cache(temp_db, app_client):
     assert js.content == js_versioned.content
     assert "function telegramVersionAtLeast(" in js.text
     assert "function openTopUpModal(" in js.text
-    assert "Temporary compatibility bridge" in js.text
+    assert "Temporary compatibility bridge" not in js.text
     ctype = js.headers.get("content-type", "")
     assert "javascript" in ctype or "ecmascript" in ctype
     js_cc = js.headers.get("cache-control", "").lower()

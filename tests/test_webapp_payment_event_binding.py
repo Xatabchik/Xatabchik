@@ -30,12 +30,7 @@ REMOVED_BRIDGES = (
     "verifyPlategaTopUp",
     "_stopTrackingTopUp",
 )
-KEPT_BRIDGES = (
-    "setPurchaseMode",
-    "openActionModal",
-    "closeActionModal",
-    "openLteTopup",
-)
+KEPT_BRIDGES = ()
 
 
 def _button_after(html: str, marker: str) -> str:
@@ -79,9 +74,9 @@ def test_payment_and_topup_have_no_inline_handlers():
     assert 'data-topup-action="submit-method"' in js
     assert 'data-topup-action="preset-amount"' in js
     assert "getElementById('topup-finance-btn')?.addEventListener('click', openTopUpModal)" in js
-    assert 'onclick="setPurchaseMode(' in html
-    assert "window.setPurchaseMode = setPurchaseMode;" in js
-    assert "window.openLteTopup = openLteTopup;" in js
+    assert 'onclick="setPurchaseMode(' not in html
+    assert "window.setPurchaseMode = setPurchaseMode;" not in js
+    assert "window.openLteTopup = openLteTopup;" not in js
 
 
 def test_removed_payment_bridges_are_gone():
@@ -112,7 +107,7 @@ def test_served_page_payment_use_delegation(temp_db, app_client):
     assert "closest('[data-topup-action]')" in js.text
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js.text, name
-    assert "window.setPurchaseMode = setPurchaseMode;" in js.text
+    assert "window.setPurchaseMode = setPurchaseMode;" not in js.text
 
 
 def test_payment_event_binding_in_node():
@@ -485,5 +480,5 @@ waitUntil(() => (contentEl.innerHTML || '').includes('topup-amount-input')).then
     assert result["processBridge"] is False
     assert result["closePayBridge"] is False
     assert result["submitTopUpBridge"] is False
-    assert result["purchaseBridge"] is True
-    assert result["lteBridge"] is True
+    assert result["purchaseBridge"] is False
+    assert result["lteBridge"] is False

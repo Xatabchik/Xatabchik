@@ -80,11 +80,12 @@ def test_entrypoint_and_helper_modules_exist_and_are_local():
     assert app_js.strip().endswith("initApp();\n}") or "initApp();" in app_js[-200:]
 
 
-def test_legacy_inline_handlers_have_window_bridges():
+def test_legacy_inline_handler_bridges_are_gone():
     app_js = mini_app_js()
-    assert "Temporary compatibility bridge for legacy inline handlers in app.html." in app_js
+    assert "Temporary compatibility bridge for legacy inline handlers in app.html." not in app_js
+    assert "Temporary compatibility bridge" not in app_js
     for name in BRIDGE_NAMES:
-        assert f"window.{name} = {name};" in app_js, name
+        assert f"window.{name} = {name};" not in app_js, name
 
 
 def test_auth_and_payment_contracts_were_not_rewritten():
@@ -129,8 +130,22 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="_loadProfileMain' not in html
     assert 'onclick="requestReferralWithdraw()' not in html
     assert 'onclick="openReferralMethodsModal()' not in html
-    assert "goToRenewKey" in keys
-    assert "toggleKeyAutoRenew" in keys
-    assert "openLteTopup" in keys
-    assert "selectPlan" in plans
-    assert "selectServer" in plans
+    assert 'onclick="setPurchaseMode(' not in html
+    assert 'onclick="openActionModal(' not in html
+    assert 'onclick="closeActionModal(' not in html
+    assert 'onclick="toggleInfoBlock(' not in html
+    assert 'onclick="toggleRenewInfoBlock(' not in html
+    assert 'onclick="selectPlan(' not in html
+    assert 'onclick="goToRenewKey(' not in keys
+    assert 'onclick="toggleKeyAutoRenew(' not in keys
+    assert 'onclick="openLteTopup(' not in keys
+    assert 'onclick="syncTelegram(' not in keys
+    assert 'onclick="selectPlan(' not in plans
+    assert 'onclick="selectServer(' not in plans
+    assert 'data-key-action="renew"' in keys
+    assert 'data-key-action="auto-renew"' in keys
+    assert 'data-key-action="lte-topup"' in keys
+    assert 'data-sync-telegram="1"' in keys
+    assert "class=\"plan-btn " in plans or 'class="plan-btn' in plans
+    assert 'class="server-option ' in plans
+    assert "onclick=" not in html

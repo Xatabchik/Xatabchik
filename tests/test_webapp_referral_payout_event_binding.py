@@ -60,8 +60,8 @@ def test_removed_referral_payout_bridges_are_gone():
     assert "window.openTopUpModal = openTopUpModal;" not in js
     assert "window.processPayment = processPayment;" not in js
     assert "window.closePaymentModal = closePaymentModal;" not in js
-    assert "window.setPurchaseMode = setPurchaseMode;" in js
-    assert "window.openActionModal = openActionModal;" in js
+    assert "window.setPurchaseMode = setPurchaseMode;" not in js
+    assert "window.openActionModal = openActionModal;" not in js
 
 
 def test_served_page_referral_payout_use_delegation(temp_db, app_client):
