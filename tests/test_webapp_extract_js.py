@@ -17,8 +17,6 @@ from webapp_frontend_src import (
 
 WEBAPP = Path("src/shop_bot/webapp")
 BRIDGE_NAMES = (
-    "toggleSettingsMenu",
-    "openEditProfileModal",
     "setPurchaseMode",
     "openTopUpModal",
     "openActionModal",
@@ -151,6 +149,8 @@ def test_inline_onclick_names_still_present_in_templates():
     assert 'onclick="switchKeysTab(' not in html
     assert 'onclick="deleteDevice' not in html
     assert 'onclick="deleteAllDevices' not in html
+    assert 'onclick="toggleSettingsMenu' not in html
+    assert 'onclick="openEditProfileModal' not in html
     assert "goToRenewKey" in keys
     assert "toggleKeyAutoRenew" in keys
     assert "openLteTopup" in keys
