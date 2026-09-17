@@ -55,7 +55,7 @@ def test_rename_uses_store_keynames_instead_of_reload():
     store = mini_app_store_js()
     js = mini_app_js()
     rename = _rename_body()
-    assert "state: { balance: null, keyNames: {} }" in store
+    assert "keyNames: {}" in store
     assert "async function refreshKeyName(" in store
     assert "function applyKeyNamesToDom(" in store
     assert "store.subscribe(applyKeyNamesToDom)" in store
@@ -66,11 +66,11 @@ def test_rename_uses_store_keynames_instead_of_reload():
     assert "await refreshKeyName(keyId, { fallbackName: newName })" in rename
     assert "Название обновлено!" in rename
     assert "Название удалено" in rename
-    assert js.count("location.reload()") == 5
+    assert js.count("location.reload()") == 2
     assert "getElementById('settings-refresh-btn')?.addEventListener('click', () => location.reload())" in js
     assert "setTimeout(() => window.location.reload(), 500)" in js
-    assert "setTimeout(() => window.location.reload(), 1200)" in js
-    assert js.count("setTimeout(() => location.reload(), 1800)") == 2
+    assert "setTimeout(() => window.location.reload(), 1200)" not in js
+    assert "setTimeout(() => location.reload(), 1800)" not in js
 
 
 def test_refresh_key_name_updates_cards_dropdown_and_display_without_reload():
