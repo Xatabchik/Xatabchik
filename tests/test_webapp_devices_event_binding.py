@@ -328,11 +328,11 @@ waitUntil(() => (contentEl.innerHTML || '').includes('data-device-action="delete
 
   fire(nextBtn);
   const page2 = contentEl.innerHTML || '';
-  const afterNext = {
+    const afterNext = {
     page: sandbox._deviceModalState && sandbox._deviceModalState.page,
     pageLabel: /2 \/ 2/.test(page2),
     hasHwid6: page2.includes('hwid-6'),
-    hasXssHwid: page2.includes('&lt;img') || page2.includes(XSS_HWID),
+    hasXssDevice: page2.includes('onerror=alert(1)'),
   };
 
   const prevBtn = parseButtons(page2).map(buttonFromAttrs).find((b) => b.getAttribute('data-device-action') === 'page-prev');
@@ -351,9 +351,9 @@ waitUntil(() => (contentEl.innerHTML || '').includes('data-device-action="delete
   fire(disabledDelete);
 
   fire(deleteBtns[0]);
-  return waitUntil(() => fetches.some((f) => f.url.includes('/api/key/device/delete'))).then(() => {
+  return waitUntil(() => notifications.some((n) => String(n).includes('Устройство удалено'))).then(() => {
     fire(deleteAllBtn);
-    return waitUntil(() => fetches.some((f) => f.url.includes('/api/key/devices/delete-all'))).then(() => {
+    return waitUntil(() => notifications.some((n) => String(n).includes('Удалено устройств'))).then(() => {
       const deletePost = fetches.find((f) => f.url.includes('/api/key/device/delete'));
       const deleteAllPost = fetches.find((f) => f.url.includes('/api/key/devices/delete-all'));
       console.log(JSON.stringify({
@@ -398,7 +398,7 @@ waitUntil(() => (contentEl.innerHTML || '').includes('data-device-action="delete
     assert result["afterNext"]["page"] == 1
     assert result["afterNext"]["pageLabel"] is True
     assert result["afterNext"]["hasHwid6"] is True
-    assert result["afterNext"]["hasXssHwid"] is False
+    assert result["afterNext"]["hasXssDevice"] is False
     assert result["afterPrev"]["page"] == 0
     assert result["afterPrev"]["pageLabel"] is True
     assert result["disabledDidNotFetch"] is True
