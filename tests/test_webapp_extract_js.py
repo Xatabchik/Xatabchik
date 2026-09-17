@@ -46,8 +46,14 @@ def test_app_html_no_longer_contains_monolithic_body_javascript():
     assert "function telegramVersionAtLeast" not in html
     assert "function initApp" not in html
     assert 'src="{{ store_js_href }}" defer>' in html
+    assert 'src="{{ transactions_js_href }}" defer>' in html
     assert 'src="{{ app_js_href }}" defer>' in html
-    assert html.index('src="{{ store_js_href }}" defer>') < html.index('src="{{ app_js_href }}" defer>')
+    assert html.index('src="{{ store_js_href }}" defer>') < html.index(
+        'src="{{ transactions_js_href }}" defer>'
+    )
+    assert html.index('src="{{ transactions_js_href }}" defer>') < html.index(
+        'src="{{ app_js_href }}" defer>'
+    )
     assert 'type="module"' not in html
     assert "cdn.tailwindcss.com" not in html
     assert "eval(" not in html
