@@ -56,7 +56,7 @@ def test_removed_keys_handler_bridges_are_gone():
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
     assert "window.openTopUpModal = openTopUpModal;" in js
-    assert "window.navigateTo = navigateTo;" in js
+    assert "window.resetSupportChat = resetSupportChat;" in js
 
 
 def test_served_keys_page_has_listeners_not_inline_handlers(temp_db, app_client):

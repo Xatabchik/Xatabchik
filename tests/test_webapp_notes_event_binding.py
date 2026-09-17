@@ -47,7 +47,7 @@ def test_removed_note_handler_bridges_are_gone():
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
     assert "window.openActionModal = openActionModal;" in js
-    assert "window.navigateTo = navigateTo;" in js
+    assert "window.resetSupportChat = resetSupportChat;" in js
     assert "window.openTopUpModal = openTopUpModal;" in js
 
 

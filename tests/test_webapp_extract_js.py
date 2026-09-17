@@ -26,7 +26,6 @@ BRIDGE_NAMES = (
     "createSupportTicket",
     "sendSupportMessage",
     "resetSupportChat",
-    "navigateTo",
     "closePaymentModal",
     "openMethodsList",
     "applyDiscountPromo",
@@ -141,7 +140,7 @@ def test_inline_onclick_names_still_present_in_templates():
     html = mini_app_html()
     keys = (WEBAPP / "web_router" / "render_keys.py").read_text(encoding="utf-8")
     plans = (WEBAPP / "web_router" / "render_plans.py").read_text(encoding="utf-8")
-    assert 'onclick="navigateTo(' in html
+    assert 'onclick="navigateTo(' not in html
     assert 'onclick="openTopUpModal()"' in html
     assert 'onclick="copyKey' not in html  # copy goes through data-key-action
     assert 'oninput="onKeysSearchInput()' not in html
