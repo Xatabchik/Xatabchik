@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from webapp_frontend_src import mini_app_html, mini_app_js, mini_app_transactions_js
+from webapp_frontend_src import mini_app_html, mini_app_js, mini_app_keys_page_js, mini_app_transactions_js
 
 NODE = shutil.which("node")
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +73,12 @@ def test_leftover_static_elements_have_no_inline_handlers():
     assert 'onclick="copyToClipboard(' not in js
     assert 'onclick="activateOwnGift(' not in js
     assert 'onclick="closeActionModal(' not in js
+    assert 'onclick="changeProfileKeysPage(' not in mini_app_keys_page_js()
+    assert 'onclick="activateOwnGift(' not in mini_app_keys_page_js()
+    assert "closest('[data-gift-action=\"activate\"]')" in mini_app_keys_page_js()
+    assert "closest('[data-gift-action=\"activate\"]')" not in js
+    assert "closest('[data-profile-keys-page]')" in mini_app_keys_page_js()
+    assert "closest('[data-gifts-page]')" in mini_app_keys_page_js()
     assert 'data-action-modal="close"' in html
     assert 'data-key-action="renew"' in keys
     assert 'data-key-action="auto-renew"' in keys
@@ -91,8 +97,10 @@ def test_leftover_static_elements_have_no_inline_handlers():
 
 def test_removed_leftover_bridges_are_gone():
     js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     for name in REMOVED_BRIDGES:
         assert f"window.{name} = {name};" not in js, name
+        assert f"window.{name} = {name};" not in keys_js, name
     assert "window.selectPlan = function" not in js
     assert "window.selectServer = function" not in js
     assert "window.selectRenewKey = function" not in js
@@ -152,6 +160,7 @@ def test_leftover_event_binding_in_node():
 const fs = require('fs');
 const vm = require('vm');
 const src = fs.readFileSync('src/shop_bot/webapp/static/js/transactions.js', 'utf8')
+  + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/keys-page.js', 'utf8')
   + '\n' + fs.readFileSync('src/shop_bot/webapp/static/js/app.js', 'utf8');
 
 function classList(initial) {
@@ -201,6 +210,9 @@ function el(id, extra) {
         if (sel === '[data-tx-action]' && attrs['data-tx-action']) return n;
         if (sel === '[data-copy-action="clipboard"]' && attrs['data-copy-action'] === 'clipboard') return n;
         if (sel === '[data-gift-action="activate"]' && attrs['data-gift-action'] === 'activate') return n;
+        if (sel === '[data-profile-keys-page]' && attrs['data-profile-keys-page']) return n;
+        if (sel === '[data-gifts-page]' && attrs['data-gifts-page']) return n;
+        if (sel === '.key-toggle' && (n.className || '').split(/\s+/).includes('key-toggle')) return n;
         if (sel === '[data-sync-telegram]' && attrs['data-sync-telegram']) return n;
         if (sel === '.plan-btn' && (n.className || '').split(/\s+/).includes('plan-btn')) return n;
         if (sel === '#renew-page') return null;

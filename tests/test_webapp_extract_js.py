@@ -14,6 +14,7 @@ from webapp_frontend_src import (
     mini_app_frontend_source,
     mini_app_html,
     mini_app_js,
+    mini_app_keys_page_js,
 )
 
 WEBAPP = Path("src/shop_bot/webapp")
@@ -47,11 +48,15 @@ def test_app_html_no_longer_contains_monolithic_body_javascript():
     assert "function initApp" not in html
     assert 'src="{{ store_js_href }}" defer>' in html
     assert 'src="{{ transactions_js_href }}" defer>' in html
+    assert 'src="{{ keys_page_js_href }}" defer>' in html
     assert 'src="{{ app_js_href }}" defer>' in html
     assert html.index('src="{{ store_js_href }}" defer>') < html.index(
         'src="{{ transactions_js_href }}" defer>'
     )
     assert html.index('src="{{ transactions_js_href }}" defer>') < html.index(
+        'src="{{ keys_page_js_href }}" defer>'
+    )
+    assert html.index('src="{{ keys_page_js_href }}" defer>') < html.index(
         'src="{{ app_js_href }}" defer>'
     )
     assert 'type="module"' not in html
@@ -92,10 +97,12 @@ def test_entrypoint_and_helper_modules_exist_and_are_local():
 
 def test_legacy_inline_handler_bridges_are_gone():
     app_js = mini_app_js()
+    keys_js = mini_app_keys_page_js()
     assert "Temporary compatibility bridge for legacy inline handlers in app.html." not in app_js
     assert "Temporary compatibility bridge" not in app_js
     for name in BRIDGE_NAMES:
         assert f"window.{name} = {name};" not in app_js, name
+        assert f"window.{name} = {name};" not in keys_js, name
 
 
 def test_auth_and_payment_contracts_were_not_rewritten():

@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from conftest import insert_gift_key, insert_user, issue_auth_token, temp_db  # noqa: F401
-from webapp_frontend_src import mini_app_js
+from webapp_frontend_src import mini_app_js, mini_app_keys_page_js
 
 USER_ID = 16601
 
@@ -219,9 +219,12 @@ def test_each_tab_paginates_separately(temp_db, monkeypatch):
         )
         _name_gift_key(database.DB_FILE, kid, f"Подарок {i}")
 
-    js = mini_app_js()
+    js = mini_app_keys_page_js()
     assert "const PROFILE_KEYS_PAGE_SIZE = 5" in js
     assert "const GIFTS_PAGE_SIZE = 5" in js
+    leftover = mini_app_js()
+    assert "const PROFILE_KEYS_PAGE_SIZE = 5" not in leftover
+    assert "const GIFTS_PAGE_SIZE = 5" not in leftover
 
     async def _no_details(_key):
         return None

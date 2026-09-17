@@ -11,6 +11,7 @@ UI_JS = WEBAPP / "static" / "js" / "ui.js"
 API_JS = WEBAPP / "static" / "js" / "api.js"
 STORE_JS = WEBAPP / "static" / "js" / "store.js"
 TRANSACTIONS_JS = WEBAPP / "static" / "js" / "transactions.js"
+KEYS_PAGE_JS = WEBAPP / "static" / "js" / "keys-page.js"
 
 
 def mini_app_html() -> str:
@@ -29,6 +30,18 @@ def mini_app_transactions_js() -> str:
     return TRANSACTIONS_JS.read_text(encoding="utf-8")
 
 
+def mini_app_keys_page_js() -> str:
+    return KEYS_PAGE_JS.read_text(encoding="utf-8")
+
+
 def mini_app_frontend_source() -> str:
     """HTML + domain JS + app.js: структурные тесты, которые раньше читали только app.html."""
-    return mini_app_html() + "\n" + mini_app_transactions_js() + "\n" + mini_app_js()
+    return (
+        mini_app_html()
+        + "\n"
+        + mini_app_transactions_js()
+        + "\n"
+        + mini_app_keys_page_js()
+        + "\n"
+        + mini_app_js()
+    )
