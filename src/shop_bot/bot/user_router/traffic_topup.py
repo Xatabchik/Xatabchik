@@ -19,6 +19,7 @@ from aiogram import (
 from aiogram.types import LabeledPrice
 from aiogram.fsm.context import FSMContext
 from shop_bot.bot import keyboards
+from shop_bot.bot.user_router.formatting import is_valid_email
 from shop_bot.data_manager.remnawave_repository import (
     deduct_from_balance,
     get_setting,
@@ -216,6 +217,24 @@ def register_traffic_topup(user_router: Router) -> None:
                 "capture": True,
                 "description": description,
                 "metadata": {"payment_id": payment_id}
+            }
+            customer_email = get_setting("receipt_email")
+            if not customer_email or not is_valid_email(customer_email):
+                await callback.message.answer(
+                    "❌ Не настроен корректный email для кассовых чеков. Обратитесь к администратору."
+                )
+                await state.clear()
+                return
+            payment_payload["receipt"] = {
+                "customer": {"email": customer_email},
+                "items": [{
+                    "description": description,
+                    "quantity": "1.00",
+                    "amount": {"value": price_str, "currency": "RUB"},
+                    "vat_code": "1",
+                    "payment_subject": "service",
+                    "payment_mode": "full_payment",
+                }],
             }
             payment = Payment.create(payment_payload, uuid.uuid4())
             try:
