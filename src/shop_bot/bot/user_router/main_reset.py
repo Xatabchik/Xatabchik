@@ -16,7 +16,7 @@ from aiogram import (
 )
 from aiogram.fsm.context import FSMContext
 from shop_bot.bot import keyboards
-from shop_bot.bot.user_router.formatting import is_valid_email
+from shop_bot.bot.user_router.formatting import build_yookassa_receipt
 from shop_bot.data_manager.remnawave_repository import (
     deduct_from_balance,
     get_setting,
@@ -183,6 +183,13 @@ def register_main_reset(user_router: Router) -> None:
         description = "Досрочный сброс основного пула трафика"
         payment_id = str(uuid.uuid4())
         price_str = f"{price:.2f}"
+        receipt = build_yookassa_receipt(get_setting("receipt_email"), description, price_str)
+        if not receipt:
+            await callback.message.answer(
+                "❌ Не настроен корректный email для кассовых чеков. Обратитесь к администратору."
+            )
+            await state.clear()
+            return
         metadata = _main_reset_metadata(data, user_id, "YooKassa", payment_id)
         try:
             create_payload_pending(payment_id, user_id, float(price), metadata)
@@ -196,24 +203,7 @@ def register_main_reset(user_router: Router) -> None:
                 "description": description,
                 "metadata": {"payment_id": payment_id}
             }
-            customer_email = get_setting("receipt_email")
-            if not customer_email or not is_valid_email(customer_email):
-                await callback.message.answer(
-                    "❌ Не настроен корректный email для кассовых чеков. Обратитесь к администратору."
-                )
-                await state.clear()
-                return
-            payment_payload["receipt"] = {
-                "customer": {"email": customer_email},
-                "items": [{
-                    "description": description,
-                    "quantity": "1.00",
-                    "amount": {"value": price_str, "currency": "RUB"},
-                    "vat_code": "1",
-                    "payment_subject": "service",
-                    "payment_mode": "full_payment",
-                }],
-            }
+            payment_payload["receipt"] = receipt
             payment = Payment.create(payment_payload, uuid.uuid4())
             try:
                 provider_payment_id = getattr(payment, "id", None)
