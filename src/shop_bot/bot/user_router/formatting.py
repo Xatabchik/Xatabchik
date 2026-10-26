@@ -11,6 +11,7 @@ __all__ = [
     "_tariff_label_from_origin",
     "_build_key_origin_meta",
     "is_valid_email",
+    "build_yookassa_receipt",
 ]
 
 def _format_duration_label(months: int | None, duration_days: int | None) -> str:
@@ -87,3 +88,25 @@ def _build_key_origin_meta(
 def is_valid_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
     return re.match(pattern, email) is not None
+
+
+def build_yookassa_receipt(email: str | None, description: str, price_str: str) -> dict | None:
+    """Чек 54-ФЗ для платежа YooKassa или None, если почта пуста/некорректна.
+
+    `price_str` должен совпадать с `amount.value` самого платежа, иначе
+    YooKassa отклонит чек как несогласованный с суммой.
+    """
+    email = (email or "").strip()
+    if not email or not is_valid_email(email):
+        return None
+    return {
+        "customer": {"email": email},
+        "items": [{
+            "description": description,
+            "quantity": "1.00",
+            "amount": {"value": price_str, "currency": "RUB"},
+            "vat_code": "1",
+            "payment_subject": "service",
+            "payment_mode": "full_payment",
+        }],
+    }

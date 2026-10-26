@@ -16,6 +16,7 @@ from aiogram import (
 )
 from aiogram.fsm.context import FSMContext
 from shop_bot.bot import keyboards
+from shop_bot.bot.user_router.formatting import build_yookassa_receipt
 from shop_bot.data_manager.remnawave_repository import (
     deduct_from_balance,
     get_setting,
@@ -182,6 +183,13 @@ def register_main_reset(user_router: Router) -> None:
         description = "Досрочный сброс основного пула трафика"
         payment_id = str(uuid.uuid4())
         price_str = f"{price:.2f}"
+        receipt = build_yookassa_receipt(get_setting("receipt_email"), description, price_str)
+        if not receipt:
+            await callback.message.answer(
+                "❌ Не указан корректный email для чека. Обратитесь в техподдержку"
+            )
+            await state.clear()
+            return
         metadata = _main_reset_metadata(data, user_id, "YooKassa", payment_id)
         try:
             create_payload_pending(payment_id, user_id, float(price), metadata)
@@ -195,6 +203,7 @@ def register_main_reset(user_router: Router) -> None:
                 "description": description,
                 "metadata": {"payment_id": payment_id}
             }
+            payment_payload["receipt"] = receipt
             payment = Payment.create(payment_payload, uuid.uuid4())
             try:
                 provider_payment_id = getattr(payment, "id", None)
