@@ -20,6 +20,10 @@ __all__ = (
     "set_referral_balance",
     "set_referral_balance_all",
     "add_to_referral_balance_all",
+    "accrue_referral_reward_once",
+    "REFERRAL_REWARD_ACCRUED",
+    "REFERRAL_REWARD_ALREADY",
+    "REFERRAL_REWARD_FAILED",
     "get_referral_balance_all",
     "get_referral_balance",
     "adjust_user_referral_balance",
@@ -360,6 +364,82 @@ def add_to_referral_balance_all(user_id: int, amount: float):
             conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to add to total referral balance for user {user_id}: {e}")
+
+REFERRAL_REWARD_ACCRUED = "accrued"
+REFERRAL_REWARD_ALREADY = "already"
+REFERRAL_REWARD_FAILED = "failed"
+
+
+def accrue_referral_reward_once(payment_id: str, referrer_id: int, amount: float, kind: str = "purchase") -> str:
+    """Начислить реферальное вознаграждение за платёж ровно один раз.
+
+    Запись в `referral_rewards` по (payment_id, kind) и обновление `referral_balance`
+    и `referral_balance_all` выполняются одной транзакцией, поэтому повторная
+    обработка того же платежа (сверка, повторная доставка вебхука, падение между
+    начислением и записью транзакции) не начисляет бонус второй раз.
+
+    Возвращает `accrued`, `already` (по этому платежу уже начислено) или `failed`
+    (нет пригодного payment_id или реферера, ошибка БД; запись не создаётся,
+    поэтому повтор сможет начислить).
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return REFERRAL_REWARD_FAILED
+    try:
+        amount_f = float(amount)
+        referrer_i = int(referrer_id)
+    except (TypeError, ValueError):
+        return REFERRAL_REWARD_FAILED
+    if amount_f <= 0:
+        return REFERRAL_REWARD_FAILED
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS referral_rewards (
+                payment_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                referrer_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (payment_id, kind)
+            )
+            """
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO referral_rewards (payment_id, kind, referrer_id, amount) VALUES (?, ?, ?, ?)",
+                (pid, kind, referrer_i, amount_f),
+            )
+            if cur.rowcount == 0:
+                conn.execute("COMMIT")
+                return REFERRAL_REWARD_ALREADY
+            upd = conn.execute(
+                "UPDATE users SET referral_balance = COALESCE(referral_balance, 0) + ?, "
+                "referral_balance_all = COALESCE(referral_balance_all, 0) + ? WHERE telegram_id = ?",
+                (amount_f, amount_f, referrer_i),
+            )
+            if upd.rowcount == 0:
+                conn.execute("ROLLBACK")
+                return REFERRAL_REWARD_FAILED
+            conn.execute("COMMIT")
+            return REFERRAL_REWARD_ACCRUED
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+    except sqlite3.Error as e:
+        logging.error(f"Failed to accrue referral reward for payment {pid}: {e}")
+        return REFERRAL_REWARD_FAILED
+    finally:
+        if conn is not None:
+            conn.close()
+
 
 def get_referral_balance_all(user_id: int) -> float:
     try:

@@ -1534,7 +1534,21 @@ def reserve_promo_code(
             )
             row = cursor.fetchone()
             status = str((row["status"] if row is not None and isinstance(row, sqlite3.Row) else (row[0] if row else "")))
-            if status not in ("reserved", "redeemed"):
+            if status == "released":
+                # Резерв освободили по TTL, а платёж пришёл позже: снова занимаем слот
+                # (лимиты уже проверены выше), иначе оплаченная выдача застревает.
+                cursor.execute(
+                    """
+                    UPDATE promo_code_reservations
+                    SET status = 'reserved', code = ?, user_id = ?, reserved_at = CURRENT_TIMESTAMP
+                    WHERE payment_id = ? AND status = 'released'
+                    """,
+                    (code_s, user_id_i, payment_id_s),
+                )
+                if int(cursor.rowcount or 0) == 0:
+                    _decrement_used_total(cursor, code_s)
+                    raise _PromoTxnAbort("unavailable")
+            elif status not in ("reserved", "redeemed"):
                 _decrement_used_total(cursor, code_s)
                 raise _PromoTxnAbort("unavailable")
         promo["used_total"] = int(promo.get("used_total") or 0) + 1

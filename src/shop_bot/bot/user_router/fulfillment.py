@@ -30,8 +30,6 @@ from shop_bot.data_manager.remnawave_repository import (
     reserve_promo_code,
     check_promo_code_available,
     update_promo_code_status,
-    add_to_referral_balance_all,
-    add_to_referral_balance,
     get_all_users,
     update_user_stats,
     log_transaction,
@@ -818,14 +816,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     logger.info(f"Referral(top_up): user={user_id}, referrer={referrer_id}, type={reward_type}, reward={float(reward):.2f}")
                     if float(reward) > 0:
                         try:
-                            ok_ref = add_to_referral_balance(referrer_id, float(reward))
+                            outcome_ref = database.accrue_referral_reward_once(
+                                payment_id, referrer_id, float(reward), kind="topup"
+                            )
                         except Exception as e:
-                            logger.warning(f"Referral(top_up): add_to_referral_balance failed for referrer {referrer_id}: {e}")
-                            ok_ref = False
-                        try:
-                            add_to_referral_balance_all(referrer_id, float(reward))
-                        except Exception as e:
-                            logger.warning(f"Referral(top_up): failed to increment referral_balance_all for {referrer_id}: {e}")
+                            logger.warning(f"Referral(top_up): accrual failed for referrer {referrer_id}: {e}")
+                            outcome_ref = database.REFERRAL_REWARD_FAILED
+                        if outcome_ref == database.REFERRAL_REWARD_ALREADY:
+                            logger.info(f"Referral(top_up): payment {payment_id} already rewarded, skip duplicate accrual.")
+                        ok_ref = outcome_ref == database.REFERRAL_REWARD_ACCRUED
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok_ref:
                             await _deliver_to_user(
@@ -1319,14 +1318,15 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                     logger.info(f"Referral: user={user_id}, referrer={referrer_id}, type={reward_type}, reward={float(reward):.2f}")
                     if float(reward) > 0:
                         try:
-                            ok = add_to_referral_balance(referrer_id, float(reward))
+                            outcome = database.accrue_referral_reward_once(
+                                payment_id, referrer_id, float(reward), kind="purchase"
+                            )
                         except Exception as e:
-                            logger.warning(f"Referral: add_to_referral_balance failed for referrer {referrer_id}: {e}")
-                            ok = False
-                        try:
-                            add_to_referral_balance_all(referrer_id, float(reward))
-                        except Exception as e:
-                            logger.warning(f"Failed to increment referral_balance_all for {referrer_id}: {e}")
+                            logger.warning(f"Referral: accrual failed for referrer {referrer_id}: {e}")
+                            outcome = database.REFERRAL_REWARD_FAILED
+                        if outcome == database.REFERRAL_REWARD_ALREADY:
+                            logger.info(f"Referral: payment {payment_id} already rewarded, skip duplicate accrual.")
+                        ok = outcome == database.REFERRAL_REWARD_ACCRUED
                         referrer_username = user_data.get('username', 'пользователь')
                         if ok:
                             await _deliver_to_user(
