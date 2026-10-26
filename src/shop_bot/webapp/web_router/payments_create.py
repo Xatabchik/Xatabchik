@@ -558,7 +558,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                     "ok": False,
                     "error": "Не удалось создать ключ, средства возвращены на баланс",
                 }
-            return {"ok": True, "message": "Оплачено с баланса!", "paid": True}
+            return {"ok": True, "message": "Оплачено с баланса!", "paid": True, "payment_id": pid}
 
         # --- Referral balance (зеркало pay_referral_balance в боте) ---
         elif method_id == "pay_referral_balance":
@@ -616,7 +616,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                     "ok": False,
                     "error": "Не удалось создать ключ, средства возвращены на реферальный баланс",
                 }
-            return {"ok": True, "message": "Оплачено с реферального баланса!", "paid": True}
+            return {"ok": True, "message": "Оплачено с реферального баланса!", "paid": True, "payment_id": pid}
 
         return {"ok": False, "error": "Метод не поддерживается"}
     except Exception as e:

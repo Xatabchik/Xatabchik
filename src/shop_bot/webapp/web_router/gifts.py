@@ -97,6 +97,28 @@ def _get_gift_fallback_card_html(g: dict, badge_html: str, action_block_html: st
         </div>"""
 
 
+def _gift_share_text_setting() -> str:
+    return (get_setting("gift_share_text") or "").strip() or (
+        "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
+    )
+
+
+def _gift_activation_links(gift_code: str, *, absolute: bool = False) -> tuple[str, str]:
+    """(webapp_link, telegram_link) активации подарка; пустая строка, если домен/бот не настроены.
+
+    `webapp_domain` в настройках хранится без схемы (app.example.com). Для
+    QR-кода и шаринга нужна полноценная ссылка, поэтому при absolute=True
+    недостающая схема дописывается как https://.
+    """
+    bot_username = get_setting("telegram_bot_username") or ""
+    webapp_domain = (get_setting("webapp_domain") or "").strip().rstrip("/")
+    if absolute and webapp_domain and not webapp_domain.lower().startswith(("http://", "https://")):
+        webapp_domain = f"https://{webapp_domain}"
+    webapp_link = f"{webapp_domain}/gift/{gift_code}" if webapp_domain else ""
+    telegram_link = f"https://t.me/{bot_username}?start=gift_{gift_code}" if bot_username else ""
+    return webapp_link, telegram_link
+
+
 @app.post("/api/user/gifts")
 async def api_user_gifts(request: Request):
     try:
@@ -111,11 +133,7 @@ async def api_user_gifts(request: Request):
     from shop_bot.data_manager import database
     gifts = database.get_user_inactive_gifts(uid) or []
 
-    bot_username = get_setting("telegram_bot_username") or ""
-    webapp_domain = (get_setting("webapp_domain") or "").rstrip("/")
-    gift_share_text = (get_setting("gift_share_text") or "").strip() or (
-        "🎁 Получи подарочный VPN ключ! Активируй ссылку и начни использовать"
-    )
+    gift_share_text = _gift_share_text_setting()
 
     # Бейдж "Подарок" на карточке ключа не нужен — карточки уже находятся на
     # отдельной вкладке "Подарочные", подпись была избыточной.
@@ -124,8 +142,7 @@ async def api_user_gifts(request: Request):
     result = []
     for g in gifts:
         code = g.get("gift_code") or ""
-        webapp_link = f"{webapp_domain}/gift/{code}" if webapp_domain else ""
-        telegram_link = f"https://t.me/{bot_username}?start=gift_{code}" if bot_username else ""
+        webapp_link, telegram_link = _gift_activation_links(code)
         # "link" оставлен для обратной совместимости (используется JS-фолбэком) — предпочитаем webapp-ссылку.
         link = webapp_link or telegram_link
 
@@ -249,6 +266,8 @@ async def api_gift_activate(req: GiftActivateRequest, request: Request):
 # (см. __init__.py). Значение берётся из текущей привязки модуля, поэтому
 # затенение импортом воспроизводится само.
 __all__ = [
+    "_gift_share_text_setting",
+    "_gift_activation_links",
     "_gift_link_row_html",
     "_get_gift_action_block_html",
     "_get_gift_fallback_card_html",

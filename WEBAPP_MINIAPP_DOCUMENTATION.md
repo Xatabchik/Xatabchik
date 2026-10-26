@@ -189,7 +189,7 @@ Email-аккаунты: `create_user_by_email`, `hash_password` / `verify_passwo
 - Собственная генерация ссылки ЮMoney (`_build_yoomoney_link`).
 - Оплата звёздами Telegram (`_send_invoice_stars`, валюта `"XTR"`).
 - Роуты: `POST /api/payment-methods`, `POST /api/create-payment`, `POST /api/apply-promo`,
-  `POST /api/check-payment`.
+  `POST /api/check-payment`, `POST /api/payment/result`, `POST /api/payment/qr`.
 
 Значит: **это не отдельный магазин, а альтернативный UI поверх той же бизнес-логики бота.**
 
@@ -251,6 +251,7 @@ Email-аккаунты: `create_user_by_email`, `hash_password` / `verify_passwo
 | GET/POST | `/api/auth/*` | Токен, Telegram, email, reset, sync-tg |
 | POST | `/api/create-payment`, `/create-topup-payment`, `/create-lte-topup-payment` | Инвойсы |
 | POST | `/api/check-payment`, `/api/webapp/payments/{id}/verify` | Сверка статуса |
+| POST | `/api/payment/result`, `/api/payment/qr` | Что куплено (ключ, ссылки подарка) и QR для экрана успеха; только владельцу, только после выдачи |
 | POST | `/api/key/*`, `/api/keys/search` | Устройства, имя, комментарий, автопродление |
 | POST | `/api/support/*` | Тикеты |
 | GET | `/api/user/transactions`, `/api/lte-packages` | История и пакеты LTE |

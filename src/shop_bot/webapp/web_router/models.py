@@ -155,6 +155,13 @@ class CheckPaymentRequest(BaseModel):
     init_data: str | None = None
 
 
+class PaymentQrRequest(BaseModel):
+    payment_id: str
+    kind: str
+    token: str | None = None
+    init_data: str | None = None
+
+
 class VerifyPlategaPaymentRequest(BaseModel):
     token: str | None = None
     init_data: str | None = None
@@ -226,6 +233,7 @@ __all__ = [
     "DeleteAllDevicesRequest",
     "SearchKeysRequest",
     "CheckPaymentRequest",
+    "PaymentQrRequest",
     "VerifyPlategaPaymentRequest",
     "KeyActionRequest",
     "DeleteDeviceRequest",
