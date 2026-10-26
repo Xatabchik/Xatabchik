@@ -89,7 +89,7 @@ def test_enrich_sets_connected_devices_and_limit(temp_db, monkeypatch):
     )
     key = database.get_key_by_id(kid)
     asyncio.run(_enrich_keys_live([key]))
-    assert _process_key_data(key)["hwid_info"] == "3 / 5 уст."
+    assert _process_key_data(key)["hwid_info"] == "3 / 5"
 
 
 def test_enrich_shows_dash_when_panel_unavailable(temp_db, monkeypatch):
@@ -126,7 +126,7 @@ def test_live_state_returns_only_own_keys_with_fresh_auto_renew(temp_db, monkeyp
     assert set(by_id) == {own}
     assert foreign not in by_id
     assert by_id[own]["auto_renew"] is True
-    assert by_id[own]["hwid_info"] == "1 / 3 уст."
+    assert by_id[own]["hwid_info"] == "1 / 3"
 
     assert database.set_key_auto_renew(own, False)
     body = _client().post("/api/keys/live-state", json={"token": token}).json()
@@ -205,7 +205,7 @@ function mkBtn(id) {
   };
 }
 function mkHwid(id) {
-  return { textContent: '0 / ∞ уст.', getAttribute: () => String(id) };
+  return { textContent: '0 / ∞', getAttribute: () => String(id) };
 }
 const buttons = [mkBtn(7), mkBtn(7), mkBtn(8)];
 const hwids = [mkHwid(7), mkHwid(8)];
@@ -228,11 +228,11 @@ assert.ok(!buttons[0].classList.has('bg-white/5'));
 _applyAutoRenewState(7, false);
 assert.ok(buttons[0].classList.has('bg-white/5'));
 assert.ok(!buttons[0].classList.has('text-primary'));
-_applyKeyHwidInfo(8, '2 / 5 уст.');
-assert.strictEqual(hwids[1].textContent, '2 / 5 уст.');
-assert.strictEqual(hwids[0].textContent, '0 / ∞ уст.');
+_applyKeyHwidInfo(8, '2 / 5');
+assert.strictEqual(hwids[1].textContent, '2 / 5');
+assert.strictEqual(hwids[0].textContent, '0 / ∞');
 _applyKeyHwidInfo(8, { evil: 1 });
-assert.strictEqual(hwids[1].textContent, '2 / 5 уст.');
+assert.strictEqual(hwids[1].textContent, '2 / 5');
 """
     )
     res = subprocess.run([NODE, str(script)], capture_output=True, text=True)

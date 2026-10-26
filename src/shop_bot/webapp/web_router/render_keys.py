@@ -515,7 +515,7 @@ def _process_key_data(key: dict) -> dict:
         "traffic_info": f"{formatted_used} / {traffic_str}" + (
             f" (сброс {reset_txt})" if (reset_txt := format_next_traffic_reset_display(key.get("next_traffic_reset_at"))) else ""
         ), 
-        "hwid_info": f"{hwid_str} уст.",
+        "hwid_info": hwid_str,
         "status_text": status_text,
         "status_color": status_color,
         "status_bg": status_bg,
