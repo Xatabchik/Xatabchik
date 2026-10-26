@@ -2219,7 +2219,9 @@ async def create_or_update_key_on_host(
             # otherwise extend from "now". This prevents losing remaining days when user renews early.
             base_dt = datetime.now(timezone.utc)
             try:
-                existing = await get_user_by_email(email, host_name=host_name)
+                # На Remnawave 3.x by-email снят (всегда 404), поэтому после email нужен
+                # lookup по username, как в ensure_user; иначе срок считается от «сейчас».
+                existing = await lookup_panel_user(None, email=email, host_name=host_name)
             except Exception:
                 existing = None
             if isinstance(existing, dict):
