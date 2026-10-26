@@ -180,7 +180,7 @@ def test_every_global_name_in_the_package_resolves():
 
 @pytest.mark.parametrize(
     "event,expected",
-    [("message", 83), ("callback_query", 205)],
+    [("message", 84), ("callback_query", 205)],
 )
 def test_handler_counts_per_observer(temp_db, event, expected):
     """Сегмент, потерянный при сборке роутера, не проявился бы иначе никак."""

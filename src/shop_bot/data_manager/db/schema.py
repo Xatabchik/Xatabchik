@@ -34,6 +34,7 @@ __all__ = (
     "_ensure_auth_pending_actions_table",
     "_ensure_promo_tables",
     "_ensure_analytics_tables",
+    "_ensure_key_write_tables",
     "_ensure_pending_tables",
     "_ensure_processed_payments_table",
     "_backfill_encrypt_secrets_at_rest",
@@ -533,6 +534,10 @@ def initialize_db():
                 "remnawave_cookies": "{}",
                 "remnawave_is_local_network": "false",
                 "default_extension_days": "30",
+                # PR-A: замок записи ключа и идемпотентная дельта продления (по умолчанию выключены).
+                "key_write_lock_scope": "off",
+                "key_extension_delta_scope": "off",
+                "payment_reconciler_mode": "alert",
 
                 "main_menu_text": None,
                 "main_menu_promo_text": "🌐 Множество локаций\n🚀 Скорость серверов 1 Гбит/с, смена IP\n📊 Безлимитный трафик\n\nСпасибо, что вы с нами!",
@@ -1245,6 +1250,7 @@ def run_migration():
             _ensure_remnawave_squads_catalog(cursor)
             _ensure_analytics_tables(cursor)
             _ensure_auth_pending_actions_table(cursor)
+            _ensure_key_write_tables(cursor)
             try:
                 cursor.execute(
                     "UPDATE plans SET traffic_limit_strategy = 'MONTH_ROLLING' "
@@ -1564,6 +1570,14 @@ def _ensure_analytics_tables(cursor: sqlite3.Cursor) -> None:
         """
     )
     _ensure_index(cursor, "idx_broadcast_sends_cuid_time", "broadcast_sends", "campaign_id, user_id, sent_at")
+
+
+def _ensure_key_write_tables(cursor: sqlite3.Cursor) -> None:
+    """Таблицы PR-A: замки записи ключа, журнал продлений, ops_alerts, журнал автопродления."""
+    from shop_bot.data_manager import auto_renew_ledger, key_write_guard
+
+    key_write_guard.ensure_tables(cursor)
+    auto_renew_ledger.ensure_tables(cursor)
 
 
 def _ensure_pending_tables(cursor: sqlite3.Cursor) -> None:

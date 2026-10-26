@@ -8,6 +8,7 @@ import html as html_escape
 import json
 
 from aiogram import Router, F, types
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -450,3 +451,22 @@ def register_payments(admin_router: Router) -> None:
             await callback.message.answer(f"❌ YooMoney: ошибка проверки токена: {err}")
 
         await show_admin_payment_detail(callback.message, 'yoomoney', edit_message=False)
+
+    @admin_router.message(Command(commands=["recheck_payment"]))
+    async def recheck_payment_handler(message: types.Message):
+        """Перепроверить зависший платёж: /recheck_payment <payment_id> (PR-A)."""
+        if not is_admin(message.from_user.id):
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        payment_id = parts[1].strip() if len(parts) > 1 else ""
+        if not payment_id:
+            await message.answer("Использование: <code>/recheck_payment &lt;payment_id&gt;</code>", parse_mode="HTML")
+            return
+        from shop_bot.data_manager import reconciler
+
+        try:
+            result = await reconciler.recheck_payment(message.bot, payment_id)
+        except Exception as exc:
+            await message.answer(f"Ошибка проверки платежа: {exc}")
+            return
+        await message.answer(result)

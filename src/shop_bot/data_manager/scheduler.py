@@ -14,6 +14,8 @@ from shop_bot.data_manager import database
 from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import backup_manager
+from shop_bot.data_manager import auto_renew_ledger
+from shop_bot.data_manager import key_write_guard
 
 from shop_bot.modules import remnawave_api
 from shop_bot.modules import telegram_reachability
@@ -23,7 +25,6 @@ CHECK_INTERVAL_SECONDS = 300
 NOTIFY_BEFORE_HOURS = {72, 48, 24, 1}
 AUTO_RENEW_RETRY_COOLDOWN_HOURS = 6
 notified_users = {}
-_auto_renew_attempts: dict[int, datetime] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -1135,7 +1136,6 @@ async def _notify_auto_renew_no_balance(
 
 
 async def check_auto_renewals(bot: Bot):
-    global _auto_renew_attempts
     if not _is_true(rw_repo.get_setting("auto_renew_globally_enabled") or "false"):
         return
 
@@ -1153,15 +1153,20 @@ async def check_auto_renewals(bot: Bot):
     now = datetime.now()
 
     for key in keys:
+        # Текущий ключ всегда доводится до конца, новый при остановке службы не начинаем.
+        if key_write_guard.is_shutting_down():
+            logger.info("Auto-renew: служба останавливается, остальные ключи пропущены.")
+            break
         try:
             key_id = int(key["key_id"])
             user_id = int(key["user_id"])
             key_name = key.get("user_key_name") or None
 
-            last_attempt = _auto_renew_attempts.get(key_id)
-            if last_attempt and (now - last_attempt).total_seconds() < AUTO_RENEW_RETRY_COOLDOWN_HOURS * 3600:
+            # Журнал попыток лежит в БД: перезапуск процесса не сбрасывает кулдаун.
+            last_attempt_age = await asyncio.to_thread(auto_renew_ledger.last_attempt_age_seconds, key_id)
+            if last_attempt_age is not None and last_attempt_age < AUTO_RENEW_RETRY_COOLDOWN_HOURS * 3600:
                 continue
-            _auto_renew_attempts[key_id] = now
+            await asyncio.to_thread(auto_renew_ledger.record_attempt, key_id)
 
             meta = _parse_origin_meta_from_description(key.get("description"))
             plan = None
@@ -1186,19 +1191,36 @@ async def check_auto_renewals(bot: Bot):
             plan_days = int(plan.get("duration_days") or 0)
             days_to_add = plan_days if plan_days > 0 else (plan_months * 30 if plan_months > 0 else 30)
 
-            if not rw_repo.deduct_from_balance(user_id, price):
+            host_name = key.get("host_name")
+            email = key.get("key_email") or key.get("email")
+            expire_str = key.get("expire_at") or key.get("expiry_date")
+            exp_dt = _parse_dt_safe(expire_str) or now
+            base_ms = max(int(exp_dt.timestamp() * 1000), int(now.timestamp() * 1000))
+            new_expiry_ms = base_ms + days_to_add * 86400000
+            charge_id = auto_renew_ledger.make_charge_id(key_id, int(exp_dt.timestamp()))
+
+            # Списание и запись о нём в одной транзакции, до обращения к панели.
+            outcome = await asyncio.to_thread(
+                auto_renew_ledger.charge,
+                charge_id=charge_id,
+                key_id=key_id,
+                user_id=user_id,
+                host_name=host_name,
+                email=email,
+                price=price,
+                days=days_to_add,
+                plan_id=_try_int(plan.get("plan_id")),
+                target_ms=new_expiry_ms,
+            )
+            if outcome == "no_balance":
                 logger.info(f"Auto-renew: пользователь {user_id}, ключ {key_id} — нехватка баланса ({price:.2f}).")
                 await _notify_auto_renew_no_balance(bot, user_id, key_id, price, key_name)
                 continue
+            if outcome == auto_renew_ledger.STATE_APPLIED:
+                logger.info(f"Auto-renew: ключ {key_id}: продление {charge_id} уже применено, повторное списание не выполняется.")
+                continue
 
-            host_name = key.get("host_name")
-            email = key.get("key_email") or key.get("email")
             try:
-                expire_str = key.get("expire_at") or key.get("expiry_date")
-                exp_dt = _parse_dt_safe(expire_str) or now
-                base_ms = max(int(exp_dt.timestamp() * 1000), int(now.timestamp() * 1000))
-                new_expiry_ms = base_ms + days_to_add * 86400000
-
                 result = await remnawave_api.create_or_update_key_on_host(
                     host_name=host_name,
                     email=email,
@@ -1207,26 +1229,35 @@ async def check_auto_renewals(bot: Bot):
                     traffic_limit_bytes=int(plan.get("traffic_limit_bytes") or 0),
                     traffic_limit_strategy=database.remnawave_traffic_limit_strategy_for_plan(plan),
                     plan_id=plan.get("plan_id"),
+                    raise_on_error=True,
+                    payment_id=charge_id,
                 )
-                if result:
-                    effective_ms = result.get("expiry_timestamp_ms") or new_expiry_ms
-                    rw_repo.update_key_fields(key_id, expire_at_ms=int(effective_ms))
-                    try:
-                        database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False)
-                    except Exception:
-                        logger.warning(
-                            f"Auto-renew: не удалось обновить политику сброса трафика ключа {key_id}",
-                            exc_info=True,
-                        )
-                    _auto_renew_attempts.pop(key_id, None)
-                    logger.info(f"Auto-renew: ключ {key_id} продлён на {days_to_add} дн. (пользователь {user_id}).")
-                    await _notify_auto_renew_success(bot, user_id, key_id, price, days_to_add, key_name)
+            except remnawave_api.RemnawaveAPIError as exc:
+                if exc.ambiguous:
+                    # Панель могла применить продление: деньги остаются в записи `charged`,
+                    # решение примет сверка по сроку в панели.
+                    logger.error(f"Auto-renew: исход продления ключа {key_id} неизвестен ({exc}); сверка решит судьбу списания.")
                 else:
-                    rw_repo.add_to_balance(user_id, price)
-                    logger.error(f"Auto-renew: Remnawave API вернул None для ключа {key_id}. Средства возвращены.")
+                    if await asyncio.to_thread(auto_renew_ledger.refund, charge_id):
+                        logger.error(f"Auto-renew: панель отклонила продление ключа {key_id}: {exc}. Средства возвращены.")
+                continue
             except Exception as exc:
-                rw_repo.add_to_balance(user_id, price)
-                logger.error(f"Auto-renew: ошибка продления ключа {key_id}: {exc}", exc_info=True)
+                logger.error(f"Auto-renew: ошибка продления ключа {key_id}: {exc}; сверка решит судьбу списания.", exc_info=True)
+                continue
+
+            effective_ms = (result or {}).get("expiry_timestamp_ms") or new_expiry_ms
+            rw_repo.update_key_fields(key_id, expire_at_ms=int(effective_ms))
+            try:
+                database.apply_key_monthly_reset_fields(key_id, plan, restart_cycle=False)
+            except Exception:
+                logger.warning(
+                    f"Auto-renew: не удалось обновить политику сброса трафика ключа {key_id}",
+                    exc_info=True,
+                )
+            await asyncio.to_thread(auto_renew_ledger.mark_applied, charge_id)
+            await asyncio.to_thread(auto_renew_ledger.clear_attempt, key_id)
+            logger.info(f"Auto-renew: ключ {key_id} продлён на {days_to_add} дн. (пользователь {user_id}).")
+            await _notify_auto_renew_success(bot, user_id, key_id, price, days_to_add, key_name)
         except Exception as exc:
             logger.error(f"Auto-renew: ошибка обработки ключа {key.get('key_id')}: {exc}", exc_info=True)
 
