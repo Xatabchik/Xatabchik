@@ -253,6 +253,7 @@ Email-аккаунты: `create_user_by_email`, `hash_password` / `verify_passwo
 | POST | `/api/check-payment`, `/api/webapp/payments/{id}/verify` | Сверка статуса |
 | POST | `/api/payment/result`, `/api/payment/qr` | Что куплено (ключ, ссылки подарка) и QR для экрана успеха; только владельцу, только после выдачи |
 | POST | `/api/key/*`, `/api/keys/search` | Устройства, имя, комментарий, автопродление |
+| POST | `/api/keys/live-state` | Актуальные автопродление и «подключено / лимит» устройств для всех ключей пользователя (карточки обновляются при открытии страницы ключей) |
 | POST | `/api/support/*` | Тикеты |
 | GET | `/api/user/transactions`, `/api/lte-packages` | История и пакеты LTE |
 | GET | `/ref/{id}`, `/gift/{code}` | Публичные лендинги + pending action |

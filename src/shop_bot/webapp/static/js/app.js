@@ -4320,6 +4320,72 @@ function goToRenewKey(keyId) {
     }, 150);
 }
 
+const _AUTO_RENEW_ON_CLASSES = ['border-primary/30', 'text-primary', 'bg-primary/10'];
+const _AUTO_RENEW_OFF_CLASSES = ['border-white/5', 'text-white', 'bg-white/5', 'hover:bg-white/10'];
+
+function _applyAutoRenewState(keyId, enabled) {
+    const id = String(parseInt(keyId, 10));
+    if (id === 'NaN') return;
+    document.querySelectorAll('[data-key-action="auto-renew"]').forEach((btn) => {
+        if (btn.getAttribute('data-key-id') !== id) return;
+        btn.setAttribute('data-auto-renew', enabled ? 'true' : 'false');
+        btn.classList.remove(...(enabled ? _AUTO_RENEW_OFF_CLASSES : _AUTO_RENEW_ON_CLASSES));
+        btn.classList.add(...(enabled ? _AUTO_RENEW_ON_CLASSES : _AUTO_RENEW_OFF_CLASSES));
+        const icon = btn.querySelector('.material-symbols-rounded');
+        const label = btn.querySelector('.auto-renew-label');
+        if (icon) icon.textContent = enabled ? 'update' : 'pause_circle';
+        if (label) label.textContent = enabled ? 'Авто: ВКЛ' : 'Авто: ВЫКЛ';
+    });
+}
+
+function _applyKeyHwidInfo(keyId, text) {
+    const id = String(parseInt(keyId, 10));
+    if (id === 'NaN' || typeof text !== 'string') return;
+    document.querySelectorAll('[data-key-hwid]').forEach((el) => {
+        if (el.getAttribute('data-key-hwid') === id) el.textContent = text;
+    });
+}
+
+let _keysLiveStateInFlight = null;
+let _keysLiveStateAt = 0;
+
+async function syncKeysLiveState(force) {
+    if (!document.querySelector('[data-key-action="auto-renew"], [data-key-hwid]')) return;
+    if (_keysLiveStateInFlight) return _keysLiveStateInFlight;
+    if (!force && Date.now() - _keysLiveStateAt < 5000) return;
+    const token = window.getAuthToken && window.getAuthToken();
+    if (!token) return;
+    _keysLiveStateInFlight = (async () => {
+        try {
+            const resp = await fetch('/api/keys/live-state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token })
+            });
+            const d = await resp.json();
+            if (!d || !d.ok || !Array.isArray(d.keys)) return;
+            d.keys.forEach((k) => {
+                if (!k || typeof k !== 'object') return;
+                _applyAutoRenewState(k.key_id, k.auto_renew === true);
+                _applyKeyHwidInfo(k.key_id, k.hwid_info);
+            });
+        } catch (e) {
+            console.error('Keys live state error:', e);
+        } finally {
+            _keysLiveStateAt = Date.now();
+            _keysLiveStateInFlight = null;
+        }
+    })();
+    return _keysLiveStateInFlight;
+}
+window.syncKeysLiveState = syncKeysLiveState;
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const keysEl = document.getElementById('keys-page');
+    if (keysEl && keysEl.style.display !== 'none') syncKeysLiveState();
+});
+
 async function toggleKeyAutoRenew(keyId, currentEnabled, btnEl) {
     const newState = !currentEnabled;
     const token = window.getAuthToken();
@@ -4333,19 +4399,9 @@ async function toggleKeyAutoRenew(keyId, currentEnabled, btnEl) {
         });
         const d = await resp.json();
         if (d.ok) {
-            btnEl.setAttribute('data-auto-renew', newState ? 'true' : 'false');
-            const icon = btnEl.querySelector('.material-symbols-rounded');
-            const label = btnEl.querySelector('.auto-renew-label');
-            if (newState) {
-                btnEl.className = btnEl.className.replace(/border-white\/5\s*text-white\s*bg-white\/5(\s*hover:bg-white\/10)?/, '').trim() + ' border-primary/30 text-primary bg-primary/10';
-                if (icon) icon.textContent = 'update';
-                if (label) label.textContent = 'Авто: ВКЛ';
-            } else {
-                btnEl.className = btnEl.className.replace(/border-primary\/30\s*text-primary\s*bg-primary\/10/, '').trim() + ' border-white/5 text-white bg-white/5 hover:bg-white/10';
-                if (icon) icon.textContent = 'pause_circle';
-                if (label) label.textContent = 'Авто: ВЫКЛ';
-            }
-            showNotification(newState ? 'Автопродление включено' : 'Автопродление выключено', 'success');
+            const actual = typeof d.auto_renew === 'boolean' ? d.auto_renew : newState;
+            _applyAutoRenewState(keyId, actual);
+            showNotification(actual ? 'Автопродление включено' : 'Автопродление выключено', 'success');
         } else {
             showNotification(d.error || 'Ошибка', 'error');
         }

@@ -139,6 +139,16 @@ async def api_user_gifts(request: Request):
     # отдельной вкладке "Подарочные", подпись была избыточной.
     badge_html = ""
 
+    gift_keys: dict[int, dict] = {}
+    for g in gifts:
+        kid = g.get("key_id")
+        if not kid or int(kid) in gift_keys:
+            continue
+        gk = database.get_key_by_id(int(kid))
+        if gk:
+            gift_keys[int(kid)] = gk
+    await _enrich_keys_live(list(gift_keys.values()))
+
     result = []
     for g in gifts:
         code = g.get("gift_code") or ""
@@ -150,7 +160,7 @@ async def api_user_gifts(request: Request):
 
         card_html = None
         key_id = g.get("key_id")
-        gift_key = database.get_key_by_id(int(key_id)) if key_id else None
+        gift_key = gift_keys.get(int(key_id)) if key_id else None
         if gift_key:
             card_html = _get_key_card_html(gift_key, badge_html=badge_html, extra_content_html=action_block_html)
         else:

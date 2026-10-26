@@ -11,8 +11,10 @@
 # Модули-владельцы маршрутов не регистрируют, поэтому их ранний импорт
 # порядок маршрутов не сдвигает.
 from shop_bot.webapp.web_router._app import app
+from shop_bot.webapp.web_router._core import limiter
 from shop_bot.webapp.web_router.models import (
     DeleteAllDevicesRequest,
+    KeysLiveStateRequest,
     RenameKeyRequest,
     SearchKeysRequest,
 )
@@ -20,6 +22,8 @@ from shop_bot.webapp.web_router.models import (
 
 from fastapi import Request
 from shop_bot.data_manager.remnawave_repository import get_user_keys
+
+KEYS_LIVE_STATE_RATE_LIMIT = "20/minute"
 
 
 @app.get("/api/user-status")
@@ -35,6 +39,7 @@ async def api_user_status(request: Request, token: str | None = None):
         formatted_keys = []
         if keys:
             keys = _sort_keys_newest_first(_personal_keys(keys))
+            await _enrich_keys_live(keys)
             formatted_keys = [_process_key_data(k) for k in keys]
         
         return {"ok": True, "keys": formatted_keys, "balance": float(user.get("balance") or 0.0)}
@@ -186,6 +191,7 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
 
         keys = search_user_keys_by_email(user_id, q)
         found_keys = keys[:20]
+        await _enrich_keys_live(found_keys)
         # Reuse the same card renderer as the main "Мои ключи" list so search
         # results get full parity: same buttons, same data-* event wiring.
         html = _get_profile_keys_html(found_keys) if found_keys else ""
@@ -196,11 +202,41 @@ async def api_keys_search(req: SearchKeysRequest, request: Request):
         return {"ok": False, "error": str(e)}
 
 
+@app.post("/api/keys/live-state")
+@limiter.limit(KEYS_LIVE_STATE_RATE_LIMIT)
+async def api_keys_live_state(req: KeysLiveStateRequest, request: Request):
+    """Актуальное состояние ключей пользователя для уже нарисованных карточек:
+    статус автопродления (из БД, общей с ботом) и «подключено / лимит» устройств
+    (из панели). Только ключи самого пользователя; идентичность — из токена."""
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user or user.get("is_banned"):
+            return _unauthorized()
+        keys = [k for k in (get_user_keys(int(user["telegram_id"])) or []) if k.get("key_id") is not None]
+        await _enrich_keys_live(keys)
+        states = []
+        for k in keys:
+            data = _process_key_data(k)
+            states.append({
+                "key_id": int(k["key_id"]),
+                "auto_renew": bool(data["auto_renew"]),
+                "hwid_info": data["hwid_info"],
+            })
+        return {"ok": True, "keys": states}
+    except Exception as e:
+        logger.error(f"Keys live state error: {e}")
+        return {"ok": False, "error": "Не удалось обновить состояние ключей"}
+
+
 # __all__ — имена, которые пакет раскладывает по остальным модулям, чтобы
 # обращение по имени внутри функций разрешалось как до разделения
 # (см. __init__.py). Значение берётся из текущей привязки модуля, поэтому
 # затенение импортом воспроизводится само.
 __all__ = [
+    "api_keys_live_state",
+    "KEYS_LIVE_STATE_RATE_LIMIT",
     "api_user_status",
     "api_key_rename",
     "api_key_devices_delete_all",

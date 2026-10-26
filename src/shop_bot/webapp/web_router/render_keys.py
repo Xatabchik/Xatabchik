@@ -5,6 +5,7 @@
 """
 
 
+import asyncio
 from typing import Any
 import html as html_lib
 from shop_bot.data_manager.remnawave_repository import get_setting, get_msk_time
@@ -15,6 +16,7 @@ from shop_bot.data_manager.remnawave_repository import (
     get_key_by_id,
 )
 import shop_bot.data_manager.remnawave_repository as rw_repo
+from shop_bot.modules import remnawave_api
 from shop_bot.data_manager.database import (
     format_next_traffic_reset_display,
     get_squad_by_class,
@@ -268,6 +270,131 @@ def _owned_lte_key_and_plan(user_id: int, key_id: int):
     return key, state["plan"]
 
 
+def _count_hwid_devices_payload(raw) -> int | None:
+    """Число устройств из ответа /api/hwid/devices; None — ответа нет (ошибка панели)."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return len(raw)
+    if isinstance(raw, dict):
+        for name in ("devices", "hwidDevices", "items", "list", "data"):
+            val = raw.get(name)
+            if isinstance(val, list):
+                return len(val)
+        for name in ("total", "count", "totalCount"):
+            try:
+                if raw.get(name) is not None:
+                    return max(0, int(raw.get(name)))
+            except (TypeError, ValueError):
+                continue
+        return 0
+    return None
+
+
+async def _live_connected_devices(key: dict, user_payload: dict | None) -> int | None:
+    """Подключённые устройства ключа, как в боте: сначала данные пользователя из
+    панели, затем отдельный HWID-endpoint. None — узнать не удалось."""
+    from shop_bot.bot.user_router.key_info import _extract_connected_devices
+
+    from_payload = _extract_connected_devices(user_payload) if isinstance(user_payload, dict) else 0
+    if from_payload > 0:
+        return from_payload
+    ref = remnawave_api.panel_user_ref_from_payload(user_payload) if isinstance(user_payload, dict) else None
+    ref = ref or key.get("remnawave_user_uuid")
+    host = key.get("host_name")
+    if not ref or not host:
+        return None
+    raw = await remnawave_api.get_hwid_devices_for_user(
+        ref, host_name=host, email=key.get("key_email") or key.get("email")
+    )
+    return _count_hwid_devices_payload(raw)
+
+
+async def _enrich_keys_live(keys: list[dict]) -> None:
+    """Дописать в словари ключей живые данные панели: лимит и число устройств,
+    лимит и расход трафика. Правит словари на месте.
+
+    Нужна всем местам, где рисуется карточка ключа (главная, «Подарочные»,
+    поиск), иначе «Лимит: N / M» берётся из пустых полей и всегда выглядит как
+    «0 / ∞». Ключи без ответа панели не получают `used_ips`, и карточка
+    показывает «—», а не выдуманный 0.
+    """
+    from shop_bot.bot.user_router.key_info import _get_tariff_info_for_key
+
+    targets = [k for k in (keys or []) if isinstance(k, dict) and k.get("key_id") is not None]
+    if not targets:
+        return
+    try:
+        details_results = await remnawave_api.gather_limited(
+            [remnawave_api.get_key_details_from_host(k) for k in targets]
+        )
+        payloads: dict[Any, dict | None] = {}
+        sub_tasks = []
+        for k, res in zip(targets, details_results):
+            user = None
+            if not isinstance(res, Exception) and res and res.get("user"):
+                user = res["user"]
+            payloads[k["key_id"]] = user
+            if not user:
+                sub_tasks.append(asyncio.sleep(0, None))
+                continue
+
+            if user.get("trafficLimitBytes") is not None:
+                k["limit_bytes"] = user.get("trafficLimitBytes")
+            if not k.get("email") and not k.get("key_email"):
+                api_email = user.get("username") or user.get("email") or ""
+                if api_email:
+                    k["email"] = api_email
+                    k["key_email"] = api_email
+
+            target_uuid = k.get("remnawave_user_uuid") or user.get("uuid")
+            if target_uuid:
+                sub_tasks.append(
+                    remnawave_api.get_user_by_uuid(str(target_uuid), host_name=k.get("host_name"))
+                )
+            else:
+                sub_tasks.append(asyncio.sleep(0, None))
+
+        sub_results = await remnawave_api.gather_limited(sub_tasks)
+        for k, sub_res in zip(targets, sub_results):
+            found_traffic = None
+            if not isinstance(sub_res, Exception) and isinstance(sub_res, dict):
+                for name in ("usedTrafficBytes", "trafficUsedBytes", "traffic_used_bytes",
+                             "usedBytes", "trafficUsed", "traffic", "used_traffic"):
+                    val = sub_res.get(name)
+                    if val is not None:
+                        found_traffic = val
+                        break
+            if found_traffic is not None:
+                k["used_bytes"] = found_traffic
+            user = payloads.get(k["key_id"])
+            if "used_bytes" not in k and user:
+                for name in ("traffic", "trafficUsed", "used_traffic"):
+                    if user.get(name) is not None:
+                        try:
+                            k["used_bytes"] = int(user.get(name))
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                if "used_bytes" not in k:
+                    k["used_bytes"] = int(user.get("upload") or 0) + int(user.get("download") or 0)
+
+        counts = await remnawave_api.gather_limited(
+            [_live_connected_devices(k, payloads.get(k["key_id"])) for k in targets]
+        )
+        for k, cnt in zip(targets, counts):
+            if isinstance(cnt, int):
+                k["used_ips"] = cnt
+            try:
+                limit = _get_tariff_info_for_key(k, payloads.get(k["key_id"]))[2]
+            except Exception:
+                limit = None
+            if limit is not None:
+                k["limit_ips"] = limit
+    except Exception as e:
+        logger.error(f"Error fetching live stats: {e}")
+
+
 def _process_key_data(key: dict) -> dict:
     # 1. Calculate expiry
     try:
@@ -339,7 +466,9 @@ def _process_key_data(key: dict) -> dict:
             traffic_str = "∞"
     
     hwid_limit = key.get('limit_ips')
-    hwid_usage = key.get('used_ips', 0)
+    hwid_usage = key.get('used_ips')
+    if hwid_usage is None:
+        hwid_usage = "—"
     
     limit_display = "∞"
     if hwid_limit is not None:
@@ -648,7 +777,7 @@ def _get_key_card_html(key: dict, badge_html: str = "", extra_content_html: str 
                             <div class="w-px h-3 bg-white/10 mx-1"></div>
                             <div class="flex items-center gap-1.5">
                                 <span class="text-gray-500 whitespace-nowrap">📱 Лимит:</span>
-                                <span class="text-gray-300 font-mono whitespace-nowrap">{data['hwid_info']}</span>
+                                <span class="text-gray-300 font-mono whitespace-nowrap" data-key-hwid="{kid}">{data['hwid_info']}</span>
                             </div>
                         </div>
                         {f'''<div class="flex items-center gap-1.5 pt-1 opacity-90">
@@ -944,6 +1073,9 @@ __all__ = [
     "_resolve_plan_id_for_key",
     "_lte_card_state",
     "_owned_lte_key_and_plan",
+    "_count_hwid_devices_payload",
+    "_live_connected_devices",
+    "_enrich_keys_live",
     "_process_key_data",
     "_get_key_html",
     "_get_profile_card_html",
