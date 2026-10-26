@@ -3,6 +3,7 @@ import threading
 import asyncio
 import signal
 import re
+import time
 import os
 try:
 
@@ -134,8 +135,12 @@ def main():
         # иначе платёж остаётся оплаченным без выданной услуги. Бюджет меньше
         # stop_grace_period (40 с) в docker-compose.yml.
         key_write_guard.request_shutdown()
-        drained = await asyncio.to_thread(key_write_guard.wait_inflight, 30.0)
-        if not drained:
+        # Опрос в цикле, а не asyncio.to_thread: создание executor'а по умолчанию
+        # ломает завершение asyncio.run (shutdown_default_executor после loop.stop()).
+        deadline = time.monotonic() + 30.0
+        while key_write_guard.inflight_count() > 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        if key_write_guard.inflight_count() > 0:
             logger.warning(
                 "Завершение: записи в панель не закончились за 30 с (в работе: %s), задачи будут отменены.",
                 key_write_guard.inflight_count(),
