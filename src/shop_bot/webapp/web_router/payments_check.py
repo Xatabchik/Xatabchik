@@ -11,12 +11,18 @@
 # Модули-владельцы маршрутов не регистрируют, поэтому их ранний импорт
 # порядок маршрутов не сдвигает.
 from shop_bot.webapp.web_router._app import app
-from shop_bot.webapp.web_router.models import CheckPaymentRequest
+from shop_bot.webapp.web_router._core import limiter
+from shop_bot.webapp.web_router.models import CheckPaymentRequest, PaymentQrRequest
 
+
+import base64
+import io
 
 from fastapi import Request
 from shop_bot.data_manager.remnawave_repository import (
     check_transaction_exists,
+    get_paid_transaction_for_user,
+    get_key_by_id,
     payment_owned_by_user,
     get_balance,
     get_pending_status,
@@ -115,6 +121,7 @@ async def api_check_payment(req: CheckPaymentRequest, request: Request):
         result = {
             "ok": True,
             "paid": True,
+            "payment_id": req.payment_id,
             "message": "Оплата успешно подтверждена",
         }
         try:
@@ -127,6 +134,132 @@ async def api_check_payment(req: CheckPaymentRequest, request: Request):
         return {"ok": False, "error": str(e)}
 
 
+PAYMENT_RESULT_RATE_LIMIT = "60/minute"
+PAYMENT_QR_RATE_LIMIT = "30/minute"
+_PAYMENT_QR_KINDS = ("gift_webapp", "gift_telegram", "key")
+
+
+def _payment_result_for_user(user_id: int, payment_id: str) -> dict | None:
+    """Что именно получил пользователь по оплаченному платежу.
+
+    None — платёж чужой, не оплачен или услуга ещё не выдана (клиенту
+    отвечаем нейтрально, как в /api/check-payment). Всё, что здесь
+    возвращается, берётся из БД по payment_id владельца: ни ключ, ни код
+    подарка не приходят от клиента.
+
+    Ключ отдаётся только пока он принадлежит покупателю. Неактивированный
+    подарок остаётся за покупателем (tag=user_gift), а после активации другим
+    пользователем ключ уходит к нему — тогда ни подписку, ни ссылку
+    покупателю больше не показываем.
+    """
+    if not payment_owned_by_user(payment_id, user_id):
+        return None
+    if not _payment_service_delivered(payment_id):
+        return None
+    tx = get_paid_transaction_for_user(payment_id, user_id)
+    if not tx:
+        return None
+
+    action = tx["action"]
+    result: dict = {"action": action, "key": None, "gift": None}
+    key_id = int(tx.get("key_id") or 0)
+    if action not in ("new", "extend", "gift") or key_id <= 0:
+        return result
+
+    key = get_key_by_id(key_id)
+    key_owned = bool(key) and int(key.get("user_id") or 0) == int(user_id)
+    if key_owned:
+        processed = _process_key_data(key)
+        result["key"] = {
+            "key_id": key_id,
+            "name": processed.get("name") or "",
+            "expire_date_str": processed.get("expire_date_str") or "",
+            "remaining_str": processed.get("remaining_str") or "",
+            "sub_url": processed.get("sub_url") or "",
+        }
+
+    if action == "gift":
+        gift_code = None
+        if key_owned:
+            from shop_bot.data_manager import database
+
+            _gift_id, gift_code = database.get_gift_info_by_key_id(key_id)
+            gift = database.get_gift_by_code(gift_code) if gift_code else None
+            if not gift or int(gift.get("from_user_id") or 0) != int(user_id):
+                gift_code = None
+        if gift_code:
+            webapp_link, telegram_link = _gift_activation_links(gift_code, absolute=True)
+            result["gift"] = {
+                "status": "pending",
+                "gift_code": gift_code,
+                "webapp_link": webapp_link,
+                "telegram_link": telegram_link,
+                "share_text": _gift_share_text_setting(),
+            }
+        else:
+            result["gift"] = {"status": "activated"}
+    return result
+
+
+@app.post("/api/payment/result")
+@limiter.limit(PAYMENT_RESULT_RATE_LIMIT)
+async def api_payment_result(req: CheckPaymentRequest, request: Request):
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user or not req.payment_id:
+            return {"ok": True, "ready": False}
+        result = _payment_result_for_user(int(user["telegram_id"]), req.payment_id.strip())
+        if result is None:
+            return {"ok": True, "ready": False}
+        return {"ok": True, "ready": True, **result}
+    except Exception as e:
+        logger.error(f"Payment result error: {e}")
+        return {"ok": False, "error": "Не удалось получить данные платежа"}
+
+
+def _qr_data_uri(payload: str) -> str:
+    import qrcode
+
+    img = qrcode.make(payload, box_size=8, border=2)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@app.post("/api/payment/qr")
+@limiter.limit(PAYMENT_QR_RATE_LIMIT)
+async def api_payment_qr(req: PaymentQrRequest, request: Request):
+    """QR для ссылки из результата платежа.
+
+    Содержимое QR сервер выбирает сам по (payment_id, kind) из
+    `_payment_result_for_user`; произвольный текст клиент передать не может,
+    поэтому эндпоинт не превращается в общий генератор QR.
+    """
+    try:
+        user = _require_authenticated_user(
+            request, token=req.token, init_data=req.init_data
+        )
+        if not user or req.kind not in _PAYMENT_QR_KINDS:
+            return {"ok": False, "error": "Not found"}
+        result = _payment_result_for_user(int(user["telegram_id"]), (req.payment_id or "").strip())
+        payload = ""
+        if result:
+            gift = result.get("gift") or {}
+            key = result.get("key") or {}
+            if req.kind == "key":
+                payload = key.get("sub_url") or ""
+            elif gift.get("status") == "pending":
+                payload = gift.get("webapp_link" if req.kind == "gift_webapp" else "telegram_link") or ""
+        if not payload:
+            return {"ok": False, "error": "Not found"}
+        return {"ok": True, "image": _qr_data_uri(payload)}
+    except Exception as e:
+        logger.error(f"Payment QR error: {e}")
+        return {"ok": False, "error": "Не удалось создать QR-код"}
+
+
 # __all__ — имена, которые пакет раскладывает по остальным модулям, чтобы
 # обращение по имени внутри функций разрешалось как до разделения
 # (см. __init__.py). Значение берётся из текущей привязки модуля, поэтому
@@ -137,4 +270,9 @@ __all__ = [
     "_payment_confirmed",
     "_payment_service_delivered",
     "api_check_payment",
+    "PAYMENT_RESULT_RATE_LIMIT",
+    "PAYMENT_QR_RATE_LIMIT",
+    "_payment_result_for_user",
+    "api_payment_result",
+    "api_payment_qr",
 ]

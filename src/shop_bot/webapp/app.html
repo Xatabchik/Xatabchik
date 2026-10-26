@@ -1159,11 +1159,18 @@
                 </div>
 
                 <div class="space-y-0.5">
-                    <h3 class="text-lg font-bold text-white tracking-tight">Всё готово!</h3>
-                    <p class="text-[11px] text-gray-500 font-medium">Подписка успешно активирована</p>
+                    <h3 id="success-title" class="text-lg font-bold text-white tracking-tight">Всё готово!</h3>
+                    <p id="success-subtitle" class="text-[11px] text-gray-500 font-medium">Подписка успешно активирована</p>
                 </div>
 
-                <div class="w-full bg-[#141414] border border-white/[0.04] rounded-2xl p-4 space-y-3.5 text-left">
+                <div id="success-gift-block"
+                    class="hidden w-full bg-[#141414] border border-white/[0.04] rounded-2xl p-4 flex-col gap-3 text-left">
+                    <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Подарок</span>
+                    <div id="success-gift-links" class="flex flex-col gap-3"></div>
+                </div>
+
+                <div id="success-key-card"
+                    class="w-full bg-[#141414] border border-white/[0.04] rounded-2xl p-4 space-y-3.5 text-left">
                     <div class="flex items-center justify-between">
                         <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Действует до</span>
                         <span id="success-expiry"
@@ -1171,9 +1178,11 @@
                     </div>
 
                     <div class="space-y-1.5">
-                        <span class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Ваш ключ
+                        <span id="success-key-label"
+                            class="text-[9px] text-gray-600 font-bold uppercase tracking-[0.15em]">Ваш ключ
                             доступа</span>
-                        <div class="flex items-center gap-2.5 bg-black/30 p-2.5 rounded-xl border border-white/[0.04] cursor-pointer hover:border-primary/20 transition-all group active:scale-[0.99]"
+                        <div class="flex items-center gap-2">
+                        <div class="flex-1 min-w-0 flex items-center gap-2.5 bg-black/30 p-2.5 rounded-xl border border-white/[0.04] cursor-pointer hover:border-primary/20 transition-all group active:scale-[0.99]"
                             data-payment-action="copy-key">
                             <div class="w-7 h-7 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
                                 <span class="material-symbols-rounded text-sm text-primary">key</span>
@@ -1182,6 +1191,13 @@
                                 class="text-[11px] text-gray-400 font-mono truncate flex-1 group-hover:text-white transition-colors">...</code>
                             <span
                                 class="material-symbols-rounded text-sm text-gray-600 group-hover:text-primary transition-colors">content_copy</span>
+                        </div>
+                        <button type="button" id="success-key-qr-btn" title="QR-код ключа"
+                            class="shrink-0 bg-primary/20 text-primary rounded-xl px-3 py-2.5 text-[10px] font-bold hover:bg-primary/30 active:scale-95 transition-all">QR</button>
+                        </div>
+                        <div id="success-key-qr" class="hidden justify-center pt-1">
+                            <img id="success-key-qr-img" alt="QR-код ключа" width="176" height="176"
+                                style="width:176px;height:176px;background:#fff;padding:8px;border-radius:12px;image-rendering:pixelated">
                         </div>
                     </div>
                 </div>

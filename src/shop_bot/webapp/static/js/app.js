@@ -2247,17 +2247,220 @@ async function refreshAppData() {
     }
 }
 
-async function showSuccessScreen(data) {
-    localStorage.removeItem('pendingPayment');
+function _isHttpUrl(value) {
+    return /^https?:\/\//i.test(String(value || ''));
+}
 
-    // Запрашиваем актуальный ключ пользователя
+function _paymentRequestBody(extra) {
+    return JSON.stringify(Object.assign({
+        token: window.getAuthToken() || '',
+        init_data: window.getTgInitData ? window.getTgInitData() : ''
+    }, extra || {}));
+}
+
+async function _fetchPaymentResult(paymentId) {
+    const response = await fetch('/api/payment/result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _paymentRequestBody({ payment_id: String(paymentId) })
+    });
+    const data = await response.json();
+    return data && data.ok && data.ready ? data : null;
+}
+
+// QR строит сервер по (payment_id, kind): произвольный текст в него не передать.
+// Приходит только PNG data-URI — подставляем в src и ничего больше.
+async function _fetchPaymentQr(paymentId, kind) {
+    const response = await fetch('/api/payment/qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _paymentRequestBody({ payment_id: String(paymentId), kind })
+    });
+    const data = await response.json();
+    const image = data && data.ok ? String(data.image || '') : '';
+    return image.indexOf('data:image/png;base64,') === 0 ? image : null;
+}
+
+function _bindSuccessQrToggle(btn, holder, img, paymentId, kind) {
+    let loaded = false;
+    let busy = false;
+    btn.onclick = async () => {
+        if (!holder.classList.contains('hidden')) {
+            holder.classList.add('hidden');
+            holder.classList.remove('flex');
+            return;
+        }
+        if (!loaded) {
+            if (busy) return;
+            busy = true;
+            btn.disabled = true;
+            let src = null;
+            try { src = await _fetchPaymentQr(paymentId, kind); } catch (e) { src = null; }
+            busy = false;
+            btn.disabled = false;
+            if (!src) {
+                showNotification('Не удалось создать QR-код', 'error');
+                return;
+            }
+            img.src = src;
+            loaded = true;
+        }
+        holder.classList.remove('hidden');
+        holder.classList.add('flex');
+    };
+}
+
+function _shareSuccessLink(link, text) {
+    if (!_isHttpUrl(link)) return;
+    const url = 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text || '');
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && tg.initData && typeof tg.openTelegramLink === 'function') {
+        try { tg.openTelegramLink(url); return; } catch (e) { /* fallback ниже */ }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function _copySuccessText(text) {
+    if (navigator.clipboard && text) {
+        navigator.clipboard.writeText(text).then(
+            () => showNotification('Ссылка скопирована!'),
+            () => showNotification('Не удалось скопировать', 'error')
+        );
+    }
+}
+
+// Строка ссылки подарка собирается через DOM API и textContent: ссылка и
+// подписи не интерпретируются как HTML.
+function _buildSuccessGiftRow(label, link, kind, shareText, paymentId) {
+    const mk = (tag, className, text) => {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (text != null) el.textContent = text;
+        return el;
+    };
+    const btnClass = 'flex-1 flex items-center justify-center gap-1 bg-primary/20 text-primary rounded-lg py-1.5 text-[10px] font-bold hover:bg-primary/30 active:scale-95 transition-all';
+    const wrap = mk('div', 'flex flex-col gap-1.5 min-w-0');
+    wrap.appendChild(mk('div', 'text-[9px] text-gray-500 font-bold uppercase tracking-wider px-0.5', label));
+    wrap.appendChild(mk('div', 'min-w-0 bg-black/30 rounded-lg px-3 py-1.5 text-[10px] text-gray-300 font-mono truncate', link));
+
+    const actions = mk('div', 'flex items-center gap-2');
+    const copyBtn = mk('button', btnClass);
+    copyBtn.type = 'button';
+    copyBtn.appendChild(mk('span', 'material-symbols-rounded text-sm', 'content_copy'));
+    copyBtn.appendChild(mk('span', '', 'Копировать'));
+    copyBtn.onclick = () => _copySuccessText(link);
+    const shareBtn = mk('button', btnClass);
+    shareBtn.type = 'button';
+    shareBtn.appendChild(mk('span', 'material-symbols-rounded text-sm', 'send'));
+    shareBtn.appendChild(mk('span', '', 'Поделиться'));
+    shareBtn.onclick = () => _shareSuccessLink(link, shareText);
+    const qrBtn = mk('button', btnClass, 'QR');
+    qrBtn.type = 'button';
+    actions.appendChild(copyBtn);
+    actions.appendChild(shareBtn);
+    actions.appendChild(qrBtn);
+    wrap.appendChild(actions);
+
+    const holder = mk('div', 'hidden justify-center pt-1');
+    const img = document.createElement('img');
+    img.alt = 'QR-код активации подарка';
+    img.width = 176;
+    img.height = 176;
+    img.style.cssText = 'width:176px;height:176px;background:#fff;padding:8px;border-radius:12px;image-rendering:pixelated';
+    holder.appendChild(img);
+    wrap.appendChild(holder);
+    _bindSuccessQrToggle(qrBtn, holder, img, paymentId, kind);
+    return wrap;
+}
+
+function _setSuccessText(title, subtitle) {
+    const titleEl = document.getElementById('success-title');
+    const subEl = document.getElementById('success-subtitle');
+    if (titleEl) titleEl.textContent = title;
+    if (subEl) subEl.textContent = subtitle;
+}
+
+function _setSuccessKeyCardVisible(visible) {
+    const card = document.getElementById('success-key-card');
+    const connect = document.getElementById('success-connect-btn');
+    if (card) card.classList.toggle('hidden', !visible);
+    if (connect) connect.classList.toggle('hidden', !visible);
+}
+
+function _resetSuccessScreen() {
+    _setSuccessText('Всё готово!', 'Подписка успешно активирована');
+    const giftBlock = document.getElementById('success-gift-block');
+    const giftLinks = document.getElementById('success-gift-links');
+    if (giftLinks) giftLinks.replaceChildren();
+    if (giftBlock) { giftBlock.classList.add('hidden'); giftBlock.classList.remove('flex'); }
+    _setSuccessKeyCardVisible(true);
+    const label = document.getElementById('success-key-label');
+    if (label) label.textContent = 'Ваш ключ доступа';
+    const qrHolder = document.getElementById('success-key-qr');
+    const qrImg = document.getElementById('success-key-qr-img');
+    if (qrHolder) { qrHolder.classList.add('hidden'); qrHolder.classList.remove('flex'); }
+    if (qrImg) qrImg.removeAttribute('src');
+    const qrBtn = document.getElementById('success-key-qr-btn');
+    if (qrBtn) { qrBtn.onclick = null; qrBtn.classList.add('hidden'); }
+    const keyEl = document.getElementById('success-key');
+    if (keyEl) keyEl.textContent = '...';
+    const expEl = document.getElementById('success-expiry');
+    if (expEl) expEl.textContent = '...';
+}
+
+function _renderSuccessKey(key, paymentId) {
+    const expEl = document.getElementById('success-expiry');
+    if (expEl) {
+        expEl.textContent = key.expire_date_str
+            ? (key.expire_date_str + (key.remaining_str ? ' (' + key.remaining_str + ')' : ''))
+            : 'Бессрочно';
+    }
+    const keyEl = document.getElementById('success-key');
+    if (keyEl) keyEl.textContent = key.sub_url || '';
+    const qrBtn = document.getElementById('success-key-qr-btn');
+    const qrHolder = document.getElementById('success-key-qr');
+    const qrImg = document.getElementById('success-key-qr-img');
+    if (qrBtn && qrHolder && qrImg && paymentId && key.sub_url) {
+        qrBtn.classList.remove('hidden');
+        _bindSuccessQrToggle(qrBtn, qrHolder, qrImg, paymentId, 'key');
+    }
+    _setSuccessKeyCardVisible(true);
+}
+
+function _renderSuccessGift(result, paymentId) {
+    const gift = result.gift || {};
+    const key = result.key;
+    const giftBlock = document.getElementById('success-gift-block');
+    const giftLinks = document.getElementById('success-gift-links');
+    const label = document.getElementById('success-key-label');
+
+    if (gift.status === 'pending') {
+        const shareText = String(gift.share_text || '');
+        const rows = [
+            ['Ссылка активации (в приложении)', gift.webapp_link, 'gift_webapp'],
+            ['Ссылка активации (в Telegram)', gift.telegram_link, 'gift_telegram']
+        ].filter((r) => _isHttpUrl(r[1]));
+        rows.forEach((r) => giftLinks.appendChild(_buildSuccessGiftRow(r[0], r[1], r[2], shareText, paymentId)));
+        if (rows.length && giftBlock) { giftBlock.classList.remove('hidden'); giftBlock.classList.add('flex'); }
+        _setSuccessText(
+            'Подарок готов!',
+            rows.length
+                ? 'Отправьте ссылку получателю. Подарок можно активировать и себе — на вкладке «Подарочные».'
+                : 'Ссылки активации — на вкладке «Подарочные» в разделе «Ключи».'
+        );
+        if (label) label.textContent = 'Ключ подарка';
+    } else {
+        _setSuccessText('Подарок куплен', 'Подарок уже активирован. Ключ — в разделе «Ключи».');
+    }
+    if (key) _renderSuccessKey(key, paymentId); else _setSuccessKeyCardVisible(false);
+}
+
+async function _renderLegacySuccessKey() {
     try {
-        const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id || RENDERED_USER_ID;
         const resp = await window.apiFetch('/api/user-status');
         const status = await resp.json();
 
         if (status.ok && status.keys?.length) {
-            // В этом окне показываем ключ, который только что купили или продлили
             const wantedId = currentPaymentData && currentPaymentData.keyId
                 ? String(currentPaymentData.keyId)
                 : '';
@@ -2276,6 +2479,37 @@ async function showSuccessScreen(data) {
     } catch (e) {
         console.error("Error fetching success data:", e);
     }
+}
+
+async function showSuccessScreen(data) {
+    localStorage.removeItem('pendingPayment');
+    const paymentId = String(
+        (data && data.payment_id) || activePaymentId || _paymentPollPid || ''
+    );
+    _resetSuccessScreen();
+
+    // Что именно куплено, определяет сервер по payment_id: подарочный ключ не
+    // входит в /api/user-status, и «первый ключ» оттуда — это чужой ключ.
+    let result = null;
+    if (paymentId) {
+        try { result = await _fetchPaymentResult(paymentId); } catch (e) { console.error('Payment result error:', e); }
+    }
+    const wasGift = (result && result.action === 'gift')
+        || (!result && currentPaymentData && currentPaymentData.action === 'gift');
+
+    if (wasGift) {
+        if (result) {
+            _renderSuccessGift(result, paymentId);
+        } else {
+            _setSuccessText('Подарок оплачен', 'Ссылки активации — на вкладке «Подарочные» в разделе «Ключи».');
+            _setSuccessKeyCardVisible(false);
+        }
+    } else if (result && result.key) {
+        if (result.action === 'extend') _setSuccessText('Всё готово!', 'Подписка успешно продлена');
+        _renderSuccessKey(result.key, paymentId);
+    } else {
+        await _renderLegacySuccessKey();
+    }
 
     changePaymentStep('success');
 
@@ -2283,6 +2517,9 @@ async function showSuccessScreen(data) {
 
     // Обновляем UI без перезагрузки страницы
     await refreshAppData();
+    if (wasGift && typeof loadUserGifts === 'function') {
+        try { await loadUserGifts(); } catch (e) { console.error(e); }
+    }
 }
 
 function copySuccessKey() {
@@ -2335,7 +2572,10 @@ function closePaymentModal() {
     const modal = document.getElementById('payment-modal');
     if (backdrop) backdrop.classList.add('opacity-0', 'pointer-events-none');
     if (card) card.classList.add('translate-y-full');
-    setTimeout(() => { if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); } }, 300);
+    setTimeout(() => {
+        if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+        _resetSuccessScreen();
+    }, 300);
 }
 
 function restorePendingPayment() {

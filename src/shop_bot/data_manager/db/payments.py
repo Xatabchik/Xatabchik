@@ -57,6 +57,7 @@ __all__ = (
     "get_transactions_paginated",
     "get_recent_transactions",
     "check_transaction_exists",
+    "get_paid_transaction_for_user",
     "payment_owned_by_user",
     "set_pending_email",
     "clear_pending_email",
@@ -1491,6 +1492,51 @@ def check_transaction_exists(payment_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to check transaction existence for {payment_id}: {e}")
         return False
+
+
+def get_paid_transaction_for_user(payment_id: str, user_id: int) -> dict | None:
+    """Финальная запись ledger со status='paid' по payment_id, но только владельца.
+
+    Возвращает ``{"action": str, "key_id": int}`` из metadata, которое пишет
+    ``process_successful_payment`` уже после выдачи услуги. Чужой или
+    неоплаченный payment_id даёт None — без различия «нет» / «чужой».
+    """
+    pid = (payment_id or "").strip()
+    if not pid:
+        return None
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT metadata FROM transactions
+                WHERE payment_id = ? AND user_id = ?
+                  AND LOWER(TRIM(COALESCE(status, ''))) = 'paid'
+                LIMIT 1
+                """,
+                (pid, uid),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"Failed to read paid transaction {pid}: {e}")
+        return None
+    if not row:
+        return None
+    try:
+        meta = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    try:
+        key_id = int(meta.get("key_id") or 0)
+    except (TypeError, ValueError):
+        key_id = 0
+    return {"action": str(meta.get("action") or "").strip().lower(), "key_id": key_id}
 
 
 def payment_owned_by_user(payment_id: str, user_id: int) -> bool:
