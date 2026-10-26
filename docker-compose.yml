@@ -16,6 +16,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     container_name: xatabchik
+    # Время на завершение идущих выдач после SIGTERM (бот ждёт их до 30 с, затем
+    # отменяет задачи). Docker по умолчанию убивает через 10 с.
+    stop_grace_period: 40s
     logging:
       driver: "json-file"
       options:
@@ -43,6 +46,8 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     container_name: xatabchik-webapp
+    # uvicorn при SIGTERM дожидается идущих запросов (в том числе выдачи), 40 с вместо 10.
+    stop_grace_period: 40s
     logging:
       driver: "json-file"
       options:
