@@ -341,6 +341,7 @@ window._loadKeysPage = async function () {
     if (giftsContent && giftsLoading && giftsContent.classList.contains('hidden') && giftsLoading.style.display !== 'none') {
         loadUserGifts();
     }
+    if (typeof window.syncKeysLiveState === 'function') window.syncKeysLiveState(true);
 };
 // ── Auto-activate gift from URL param ────────────────────────────
 (function checkGiftParam() {

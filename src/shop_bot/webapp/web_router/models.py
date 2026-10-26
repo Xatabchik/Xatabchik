@@ -149,6 +149,11 @@ class SearchKeysRequest(BaseModel):
     token: str | None = None
 
 
+class KeysLiveStateRequest(BaseModel):
+    token: str | None = None
+    init_data: str | None = None
+
+
 class CheckPaymentRequest(BaseModel):
     payment_id: str
     token: str | None = None
@@ -232,6 +237,7 @@ __all__ = [
     "RenameKeyRequest",
     "DeleteAllDevicesRequest",
     "SearchKeysRequest",
+    "KeysLiveStateRequest",
     "CheckPaymentRequest",
     "PaymentQrRequest",
     "VerifyPlategaPaymentRequest",

@@ -38,8 +38,10 @@ async def api_key_auto_renew(request: Request):
     if not key or key.get("user_id") != user.get("telegram_id"):
         return {"ok": False, "error": "Key not found"}
 
-    rw_repo.set_key_auto_renew(int(key_id), bool(enabled))
-    return {"ok": True, "auto_renew": bool(enabled)}
+    if not rw_repo.set_key_auto_renew(int(key_id), bool(enabled)):
+        return {"ok": False, "error": "Не удалось изменить автопродление"}
+    fresh = get_key_by_id(int(key_id)) or {}
+    return {"ok": True, "auto_renew": bool(int(fresh.get("auto_renew") or 0))}
 
 
 # __all__ — имена, которые пакет раскладывает по остальным модулям, чтобы
