@@ -12,6 +12,7 @@
 # порядок маршрутов не сдвигает.
 from shop_bot.webapp.web_router._app import app
 from shop_bot.webapp.web_router._core import (
+    AUTH_CHECK_TOKEN_RATE_LIMIT,
     AUTH_RATE_LIMIT,
     TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
     limiter,
@@ -129,7 +130,7 @@ async def api_request_auth_token(request: Request):
 
 
 @app.get("/api/auth/check-token/{token}")
-@limiter.limit(AUTH_RATE_LIMIT)
+@limiter.shared_limit(AUTH_CHECK_TOKEN_RATE_LIMIT, scope="auth_check_token")
 async def api_check_auth_token(token: str, request: Request):
     from shop_bot.data_manager import database
     # 1. Check in memory (waiting for bot confirmation, same-process fast path)
