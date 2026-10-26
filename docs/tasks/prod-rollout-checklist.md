@@ -113,6 +113,29 @@ docker compose up -d --no-build xatabchik-webapp && docker restart xatabchik
 БД PR-IP не меняет. Переменные окружения: `WEBAPP_FORWARDED_ALLOW_IPS` (webapp, через compose)
 и `SHOPBOT_TRUSTED_PROXIES` (панель Flask) позволяют сузить список доверенных прокси.
 
+## PR-IP при Caddy в docker и Cloudflare (вариант прода)
+
+Если вместо nginx на хосте стоит Caddy в контейнере в общей docker-сети, а перед ним Cloudflare, шаги про nginx
+заменяются на следующие. Проверка, что CDN есть: DNS домена ведёт на адреса Cloudflare, в ответе `server: cloudflare`, `cf-ray`.
+
+1. webapp должен быть в одной сети с Caddy. Локальную правку compose держать в `docker-compose.override.yml`
+   (`networks: [default, <сеть Caddy>]`, сеть `external: true`).
+2. Доверенные адреса для uvicorn: подсеть сети Caddy и диапазоны Cloudflare, значение берётся у Cloudflare
+   (`https://www.cloudflare.com/ips-v4`, `/ips-v6`) и пишется в `.env` рядом с `docker-compose.yml`:
+   `WEBAPP_FORWARDED_ALLOW_IPS=127.0.0.1,::1,<подсеть сети Caddy>,<диапазоны Cloudflare через запятую>`.
+   Диапазоны периодически обновлять.
+3. Caddy: в блоке сайта приложения `reverse_proxy <апстрим> { trusted_proxies <диапазоны Cloudflare через пробел> }`.
+   Без этого Caddy затирает `X-Forwarded-For` адресом узла Cloudflare, и клиенты сливаются в один адрес.
+   Директива действует только для этого сайта. Проверка: `caddy validate`, затем `caddy reload` (без простоя).
+   Файл Caddyfile при bind-mount перезаписывать через `cat новый > файл`, не `mv`.
+4. Пересоздать webapp (`docker compose up -d --no-build <webapp>`) и перезапустить бота.
+
+Проверки: `docker logs <webapp>` показывает в access-логе реальные адреса клиентов (не адрес Caddy и не диапазоны Cloudflare);
+лимит на маршруте без параметра пути (`POST /api/auth/token` с неверными данными, 30/мин) даёт 429 после 30-го запроса с одного адреса,
+а запросы с другой сети в это время проходят; поддельный `X-Forwarded-For` нового лимита не создаёт.
+Маршрут `/api/auth/check-token/{token}` до #178 лимитом по адресу не защищён (корзина на каждый токен), проверять его после #178.
+Остаточный риск: лимит считается по полному IPv6-адресу, клиент с блоком `/64` может менять адреса.
+
 ## PR-A: замок записи ключа, идемпотентное продление, журнал автопродления, сверка (PR #180)
 
 Только после того, как PR-0 и PR-IP стоят на проде. PR-B не начинается без отдельного подтверждения владельца.
