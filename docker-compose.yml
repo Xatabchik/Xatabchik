@@ -25,7 +25,14 @@ services:
   xatabchik-webapp:
     build: .
     restart: unless-stopped
-    command: /app/.venv/bin/uvicorn shop_bot.webapp.handlers:app --host 0.0.0.0 --port 8000 --proxy-headers
+    # nginx стоит на хосте и приходит в контейнер через docker-proxy, поэтому
+    # uvicorn видит не 127.0.0.1, а шлюз docker-сети (172.x.0.1). При значении
+    # по умолчанию (127.0.0.1) X-Forwarded-For игнорируется и все клиенты для
+    # slowapi выглядят одним адресом. Доверяем только loopback и частным
+    # диапазонам: порт опубликован лишь на 127.0.0.1, а соединения с публичных
+    # адресов остаются недоверенными, их X-Forwarded-For не читается. Не ставьте
+    # "*", если порт 8001 когда-либо будет открыт наружу.
+    command: /app/.venv/bin/uvicorn shop_bot.webapp.handlers:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips ${WEBAPP_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     ports:
       - 127.0.0.1:8001:8000
     volumes:

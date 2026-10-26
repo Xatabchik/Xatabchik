@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
+from shop_bot.core.client_ip import resolve_client_ip
 from shop_bot.modules import remnawave_api
 from shop_bot.modules import telegram_reachability
 from shop_bot.modules.platega_fulfillment import (
@@ -819,16 +820,9 @@ def create_webhook_app(bot_controller_instance):
         _login_attempts[ip] = attempts
         return True
 
-    _TRUSTED_PROXY_REMOTE_ADDRS = frozenset({"127.0.0.1", "::1"})
-
     def _login_client_ip() -> str:
-        """IP for login rate-limit. Honor X-Forwarded-For only behind a local proxy."""
-        remote = (request.remote_addr or "").strip()
-        if remote in _TRUSTED_PROXY_REMOTE_ADDRS:
-            xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-            if xff:
-                return xff
-        return remote or "unknown"
+        """IP for login rate-limit: X-Forwarded-For only behind a trusted proxy."""
+        return resolve_client_ip(request.remote_addr, request.headers.get("X-Forwarded-For")) or "unknown"
 
     def _verify_panel_password(stored: str, provided: str) -> bool:
         """Verify panel password. Prefers bcrypt hashes; legacy plaintext uses compare_digest."""
@@ -1813,7 +1807,7 @@ def create_webhook_app(bot_controller_instance):
             f"        proxy_pass http://127.0.0.1:{port};\n"
             f"        proxy_set_header Host $host;\n"
             f"        proxy_set_header X-Real-IP $remote_addr;\n"
-            f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            f"        proxy_set_header X-Forwarded-For $remote_addr;\n"
             f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
             f"        proxy_http_version 1.1;\n"
             f"        proxy_set_header Upgrade $http_upgrade;\n"
@@ -1853,7 +1847,7 @@ def create_webhook_app(bot_controller_instance):
             f"        proxy_pass http://127.0.0.1:{port};\n"
             f"        proxy_set_header Host $host;\n"
             f"        proxy_set_header X-Real-IP $remote_addr;\n"
-            f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            f"        proxy_set_header X-Forwarded-For $remote_addr;\n"
             f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
             f"        proxy_http_version 1.1;\n"
             f"        proxy_set_header Upgrade $http_upgrade;\n"
@@ -6013,14 +6007,8 @@ def create_webhook_app(bot_controller_instance):
 
 
     def _get_client_ip() -> str:
-        """Best-effort client IP (supports reverse proxy via X-Forwarded-For)."""
-        try:
-            xff = request.headers.get('X-Forwarded-For')
-            if xff:
-                return xff.split(',')[0].strip()
-        except Exception:
-            pass
-        return request.remote_addr or ''
+        """Client IP; X-Forwarded-For is honored only behind a trusted proxy."""
+        return resolve_client_ip(request.remote_addr, request.headers.get('X-Forwarded-For'))
 
     def _is_ip_allowed(allowlist: list[str]) -> bool:
         if not allowlist:
