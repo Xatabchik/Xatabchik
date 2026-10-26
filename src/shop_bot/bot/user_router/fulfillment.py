@@ -1058,6 +1058,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 hwid_device_limit=hwid_device_limit,
                 plan_id=plan_id_int,
                 raise_on_error=True,
+                payment_id=payment_id,
             )
         except Exception as exc:
             action_label = _format_key_action_label(action, price=price, key_id=key_id)

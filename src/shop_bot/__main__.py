@@ -3,6 +3,7 @@ import threading
 import asyncio
 import signal
 import re
+import time
 import os
 try:
 
@@ -14,6 +15,8 @@ except Exception:
 from shop_bot.webhook_server.app import create_webhook_app
 from shop_bot.webhook_server import app as webhook_app
 from shop_bot.data_manager.scheduler import periodic_subscription_check
+from shop_bot.data_manager import key_write_guard
+from shop_bot.data_manager import reconciler
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.bot_controller import BotController
 
@@ -105,6 +108,11 @@ def main():
     logger.info("Инициализация базы данных...")
     rw_repo.initialize_db()
     logger.info("Инициализация базы данных завершена.")
+    os.environ.setdefault("SHOPBOT_SERVICE_NAME", "bot")
+    key_write_guard.check_wal_mode()
+    stale_locks = key_write_guard.clear_stale_locks_of_service()
+    if stale_locks:
+        logger.info("Удалены замки записи ключей от прошлого запуска: %s", stale_locks)
     try:
         from shop_bot.data_manager.database import get_ticket_media_root
 
@@ -123,6 +131,20 @@ def main():
     
     async def shutdown(sig: signal.Signals, loop: asyncio.AbstractEventLoop):
         logger.info(f"Получен сигнал: {sig.name}. Запускаю завершение работы...")
+        # Идущие записи в панель (выдача, продление) должны закончиться до отмены задач:
+        # иначе платёж остаётся оплаченным без выданной услуги. Бюджет меньше
+        # stop_grace_period (40 с) в docker-compose.yml.
+        key_write_guard.request_shutdown()
+        # Опрос в цикле, а не asyncio.to_thread: создание executor'а по умолчанию
+        # ломает завершение asyncio.run (shutdown_default_executor после loop.stop()).
+        deadline = time.monotonic() + 30.0
+        while key_write_guard.inflight_count() > 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        if key_write_guard.inflight_count() > 0:
+            logger.warning(
+                "Завершение: записи в панель не закончились за 30 с (в работе: %s), задачи будут отменены.",
+                key_write_guard.inflight_count(),
+            )
         if bot_controller.get_status()["is_running"]:
             bot_controller.stop()
             await asyncio.sleep(2)
@@ -214,6 +236,7 @@ def main():
         main_bot_loop = bot_controller.get_loop()
         if main_bot_loop and main_bot_loop.is_running():
             asyncio.run_coroutine_threadsafe(periodic_subscription_check(bot_controller), main_bot_loop)
+            asyncio.run_coroutine_threadsafe(reconciler.run_ops_loop(bot_controller), main_bot_loop)
         else:
             logger.warning("Не удалось запустить планировщик: цикл событий основного бота недоступен.")
 

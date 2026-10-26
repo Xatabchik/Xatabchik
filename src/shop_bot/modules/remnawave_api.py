@@ -11,6 +11,7 @@ import asyncio
 
 import httpx
 
+from shop_bot.data_manager import key_write_guard
 from shop_bot.data_manager import remnawave_repository as rw_repo
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,18 @@ except Exception:
 
 
 class RemnawaveAPIError(RuntimeError):
-    """Base error for Remnawave API interactions."""
+    """Base error for Remnawave API interactions.
+
+    `ambiguous=True` значит «результат запроса неизвестен»: запрос мог дойти до панели и
+    примениться, а ответ потерялся (таймаут чтения, обрыв сети). Ошибка с кодом от панели
+    или отказ до отправки запроса не двусмысленны.
+    """
+
+    ambiguous = False
+
+
+class RemnawaveAmbiguousError(RemnawaveAPIError):
+    ambiguous = True
 
 
 # Remnawave backend-contract: enable/disable уже в нужном состоянии — HTTP 400.
@@ -83,6 +95,10 @@ def _inflight_semaphore() -> asyncio.Semaphore:
         return sem
 
 
+# Ошибки до отправки запроса: панель его не получала, повторять безопасно.
+_NOT_SENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
 async def _client_request(client: httpx.AsyncClient, **kwargs) -> httpx.Response:
     """Один HTTP-запрос к панели с лимитом параллелизма.
 
@@ -95,9 +111,13 @@ async def _client_request(client: httpx.AsyncClient, **kwargs) -> httpx.Response
         async with sem:
             return await client.request(**kwargs)
     except httpx.TimeoutException as e:
-        raise RemnawaveAPIError(f"Remnawave API timeout: {e}") from e
+        if isinstance(e, _NOT_SENT_ERRORS):
+            raise RemnawaveAPIError(f"Remnawave API timeout: {e}") from e
+        raise RemnawaveAmbiguousError(f"Remnawave API timeout: {e}") from e
     except httpx.TransportError as e:
-        raise RemnawaveAPIError(f"Remnawave API transport error: {e}") from e
+        if isinstance(e, _NOT_SENT_ERRORS):
+            raise RemnawaveAPIError(f"Remnawave API transport error: {e}") from e
+        raise RemnawaveAmbiguousError(f"Remnawave API transport error: {e}") from e
 
 
 async def gather_limited(coros, *, limit: int | None = None, return_exceptions: bool = True):
@@ -919,7 +939,8 @@ async def ensure_user(
     data = response.json() or {}
     result = data.get("response") if isinstance(data, dict) else None
     if not result:
-        raise RemnawaveAPIError("Remnawave API returned unexpected payload")
+        # PATCH уже мог примениться, поэтому исход неизвестен.
+        raise RemnawaveAmbiguousError("Remnawave API returned unexpected payload")
 
     action = "создан" if method == "POST" else "обновлён"
     logger.info(
@@ -2147,6 +2168,193 @@ def extract_subscription_url(user_payload: dict[str, Any] | None) -> str | None:
 
 
 
+def _expire_str_to_ms(value: Any) -> int | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+async def _read_panel_expiry_ms(host_name: str, email: str) -> tuple[bool, int | None]:
+    """Свежий срок пользователя в панели: (найден ли пользователь, срок в мс).
+
+    Ошибки панели не глотаются: при дельте неверная база молча отняла бы период.
+    """
+    normalized = _normalize_email_for_remnawave(email)
+    user = await get_user_by_email(normalized, host_name=host_name)
+    if not user:
+        username = _normalize_username_for_remnawave(email.split("@")[0])
+        if username:
+            user = await get_user_by_username(username, host_name=host_name)
+    if not isinstance(user, dict):
+        return False, None
+    return True, _expire_str_to_ms(user.get("expireAt") or user.get("expire_at"))
+
+
+async def _resolve_other_started(lock_key: str, payment_id: str, panel_ms: int | None) -> None:
+    """Под замком закрыть чужие записи `started` по тому же ключу.
+
+    Если срок в панели уже достиг их цели, PATCH применился (запись становится `done`),
+    иначе он не применялся, и запись удаляется: повтор того платежа посчитает срок заново
+    от актуального значения и добавит дни ровно один раз.
+    """
+    others = await asyncio.to_thread(key_write_guard.extensions_started_for_lock, lock_key, payment_id)
+    for rec in others:
+        if panel_ms is not None and panel_ms >= int(rec["target_ms"]):
+            await asyncio.to_thread(key_write_guard.extension_done, rec["payment_id"], panel_ms)
+        else:
+            await asyncio.to_thread(key_write_guard.extension_delete, rec["payment_id"])
+
+
+async def _plan_delta_target(
+    *,
+    host_name: str,
+    email: str,
+    payment_id: str,
+    days: int,
+    absolute_ms: int | None,
+    lock_key: str,
+) -> tuple[int, bool]:
+    """Целевой срок по идемпотентной дельте: (target_ms, created_started_record)."""
+    _found, panel_ms = await _read_panel_expiry_ms(host_name, email)
+    await _resolve_other_started(lock_key, payment_id, panel_ms)
+    rec = await asyncio.to_thread(key_write_guard.extension_get, payment_id)
+    if rec and rec["state"] == "done":
+        return max(panel_ms or 0, int(rec["target_ms"])), False
+    if rec and rec["state"] == "started" and panel_ms is not None and panel_ms >= int(rec["target_ms"]):
+        await asyncio.to_thread(key_write_guard.extension_done, payment_id, panel_ms)
+        return panel_ms, False
+    now_ms = int(time.time() * 1000)
+    target_ms = max(absolute_ms or 0, max(panel_ms or 0, now_ms) + int(days) * 86400000)
+    source = "autorenew" if payment_id.startswith("autorenew:") else "payment"
+    await asyncio.to_thread(key_write_guard.extension_start, payment_id, lock_key, target_ms, source, int(days))
+    return target_ms, True
+
+
+async def _write_key_on_host(
+    *,
+    host_name: str,
+    email: str,
+    squad: dict,
+    squad_uuid: str,
+    extra_squad_uuids: list[str],
+    days_to_add: int | None,
+    expiry_timestamp_ms: int | None,
+    description: str | None,
+    tag: str | None,
+    traffic_limit_bytes: int | None,
+    traffic_limit_strategy: str | None,
+    hwid_device_limit: int | None,
+    payment_id: str | None,
+    delta_on: bool,
+) -> dict:
+    tracking_new = False
+    if delta_on:
+        lock_key = key_write_guard.make_lock_key(host_name, _normalize_email_for_remnawave(email))
+        target_ms, tracking_new = await _plan_delta_target(
+            host_name=host_name,
+            email=email,
+            payment_id=payment_id,
+            days=int(days_to_add),
+            absolute_ms=expiry_timestamp_ms,
+            lock_key=lock_key,
+        )
+        target_dt = datetime.fromtimestamp(target_ms / 1000, tz=timezone.utc)
+    elif expiry_timestamp_ms is not None:
+        target_dt = datetime.fromtimestamp(expiry_timestamp_ms / 1000, tz=timezone.utc)
+    else:
+        days = days_to_add if days_to_add is not None else int(rw_repo.get_setting('default_extension_days') or 30)
+        if days == 0:
+            days = 1
+
+        # IMPORTANT: extend from the current expiry date (if it's in the future),
+        # otherwise extend from "now". This prevents losing remaining days when user renews early.
+        base_dt = datetime.now(timezone.utc)
+        try:
+            # На Remnawave 3.x by-email снят (всегда 404), поэтому после email нужен
+            # lookup по username, как в ensure_user; иначе срок считается от «сейчас».
+            existing = await lookup_panel_user(None, email=email, host_name=host_name)
+        except Exception:
+            existing = None
+        if isinstance(existing, dict):
+            expire_at_str = existing.get('expireAt') or existing.get('expire_at') or existing.get('expire_at_str')
+            if expire_at_str:
+                try:
+                    exp_dt = datetime.fromisoformat(str(expire_at_str).replace('Z', '+00:00'))
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    if exp_dt > base_dt:
+                        base_dt = exp_dt
+                except Exception:
+                    pass
+
+        target_dt = base_dt + timedelta(days=days)
+    traffic_limit_bytes_effective = traffic_limit_bytes if traffic_limit_bytes is not None else squad.get('default_traffic_limit_bytes')
+    traffic_limit_strategy_effective = traffic_limit_strategy if traffic_limit_strategy is not None else (squad.get('default_traffic_strategy') or 'NO_RESET')
+
+    try:
+        user_payload = await ensure_user(
+            host_name=host_name,
+            email=email,
+            squad_uuid=squad_uuid,
+            expire_at=target_dt,
+            traffic_limit_bytes=traffic_limit_bytes_effective,
+            traffic_limit_strategy=traffic_limit_strategy_effective,
+            description=description,
+            tag=tag,
+            username=email.split('@')[0] if email else None,
+            hwid_device_limit=hwid_device_limit,
+            extra_squad_uuids=extra_squad_uuids or None,
+        )
+    except RemnawaveAPIError as exc:
+        # Однозначный отказ: PATCH не применялся, запись `started` больше не нужна.
+        # Таймаут или обрыв (ambiguous) и любые другие исключения (в том числе отмена
+        # задачи) оставляют `started`: исход решит сравнение со сроком в панели.
+        if tracking_new and not exc.ambiguous:
+            try:
+                key_write_guard.extension_delete(payment_id)
+            except Exception:
+                logger.exception("Remnawave: не удалось удалить запись продления %s", payment_id)
+        raise
+
+    subscription_url = extract_subscription_url(user_payload) or ''
+    expire_at_str = user_payload.get('expireAt')
+    try:
+        expire_dt = datetime.fromisoformat(expire_at_str.replace('Z', '+00:00')) if expire_at_str else target_dt
+    except Exception:
+        expire_dt = target_dt
+    expiry_ts_ms = int(expire_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+    if delta_on:
+        try:
+            await asyncio.to_thread(key_write_guard.extension_done, payment_id, expiry_ts_ms)
+        except Exception:
+            logger.exception("Remnawave: не удалось перевести продление %s в done", payment_id)
+        await asyncio.to_thread(
+            key_write_guard.label_transaction_extension,
+            payment_id,
+            {"state": "done", "target_ms": expiry_ts_ms, "days": int(days_to_add), "host_name": host_name},
+        )
+
+    return {
+        'client_uuid': str(user_payload.get('uuid') or user_payload.get('id') or ''),
+        'short_uuid': user_payload.get('shortUuid'),
+        'email': email,
+        'host_name': squad.get('host_name') or host_name,
+        'squad_uuid': squad_uuid,
+        'subscription_url': subscription_url,
+        'traffic_limit_bytes': user_payload.get('trafficLimitBytes'),
+        'traffic_limit_strategy': user_payload.get('trafficLimitStrategy'),
+        'expiry_timestamp_ms': expiry_ts_ms,
+        'connection_string': subscription_url,
+    }
+
+
 async def create_or_update_key_on_host(
     host_name: str,
     email: str,
@@ -2161,6 +2369,7 @@ async def create_or_update_key_on_host(
     plan_id: int | None = None,
     include_lte_squad: bool | None = None,
     raise_on_error: bool = False,
+    payment_id: str | None = None,
 ) -> dict | None:
     """Legacy совместимость: создаёт/обновляет пользователя Remnawave и возвращает данные по ключу.
 
@@ -2208,72 +2417,47 @@ async def create_or_update_key_on_host(
             except Exception as e:
                 logger.warning("Remnawave: не удалось определить LTE-сквад для хоста '%s': %s", host_name, e)
 
-        if expiry_timestamp_ms is not None:
-            target_dt = datetime.fromtimestamp(expiry_timestamp_ms / 1000, tz=timezone.utc)
-        else:
-            days = days_to_add if days_to_add is not None else int(rw_repo.get_setting('default_extension_days') or 30)
-            if days == 0:
-                days = 1
-
-            # IMPORTANT: extend from the current expiry date (if it's in the future),
-            # otherwise extend from "now". This prevents losing remaining days when user renews early.
-            base_dt = datetime.now(timezone.utc)
-            try:
-                # На Remnawave 3.x by-email снят (всегда 404), поэтому после email нужен
-                # lookup по username, как в ensure_user; иначе срок считается от «сейчас».
-                existing = await lookup_panel_user(None, email=email, host_name=host_name)
-            except Exception:
-                existing = None
-            if isinstance(existing, dict):
-                expire_at_str = existing.get('expireAt') or existing.get('expire_at') or existing.get('expire_at_str')
-                if expire_at_str:
-                    try:
-                        exp_dt = datetime.fromisoformat(str(expire_at_str).replace('Z', '+00:00'))
-                        if exp_dt.tzinfo is None:
-                            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                        if exp_dt > base_dt:
-                            base_dt = exp_dt
-                    except Exception:
-                        pass
-
-            target_dt = base_dt + timedelta(days=days)
-        traffic_limit_bytes_effective = traffic_limit_bytes if traffic_limit_bytes is not None else squad.get('default_traffic_limit_bytes')
-        traffic_limit_strategy_effective = traffic_limit_strategy if traffic_limit_strategy is not None else (squad.get('default_traffic_strategy') or 'NO_RESET')
-
-        user_payload = await ensure_user(
+        pid = str(payment_id).strip() if payment_id else ""
+        lock_scope = key_write_guard.get_lock_scope()
+        delta_on = bool(
+            pid
+            and days_to_add is not None
+            and int(days_to_add) > 0
+            and key_write_guard.get_delta_scope() == "payments"
+        )
+        # Дельта без замка небезопасна: срок читается и записывается одним шагом под замком.
+        use_lock = delta_on or lock_scope == "all" or (lock_scope == "payments" and bool(pid))
+        write_kwargs = dict(
             host_name=host_name,
             email=email,
+            squad=squad,
             squad_uuid=squad_uuid,
-            expire_at=target_dt,
-            traffic_limit_bytes=traffic_limit_bytes_effective,
-            traffic_limit_strategy=traffic_limit_strategy_effective,
+            extra_squad_uuids=extra_squad_uuids,
+            days_to_add=days_to_add,
+            expiry_timestamp_ms=expiry_timestamp_ms,
             description=description,
             tag=tag,
-            username=email.split('@')[0] if email else None,
+            traffic_limit_bytes=traffic_limit_bytes,
+            traffic_limit_strategy=traffic_limit_strategy,
             hwid_device_limit=hwid_device_limit,
-            extra_squad_uuids=extra_squad_uuids or None,
+            payment_id=pid or None,
+            delta_on=delta_on,
         )
+        if not use_lock:
+            with key_write_guard.track_inflight():
+                return await _write_key_on_host(**write_kwargs)
 
-        subscription_url = extract_subscription_url(user_payload) or ''
-        expire_at_str = user_payload.get('expireAt')
+        lock_key = key_write_guard.make_lock_key(host_name, _normalize_email_for_remnawave(email))
+        lock = await key_write_guard.acquire_lock(
+            lock_key, context=f"payment_id={pid or '-'} host={host_name}"
+        )
         try:
-            expire_dt = datetime.fromisoformat(expire_at_str.replace('Z', '+00:00')) if expire_at_str else target_dt
-        except Exception:
-            expire_dt = target_dt
-        expiry_ts_ms = int(expire_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-
-        return {
-            'client_uuid': str(user_payload.get('uuid') or user_payload.get('id') or ''),
-            'short_uuid': user_payload.get('shortUuid'),
-            'email': email,
-            'host_name': squad.get('host_name') or host_name,
-            'squad_uuid': squad_uuid,
-            'subscription_url': subscription_url,
-            'traffic_limit_bytes': user_payload.get('trafficLimitBytes'),
-            'traffic_limit_strategy': user_payload.get('trafficLimitStrategy'),
-            'expiry_timestamp_ms': expiry_ts_ms,
-            'connection_string': subscription_url,
-        }
+            with key_write_guard.track_inflight():
+                return await _write_key_on_host(**write_kwargs)
+        finally:
+            # Синхронно: при отмене задачи await в finally снова бросил бы CancelledError.
+            if lock.acquired:
+                key_write_guard.release_lock(lock.lock_key, lock.owner)
     except RemnawaveAPIError as exc:
         logger.error("Remnawave: ошибка create_or_update_key_on_host %s/%s: %s", host_name, email, exc)
         if raise_on_error:
