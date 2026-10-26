@@ -770,10 +770,21 @@
                 window.history.replaceState(null, '', appendPendingToken('/'));
             }
 
+            // Сервер отдаёт login.html именно тогда, когда токен из cookie не принят. Если
+            // сохранённый токен устарел (его заменил вход с другого устройства), слепой
+            // редирект на "/" зацикливается: "/" снова отдаёт эту страницу. Поэтому на
+            // редирект с токеном даётся одна попытка за короткое окно, после неё токен
+            // считается недействительным и показывается обычный вход.
             const savedToken = getAuthToken();
             if (savedToken) {
-                window.location.href = appendPendingToken("/");
-                return;
+                let lastTry = 0;
+                try { lastTry = Number(sessionStorage.getItem('login_redirect_at') || 0); } catch (e) { }
+                if (Date.now() - lastTry > 15000) {
+                    try { sessionStorage.setItem('login_redirect_at', String(Date.now())); } catch (e) { }
+                    window.location.href = appendPendingToken("/");
+                    return;
+                }
+                removeAuthToken();
             }
 
             async function startAuthPolling(token) {
