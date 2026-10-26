@@ -99,3 +99,53 @@ docker compose up -d --no-build xatabchik-webapp && docker restart xatabchik
 
 БД PR-IP не меняет. Переменные окружения: `WEBAPP_FORWARDED_ALLOW_IPS` (webapp, через compose)
 и `SHOPBOT_TRUSTED_PROXIES` (панель Flask) позволяют сузить список доверенных прокси.
+
+## PR-A: замок записи ключа, идемпотентное продление, журнал автопродления, сверка (PR #180)
+
+Только после того, как PR-0 и PR-IP стоят на проде. PR-B не начинается без отдельного подтверждения владельца.
+
+Новые режимы выключены по умолчанию, поэтому сам выкат кода поведение не меняет. Таблицы
+`key_write_locks`, `key_extension_applied`, `ops_alerts`, `auto_renew_charges`, `auto_renew_attempts`
+создаются при старте.
+
+Порядок:
+
+1. Копия БД как выше (`.backup` и `integrity_check`) и `git rev-parse HEAD > /root/backups/pra-prev-commit`.
+2. Получить код PR #180 и пересоздать оба контейнера: `docker compose up -d --no-build`
+   (в `docker-compose.yml` добавлен `stop_grace_period: 40s`, он применяется только при пересоздании,
+   а не при `docker restart`). Проверить: `docker inspect -f '{{.Config.StopTimeout}}' xatabchik xatabchik-webapp` даёт `40`.
+3. Подождать 30 секунд, оба контейнера `Up`, в логах нет `Traceback`. В логе бота при старте нет
+   предупреждения о режиме журнала SQLite (нужен `wal`: `sqlite3 $APP/users.db "PRAGMA journal_mode;"`).
+4. Проверить остановку: `docker stop xatabchik` завершается с кодом 0 (`docker inspect -f '{{.State.ExitCode}}' xatabchik`), затем `docker start xatabchik`.
+
+Включение режимов (значения читаются при каждом вызове, перезапуск не нужен). Меняются в `bot_settings`:
+
+```
+sqlite3 $APP/users.db "UPDATE bot_settings SET value='payments' WHERE key IN ('key_write_lock_scope','key_extension_delta_scope');"
+```
+
+- `key_write_lock_scope=payments` и `key_extension_delta_scope=payments` включаются ВМЕСТЕ одной командой.
+  На стенде один замок без дельты не помогает: два параллельных продления по 30 дней дают +30 вместо +60
+  (оба платежа пишут одну и ту же абсолютную дату). Только замок и дельта вместе дают +60, а повторная доставка
+  того же `payment_id` ничего не добавляет. Не включать замок отдельно.
+- `key_write_lock_scope=all` (замок также для админских операций «добавить дни» и вызовов без `payment_id`)
+  включать позже, отдельным шагом, после наблюдения за режимом `payments`.
+- `payment_reconciler_mode` остаётся `alert` (только оповещения админам). Режим `retry` включать ТОЛЬКО после
+  п. 3 списка вопросов к владельцу в отчёте этапа 2: сверка платежей с баланса (см. `balance-payments-reconciliation.md`).
+  Сейчас сверка не видит такие платежи, а автоповтор `new` без этого пункта оставляет их без защиты.
+- Автопродление (`auto_renew_globally_enabled`) работает через новый журнал сразу после выката: после выката проверить, что
+  первая попытка прошла (`SELECT state, COUNT(*) FROM auto_renew_charges GROUP BY state;`, записи `charged` старше 15 минут
+  означают неоконченное продление, их закроет сверка).
+
+Проверки после включения:
+
+- `SELECT state, COUNT(*) FROM key_extension_applied GROUP BY state;` записи `started` старше 10 минут единичны (неоднозначные
+  таймауты панели, их закрывает следующее продление или сверка); `done` растёт с каждым продлением.
+- `SELECT COUNT(*) FROM key_write_locks;` стремится к 0 между платежами.
+- `docker logs --since 1h xatabchik | grep KEY_WRITE_LOCK_TIMEOUT` пусто. Каждое такое событие значит, что запись шла без замка
+  дольше 360 секунд, и дублируется в `ops_alerts` и админу.
+- Два одновременных продления одного ключа дают ровно два периода (на тестовом ключе).
+
+Откат без перезапуска: `UPDATE bot_settings SET value='off' WHERE key IN ('key_write_lock_scope','key_extension_delta_scope');`
+и при необходимости `payment_reconciler_mode='off'`. Таблицы остаются и ничему не мешают.
+Откат кода: `git checkout $(cat /root/backups/pra-prev-commit) && docker compose up -d --no-build`.
