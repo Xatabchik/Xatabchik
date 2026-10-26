@@ -929,7 +929,20 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return False
             candidate_email = existing_key['key_email']
-            host_name = existing_key.get('host_name') or host_name
+            key_host_name = existing_key.get('host_name')
+            if not key_host_name:
+                logger.warning(
+                    "extend: у ключа нет host_name, использован хост из metadata "
+                    "(payment_id=%s key_id=%s metadata_host=%r key_host=%r)",
+                    payment_id, key_id, host_name, key_host_name,
+                )
+            elif key_host_name != host_name:
+                logger.warning(
+                    "extend: host_name в metadata не совпадает с хостом ключа, "
+                    "использован хост ключа (payment_id=%s key_id=%s metadata_host=%r key_host=%r)",
+                    payment_id, key_id, host_name, key_host_name,
+                )
+            host_name = key_host_name or host_name
 
         # plan-based duration & limits
         plan = get_plan_by_id(plan_id) if plan_id else None

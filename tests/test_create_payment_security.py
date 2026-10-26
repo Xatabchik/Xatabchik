@@ -364,14 +364,12 @@ def test_gift_by_any_user_still_works_on_active_host(temp_db, monkeypatch):
     assert env.balance(ATTACKER) == 990.0
 
 
-def test_fulfillment_extend_uses_host_of_key_when_metadata_differs(temp_db, monkeypatch):
-    """process_successful_payment: хост из metadata (в т.ч. от старых pending-платежей)
-    не должен перенаправлять продление на другой хост."""
+def _run_extend_fulfillment(temp_db, monkeypatch, *, key_host, meta_host):
     from shop_bot.bot.user_router import fulfillment
     from shop_bot.modules import remnawave_api
 
     insert_user(temp_db.DB_FILE, telegram_id=OWNER, username="owner")
-    key_id = _insert_key(temp_db.DB_FILE, user_id=OWNER, host_name="HostA", email="owner-a@bot.local")
+    key_id = _insert_key(temp_db.DB_FILE, user_id=OWNER, host_name=key_host, email="owner-a@bot.local")
     plan_a = _host_with_plan(temp_db, "HostA", price=100.0)
     _host_with_plan(temp_db, "HostB", price=10.0)
 
@@ -405,12 +403,43 @@ def test_fulfillment_extend_uses_host_of_key_when_metadata_differs(temp_db, monk
 
     meta = {
         "user_id": OWNER, "months": 1, "price": 100.0, "action": "extend",
-        "key_id": key_id, "host_name": "HostB", "plan_id": plan_a,
+        "key_id": key_id, "host_name": meta_host, "plan_id": plan_a,
         "payment_method": "Balance", "payment_id": "pr0-fulfil-1",
     }
     result = asyncio.run(fulfillment.process_successful_payment(_Bot(), meta))
+    assert result is False  # заглушка панели вернула None, выдача отменена
+    return key_id, seen
 
-    assert result is False  # заглушка панели вернула None → выдача отменена
+
+def test_fulfillment_extend_uses_host_of_key_when_metadata_differs(temp_db, monkeypatch, caplog):
+    """process_successful_payment: хост из metadata (в т.ч. от старых pending-платежей)
+    не должен перенаправлять продление на другой хост, и это попадает в лог."""
+    with caplog.at_level("WARNING"):
+        key_id, seen = _run_extend_fulfillment(temp_db, monkeypatch, key_host="HostA", meta_host="HostB")
+
     assert len(seen) == 1
     assert seen[0]["host_name"] == "HostA"
     assert seen[0]["email"] == "owner-a@bot.local"
+    warnings = [r.getMessage() for r in caplog.records if "не совпадает с хостом ключа" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "payment_id=pr0-fulfil-1" in warnings[0]
+    assert f"key_id={key_id}" in warnings[0]
+    assert "metadata_host='HostB'" in warnings[0] and "key_host='HostA'" in warnings[0]
+
+
+def test_fulfillment_extend_matching_host_does_not_warn(temp_db, monkeypatch, caplog):
+    with caplog.at_level("WARNING"):
+        _, seen = _run_extend_fulfillment(temp_db, monkeypatch, key_host="HostA", meta_host="HostA")
+
+    assert seen[0]["host_name"] == "HostA"
+    assert not [r for r in caplog.records if "host_name в metadata" in r.getMessage() or "нет host_name" in r.getMessage()]
+
+
+def test_fulfillment_extend_falls_back_to_metadata_host_and_warns(temp_db, monkeypatch, caplog):
+    with caplog.at_level("WARNING"):
+        key_id, seen = _run_extend_fulfillment(temp_db, monkeypatch, key_host="", meta_host="HostA")
+
+    assert seen[0]["host_name"] == "HostA"
+    warnings = [r.getMessage() for r in caplog.records if "у ключа нет host_name" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "payment_id=pr0-fulfil-1" in warnings[0] and f"key_id={key_id}" in warnings[0]
