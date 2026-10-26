@@ -104,6 +104,7 @@ def _buy_with_balance(monkeypatch, *, user_id, host_name, username):
     token = issue_auth_token(user_id)
     database.update_setting("telegram_bot_token", "123456:FAKE_BOT_TOKEN_FOR_TESTS")
     database.create_plan(host_name, "1 месяц", 1, 100.0)
+    database.create_host(host_name, "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host(host_name)[0]["plan_id"]
 
     return _client().post(

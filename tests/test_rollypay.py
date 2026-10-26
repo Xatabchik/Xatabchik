@@ -281,6 +281,7 @@ def test_create_payment_rollypay_stores_pending(temp_db, monkeypatch):
     database.update_setting("rollypay_api_key", "api-key")
     database.update_setting("rollypay_signing_secret", "real-secret")
     database.create_plan("TestHost", "1 месяц", 1, 200.0)
+    database.create_host("TestHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("TestHost")[0]["plan_id"]
 
     class _FakeAPI:

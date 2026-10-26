@@ -8,6 +8,7 @@ Remnawave молча return'ил без исключения и без возв�
 /api/create-payment считал оплату успешной.
 """
 from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 
 def _client():
@@ -27,6 +28,7 @@ def test_pay_balance_rolls_back_when_key_provision_fails(temp_db, monkeypatch):
     token = issue_auth_token(user_id)
     database.update_setting("telegram_bot_token", "123456:FAKE_BOT_TOKEN_FOR_TESTS")
     database.create_plan("RollHost", "1 месяц", 1, 100.0)
+    database.create_host("RollHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("RollHost")[0]["plan_id"]
 
     async def boom_create(*args, **kwargs):
@@ -76,7 +78,7 @@ def test_pay_balance_rolls_back_when_key_provision_fails(temp_db, monkeypatch):
             "token": token,
             "payment_method": "pay_balance",
             "plan_id": plan_id,
-            "host_name": None,  # triggers Host 'None' not found in real code; mocked boom anyway
+            "host_name": _host_of_plan(plan_id),
             "action": "new",
         },
     )
@@ -112,6 +114,7 @@ def test_pay_referral_balance_rolls_back_when_provision_returns_false(temp_db, m
     token = issue_auth_token(user_id)
     database.update_setting("telegram_bot_token", "123456:FAKE_BOT_TOKEN_FOR_TESTS")
     database.create_plan("RefRollHost", "1 месяц", 1, 100.0)
+    database.create_host("RefRollHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("RefRollHost")[0]["plan_id"]
 
     async def fake_fail(bot, meta):

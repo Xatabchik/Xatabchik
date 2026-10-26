@@ -172,3 +172,11 @@ def register_and_verify_email_user(app_client, temp_db_path: Path, email: str, p
     data = login_resp.json()
     assert data.get("ok") is True and data.get("token"), data
     return data["token"], user["telegram_id"]
+
+
+def host_of_plan(plan_id: int) -> str:
+    """Имя хоста, к которому привязан тариф: /api/create-payment теперь
+    требует host_name для new/gift и сверяет его с тарифом."""
+    from shop_bot.data_manager import database
+
+    return database.get_plan_by_id(plan_id)["host_name"]

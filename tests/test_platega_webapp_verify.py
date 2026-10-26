@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 OWNER_ID = 93001
 ATTACKER_ID = 93002
@@ -254,6 +255,7 @@ def test_create_payment_stores_platega_transaction_id(temp_db, monkeypatch):
     database.update_setting("platega_merchant_id", "mid-1")
     database.update_setting("platega_secret", "real-secret")
     database.create_plan("PlategaHost", "1 месяц", 1, 100.0)
+    database.create_host("PlategaHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("PlategaHost")[0]["plan_id"]
 
     async def fake_create(self, *args, **kwargs):
@@ -271,6 +273,7 @@ def test_create_payment_stores_platega_transaction_id(temp_db, monkeypatch):
             "token": token,
             "payment_method": "pay_platega",
             "plan_id": plan_id,
+            "host_name": _host_of_plan(plan_id),
             "action": "new",
         },
     )
