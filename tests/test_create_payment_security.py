@@ -190,16 +190,17 @@ def test_new_and_gift_with_nonexistent_host_are_rejected(temp_db, monkeypatch):
     assert env.calls == []
 
 
-def test_new_on_inactive_host_is_rejected(temp_db, monkeypatch):
+def test_new_and_gift_on_host_flagged_inactive_keep_selling(temp_db, monkeypatch):
+    """PR-0 не меняет правила продаж: xui_hosts.is_active раньше не влиял на покупку."""
     env = _Env(temp_db, monkeypatch)
     with sqlite3.connect(temp_db.DB_FILE) as conn:
         conn.execute("UPDATE xui_hosts SET is_active = 0 WHERE host_name = 'HostA'")
         conn.commit()
 
-    data = env.pay(env.owner_token, action="new", host_name="HostA", plan_id=env.plan_a)
-
-    assert data.get("ok") is False
-    assert data.get("error") == "Сервер не найден"
+    for action in ("new", "gift"):
+        data = env.pay(env.owner_token, action=action, host_name="HostA", plan_id=env.plan_a)
+        assert data.get("ok") is True, (action, data)
+    assert [c["host_name"] for c in env.calls] == ["HostA", "HostA"]
 
 
 def test_extend_key_without_host_is_rejected(temp_db, monkeypatch):

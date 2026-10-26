@@ -172,7 +172,7 @@ def _resolve_payment_target(
     Из запроса берутся только указатели (action, key_id, host_name, plan_id),
     но не факты: для extend ключ обязан принадлежать плательщику, а хост
     берётся из ключа (host_name клиента игнорируется). Для new/gift хост
-    должен существовать и быть активным. Тариф ищется среди активных тарифов
+    должен существовать. Тариф ищется среди активных тарифов
     именно этого хоста. key_id вне extend обнуляется.
     """
     action_name = (action or "").strip().lower()
@@ -203,8 +203,6 @@ def _resolve_payment_target(
         host_row = get_host(requested_host) if requested_host else None
 
     if not host_row or not str(host_row.get("host_name") or "").strip():
-        return None, {"ok": False, "error": "Сервер не найден"}
-    if action_name != "extend" and not int(host_row.get("is_active", 1) or 0):
         return None, {"ok": False, "error": "Сервер не найден"}
     resolved_host = str(host_row["host_name"]).strip()
 
