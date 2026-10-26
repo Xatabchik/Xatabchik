@@ -22,6 +22,11 @@ TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = 10 * 60
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
 AUTH_RATE_LIMIT = "30/minute"
+# login.html опрашивает check-token раз в 2 с (30 запросов в минуту на одного
+# ожидающего входа), а лимит общий на IP: за NAT или CDN-адресом ждут несколько
+# человек: 300/мин это 10 одновременных входов на адрес. Токен uuid4, перебор
+# нереален, лимит защищает только от нагрузки (docs/tasks/check-token-load.md).
+AUTH_CHECK_TOKEN_RATE_LIMIT = "300/minute"
 SUPPORT_RATE_LIMIT = "30/minute"
 SUPPORT_TEXT_MAX_LEN = 2000
 SUPPORT_CAPTION_MAX_LEN = 500
