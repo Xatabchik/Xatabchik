@@ -312,3 +312,36 @@ def test_reserve_after_release_respects_total_limit(temp_db):
     promo, err = rw.reserve_promo_code("SALE10", BUYER, "pay-promo-4")
     assert promo is None and err == "total_limit_reached"
     assert _used_total(temp_db) == 1
+
+
+def test_ttl_release_then_repeated_reserve_never_counts_twice(temp_db):
+    """Освобождение по TTL, затем несколько резервов того же платежа и redeem: used_total растёт один раз."""
+    from shop_bot.data_manager import remnawave_repository as rw
+
+    insert_user(temp_db.DB_FILE, telegram_id=BUYER, username="buyer")
+    _promo(temp_db)
+    assert rw.reserve_promo_code("SALE10", BUYER, "pay-ttl-1")[1] is None
+    assert _used_total(temp_db) == 1
+
+    with _db(temp_db) as c:
+        c.execute(
+            "UPDATE promo_code_reservations SET reserved_at = datetime('now', '-48 hours') WHERE payment_id = 'pay-ttl-1'"
+        )
+        c.commit()
+    assert rw.release_stale_promo_reservations(max_age_hours=1) == 1
+    assert _used_total(temp_db) == 0
+
+    for _ in range(3):
+        promo, err = rw.reserve_promo_code("SALE10", BUYER, "pay-ttl-1")
+        assert err is None and promo
+        assert _used_total(temp_db) == 1
+
+    assert rw.redeem_promo_code("SALE10", BUYER, applied_amount=10.0, order_id="pay-ttl-1")
+    assert _used_total(temp_db) == 1
+    promo, err = rw.reserve_promo_code("SALE10", BUYER, "pay-ttl-1")
+    assert err is None and promo
+    assert _used_total(temp_db) == 1
+    with _db(temp_db) as c:
+        status = c.execute("SELECT status FROM promo_code_reservations WHERE payment_id = 'pay-ttl-1'").fetchone()[0]
+        usages = c.execute("SELECT COUNT(*) FROM promo_code_usages WHERE order_id = 'pay-ttl-1'").fetchone()[0]
+    assert status == "redeemed" and usages == 1
