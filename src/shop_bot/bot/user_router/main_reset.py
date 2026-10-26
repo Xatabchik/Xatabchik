@@ -186,7 +186,7 @@ def register_main_reset(user_router: Router) -> None:
         receipt = build_yookassa_receipt(get_setting("receipt_email"), description, price_str)
         if not receipt:
             await callback.message.answer(
-                "❌ Не настроен корректный email для кассовых чеков. Обратитесь к администратору."
+                "❌ Не указан корректный email для чека. Обратитесь в техподдержку"
             )
             await state.clear()
             return
