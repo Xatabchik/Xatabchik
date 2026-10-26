@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 RECEIPT_EMAIL = "receipts@example.com"
 
@@ -68,6 +69,7 @@ def _buy_subscription(handlers, token: str, plan_id: int, user_id: int) -> dict:
         "token": token,
         "payment_method": "pay_yookassa",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
     })
     return resp.json()
@@ -81,6 +83,7 @@ def test_subscription_payment_includes_receipt(temp_db, monkeypatch):
     token = issue_auth_token(43001)
     _configure_yookassa(database, receipt_email=RECEIPT_EMAIL)
     database.create_plan("YooHost", "3 месяца", 3, 300.0)
+    database.create_host("YooHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("YooHost")[0]["plan_id"]
 
     created = _stub_yookassa(monkeypatch, handlers)
@@ -111,6 +114,7 @@ def test_receipt_total_matches_payment_amount(temp_db, monkeypatch):
     token = issue_auth_token(43002)
     _configure_yookassa(database, receipt_email=RECEIPT_EMAIL)
     database.create_plan("YooHost2", "1 месяц", 1, 149.5)
+    database.create_host("YooHost2", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("YooHost2")[0]["plan_id"]
 
     created = _stub_yookassa(monkeypatch, handlers)
@@ -134,6 +138,7 @@ def test_no_receipt_when_receipt_email_cleared(temp_db, monkeypatch):
     token = issue_auth_token(43003)
     _configure_yookassa(database, receipt_email="")
     database.create_plan("YooHost3", "1 месяц", 1, 100.0)
+    database.create_host("YooHost3", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("YooHost3")[0]["plan_id"]
 
     created = _stub_yookassa(monkeypatch, handlers)
@@ -158,6 +163,7 @@ def test_receipt_is_sent_with_default_receipt_email(temp_db, monkeypatch):
     token = issue_auth_token(43004)
     _configure_yookassa(database, receipt_email=None)
     database.create_plan("YooHost4", "1 месяц", 1, 100.0)
+    database.create_host("YooHost4", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("YooHost4")[0]["plan_id"]
 
     created = _stub_yookassa(monkeypatch, handlers)

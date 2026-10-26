@@ -18,6 +18,7 @@ from conftest import (  # noqa: F401
     make_telegram_init_data,
     temp_db,
 )
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 # Stars доступны только из Telegram Mini App (см.
 # tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
@@ -26,6 +27,7 @@ from conftest import (  # noqa: F401
 
 def _make_plan(database, host_name: str, price: float = 100.0) -> int:
     database.create_plan(host_name, "1 месяц", 1, price)
+    database.create_host(host_name, "https://panel.test", "user", "pass", 1)
     return database.get_plans_for_host(host_name)[0]["plan_id"]
 
 
@@ -217,6 +219,7 @@ def test_create_payment_second_user_gets_promo_unavailable(temp_db, monkeypatch)
     body = {
         "payment_method": "pay_stars",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
         "promo_code": "LIMIT1WEB",
     }

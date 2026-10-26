@@ -8,6 +8,7 @@
 4. /api/create-topup-payment отклоняет pay_referral_balance
 """
 from conftest import insert_user, issue_auth_token, temp_db  # noqa: F401
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 
 def test_payment_methods_includes_referral_balance(temp_db):
@@ -37,6 +38,7 @@ def test_create_payment_with_referral_balance_success(temp_db, monkeypatch):
     insert_user(database.DB_FILE, telegram_id=51002, username="refpay2", referral_balance=200.0)
     token = issue_auth_token(51002)
     database.create_plan("RefHost", "1 месяц", 1, 100.0)
+    database.create_host("RefHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("RefHost")[0]["plan_id"]
 
     captured = []
@@ -76,6 +78,7 @@ def test_create_payment_referral_balance_insufficient(temp_db, monkeypatch):
     insert_user(database.DB_FILE, telegram_id=51003, username="refpay3", referral_balance=10.0)
     token = issue_auth_token(51003)
     database.create_plan("RefHost2", "1 месяц", 1, 100.0)
+    database.create_host("RefHost2", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("RefHost2")[0]["plan_id"]
 
     called = []
@@ -91,6 +94,7 @@ def test_create_payment_referral_balance_insufficient(temp_db, monkeypatch):
         "token": token,
         "payment_method": "pay_referral_balance",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
     })
     data = resp.json()
@@ -109,6 +113,7 @@ def test_create_payment_referral_balance_refunds_on_processing_error(temp_db, mo
     insert_user(database.DB_FILE, telegram_id=51004, username="refpay4", referral_balance=200.0)
     token = issue_auth_token(51004)
     database.create_plan("RefHost3", "1 месяц", 1, 100.0)
+    database.create_host("RefHost3", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("RefHost3")[0]["plan_id"]
 
     async def boom(bot, meta):
@@ -122,6 +127,7 @@ def test_create_payment_referral_balance_refunds_on_processing_error(temp_db, mo
         "token": token,
         "payment_method": "pay_referral_balance",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
     })
     data = resp.json()

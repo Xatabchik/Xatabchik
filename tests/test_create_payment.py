@@ -14,6 +14,7 @@ from conftest import (  # noqa: F401
     make_telegram_init_data,
     temp_db,
 )
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 # Stars доступны только из Telegram Mini App (см.
 # tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
@@ -60,6 +61,7 @@ def test_create_payment_stars_end_to_end(temp_db, monkeypatch):
     database.update_setting("stars_per_rub", "2")
 
     database.create_plan("TestHost", "1 месяц", 1, 100.0)
+    database.create_host("TestHost", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("TestHost")[0]["plan_id"]
 
     sent_invoices = []
@@ -79,6 +81,7 @@ def test_create_payment_stars_end_to_end(temp_db, monkeypatch):
         "init_data": make_telegram_init_data(42001),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
     })
     data = resp.json()
@@ -99,6 +102,7 @@ def test_create_payment_stars_disabled_returns_clean_error(temp_db):
     token = issue_auth_token(42002)
     database.update_setting("stars_per_rub", "0")
     database.create_plan("TestHost2", "1 месяц", 1, 100.0)
+    database.create_host("TestHost2", "https://panel.test", "user", "pass", 1)
     plan_id = database.get_plans_for_host("TestHost2")[0]["plan_id"]
 
     client = TestClient(handlers.app)
@@ -108,6 +112,7 @@ def test_create_payment_stars_disabled_returns_clean_error(temp_db):
         "init_data": make_telegram_init_data(42002),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
     })
     data = resp.json()

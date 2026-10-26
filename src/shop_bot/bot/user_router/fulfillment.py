@@ -929,6 +929,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 )
                 return False
             candidate_email = existing_key['key_email']
+            host_name = existing_key.get('host_name') or host_name
 
         # plan-based duration & limits
         plan = get_plan_by_id(plan_id) if plan_id else None

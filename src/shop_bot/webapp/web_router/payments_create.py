@@ -22,7 +22,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 import traceback
 from shop_bot.data_manager.remnawave_repository import (
-    get_plan_by_id,
+    get_active_plans_for_host,
     deduct_from_balance,
     deduct_from_referral_balance,
     get_referral_balance,
@@ -156,6 +156,141 @@ async def api_get_payment_methods(req: PaymentMethodsRequest, request: Request):
     return {"ok": True, "methods": methods, "balance": balance, "referral_balance": ref_balance}
 
 
+_PAYMENT_ACTIONS = ("new", "extend", "gift")
+
+
+def _resolve_payment_target(
+    *,
+    user_id: int,
+    action: str | None,
+    key_id: int | None,
+    host_name: str | None,
+    plan_id: int | None,
+) -> tuple[dict | None, dict | None]:
+    """Определить хост, ключ и тариф платежа по серверным данным.
+
+    Из запроса берутся только указатели (action, key_id, host_name, plan_id),
+    но не факты: для extend ключ обязан принадлежать плательщику, а хост
+    берётся из ключа (host_name клиента игнорируется). Для new/gift хост
+    должен существовать и быть активным. Тариф ищется среди активных тарифов
+    именно этого хоста. key_id вне extend обнуляется.
+    """
+    action_name = (action or "").strip().lower()
+    if action_name not in _PAYMENT_ACTIONS:
+        return None, {"ok": False, "error": "Неверное действие"}
+
+    key = None
+    resolved_key_id = None
+    if action_name == "extend":
+        try:
+            requested_key_id = int(key_id) if key_id else 0
+        except (TypeError, ValueError):
+            requested_key_id = 0
+        key = get_key_by_id(requested_key_id) if requested_key_id > 0 else None
+        try:
+            owner_id = int(key.get("user_id")) if key else None
+        except (TypeError, ValueError):
+            owner_id = None
+        if not key or owner_id != int(user_id):
+            return None, {"ok": False, "error": "Ключ не найден"}
+        resolved_key_id = requested_key_id
+        key_host = str(key.get("host_name") or "").strip()
+        if not key_host:
+            return None, {"ok": False, "error": "У ключа не указан сервер. Обратитесь в поддержку."}
+        host_row = get_host(key_host)
+    else:
+        requested_host = str(host_name or "").strip()
+        host_row = get_host(requested_host) if requested_host else None
+
+    if not host_row or not str(host_row.get("host_name") or "").strip():
+        return None, {"ok": False, "error": "Сервер не найден"}
+    if action_name != "extend" and not int(host_row.get("is_active", 1) or 0):
+        return None, {"ok": False, "error": "Сервер не найден"}
+    resolved_host = str(host_row["host_name"]).strip()
+
+    try:
+        wanted_plan_id = int(plan_id)
+    except (TypeError, ValueError):
+        wanted_plan_id = None
+    plan = None
+    if wanted_plan_id is not None:
+        for candidate in get_active_plans_for_host(resolved_host):
+            try:
+                if int(candidate.get("plan_id")) == wanted_plan_id:
+                    plan = candidate
+                    break
+            except (TypeError, ValueError):
+                continue
+    if not plan:
+        return None, {"ok": False, "error": "Тариф не найден"}
+
+    return {
+        "action": action_name,
+        "host_name": resolved_host,
+        "key_id": resolved_key_id,
+        "key": key,
+        "plan": plan,
+    }, None
+
+
+async def _server_tier_surcharge(
+    *,
+    host_name: str,
+    action: str,
+    key: dict | None,
+    requested_devices,
+) -> tuple[int | None, float]:
+    """Доплата за устройства в месяц, посчитанная только по серверным данным.
+
+    Клиентский tier_price не используется вовсе. Для хостов с device_mode='tiers'
+    доплата берётся из таблицы ступеней по числу устройств; при
+    tier_lock_extend продление считает число устройств по панели. Нечисловое,
+    отрицательное и неизвестное значение даёт нулевую доплату.
+    """
+    host_data = get_host(host_name)
+    if not host_data or host_data.get("device_mode") != "tiers":
+        return None, 0.0
+
+    try:
+        base_devices = int(get_setting(f"base_device_{host_name}", "1") or 1)
+    except (TypeError, ValueError):
+        base_devices = 1
+    tiers = get_device_tiers(host_name) or []
+
+    def _surcharge_for(count: int) -> float:
+        if count <= base_devices:
+            return 0.0
+        for tier in tiers:
+            if tier.get("device_count") == count:
+                try:
+                    return max(0.0, (count - base_devices) * float(tier.get("price") or 0))
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    devices = None
+    if action == "extend" and int(host_data.get("tier_lock_extend", 0) or 0):
+        if key and key.get("remnawave_user_uuid"):
+            try:
+                user_info = await remnawave_api.get_user_by_uuid(key["remnawave_user_uuid"], host_name=host_name)
+                if user_info:
+                    devices = int(user_info.get("hwidDeviceLimit") or 1)
+            except Exception as e:
+                logger.error(f"Auto-detect hwid error: {e}")
+    else:
+        try:
+            devices = int(requested_devices)
+        except (TypeError, ValueError):
+            devices = None
+
+    if devices is None or devices <= 1:
+        return None, 0.0
+    price = _surcharge_for(devices)
+    if price <= 0:
+        return None, 0.0
+    return devices, price
+
+
 @app.post("/api/create-payment")
 async def api_create_payment(req: CreatePaymentRequest, request: Request):
     try:
@@ -172,50 +307,36 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
         if method_error:
             return method_error
 
-        plan = get_plan_by_id(plan_id)
-        if not plan:
-            return {"ok": False, "error": "Тариф не найден"}
-        
-        final_price = calculate_webapp_price(float(plan['price']), user_id) 
-        
+        target, target_error = _resolve_payment_target(
+            user_id=user_id,
+            action=req.action,
+            key_id=req.key_id,
+            host_name=req.host_name,
+            plan_id=plan_id,
+        )
+        if target_error:
+            return target_error
+        host_name = target["host_name"]
+        key_id = target["key_id"]
+        action_name = target["action"]
+        plan = target["plan"]
+        plan_id = int(plan["plan_id"])
+
+        final_price = calculate_webapp_price(float(plan['price']), user_id)
+
         months = int(plan.get('months') or 0)
         duration_days = int(plan.get('duration_days') or 0)
         billing_months = _billing_months_for_plan(plan)
-        
-        tier_device_count = req.tier_device_count
-        tier_price_per_month = req.tier_price
-        
-        if tier_price_per_month == 0:
-            tier_device_count = None
-        
-        if req.action == 'extend' and req.key_id:
-            host_data = get_host(req.host_name) if req.host_name else None
-            if host_data and host_data.get('device_mode') == 'tiers' and int(host_data.get('tier_lock_extend', 0) or 0):
-                if not tier_price_per_month: 
-                    key = get_key_by_id(req.key_id)
-                    if key and key.get('remnawave_user_uuid'):
-                        try:
-                            user_info = await remnawave_api.get_user_by_uuid(key['remnawave_user_uuid'], host_name=req.host_name)
-                            if user_info:
-                                hwid = int(user_info.get('hwidDeviceLimit') or 1)
-                                if hwid > 1:
-                                    from shop_bot.data_manager import database
-                                    base_devices = int(database.get_setting(f"base_device_{req.host_name}", "1"))
-                                    tiers = get_device_tiers(req.host_name)
-                                    for t in tiers:
-                                        if t['device_count'] == hwid:
-                                            tier_device_count = hwid
-                                            diff = hwid - base_devices
-                                            if diff < 0: diff = 0
-                                            tier_price_per_month = float(diff * t['price'])
-                                            break
-                        except Exception as e:
-                            logger.error(f"Auto-detect hwid error: {e}")
-        
+
+        tier_device_count, tier_price_per_month = await _server_tier_surcharge(
+            host_name=host_name,
+            action=action_name,
+            key=target["key"],
+            requested_devices=req.tier_device_count,
+        )
+
         if tier_price_per_month > 0:
             final_price += tier_price_per_month * billing_months
-            
-        action_name = req.action
 
         # --- APPLY PROMO DISCOUNT ---
         # Промокод — это ИСКЛЮЧИТЕЛЬНО скидка на покупку/продление/подарочную
@@ -255,7 +376,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "YooKassa", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -263,7 +384,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
             if pending_err:
                 return pending_err
-            comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+            comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, host_name)
             price_str = f"{final_price:.2f}"
             payload = {
                 "amount": {"value": price_str, "currency": "RUB"},
@@ -292,7 +413,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "Platega", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -320,7 +441,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "RollyPay", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -328,7 +449,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
             if pending_err:
                 return pending_err
-            comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+            comment = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, host_name)
             return_url = f"https://t.me/{get_setting('telegram_bot_username')}"
             try:
                 rollypay = _rollypay_api()
@@ -356,7 +477,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "Platega Crypto", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -382,7 +503,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
              pid = str(uuid.uuid4())
              meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "CryptoBot", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -411,7 +532,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "Heleket", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -424,7 +545,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 result = await create_heleket_payment_request(
                     amount=float(final_price), 
                     currency="RUB", 
-                    description=f"Payment for {req.host_name}",
+                    description=f"Payment for {host_name}",
                     order_id=pid,
                     return_url=f"https://t.me/{get_setting('telegram_bot_username')}",
                     user_id=user_id,
@@ -456,7 +577,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
              pid = str(uuid.uuid4())
              meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "YooMoney", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -464,7 +585,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
              pending_err = _create_payload_pending_or_error(pid, user_id, float(final_price), meta)
              if pending_err:
                  return pending_err
-             desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+             desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, host_name)
              link = _build_yoomoney_link(wallet, Decimal(str(final_price)), pid, desc)
              
              kb = create_yoomoney_payment_keyboard(link, pid)
@@ -486,7 +607,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
              pid = str(uuid.uuid4())
              meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": float(final_price),
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "Telegram Stars", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -495,7 +616,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
              if pending_err:
                  return pending_err
              title = f"{'Подписка' if action_name == 'new' else 'Продление'} на {months} мес."
-             desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, req.host_name)
+             desc = get_transaction_comment({"id": user_id, "username": user.get("username")}, action_name, months, host_name)
              await _send_invoice_stars(user_id, title, desc, pid, stars_amount)
              bot_username = get_setting('telegram_bot_username')
              return {"ok": True, "message": "Счёт Stars отправлен в бот", "payment_url": f"tg://resolve?domain={bot_username}"}
@@ -508,7 +629,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = str(uuid.uuid4())
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": amount,
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "Balance", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount
@@ -568,7 +689,7 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
             pid = f"referral_balance:{user_id}:{uuid.uuid4()}"
             meta = {
                 "user_id": user_id, "months": months, "duration_days": duration_days, "price": amount,
-                "action": action_name, "key_id": req.key_id, "host_name": req.host_name,
+                "action": action_name, "key_id": key_id, "host_name": host_name,
                 "plan_id": plan_id, "payment_method": "ReferralBalance", "payment_id": pid,
                 "tier_device_count": tier_device_count,
                 "promo_code": applied_promo_code, "promo_discount": promo_discount_amount

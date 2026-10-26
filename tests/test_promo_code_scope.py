@@ -22,6 +22,7 @@ from conftest import (  # noqa: F401
     make_telegram_init_data,
     temp_db,
 )
+from conftest import host_of_plan as _host_of_plan  # noqa: E402
 
 # Stars доступны только из Telegram Mini App (см.
 # tests/test_webapp_telegram_only_methods.py), поэтому запросы ниже несут
@@ -31,6 +32,7 @@ from conftest import (  # noqa: F401
 
 def _make_plan(database, host_name: str, price: float = 100.0) -> int:
     database.create_plan(host_name, "1 месяц", 1, price)
+    database.create_host(host_name, "https://panel.test", "user", "pass", 1)
     return database.get_plans_for_host(host_name)[0]["plan_id"]
 
 
@@ -124,6 +126,7 @@ def test_create_payment_stars_new_action_applies_promo_discount(temp_db, monkeyp
         "init_data": make_telegram_init_data(51004),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "new",
         "promo_code": "HALFSTARS",
     })
@@ -162,6 +165,7 @@ def test_create_payment_gift_action_also_applies_promo_discount(temp_db, monkeyp
         "init_data": make_telegram_init_data(51005),
         "payment_method": "pay_stars",
         "plan_id": plan_id,
+        "host_name": _host_of_plan(plan_id),
         "action": "gift",
         "promo_code": "GIFTPROMO",
     })
@@ -205,9 +209,10 @@ def test_create_payment_top_up_action_never_applies_promo_discount(temp_db, monk
         "action": "top_up",
         "promo_code": "NOTOPUP",
     })
-    assert resp.json().get("ok") is True
-    # Без скидки: 100 * 2 = 200 звёзд. Промокод НЕ должен был применяться.
-    assert invoices[0] == 200, invoices
+    # Покупочный эндпоинт принимает только new/extend/gift: top_up отклоняется
+    # до расчёта цены, поэтому ни скидки, ни счёта не появляется.
+    assert resp.json().get("ok") is False
+    assert invoices == [], invoices
 
 
 def test_create_topup_payment_request_has_no_promo_field():

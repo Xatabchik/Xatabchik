@@ -62,6 +62,7 @@ def _enable_stars(database) -> int:
     database.update_setting("ton_wallet_address", "EQtest")
     database.update_setting("tonapi_key", "tonapi-test")
     database.create_plan(HOST, "1 месяц", 1, 100.0)
+    database.create_host(HOST, "https://panel.test", "user", "pass", 1)
     return database.get_plans_for_host(HOST)[0]["plan_id"]
 
 
