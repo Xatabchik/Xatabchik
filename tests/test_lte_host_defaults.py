@@ -157,6 +157,9 @@ def test_resetting_host_default_to_zero_behaves_like_zeroed_plan_limit(temp_db):
     assert database.should_account_lte_traffic(plan, "Alpha") is True
 
     assert database.set_host_lte_default_limit_bytes("Alpha", 0) is True
+    # Резолвер чистый: дефолт хоста живёт в словаре тарифа, поэтому тариф читаем заново.
+    assert database.resolve_plan_lte_limit_bytes(plan) == 100 * GB
+    plan = database.get_plan_by_id(plan["plan_id"])
     assert database.resolve_plan_lte_limit_bytes(plan) == 0
     assert database.should_account_lte_traffic(plan, "Alpha") is False
     assert database.set_host_lte_default_limit_bytes("Нет такого", 5 * GB) is False
@@ -166,17 +169,55 @@ def test_host_default_lookup_ignores_case_and_spaces(temp_db):
     database = temp_db
     _make_host(database, "Alpha", default_gb=5)
     assert database.get_host_lte_default_limit_bytes("  alpha ") == 5 * GB
-    plan = {"plan_id": 1, "host_name": " ALPHA", "lte_limit_bytes": 0}
+    plan_id = _make_plan(database, lte_gb=0)
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute("UPDATE plans SET host_name = ' ALPHA' WHERE plan_id = ?", (plan_id,))
+    assert database.resolve_plan_lte_limit_bytes(database.get_plan_by_id(plan_id)) == 5 * GB
+    assert database.resolve_plan_lte_limit_bytes(database.get_plans_for_host("ALPHA")[0]) == 5 * GB
+
+
+def test_resolver_is_pure_and_does_not_open_sqlite(temp_db, monkeypatch):
+    database = temp_db
+    _make_host(database, "Alpha", default_gb=5)
+    plan = database.get_plan_by_id(_make_plan(database, lte_gb=0))
+    assert plan["host_lte_default_limit_bytes"] == 5 * GB
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("resolve_plan_lte_limit_bytes must not touch the DB")
+
+    monkeypatch.setattr(sqlite3, "connect", _boom)
     assert database.resolve_plan_lte_limit_bytes(plan) == 5 * GB
+    assert database.plan_lte_limit_bytes(plan) == 5 * GB
+    assert database.resolve_plan_lte_limit_bytes({"host_name": "Alpha", "lte_limit_bytes": 0}) == 0
+    assert database.resolve_plan_lte_limit_bytes({"lte_limit_bytes": 2 * GB, "host_lte_default_limit_bytes": 5 * GB}) == 2 * GB
+    assert database.resolve_plan_lte_limit_bytes(None) == 0
+
+
+def test_every_plan_getter_carries_host_default(temp_db):
+    database = temp_db
+    _make_host(database, "Alpha", default_gb=7)
+    _make_host(database, "Beta")
+    plan_id = _make_plan(database, lte_gb=0)
+    other_id = _make_plan(database, "Beta", "B1", lte_gb=0)
+    for plan in (
+        database.get_plan_by_id(plan_id),
+        database.get_plans_for_host("Alpha")[0],
+        database.get_active_plans_for_host("Alpha")[0],
+        database.resolve_plan_for_key({"host_name": "Alpha", "description": json.dumps({"plan_id": plan_id})}),
+        database.resolve_plan_for_key({"host_name": "Alpha", "description": ""}),
+        next(p for p in database.get_all_plans() if p["plan_id"] == plan_id),
+    ):
+        assert database.resolve_plan_lte_limit_bytes(plan) == 7 * GB
+    assert database.resolve_plan_lte_limit_bytes(database.get_plan_by_id(other_id)) == 0
 
 
 def test_monthly_reset_needed_for_inherited_limit(temp_db):
     database = temp_db
     _make_host(database, "Alpha")
-    plan = database.get_plan_by_id(_make_plan(database, lte_gb=0))
-    assert database.plan_has_monthly_traffic_reset(plan) is False
+    plan_id = _make_plan(database, lte_gb=0)
+    assert database.plan_has_monthly_traffic_reset(database.get_plan_by_id(plan_id)) is False
     database.set_host_lte_default_limit_bytes("Alpha", 10 * GB)
-    assert database.plan_has_monthly_traffic_reset(plan) is True
+    assert database.plan_has_monthly_traffic_reset(database.get_plan_by_id(plan_id)) is True
 
 
 # --- Пакеты: override -> хост -> ничего --------------------------------------

@@ -634,7 +634,11 @@ def get_plans_for_host(host_name: str) -> list[dict]:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM plans WHERE TRIM(host_name) = TRIM(?) ORDER BY sort_order, COALESCE(duration_days, months*30, months, 0)", (host_name,))
+            cursor.execute(
+                f"{_PLANS_WITH_HOST_LTE_SQL} WHERE TRIM(plans.host_name) = TRIM(?) "
+                "ORDER BY plans.sort_order, COALESCE(plans.duration_days, plans.months*30, plans.months, 0)",
+                (host_name,),
+            )
             plans = cursor.fetchall()
             return [dict(plan) for plan in plans]
     except sqlite3.Error as e:
@@ -651,7 +655,8 @@ def get_active_plans_for_host(host_name: str) -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM plans WHERE TRIM(host_name) = TRIM(?) AND COALESCE(is_active, 1) = 1 ORDER BY sort_order, COALESCE(duration_days, months*30, months, 0)",
+                f"{_PLANS_WITH_HOST_LTE_SQL} WHERE TRIM(plans.host_name) = TRIM(?) AND COALESCE(plans.is_active, 1) = 1 "
+                "ORDER BY plans.sort_order, COALESCE(plans.duration_days, plans.months*30, plans.months, 0)",
                 (host_name,)
             )
             plans = cursor.fetchall()

@@ -76,6 +76,8 @@ LTE-сквад подключается к хосту, поэтому базов
 | Базовый LTE-лимит (`resolve_plan_lte_limit_bytes`) | `plans.lte_limit_bytes > 0` → иначе `xui_hosts.lte_default_limit_bytes` → иначе 0 (LTE не учитывается) |
 | Пакеты докупки LTE (`get_lte_packages_for_plan`) | любые собственные LTE-пакеты тарифа (в том числе выключенные) → только они (override); иначе пакеты хоста; иначе ничего |
 
+- `resolve_plan_lte_limit_bytes` не читает БД: дефолт хоста берётся из `plan["host_lte_default_limit_bytes"]`, который добавляют запросы `get_plan_by_id`, `get_plans_for_host`, `get_active_plans_for_host`, `get_all_plans`.
+- При смене дефолта хоста с 0/NULL на >0 ключам хоста идемпотентно проставляется `next_traffic_reset_at` (`backfill_monthly_traffic_reset_for_host`); при >0 -> 0 даты остаются как есть.
 - Собственный пакет тарифа полностью заменяет список хоста: «выключить все» на тарифе скрывает докупку, а не откатывает её на хост.
 - Пакет хоста хранится в `traffic_packages` как `pool='lte'`, `plan_id=0`, `host_name=<хост>`. Цена пакета абсолютная и не зависит от срока тарифа.
 - Изменение дефолта хоста долетает до выданных ключей через ресинк в `scheduler.enforce_dual_traffic_limits` (как изменение `plans.lte_limit_bytes`). Сброс дефолта в 0 работает так же, как обнуление лимита тарифа.

@@ -173,7 +173,7 @@ def get_plan_by_id(plan_id: int) -> dict | None:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM plans WHERE plan_id = ?", (plan_id,))
+            cursor.execute(f"{_PLANS_WITH_HOST_LTE_SQL} WHERE plans.plan_id = ?", (plan_id,))
             plan = cursor.fetchone()
             return dict(plan) if plan else None
     except sqlite3.Error as e:
@@ -188,10 +188,10 @@ def get_all_plans() -> list[dict]:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                """
-                SELECT * FROM plans
-                ORDER BY TRIM(host_name), sort_order,
-                         COALESCE(duration_days, months * 30, months, 0), plan_id
+                f"""
+                {_PLANS_WITH_HOST_LTE_SQL}
+                ORDER BY TRIM(plans.host_name), plans.sort_order,
+                         COALESCE(plans.duration_days, plans.months * 30, plans.months, 0), plans.plan_id
                 """
             )
             return [dict(plan) for plan in cursor.fetchall()]

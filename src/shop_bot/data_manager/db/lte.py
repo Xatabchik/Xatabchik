@@ -92,6 +92,9 @@ def set_host_lte_default_limit_bytes(host_name: str | None, limit_bytes: int | N
 
     Возвращает False, если хоста нет. Тарифы с собственным `lte_limit_bytes > 0` от
     значения не зависят; остальные подхватывают его на следующем проходе воркера.
+    При переходе с «не задан» на >0 идемпотентно проставляет `next_traffic_reset_at`
+    ключам этого хоста (см. `backfill_monthly_traffic_reset_for_host`); обратный переход
+    уже стоящие даты не трогает.
     """
     host_name_n = normalize_host_name(host_name)
     if not host_name_n:
@@ -101,30 +104,51 @@ def set_host_lte_default_limit_bytes(host_name: str | None, limit_bytes: int | N
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
+                "SELECT COALESCE(lte_default_limit_bytes, 0) FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE LIMIT 1",
+                (host_name_n,),
+            )
+            row = cursor.fetchone()
+            previous = _as_limit_bytes(row[0]) if row else 0
+            cursor.execute(
                 "UPDATE xui_hosts SET lte_default_limit_bytes = ? WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
                 (value, host_name_n),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            updated = cursor.rowcount > 0
     except sqlite3.Error as e:
         logging.error(f"Failed to set LTE default limit for host '{host_name_n}': {e}")
         return False
+    if updated and previous <= 0 < value:
+        # Ключи тарифов с lte_limit_bytes=0 получили лимит по наследству, а даты сброса
+        # у них пустые, а check_traffic_boost_resets такие ключи пропускает.
+        try:
+            backfill_monthly_traffic_reset_for_host(host_name_n)
+        except Exception:
+            logging.warning(
+                f"Backfill monthly traffic reset for host '{host_name_n}' failed", exc_info=True
+            )
+    return updated
 
 
 def resolve_plan_lte_limit_bytes(plan: dict | None) -> int:
     """Эффективный базовый LTE-лимит тарифа: свой > 0, иначе дефолт хоста, иначе 0.
 
+    Чистая функция, БД не трогает: её зовут на каждый ключ в проходах воркера
+    (сброс, энфорсинг, backfill). Дефолт хоста приезжает в словаре тарифа как
+    `host_lte_default_limit_bytes` (LEFT JOIN в `get_plan_by_id`, `get_plans_for_host`,
+    `get_active_plans_for_host`, `get_all_plans`). Словарь тарифа из другого источника без этого
+    поля унаследованного лимита не увидит.
+
     Единственная точка чтения лимита: если читать `plan["lte_limit_bytes"]` напрямую,
     унаследованный от хоста лимит заработает в одном месте (например, в карточке ключа)
     и не заработает в другом (энфорсинг, добавление LTE-сквада при выдаче ключа).
     """
-    own = _as_limit_bytes((plan or {}).get("lte_limit_bytes"))
+    plan = plan or {}
+    own = _as_limit_bytes(plan.get("lte_limit_bytes"))
     if own > 0:
         return own
-    host_name = (plan or {}).get("host_name")
-    if not host_name:
-        return 0
-    return get_host_lte_default_limit_bytes(host_name)
+    return _as_limit_bytes(plan.get("host_lte_default_limit_bytes"))
 
 
 def plan_lte_limit_bytes(plan: dict | None) -> int:

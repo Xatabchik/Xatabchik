@@ -34,6 +34,7 @@ __all__ = (
     "_SUCCESS_TX_SQL",
     "_NON_BALANCE_SQL",
     "_REAL_MONEY_SQL",
+    "_PLANS_WITH_HOST_LTE_SQL",
     "EMAIL_ONLY_TELEGRAM_ID_MIN",
     "EMAIL_ONLY_TELEGRAM_ID_MAX",
     "SECRET_SETTING_KEYS",
@@ -171,6 +172,19 @@ def _decrypt_row_secrets(row: dict | None, *fields: str) -> dict | None:
 # чтобы цифры не расходились между разделами админки.
 _SUCCESS_TX_SQL = "status IN ('paid','success','succeeded')"
 _NON_BALANCE_SQL = "LOWER(COALESCE(payment_method, '')) <> 'balance'"
+# Тариф + дефолт LTE-лимита его хоста одним запросом: `resolve_plan_lte_limit_bytes`
+# обязан быть чистой функцией (его зовут на каждый ключ в проходах воркера), поэтому
+# дефолт хоста приезжает в словаре тарифа как `host_lte_default_limit_bytes`.
+# Подзапрос с GROUP BY гарантирует не более одной строки хоста на тариф: имена хостов
+# сравниваются как `TRIM(...) COLLATE NOCASE`, и без этого два хоста, различающиеся
+# только регистром, размножили бы тарифы. Условия WHERE/ORDER BY пишем с `plans.`.
+_PLANS_WITH_HOST_LTE_SQL = (
+    "SELECT plans.*, COALESCE(host_lte.default_limit_bytes, 0) AS host_lte_default_limit_bytes "
+    "FROM plans LEFT JOIN ("
+    "SELECT TRIM(host_name) AS host_key, MAX(COALESCE(lte_default_limit_bytes, 0)) AS default_limit_bytes "
+    "FROM xui_hosts GROUP BY TRIM(host_name) COLLATE NOCASE"
+    ") AS host_lte ON host_lte.host_key = TRIM(plans.host_name) COLLATE NOCASE"
+)
 # Чёрный список внутренних методов: всё остальное считаем «реальными деньгами».
 # Точные значения в коде: 'Balance', 'ReferralBalance' (handlers / webapp).
 _REAL_MONEY_SQL = (
