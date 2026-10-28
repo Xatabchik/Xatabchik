@@ -4,6 +4,7 @@
 порядок регистрации хендлеров сохранён.
 """
 
+import hashlib
 import html as html_escape
 import json
 
@@ -142,11 +143,31 @@ def _format_plans_for_host(host_name: str) -> str:
 # __all__ — имена, которые пакет раскладывает по остальным модулям (см. __init__.py).
 __all__ = [
     "AdminPlans",
+    "_host_lte_packages_view",
     "_format_plan_duration",
     "_format_traffic_gb",
     "_format_devices",
     "_format_plans_for_host",
 ]
+
+
+def _host_digest(host_name: str) -> str:
+    """Короткий дайджест имени хоста для callback_data (как в admin_router/hosts.py)."""
+    return hashlib.sha1(str(host_name or '').encode('utf-8', 'ignore')).hexdigest()[:12]
+
+
+def _host_lte_packages_view(host_name: str, digest: str | None = None) -> tuple[str, "types.InlineKeyboardMarkup"]:
+    """Текст и клавиатура экрана LTE-пакетов хоста (общий список для тарифов без своих пакетов)."""
+    digest = digest or _host_digest(host_name)
+    packages = database.get_host_lte_packages(host_name)
+    text = (
+        f"💰 <b>LTE-пакеты хоста «{html_escape.escape(str(host_name))}»</b>\n\n"
+        "Общий список докупки LTE: его видят все тарифы хоста, у которых нет собственных "
+        "LTE-пакетов. Цена пакета абсолютная и не зависит от срока тарифа."
+    )
+    if not packages:
+        text += "\n\n❌ Пакеты пока не настроены."
+    return text, keyboards.create_admin_traffic_packages_keyboard(None, packages, pool='lte', host_digest=digest)
 
 
 def register_plans(admin_router: Router) -> None:
@@ -311,7 +332,7 @@ def register_plans(admin_router: Router) -> None:
             await callback.answer("Тариф не найден.", show_alert=True)
             return
         await callback.answer()
-        await state.update_data(current_plan_id=plan_id, current_pkg_pool='main')
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool='main', current_pkg_host=None)
         await state.set_state(AdminPlans.packages_menu)
         packages = get_traffic_packages_for_plan(plan_id, pool='main')
         pname = html_escape.escape(str(plan.get('plan_name') or '—'))
@@ -343,19 +364,30 @@ def register_plans(admin_router: Router) -> None:
         if not plan:
             await callback.answer("Тариф не найден.", show_alert=True)
             return
-        if int(plan.get('lte_limit_bytes') or 0) <= 0:
-            await callback.answer("Сначала задайте LTE-лимит тарифа.", show_alert=True)
+        if database.resolve_plan_lte_limit_bytes(plan) <= 0:
+            await callback.answer("Сначала задайте LTE-лимит тарифа или хоста.", show_alert=True)
             return
         await callback.answer()
-        await state.update_data(current_plan_id=plan_id, current_pkg_pool='lte')
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool='lte', current_pkg_host=None)
         await state.set_state(AdminPlans.packages_menu)
+        # В списке — только собственные пакеты тарифа (их можно править); пакеты хоста
+        # показываются справкой, пока override не создан.
         packages = database.get_traffic_packages_for_plan(plan_id, pool='lte')
         pname = html_escape.escape(str(plan.get('plan_name') or '—'))
         text = (
             f"💰 <b>LTE-пакеты докупки для тарифа «{pname}»</b>\n\n"
             "Пользователи смогут докупить один из этих пакетов ГБ в независимый LTE-пул (premium-ноды)."
         )
-        if not packages:
+        source = database.lte_packages_source(plan)
+        if source == 'host':
+            host_pkgs = database.get_host_lte_packages(plan.get('host_name'))
+            text += (
+                f"\n\nℹ️ Используются пакеты хоста ({len(host_pkgs)} шт.). "
+                "Первый добавленный здесь собственный пакет полностью заменит список хоста для этого тарифа."
+            )
+        elif source == 'plan':
+            text += "\n\nℹ️ Пакеты тарифа (переопределяют пакеты хоста). Если выключить все, докупка скроется."
+        elif not packages:
             text += "\n\n❌ Пакеты пока не настроены."
         await callback.message.edit_text(
             text,
@@ -488,6 +520,20 @@ def register_plans(admin_router: Router) -> None:
             await callback.answer("У вас нет прав.", show_alert=True)
             return
         rest = callback.data.split("admin_pkg_add_", 1)[-1]
+        if rest == 'host_lte':
+            # Область «хост»: имя хоста уже лежит в FSM (current_pkg_host), в callback_data оно не помещается.
+            data = await state.get_data()
+            if not data.get('current_pkg_host'):
+                await callback.answer("Хост не выбран.", show_alert=True)
+                return
+            await callback.answer()
+            await state.update_data(current_plan_id=None, current_pkg_pool='lte')
+            await state.set_state(AdminPlans.waiting_for_package_size)
+            await callback.message.edit_text(
+                "📶 Введите объём пакета хоста в ГБ (например, 500 или 1500):",
+                reply_markup=keyboards.create_admin_plan_edit_flow_keyboard()
+            )
+            return
         pool = 'main'
         plan_id_str = rest
         if rest.endswith('_lte'):
@@ -502,7 +548,7 @@ def register_plans(admin_router: Router) -> None:
             await callback.answer("Некорректный тариф.", show_alert=True)
             return
         await callback.answer()
-        await state.update_data(current_plan_id=plan_id, current_pkg_pool=pool)
+        await state.update_data(current_plan_id=plan_id, current_pkg_pool=pool, current_pkg_host=None)
         await state.set_state(AdminPlans.waiting_for_package_size)
         await callback.message.edit_text(
             "📶 Введите объём пакета в ГБ (например, 5 или 10):",
@@ -543,6 +589,15 @@ def register_plans(admin_router: Router) -> None:
         plan_id = data.get('current_plan_id')
         size_gb = data.get('new_package_size')
         pool = data.get('current_pkg_pool') or 'main'
+        host_scope_name = data.get('current_pkg_host')
+        if host_scope_name and size_gb:
+            if not database.create_host_traffic_package(host_scope_name, float(size_gb), float(price), pool='lte'):
+                await message.answer("❌ Не удалось добавить пакет хоста.")
+                return
+            await state.set_state(AdminPlans.packages_menu)
+            _text, _kb = _host_lte_packages_view(host_scope_name)
+            await message.answer("✅ Пакет хоста добавлен.", reply_markup=_kb)
+            return
         if not plan_id or not size_gb:
             await message.answer("❌ Ошибка данных. Начните заново.")
             await state.clear()
@@ -571,12 +626,17 @@ def register_plans(admin_router: Router) -> None:
             await callback.answer("Пакет не найден.", show_alert=True)
             return
         await callback.answer()
-        await state.update_data(current_package_id=pkg_id, current_plan_id=pkg.get('plan_id'))
+        is_host_pkg = int(pkg.get('plan_id') or 0) == 0
+        await state.update_data(
+            current_package_id=pkg_id,
+            current_plan_id=pkg.get('plan_id'),
+            current_pkg_host=(pkg.get('host_name') if is_host_pkg else None),
+        )
         await state.set_state(AdminPlans.package_menu)
         is_active = int(pkg.get('is_active', 1) or 0) == 1
         await callback.message.edit_text(
             _format_traffic_package_detail(pkg),
-            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active, host_scope=is_host_pkg),
             parse_mode='HTML'
         )
 
@@ -615,7 +675,7 @@ def register_plans(admin_router: Router) -> None:
         is_active = int(pkg.get('is_active', 1) or 0) == 1
         await message.answer(
             _format_traffic_package_detail(pkg),
-            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active, host_scope=int(pkg.get('plan_id') or 0) == 0),
             parse_mode='HTML'
         )
 
@@ -654,7 +714,7 @@ def register_plans(admin_router: Router) -> None:
         is_active = int(pkg.get('is_active', 1) or 0) == 1
         await message.answer(
             _format_traffic_package_detail(pkg),
-            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(int(pkg_id), plan_id, is_active, host_scope=int(pkg.get('plan_id') or 0) == 0),
             parse_mode='HTML'
         )
 
@@ -680,7 +740,7 @@ def register_plans(admin_router: Router) -> None:
         is_active = int(pkg.get('is_active', 1) or 0) == 1
         await callback.message.edit_text(
             _format_traffic_package_detail(pkg),
-            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active),
+            reply_markup=keyboards.create_admin_traffic_package_manage_keyboard(pkg_id, pkg.get('plan_id'), is_active, host_scope=int(pkg.get('plan_id') or 0) == 0),
             parse_mode='HTML'
         )
 
@@ -697,14 +757,36 @@ def register_plans(admin_router: Router) -> None:
             return
         pkg = get_traffic_package_by_id(pkg_id)
         plan_id = pkg.get('plan_id') if pkg else None
+        pkg_host = pkg.get('host_name') if pkg and int(plan_id or 0) == 0 else None
         delete_traffic_package(pkg_id)
         await callback.answer("Пакет удалён.")
         await state.set_state(AdminPlans.packages_menu)
+        if pkg_host:
+            _text, _kb = _host_lte_packages_view(pkg_host)
+            await callback.message.edit_text("💰 Пакеты хоста обновлены.", reply_markup=_kb)
+            return
         packages = get_traffic_packages_for_plan(plan_id) if plan_id else []
         await callback.message.edit_text(
             "📶 Пакеты обновлены.",
             reply_markup=keyboards.create_admin_traffic_packages_keyboard(plan_id, packages)
         )
+
+
+    @admin_router.callback_query(AdminPlans.package_menu, F.data == "admin_pkg_back_host")
+    async def admin_pkg_back_host(callback: types.CallbackQuery, state: FSMContext):
+        """Назад из карточки пакета хоста к общему списку LTE-пакетов хоста."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        data = await state.get_data()
+        host_name = data.get('current_pkg_host')
+        if not host_name:
+            await callback.answer("Хост не выбран.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.packages_menu)
+        text, kb = _host_lte_packages_view(host_name)
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
 
 
 

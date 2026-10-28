@@ -12,6 +12,14 @@ from ._core import _UNSET
 
 __all__ = (
     "plan_lte_limit_bytes",
+    "get_host_lte_default_limit_bytes",
+    "set_host_lte_default_limit_bytes",
+    "resolve_plan_lte_limit_bytes",
+    "get_host_lte_packages",
+    "get_lte_packages_for_plan",
+    "lte_package_applies_to_plan",
+    "lte_packages_source",
+    "copy_plan_lte_packages_to_host",
     "should_account_lte_traffic",
     "add_host_squad",
     "get_host_squads",
@@ -46,8 +54,247 @@ __all__ = (
 )
 
 
+_ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
+
+def _host_match_key(host_name: str | None) -> str:
+    """Ключ сравнения имён хостов в Python, совпадающий с `TRIM(...) COLLATE NOCASE` в SQL.
+
+    NOCASE в SQLite складывает регистр только у ASCII, поэтому `str.casefold()` тут нельзя:
+    он считал бы равными кириллические имена, которые SQL-запросы выше по стеку различают,
+    и пакет мог бы пройти проверку принадлежности, но не попасть в выдачу.
+    """
+    return normalize_host_name(host_name).translate(_ASCII_LOWER)
+
+
+def get_host_lte_default_limit_bytes(host_name: str | None) -> int:
+    """Базовый LTE-лимит хоста (`xui_hosts.lte_default_limit_bytes`); 0 — «не задан»."""
+    host_name_n = normalize_host_name(host_name)
+    if not host_name_n:
+        return 0
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT lte_default_limit_bytes FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE LIMIT 1",
+                (host_name_n,),
+            )
+            row = cursor.fetchone()
+            return _as_limit_bytes(row[0]) if row else 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get LTE default limit for host '{host_name_n}': {e}")
+        return 0
+
+
+def set_host_lte_default_limit_bytes(host_name: str | None, limit_bytes: int | None) -> bool:
+    """Задать базовый LTE-лимит хоста; 0/None/отрицательное значение сбрасывает его в «не задан».
+
+    Возвращает False, если хоста нет. Тарифы с собственным `lte_limit_bytes > 0` от
+    значения не зависят; остальные подхватывают его на следующем проходе воркера.
+    При переходе с «не задан» на >0 идемпотентно проставляет `next_traffic_reset_at`
+    ключам этого хоста (см. `backfill_monthly_traffic_reset_for_host`); обратный переход
+    уже стоящие даты не трогает, а у ключей с унаследованным лимитом сбрасывает
+    сохранённый в `key_lte_state` лимит, чтобы при возврате дефолта воркер снова выдал им сквад.
+    """
+    host_name_n = normalize_host_name(host_name)
+    if not host_name_n:
+        return False
+    try:
+        value = _as_limit_bytes(limit_bytes)
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(lte_default_limit_bytes, 0) FROM xui_hosts "
+                "WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE LIMIT 1",
+                (host_name_n,),
+            )
+            row = cursor.fetchone()
+            previous = _as_limit_bytes(row[0]) if row else 0
+            cursor.execute(
+                "UPDATE xui_hosts SET lte_default_limit_bytes = ? WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (value, host_name_n),
+            )
+            conn.commit()
+            updated = cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"Failed to set LTE default limit for host '{host_name_n}': {e}")
+        return False
+    if updated and previous <= 0 < value:
+        # Ключи тарифов с lte_limit_bytes=0 получили лимит по наследству, а даты сброса
+        # у них пустые, а check_traffic_boost_resets такие ключи пропускает.
+        try:
+            backfill_monthly_traffic_reset_for_host(host_name_n)
+        except Exception:
+            logging.warning(
+                f"Backfill monthly traffic reset for host '{host_name_n}' failed", exc_info=True
+            )
+    if updated and previous > 0 >= value:
+        try:
+            _forget_inherited_lte_limit_for_host(host_name_n)
+        except Exception:
+            logging.warning(
+                f"Reset of inherited LTE limit in key state for host '{host_name_n}' failed", exc_info=True
+            )
+    return updated
+
+
+def _forget_inherited_lte_limit_for_host(host_name: str) -> int:
+    """Обнулить `key_lte_state.lte_limit_bytes` у ключей хоста, чей лимит был только унаследованным.
+
+    Воркер добавляет LTE-сквад ключу ровно тогда, когда лимит впервые попадает в состояние
+    ключа (`lte_limit_bytes` было 0). Если дефолт хоста вернули в 0, а потом снова подняли,
+    старое значение осталось бы в состоянии, и ключ, потерявший сквад при продлении без
+    LTE, не получил бы его обратно: учёт идёт, доступа к premium-нодам нет. Буст и baseline
+    не трогаем, ключи со своим лимитом тарифа не затрагиваем.
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM vpn_keys WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE", (host_name,)
+        ).fetchall()
+        key_ids = []
+        for row in rows:
+            key = dict(row)
+            plan = resolve_plan_for_key(key)
+            if plan and _as_limit_bytes(plan.get("lte_limit_bytes")) <= 0:
+                key_ids.append(int(key["key_id"]))
+        for key_id in key_ids:
+            conn.execute(
+                "UPDATE key_lte_state SET lte_limit_bytes = 0 WHERE key_id = ? AND COALESCE(lte_limit_bytes, 0) > 0",
+                (key_id,),
+            )
+        conn.commit()
+    return len(key_ids)
+
+
+def resolve_plan_lte_limit_bytes(plan: dict | None) -> int:
+    """Эффективный базовый LTE-лимит тарифа: свой > 0, иначе дефолт хоста, иначе 0.
+
+    Чистая функция, БД не трогает: её зовут на каждый ключ в проходах воркера
+    (сброс, энфорсинг, backfill). Дефолт хоста приезжает в словаре тарифа как
+    `host_lte_default_limit_bytes` (LEFT JOIN в `get_plan_by_id`, `get_plans_for_host`,
+    `get_active_plans_for_host`, `get_all_plans`). Словарь тарифа из другого источника без этого
+    поля унаследованного лимита не увидит.
+
+    Единственная точка чтения лимита: если читать `plan["lte_limit_bytes"]` напрямую,
+    унаследованный от хоста лимит заработает в одном месте (например, в карточке ключа)
+    и не заработает в другом (энфорсинг, добавление LTE-сквада при выдаче ключа).
+    """
+    plan = plan or {}
+    own = _as_limit_bytes(plan.get("lte_limit_bytes"))
+    if own > 0:
+        return own
+    return _as_limit_bytes(plan.get("host_lte_default_limit_bytes"))
+
+
 def plan_lte_limit_bytes(plan: dict | None) -> int:
-    return _as_limit_bytes((plan or {}).get("lte_limit_bytes"))
+    return resolve_plan_lte_limit_bytes(plan)
+
+
+def get_host_lte_packages(host_name: str | None, *, only_active: bool = False) -> list[dict]:
+    """LTE-пакеты докупки уровня хоста (`plan_id = 0`, `host_name = <хост>`), в порядке показа."""
+    host_name_n = normalize_host_name(host_name)
+    if not host_name_n:
+        return []
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            query = (
+                "SELECT * FROM traffic_packages WHERE plan_id = 0 AND COALESCE(pool, 'main') = 'lte' "
+                "AND TRIM(host_name) = TRIM(?) COLLATE NOCASE"
+            )
+            if only_active:
+                query += " AND COALESCE(is_active, 1) = 1"
+            query += " ORDER BY sort_order, size_gb"
+            cursor.execute(query, (host_name_n,))
+            return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"Failed to get host LTE packages for '{host_name_n}': {e}")
+        return []
+
+
+def _plan_own_lte_packages(plan: dict | None) -> list[dict]:
+    """Все собственные LTE-пакеты тарифа, включая выключенные (признак override)."""
+    try:
+        plan_id = int((plan or {}).get("plan_id") or 0)
+    except (TypeError, ValueError):
+        return []
+    if plan_id <= 0:
+        return []
+    return get_traffic_packages_for_plan(plan_id, only_active=False, pool="lte")
+
+
+def get_lte_packages_for_plan(plan: dict | None, *, only_active: bool = False) -> list[dict]:
+    """LTE-пакеты, доступные для докупки по тарифу: собственные (override) либо пакеты хоста.
+
+    Если у тарифа есть ЛЮБЫЕ собственные LTE-строки, в том числе выключенные, показываются
+    только они и пакеты хоста игнорируются. Так «выключить все пакеты» на тарифе означает
+    осознанное скрытие докупки, а не откат на список хоста.
+    """
+    own = _plan_own_lte_packages(plan)
+    if own:
+        if only_active:
+            return [p for p in own if int(p.get("is_active") if p.get("is_active") is not None else 1) == 1]
+        return own
+    return get_host_lte_packages((plan or {}).get("host_name"), only_active=only_active)
+
+
+def lte_package_applies_to_plan(package: dict | None, plan: dict | None) -> bool:
+    """Относится ли LTE-пакет к тарифу: это его пакет либо пакет хоста этого тарифа.
+
+    Проверка именно принадлежности, а не текущей видимости: платёж, созданный до того, как
+    у тарифа появился override, обязан пройти fulfillment. Пакет хоста A тарифу хоста B
+    не подходит — иначе докупку можно было бы оформить на чужой хост.
+    """
+    if not package or not plan:
+        return False
+    if str(package.get("pool") or "main").strip().lower() != "lte":
+        return False
+    try:
+        package_plan_id = int(package.get("plan_id") or 0)
+        plan_id = int(plan.get("plan_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if package_plan_id > 0:
+        return package_plan_id == plan_id
+    package_host = _host_match_key(package.get("host_name"))
+    return bool(package_host) and package_host == _host_match_key(plan.get("host_name"))
+
+
+def lte_packages_source(plan: dict | None) -> str:
+    """Откуда берётся список LTE-пакетов тарифа: 'plan' (override), 'host' или 'none'."""
+    if _plan_own_lte_packages(plan):
+        return "plan"
+    if get_host_lte_packages((plan or {}).get("host_name")):
+        return "host"
+    return "none"
+
+
+def copy_plan_lte_packages_to_host(plan_id: int, host_name: str | None) -> int:
+    """Скопировать LTE-пакеты тарифа в пакеты хоста, пропуская дубли по (size_gb, price).
+
+    Копируются все строки тарифа, включая выключенные, с сохранением признака активности.
+    Пакеты тарифа не удаляются. Возвращает число добавленных пакетов.
+    """
+    existing = {
+        (round(float(p.get("size_gb") or 0), 6), round(float(p.get("price") or 0), 6))
+        for p in get_host_lte_packages(host_name)
+    }
+    added = 0
+    for pkg in get_traffic_packages_for_plan(plan_id, only_active=False, pool="lte"):
+        sig = (round(float(pkg.get("size_gb") or 0), 6), round(float(pkg.get("price") or 0), 6))
+        if sig in existing:
+            continue
+        new_id = create_host_traffic_package(host_name, pkg["size_gb"], pkg["price"], pool="lte")
+        if not new_id:
+            continue
+        if int(pkg.get("is_active") if pkg.get("is_active") is not None else 1) == 0:
+            update_traffic_package(new_id, is_active=False)
+        existing.add(sig)
+        added += 1
+    return added
 
 
 def should_account_lte_traffic(
@@ -58,7 +305,8 @@ def should_account_lte_traffic(
 ) -> bool:
     """LTE-учёт (снапшоты, baseline, энфорс) только при лимите и живом скваде.
 
-    Безлимитный LTE (`lte_limit_bytes` 0/NULL) и хост без активного сквада класса
+    Безлимитный LTE (эффективный лимит 0: ни `plans.lte_limit_bytes`, ни дефолта хоста) и
+    хост без активного сквада класса
     `lte` не должны порождать запросы статистики на панель и строки в
     `key_lte_state` / `key_node_usage_snapshots`.
     """

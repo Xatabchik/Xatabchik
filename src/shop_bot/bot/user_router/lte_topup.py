@@ -68,7 +68,7 @@ def register_lte_topup(user_router: Router) -> None:
             )
             return
 
-        packages = database.get_traffic_packages_for_plan(plan['plan_id'], only_active=True, pool='lte')
+        packages = database.get_lte_packages_for_plan(plan, only_active=True)
         lte_label = database.get_lte_squad_display_label(key_data.get("host_name"))
         lte_label_html = html_escape(lte_label)
         if not packages:
@@ -103,7 +103,17 @@ def register_lte_topup(user_router: Router) -> None:
             return
 
         package = database.get_traffic_package_by_id(package_id)
-        if not package or int(package.get('plan_id')) != int(plan['plan_id']):
+        # Принадлежность (свой пакет или пакет хоста ключа) плюс текущая видимость: у тарифа
+        # с собственным списком пакеты хоста купить нельзя, даже зная их package_id.
+        visible_ids = {
+            int(p['package_id'])
+            for p in database.get_lte_packages_for_plan(plan, only_active=True)
+        }
+        if (
+            not package
+            or not database.lte_package_applies_to_plan(package, plan)
+            or int(package['package_id']) not in visible_ids
+        ):
             await callback.answer("Пакет не найден", show_alert=True)
             return
 

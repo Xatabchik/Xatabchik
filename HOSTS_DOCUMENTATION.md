@@ -130,6 +130,9 @@ CREATE TABLE IF NOT EXISTS xui_hosts (
 | `created_at` | TEXT | Дата создания (ISO 8601) |
 | `updated_at` | TEXT | Дата последнего обновления |
 | `speedtest_last_run` | TEXT | Дата последнего speedtest |
+| `lte_default_limit_bytes` | INTEGER | Базовый LTE-лимит хоста (0/NULL — не задан). Наследуется тарифами с `plans.lte_limit_bytes = 0` |
+
+LTE-пакеты хоста лежат в `traffic_packages` (`pool='lte'`, `plan_id=0`, `host_name=<хост>`) и общие для тарифов хоста без собственных LTE-пакетов; правило разрешения «override тарифа → хост → ничего» описано в [TARIFFS_GUIDE.md](TARIFFS_GUIDE.md#lte-параметры-хоста-и-наследование). `update_host_name` переносит `host_name` пакетов хоста вместе с тарифами и ключами, `delete_host` удаляет пакеты хоста.
 
 ### Нормализация имен
 

@@ -525,8 +525,30 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         try:
             key_data = rw_repo.get_key_by_id(key_id_lte) if key_id_lte else None
             package = database.get_traffic_package_by_id(package_id_lte) if package_id_lte else None
-            if not key_data or not package:
-                logger.error(f"lte_gb_topup: ключ или пакет не найден (key_id={key_id_lte}, package_id={package_id_lte})")
+            package_mismatch = False
+            if key_data and package:
+                # Пакет должен принадлежать тарифу ключа либо хосту ключа: пакет хоста A не
+                # начисляется ключу хоста B, даже если платёж собран вручную. Если тариф ключа
+                # определить нельзя (ключ без plan_id и без тарифов на хосте), для пакета
+                # тарифа остаётся прежняя логика — доверяем plan_id пакета, а пакет хоста
+                # всё равно сверяется по имени хоста ключа.
+                try:
+                    plan_for_key = database.resolve_plan_for_key(key_data)
+                except Exception:
+                    plan_for_key = None
+                if plan_for_key:
+                    plan_ctx = plan_for_key
+                else:
+                    plan_ctx = {
+                        "plan_id": _to_int(metadata.get('plan_id'), 0) or int(package.get('plan_id') or 0),
+                        "host_name": key_data.get('host_name'),
+                    }
+                package_mismatch = not database.lte_package_applies_to_plan(package, plan_ctx)
+            if not key_data or not package or package_mismatch:
+                logger.error(
+                    f"lte_gb_topup: ключ или пакет не найден или пакет не подходит ключу "
+                    f"(key_id={key_id_lte}, package_id={package_id_lte}, mismatch={package_mismatch})"
+                )
                 await _abort_topup_fulfillment(
                     bot,
                     payment_id=payment_id,

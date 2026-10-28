@@ -99,6 +99,10 @@ from shop_bot.data_manager.database import (
 from shop_bot.data_manager.database import (
     create_traffic_package, get_traffic_packages_for_plan, get_traffic_package_by_id,
     update_traffic_package, delete_traffic_package,
+    create_host_traffic_package, get_host_lte_packages, get_lte_packages_for_plan,
+    lte_packages_source, resolve_plan_lte_limit_bytes, copy_plan_lte_packages_to_host,
+    get_host_lte_default_limit_bytes, set_host_lte_default_limit_bytes,
+    lte_package_applies_to_plan, normalize_host_name,
 )
 from shop_bot.data_manager.database import (
     get_key_by_id, update_key_fields, set_key_traffic_boost,
@@ -2963,7 +2967,7 @@ def create_webhook_app(bot_controller_instance):
                 "price": plan.get('price'),
                 "traffic_limit_bytes": plan.get('traffic_limit_bytes'),
                 "hwid_device_limit": plan.get('hwid_device_limit'),
-                "lte_limit_bytes": plan.get('lte_limit_bytes'),
+                "lte_limit_bytes": resolve_plan_lte_limit_bytes(plan),
             } if plan else None),
             "plans_for_host": [
                 {
@@ -3151,7 +3155,7 @@ def create_webhook_app(bot_controller_instance):
 
         # LTE-докупка доступна только тарифам, у которых явно задан LTE-пул.
         plan_for_check = _resolve_key_plan(key)
-        if not plan_for_check or int(plan_for_check.get('lte_limit_bytes') or 0) <= 0:
+        if not plan_for_check or resolve_plan_lte_limit_bytes(plan_for_check) <= 0:
             return jsonify({"ok": False, "error": "no_lte_plan"}), 400
 
         add_bytes = int(gb * 1024 * 1024 * 1024)
@@ -4767,6 +4771,16 @@ def create_webhook_app(bot_controller_instance):
                     plan['lte_traffic_packages'] = get_traffic_packages_for_plan(plan['plan_id'], pool='lte')
                 except Exception:
                     plan['lte_traffic_packages'] = []
+                # Наследование LTE от хоста посчитано здесь, чтобы шаблон не ходил в БД:
+                # собственные пакеты (lte_traffic_packages) нужны для правки, эффективные — для подписи.
+                try:
+                    plan['effective_lte_limit_bytes'] = resolve_plan_lte_limit_bytes(plan)
+                    plan['lte_packages_source'] = lte_packages_source(plan)
+                    plan['effective_lte_packages'] = get_lte_packages_for_plan(plan)
+                except Exception:
+                    plan['effective_lte_limit_bytes'] = int(plan.get('lte_limit_bytes') or 0)
+                    plan['lte_packages_source'] = 'plan' if plan['lte_traffic_packages'] else 'none'
+                    plan['effective_lte_packages'] = list(plan['lte_traffic_packages'])
 
             try:
                 host['latest_speedtest'] = get_latest_speedtest(host['host_name'])
@@ -4778,6 +4792,18 @@ def create_webhook_app(bot_controller_instance):
             except Exception:
                 host['squads'] = []
             host['lte_label'] = get_lte_squad_display_label(host.get('host_name'))
+            # Блок «LTE хоста»: дефолтный лимит и общий список пакетов докупки.
+            try:
+                host['lte_default_limit_bytes'] = get_host_lte_default_limit_bytes(host['host_name'])
+                host['lte_host_packages'] = get_host_lte_packages(host['host_name'])
+            except Exception:
+                host['lte_default_limit_bytes'] = 0
+                host['lte_host_packages'] = []
+            # Только предупреждение, не блокировка: сквад можно добавить позже.
+            try:
+                host['lte_squad_missing'] = not get_squad_by_class(host['host_name'], 'lte')
+            except Exception:
+                host['lte_squad_missing'] = False
             try:
                 host['selected_squad_ids'] = set(get_host_selected_squad_catalog_ids(host['host_name']))
             except Exception:
@@ -5934,24 +5960,68 @@ def create_webhook_app(bot_controller_instance):
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    def _package_scope_from_form():
+        """Область пакета из формы: ('plan', plan_id) | ('host', host_name) | (None, None).
+
+        Имя хоста передаётся полем формы, а не частью пути: оно бывает с пробелами и кириллицей.
+        Указание обоих полей сразу — ошибка формы, а не «побеждает первое».
+        """
+        plan_raw = (request.form.get('plan_id') or '').strip()
+        host_raw = (request.form.get('host_name') or '').strip()
+        if plan_raw and host_raw:
+            return None, None
+        if plan_raw:
+            try:
+                return 'plan', int(plan_raw)
+            except (TypeError, ValueError):
+                return None, None
+        if host_raw:
+            return 'host', host_raw
+        return None, None
+
+    def _package_in_scope(pkg: dict, scope: str | None, value) -> bool:
+        """Принадлежит ли существующий пакет области из формы; без области (legacy-формы) — да."""
+        if scope is None:
+            return True
+        if scope == 'plan':
+            return int(pkg.get('plan_id') or 0) == int(value)
+        return lte_package_applies_to_plan(pkg, {"plan_id": 0, "host_name": value}) and int(pkg.get('plan_id') or 0) == 0
+
     @flask_app.route('/add-traffic-package', methods=['POST'])
     @login_required
     def add_traffic_package_route():
+        scope, scope_value = _package_scope_from_form()
         try:
-            plan_id = int(request.form['plan_id'])
             size_gb = float(request.form['size_gb'])
             price = float(request.form['price'])
         except (KeyError, TypeError, ValueError):
             flash('Проверьте поля пакета ГБ.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
+        if scope is None or size_gb <= 0 or price <= 0:
+            flash('Проверьте поля пакета ГБ: нужен тариф или хост, размер и цена больше нуля.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
 
         # Пул обязателен: без него пакет всегда уходил в 'main', и докупка LTE
         # у пользователей отвечала «пакеты не настроены».
         pool = _normalize_package_pool(request.form.get('pool'))
+
+        if scope == 'host':
+            # Пакеты хоста есть только у пула LTE; main остаётся на тарифах.
+            if pool != 'lte':
+                flash('Пакеты хоста поддерживаются только для пула LTE.', 'danger')
+                return redirect(url_for('settings_page', tab='hosts'))
+            # Лимит тут не проверяем: он может быть унаследован от хоста или задан на тарифе.
+            if create_host_traffic_package(scope_value, size_gb, price, pool='lte'):
+                flash('LTE-пакет хоста добавлен.', 'success')
+            else:
+                flash('Не удалось добавить LTE-пакет хоста.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
+
+        plan_id = scope_value
         if pool == 'lte':
             plan = get_plan_by_id(plan_id)
-            if not plan or int(plan.get('lte_limit_bytes') or 0) <= 0:
-                flash('Сначала задайте LTE-лимит тарифа («LTE пул, ГБ»), иначе LTE-пакеты не будут доступны.', 'danger')
+            if not plan or resolve_plan_lte_limit_bytes(plan) <= 0:
+                flash('Сначала задайте LTE-лимит тарифа («LTE пул, ГБ») или LTE-лимит хоста, иначе LTE-пакеты не будут доступны.', 'danger')
                 return redirect(url_for('settings_page', tab='hosts'))
 
         create_traffic_package(plan_id, size_gb, price, pool=pool)
@@ -5964,6 +6034,7 @@ def create_webhook_app(bot_controller_instance):
         size_gb = request.form.get('size_gb')
         price = request.form.get('price')
         is_active_raw = request.form.get('is_active')
+        scope, scope_value = _package_scope_from_form()
 
         kwargs = {}
         try:
@@ -5974,9 +6045,17 @@ def create_webhook_app(bot_controller_instance):
         except (TypeError, ValueError):
             flash('Некорректные значения для пакета ГБ.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
+        if any(v <= 0 for k, v in kwargs.items() if k in ('size_gb', 'price')):
+            flash('Размер и цена пакета должны быть больше нуля.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
 
         if is_active_raw is not None:
             kwargs['is_active'] = str(is_active_raw).lower() in ('on', 'true', '1', 'yes')
+
+        pkg = get_traffic_package_by_id(package_id)
+        if not pkg or not _package_in_scope(pkg, scope, scope_value):
+            flash('Не удалось обновить пакет ГБ (возможно, он не найден).', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
 
         ok = update_traffic_package(package_id, **kwargs)
         if ok:
@@ -5988,8 +6067,9 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/toggle-traffic-package/<int:package_id>', methods=['POST'])
     @login_required
     def toggle_traffic_package_route(package_id):
+        scope, scope_value = _package_scope_from_form()
         pkg = get_traffic_package_by_id(package_id)
-        if not pkg:
+        if not pkg or not _package_in_scope(pkg, scope, scope_value):
             flash('Пакет ГБ не найден.', 'danger')
             return redirect(url_for('settings_page', tab='hosts'))
         new_state = not bool(pkg.get('is_active'))
@@ -6000,8 +6080,48 @@ def create_webhook_app(bot_controller_instance):
     @flask_app.route('/delete-traffic-package/<int:package_id>', methods=['POST'])
     @login_required
     def delete_traffic_package_route(package_id):
+        scope, scope_value = _package_scope_from_form()
+        pkg = get_traffic_package_by_id(package_id)
+        if pkg and not _package_in_scope(pkg, scope, scope_value):
+            flash('Пакет ГБ не найден.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
         delete_traffic_package(package_id)
         flash('Пакет ГБ удалён.', 'success')
+        return redirect(url_for('settings_page', tab='hosts'))
+
+    @flask_app.route('/update-host-lte-default', methods=['POST'])
+    @login_required
+    def update_host_lte_default_route():
+        """Сохраняет базовый LTE-лимит хоста (ГБ; 0 или пусто — не задан)."""
+        host_name = (request.form.get('host_name') or '').strip()
+        raw = (request.form.get('lte_default_limit_gb') or '').strip()
+        try:
+            gb = float(raw) if raw else 0.0
+        except (TypeError, ValueError):
+            gb = -1.0
+        if not host_name or gb < 0:
+            flash('Проверьте хост и значение «LTE пул по умолчанию, ГБ».', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
+        ok = set_host_lte_default_limit_bytes(host_name, int(gb * 1024 * 1024 * 1024) if gb > 0 else 0)
+        flash('LTE-лимит хоста сохранён.' if ok else 'Не удалось сохранить LTE-лимит хоста (хост не найден).', 'success' if ok else 'danger')
+        return redirect(url_for('settings_page', tab='hosts'))
+
+    @flask_app.route('/copy-plan-lte-packages-to-host', methods=['POST'])
+    @login_required
+    def copy_plan_lte_packages_to_host_route():
+        """Копирует LTE-пакеты выбранного тарифа в пакеты хоста; пакеты тарифа не удаляются."""
+        host_name = (request.form.get('host_name') or '').strip()
+        try:
+            plan_id = int(request.form.get('source_plan_id') or 0)
+        except (TypeError, ValueError):
+            plan_id = 0
+        plan = get_plan_by_id(plan_id) if plan_id > 0 else None
+        # Тариф-источник обязан принадлежать этому же хосту, иначе можно перенести чужую сетку.
+        if not host_name or not plan or normalize_host_name(plan.get('host_name')).lower() != normalize_host_name(host_name).lower():
+            flash('Выберите тариф этого хоста.', 'danger')
+            return redirect(url_for('settings_page', tab='hosts'))
+        added = copy_plan_lte_packages_to_host(plan_id, host_name)
+        flash(f'Скопировано LTE-пакетов в хост: {added}.' if added else 'Нечего копировать: у тарифа нет LTE-пакетов или они уже есть у хоста.', 'success' if added else 'warning')
         return redirect(url_for('settings_page', tab='hosts'))
 
 

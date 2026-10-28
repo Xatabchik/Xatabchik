@@ -276,7 +276,7 @@ async def check_traffic_boost_resets(bot: Bot):
       - основной пул (если тариф лимитный): сброс used traffic на Remnawave,
         лимит возвращается к `plans.traffic_limit_bytes`, докупленный буст сгорает,
         `traffic_limit_strategy` остаётся MONTH_ROLLING;
-      - LTE-пул (если задан `plans.lte_limit_bytes`): новый расчётный период —
+      - LTE-пул (если задан эффективный лимит: `plans.lte_limit_bytes` либо дефолт хоста): новый расчётный период —
         baseline переустанавливается, докупленный LTE-буст сгорает;
       - для безлимитного основного пула панель не трогаем — крутим только LTE
         и дату следующего сброса;
@@ -469,10 +469,12 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         main_limit = base + int(k.get("traffic_boost_bytes") or 0)
                 # LTE-лимит тарифа читается независимо от основного: тариф может быть
                 # безлимитным по основному пулу и иметь отдельный LTE-лимит.
+                # Эффективный лимит: собственный лимит тарифа либо дефолт хоста (наследование).
                 try:
-                    plan_lte_limit = int((plan or {}).get("lte_limit_bytes") or 0)
+                    plan_lte_limit = int(database.resolve_plan_lte_limit_bytes(plan) or 0)
                 except Exception:
                     plan_lte_limit = 0
+                lte_limit_inherited = bool(plan) and plan_lte_limit > 0 and int((plan or {}).get("lte_limit_bytes") or 0) <= 0
 
                 # LTE-учёт только если у тарифа задан лимит И на хосте есть активный
                 # сквад класса 'lte'. Безлимит и хост без сквада — не ходим в панель
@@ -545,10 +547,33 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                 lte = database.get_key_lte_state(key_id_for_usage)
                 if plan_lte_limit > 0 and int(lte.get("lte_limit_bytes") or 0) != plan_lte_limit:
                     # Пересинхронизация базового лимита из тарифа на каждом проходе, чтобы
-                    # изменение plans.lte_limit_bytes долетало до выданных ключей.
+                    # изменение plans.lte_limit_bytes (или дефолта хоста) долетало до выданных ключей.
                     # Докупленный буст при этом не трогаем.
-                    database.update_key_lte_state(key_id_for_usage, lte_limit_bytes=plan_lte_limit)
-                    lte["lte_limit_bytes"] = plan_lte_limit
+                    limit_synced = True
+                    if lte_limit_inherited and int(lte.get("lte_limit_bytes") or 0) <= 0:
+                        # Лимит у ключа впервые появился через наследование от хоста: такой ключ
+                        # выдан без LTE-сквада (при создании лимит тарифа был 0), и учёт без
+                        # сквада означал бы «лимит есть, премиум-нод нет». Добавляем сквад один раз:
+                        # пока он не добавлен, лимит в состоянии ключа не фиксируется, и
+                        # следующий проход повторит попытку. Ключ с отключённым доступом пропускаем —
+                        # сквад ему вернёт обычный путь включения.
+                        if (k.get("remote_access_state") or "enabled") == "enabled":
+                            try:
+                                limit_synced = bool(await remnawave_api.add_squad_to_user(
+                                    str(user_uuid), str(lte_squad.get("squad_uuid") or ""), host_name=host_name
+                                ))
+                            except Exception as e:
+                                limit_synced = False
+                                logger.warning(
+                                    "Scheduler[dual-limits]: не удалось добавить LTE-сквад ключу key_id=%s "
+                                    "при унаследованном лимите хоста '%s': %s",
+                                    key_id_for_usage, host_name, e,
+                                )
+                        else:
+                            limit_synced = False
+                    if limit_synced:
+                        database.update_key_lte_state(key_id_for_usage, lte_limit_bytes=plan_lte_limit)
+                        lte["lte_limit_bytes"] = plan_lte_limit
 
                 # --- Точка отсчёта (baseline) LTE-расхода ---
                 # Панель хранит расход по нодам накопительно, поэтому сравнивать лимит нужно

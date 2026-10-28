@@ -40,6 +40,7 @@ __all__ = (
     "update_key_fields",
     "apply_key_monthly_reset_fields",
     "backfill_monthly_traffic_reset_for_existing_keys",
+    "backfill_monthly_traffic_reset_for_host",
     "delete_key_by_email",
     "get_user_keys",
     "get_key_by_id",
@@ -636,17 +637,7 @@ def apply_key_monthly_reset_fields(
     )
 
 
-def backfill_monthly_traffic_reset_for_existing_keys() -> int:
-    """Проставить MONTH_ROLLING и дату сброса уже выданным лимитным/LTE-ключам.
-
-    Идемпотентно: будущая дата не сдвигается, стратегия переписывается только
-    если основной пул ограничен, а в колонке ещё не MONTH_ROLLING.
-    """
-    try:
-        keys = get_all_keys()
-    except Exception:
-        logging.warning("Backfill monthly traffic reset: не удалось прочитать ключи", exc_info=True)
-        return 0
+def _backfill_monthly_traffic_reset(keys: list[dict], *, scope: str) -> int:
     updated = 0
     for key in keys:
         try:
@@ -674,8 +665,49 @@ def backfill_monthly_traffic_reset_for_existing_keys() -> int:
                 exc_info=True,
             )
     if updated:
-        logging.info("Backfill monthly traffic reset: обновлено ключей: %s", updated)
+        logging.info("Backfill monthly traffic reset (%s): обновлено ключей: %s", scope, updated)
     return updated
+
+
+def backfill_monthly_traffic_reset_for_existing_keys() -> int:
+    """Проставить MONTH_ROLLING и дату сброса уже выданным лимитным/LTE-ключам.
+
+    Идемпотентно: будущая дата не сдвигается, стратегия переписывается только
+    если основной пул ограничен, а в колонке ещё не MONTH_ROLLING.
+    """
+    try:
+        keys = get_all_keys()
+    except Exception:
+        logging.warning("Backfill monthly traffic reset: не удалось прочитать ключи", exc_info=True)
+        return 0
+    return _backfill_monthly_traffic_reset(keys, scope="all")
+
+
+def backfill_monthly_traffic_reset_for_host(host_name: str | None) -> int:
+    """То же, что `backfill_monthly_traffic_reset_for_existing_keys`, но только по ключам хоста.
+
+    Нужна, когда лимит ключей появляется через наследование (дефолт LTE хоста стал > 0):
+    у таких ключей `next_traffic_reset_at` пуст, и `check_traffic_boost_resets` их пропускает.
+    Хост сравнивается как `TRIM(...) COLLATE NOCASE`, как и в остальных запросах по хосту.
+    """
+    host_name_n = str(host_name or "").strip()
+    if not host_name_n:
+        return 0
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM vpn_keys WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name_n,),
+            )
+            keys = [_normalize_key_row(row) for row in cursor.fetchall()]
+    except sqlite3.Error:
+        logging.warning(
+            "Backfill monthly traffic reset: не удалось прочитать ключи хоста %s", host_name_n, exc_info=True
+        )
+        return 0
+    return _backfill_monthly_traffic_reset(keys, scope=f"host={host_name_n}")
 
 
 def delete_key_by_email(email: str) -> bool:

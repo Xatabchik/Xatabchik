@@ -159,6 +159,7 @@
 | `squad_uuid` | TEXT UNIQUE | UUID группы |
 | `description` | TEXT | Описание хоста |
 | `default_traffic_limit_bytes` | INTEGER | Лимит трафика по умолчанию в байтах |
+| `lte_default_limit_bytes` | INTEGER | Базовый LTE-лимит хоста в байтах (по умолчанию 0 = не задан); наследуется тарифами с `plans.lte_limit_bytes = 0` |
 | `default_traffic_strategy` | TEXT | Стратегия лимита трафика ('NO_RESET' по умолчанию) |
 | `host_url` | TEXT | URL панели управления |
 | `host_username` | TEXT | Имя пользователя для API |
@@ -872,7 +873,11 @@
 
 ### `traffic_packages`
 
-Пакеты докупки ГБ. Поля: `package_id`, `plan_id`, `size_gb`, `price`, `is_active`, `sort_order`, `pool` (`main` или LTE). Функции: `create_traffic_package`, `get_traffic_packages_for_plan`.
+Пакеты докупки ГБ. Поля: `package_id`, `plan_id`, `host_name`, `size_gb`, `price`, `is_active`, `sort_order`, `pool` (`main` или LTE). Функции: `create_traffic_package`, `create_host_traffic_package`, `get_traffic_packages_for_plan`.
+
+Пакет тарифа — строка с `plan_id` тарифа и `host_name IS NULL`. Пакет хоста (только `pool='lte'`) — строка с `host_name=<хост>` и `plan_id=0` (sentinel, `plan_id` объявлен `NOT NULL`); индекс `idx_traffic_packages_host_pool(host_name, pool)`. FK на `plans` для `plan_id=0` формально нарушается, но проект не включает `PRAGMA foreign_keys` на рабочих соединениях, поэтому запись проходит; общая таблица выбрана, чтобы `package_id` (он едет в metadata платежа и читается через `get_traffic_package_by_id`) не пересекался между пакетами тарифов и хостов. Миграции (`_ensure_hosts_columns`, `_ensure_traffic_packages_table`) идемпотентны и данные не меняют.
+
+Разрешение для тарифа (`db/lte.py`): `resolve_plan_lte_limit_bytes` — `plans.lte_limit_bytes > 0`, иначе `xui_hosts.lte_default_limit_bytes`, иначе 0; `get_lte_packages_for_plan` — собственные LTE-строки тарифа (в том числе выключенные), иначе пакеты хоста, иначе пусто; `lte_package_applies_to_plan` — проверка принадлежности пакета тарифу или хосту (используется при создании платежа и в fulfillment); `lte_packages_source` — `plan` / `host` / `none`.
 
 ### `subscription_lte` / `key_lte_state` / `key_node_usage_snapshots`
 
