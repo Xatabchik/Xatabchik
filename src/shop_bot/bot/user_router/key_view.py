@@ -259,7 +259,7 @@ def register_key_view(user_router: Router) -> None:
                     plan_for_key = get_plan_by_id(plan_id_for_key)
                     if plan_for_key:
                         plan_traffic_limit_bytes = int(plan_for_key.get('traffic_limit_bytes') or 0)
-                        plan_lte_limit_bytes = int(plan_for_key.get('lte_limit_bytes') or 0)
+                        plan_lte_limit_bytes = database.resolve_plan_lte_limit_bytes(plan_for_key)
                         plan_main_reset_price = float(plan_for_key.get('main_reset_price_rub') or 0)
                         if plan_traffic_limit_bytes > 0:
                             show_traffic_topup = True

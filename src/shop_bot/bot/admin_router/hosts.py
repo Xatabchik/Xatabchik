@@ -63,6 +63,7 @@ def register_hosts(admin_router: Router) -> None:
         waiting_set_rmw_token = State()
         waiting_set_squad = State()
         waiting_set_ssh = State()
+        waiting_lte_default_limit = State()
 
         squads_menu = State()
         waiting_add_squad2_uuid = State()
@@ -114,6 +115,11 @@ def register_hosts(admin_router: Router) -> None:
             lte_squad = None
         lte_squad_txt = "✅ настроен" if lte_squad else "— не настроен"
         try:
+            lte_default_limit = database.get_host_lte_default_limit_bytes(name) if name and name != '—' else 0
+        except Exception:
+            lte_default_limit = 0
+        lte_default_txt = f"{lte_default_limit // (1024 ** 3)} ГБ" if lte_default_limit > 0 else "не задан"
+        try:
             overlap = database.get_host_squad_overlap(name) if name and name != '—' else []
         except Exception:
             overlap = []
@@ -129,6 +135,7 @@ def register_hosts(admin_router: Router) -> None:
             f"⚙️ Remnawave URL: {_safe(rmw_url)}",
             f"🧩 Squad UUID: {_safe(squad_uuid)}",
             f"💰 LTE-сквад: {lte_squad_txt}",
+            f"💰 LTE-лимит по умолчанию: {lte_default_txt}",
             "",
             "🔌 <b>SSH (speedtest)</b>",
             f"Host: {_safe(ssh_host)}",
@@ -164,7 +171,11 @@ def register_hosts(admin_router: Router) -> None:
             node_class = database.get_host_class(host_name)
         except Exception:
             node_class = 'unlim'
-        kb = keyboards.create_admin_host_manage_keyboard(digest, node_class)
+        try:
+            lte_default_limit = database.get_host_lte_default_limit_bytes(host_name)
+        except Exception:
+            lte_default_limit = 0
+        kb = keyboards.create_admin_host_manage_keyboard(digest, node_class, lte_default_limit)
         if edit_message:
             try:
                 await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -881,6 +892,77 @@ def register_hosts(admin_router: Router) -> None:
             await show_admin_host_detail(message, host_name, edit_message=False)
         else:
             await show_admin_hosts_menu(message, edit_message=False)
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_lte_limit:"))
+    async def admin_hosts_lte_limit(callback: types.CallbackQuery, state: FSMContext):
+        """Запрос базового LTE-лимита хоста: его наследуют тарифы с собственным лимитом 0."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        digest = callback.data.split("admin_hosts_lte_limit:", 1)[-1]
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminHosts.waiting_lte_default_limit)
+        await state.update_data(host_digest=digest, host_name=host_name)
+        await callback.message.edit_text(
+            "💰 <b>LTE-лимит хоста</b>\n\n"
+            "Введите базовый LTE-пул в ГБ. Его наследуют тарифы хоста, у которых собственный "
+            "LTE-лимит не задан. <code>0</code> — не задан:",
+            reply_markup=keyboards.create_admin_hosts_cancel_keyboard(f"admin_hosts_open:{digest}"),
+            parse_mode="HTML",
+        )
+
+
+    @admin_router.message(AdminHosts.waiting_lte_default_limit)
+    async def admin_hosts_lte_limit_input(message: types.Message, state: FSMContext):
+        if not is_admin(message.from_user.id):
+            return
+        text = (message.text or "").replace(",", ".").strip()
+        try:
+            gb = float(text)
+            if gb < 0:
+                raise ValueError
+        except Exception:
+            await message.answer("❌ Введите неотрицательное число ГБ, например: 100")
+            return
+        data = await state.get_data()
+        host_name = data.get('host_name')
+        ok = False
+        try:
+            ok = bool(database.set_host_lte_default_limit_bytes(host_name, int(gb * 1024 * 1024 * 1024)))
+        except Exception:
+            ok = False
+        await state.clear()
+        await message.answer("✅ LTE-лимит хоста сохранён." if ok else "❌ Не удалось сохранить LTE-лимит хоста.")
+        if host_name:
+            await show_admin_host_detail(message, host_name, edit_message=False)
+        else:
+            await show_admin_hosts_menu(message, edit_message=False)
+
+
+    @admin_router.callback_query(F.data.startswith("admin_hosts_lte_packages:"))
+    async def admin_hosts_lte_packages(callback: types.CallbackQuery, state: FSMContext):
+        """Экран LTE-пакетов хоста: дальше те же хендлеры пакетов, что и у тарифов (область — хост)."""
+        if not is_admin(callback.from_user.id):
+            await callback.answer("У вас нет прав.", show_alert=True)
+            return
+        digest = callback.data.split("admin_hosts_lte_packages:", 1)[-1]
+        host_name = _resolve_host_from_digest(digest)
+        if not host_name:
+            await callback.answer("Хост не найден.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(AdminPlans.packages_menu)
+        await state.update_data(
+            host_digest=digest, host_name=host_name,
+            current_pkg_host=host_name, current_plan_id=None, current_pkg_pool='lte',
+        )
+        text, kb = _host_lte_packages_view(host_name, digest)
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode='HTML')
 
 
     @admin_router.callback_query(F.data.startswith("admin_hosts_set_ssh:"))

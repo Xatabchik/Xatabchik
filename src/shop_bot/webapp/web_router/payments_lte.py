@@ -26,8 +26,9 @@ from shop_bot.data_manager.remnawave_repository import (
     deduct_from_referral_balance,
 )
 from shop_bot.data_manager.database import (
-    get_traffic_packages_for_plan,
+    get_lte_packages_for_plan,
     get_traffic_package_by_id,
+    lte_package_applies_to_plan,
 )
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -42,8 +43,12 @@ from shop_bot.bot.handlers import create_cryptobot_api_invoice, process_successf
 from yookassa import Configuration as YookassaConfiguration, Payment as YookassaPayment
 
 
-def _lte_topup_metadata(user_id: int, key_id: int, package: dict, payment_method: str, payment_id: str, host_name: str | None) -> dict:
-    """Метаданные те же, что бот кладёт в pending для process_successful_payment."""
+def _lte_topup_metadata(user_id: int, key_id: int, package: dict, payment_method: str, payment_id: str, host_name: str | None, plan_id: int | None = None) -> dict:
+    """Метаданные те же, что бот кладёт в pending для process_successful_payment.
+
+    `plan_id` — тариф ключа, а не пакета: у пакета хоста собственный `plan_id` равен 0,
+    и в метаданных платежа он потерял бы привязку к тарифу.
+    """
     return {
         "user_id": int(user_id),
         "price": float(package.get("price") or 0),
@@ -54,7 +59,7 @@ def _lte_topup_metadata(user_id: int, key_id: int, package: dict, payment_method
         "payment_method": payment_method,
         "payment_id": payment_id,
         "host_name": host_name,
-        "plan_id": int(package.get("plan_id") or 0),
+        "plan_id": int(plan_id if plan_id is not None else (package.get("plan_id") or 0)),
     }
 
 
@@ -69,7 +74,7 @@ async def api_lte_packages(request: Request, key_id: int, token: str | None = No
     if not key or not plan:
         return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}
 
-    packages = get_traffic_packages_for_plan(int(plan["plan_id"]), only_active=True, pool="lte")
+    packages = get_lte_packages_for_plan(plan, only_active=True)
     if not packages:
         return {"ok": False, "error": "Пакеты докупки LTE для этого тарифа пока не настроены. Обратитесь к администратору."}
 
@@ -115,11 +120,15 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             return {"ok": False, "error": "Для тарифа этого ключа не настроена докупка LTE."}
 
         package = get_traffic_package_by_id(int(req.package_id))
+        # Принадлежность тарифу/хосту ключа плюс текущая видимость: у тарифа со своим
+        # списком пакеты хоста купить нельзя, даже зная их package_id.
+        visible_ids = {int(p["package_id"]) for p in get_lte_packages_for_plan(plan, only_active=True)}
         if (
             not package
-            or int(package.get("plan_id") or 0) != int(plan["plan_id"])
+            or not lte_package_applies_to_plan(package, plan)
             or str(package.get("pool") or "main").strip().lower() != "lte"
             or int(package.get("is_active") if package.get("is_active") is not None else 1) != 1
+            or int(package["package_id"]) not in visible_ids
         ):
             return {"ok": False, "error": "Пакет не найден"}
 
@@ -143,7 +152,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not deduct_from_balance(user_id, price):
                 return {"ok": False, "error": "Недостаточно средств"}
             pid = f"balance:{user_id}:{uuid.uuid4()}"
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Balance", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Balance", pid, host_name, int(plan["plan_id"]))
             token = get_setting("telegram_bot_token")
             if not token:
                 _rollback_internal_payment(
@@ -168,7 +177,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not deduct_from_referral_balance(user_id, price):
                 return {"ok": False, "error": "Недостаточно средств на реферальном балансе"}
             pid = f"referral_balance:{user_id}:{uuid.uuid4()}"
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "ReferralBalance", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "ReferralBalance", pid, host_name, int(plan["plan_id"]))
             token = get_setting("telegram_bot_token")
             if not token:
                 _rollback_internal_payment(
@@ -196,7 +205,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             YookassaConfiguration.account_id = shop_id
             YookassaConfiguration.secret_key = secret
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooKassa", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooKassa", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -238,7 +247,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not mid or not key_secret:
                 return {"ok": False, "error": "Platega не настроена"}
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Platega", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Platega", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -264,7 +273,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not _rollypay_is_enabled():
                 return {"ok": False, "error": "RollyPay не настроена"}
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "RollyPay", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "RollyPay", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -295,7 +304,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not get_setting("cryptobot_token"):
                 return {"ok": False, "error": "CryptoBot не настроен"}
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "CryptoBot", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "CryptoBot", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -317,7 +326,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not ((get_setting("heleket_merchant_id") or "") and (get_setting("heleket_api_key") or "")):
                 return {"ok": False, "error": "Heleket не настроен"}
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Heleket", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Heleket", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -348,7 +357,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if not wallet or not secret:
                 return {"ok": False, "error": "YooMoney не настроен"}
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooMoney", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "YooMoney", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err
@@ -375,7 +384,7 @@ async def api_create_lte_topup_payment(req: CreateLteTopUpPaymentRequest, reques
             if stars_amount <= 0:
                 stars_amount = 1
             pid = str(uuid.uuid4())
-            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Telegram Stars", pid, host_name)
+            meta = _lte_topup_metadata(user_id, int(key["key_id"]), package, "Telegram Stars", pid, host_name, int(plan["plan_id"]))
             pending_err = _create_payload_pending_or_error(pid, user_id, price, meta)
             if pending_err:
                 return pending_err

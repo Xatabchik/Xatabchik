@@ -23,6 +23,7 @@ from shop_bot.data_manager.database import (
     should_account_lte_traffic,
     get_key_lte_state,
     resolve_lte_limit_bytes,
+    resolve_plan_lte_limit_bytes,
     squad_display_label,
 )
 
@@ -207,9 +208,9 @@ def _lte_card_state(key: dict) -> dict:
     """Условия и цифры LTE-пула — те же, что в карточке ключа бота.
 
     Показываем блок и кнопку докупки только если:
-      1) у тарифа ключа задан lte_limit_bytes > 0;
+      1) эффективный LTE-лимит тарифа ключа > 0 (свой или унаследованный от хоста);
       2) на хосте ключа есть активный сквад класса lte.
-    Лимит = plans.lte_limit_bytes + докупленный буст (resolve_lte_limit_bytes).
+    Лимит = эффективный лимит тарифа + докупленный буст (resolve_lte_limit_bytes).
     """
     empty = {
         "show_lte": False,
@@ -225,7 +226,7 @@ def _lte_card_state(key: dict) -> dict:
         if not plan_id:
             return empty
         plan = get_plan_by_id(plan_id)
-        plan_lte_limit = int((plan or {}).get("lte_limit_bytes") or 0)
+        plan_lte_limit = resolve_plan_lte_limit_bytes(plan)
         host_name = key.get("host_name")
         if not should_account_lte_traffic(plan, host_name):
             return empty

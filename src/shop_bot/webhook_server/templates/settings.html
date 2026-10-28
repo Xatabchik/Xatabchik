@@ -851,6 +851,86 @@
 								{% endif %}
 							</form>
 
+							{# --- LTE хоста: дефолтный лимит и общий список пакетов докупки; тарифы хоста наследуют их --- #}
+							<details class="rw-drawer nested-drawer" style="margin: 8px 0;">
+							  <summary class="rw-drawer-summary">
+								<span><i class="ti ti-bolt me-1"></i> {{ host.lte_label or 'LTE' }} хоста 💰</span>
+								<span class="rw-drawer-caret" aria-hidden="true"></span>
+							  </summary>
+							  <div class="rw-drawer-body">
+								{% set host_lte_default_gb = (host.lte_default_limit_bytes / 1073741824) if host.lte_default_limit_bytes else 0 %}
+								{% if host.lte_squad_missing %}
+								<div class="alert alert-warning p-2 small">
+									<i class="ti ti-alert-triangle me-1"></i>
+									У хоста нет активного сквада класса LTE — докупка и учёт {{ host.lte_label or 'LTE' }} не заработают, пока вы его не добавите. Настройки ниже можно сохранить заранее.
+								</div>
+								{% endif %}
+								<p class="text-secondary small">Тарифы хоста без собственных настроек наследуют лимит и пакеты отсюда. Тариф может переопределить их в своей карточке.</p>
+								<form action="{{ url_for('update_host_lte_default_route') }}" method="post" class="form-inline mb-2">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+									<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+									<label class="me-2">{{ host.lte_label or 'LTE' }} пул по умолчанию, ГБ</label>
+									<input type="number" step="0.01" min="0" class="form-control pill" name="lte_default_limit_gb" value="{{ host_lte_default_gb|round(2) if host_lte_default_gb > 0 else '' }}" placeholder="0 = не задан" style="width:140px;" />
+									<button type="submit" class="btn btn-primary btn-sm pill"><i class="ti ti-device-floppy"></i> Сохранить</button>
+								</form>
+
+								<div class="traffic-packages-section">
+									<h5><i class="ti ti-package"></i> Пакеты докупки {{ host.lte_label or 'LTE' }} — общие для тарифов хоста:</h5>
+									{% if host.lte_host_packages %}
+									<ul class="pkg-list">
+										{% for pkg in host.lte_host_packages %}
+										<li class="pkg-row {{ 'is-inactive' if not pkg.is_active else '' }}">
+											<span class="pkg-label">{{ '✅' if pkg.is_active else '🚫' }} 💰 {{ pkg.size_gb }} ГБ — {{ pkg.price|round(0) }} RUB</span>
+											<form action="{{ url_for('toggle_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+												<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+												<button type="submit" class="btn btn-outline-secondary btn-sm pill" title="Вкл/выкл">{{ 'Выключить' if pkg.is_active else 'Включить' }}</button>
+											</form>
+											<button type="button" class="btn btn-outline-secondary btn-sm pill plan-edit-toggle" data-target="#edit-host-lte-pkg-{{ pkg.package_id }}">Редактировать</button>
+											<form action="{{ url_for('delete_traffic_package_route', package_id=pkg.package_id) }}" method="post" style="display:inline-block;" data-confirm="Удалить пакет хоста {{ pkg.size_gb }} ГБ?">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+												<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+												<button type="submit" class="btn btn-danger btn-sm" title="Удалить">×</button>
+											</form>
+										</li>
+										<li id="edit-host-lte-pkg-{{ pkg.package_id }}" class="plan-edit collapse">
+											<form action="{{ url_for('update_traffic_package_route', package_id=pkg.package_id) }}" method="post" class="form-inline">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+												<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+												<input type="number" step="0.01" min="0.01" class="form-control pill" name="size_gb" value="{{ pkg.size_gb }}" placeholder="ГБ" required style="width:90px;" />
+												<input type="number" step="0.01" min="0.01" class="form-control pill" name="price" value="{{ pkg.price }}" placeholder="Цена" required style="width:110px;" />
+												<button type="submit" class="btn btn-primary btn-sm pill">Сохранить</button>
+											</form>
+										</li>
+										{% endfor %}
+									</ul>
+									{% else %}
+									<p class="plans-empty-hint">Пакеты хоста не добавлены.</p>
+									{% endif %}
+									<form action="{{ url_for('add_traffic_package_route') }}" method="post" class="form-inline">
+										<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+										<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+										<input type="hidden" name="pool" value="lte" />
+										<input type="number" step="0.01" min="0.01" class="form-control pill" name="size_gb" placeholder="ГБ" required style="width:90px;" />
+										<input type="number" step="0.01" min="0.01" class="form-control pill" name="price" placeholder="Цена" required style="width:110px;" />
+										<button type="submit" class="btn btn-warning btn-sm pill">+ пакет хоста {{ host.lte_label or 'LTE' }} ГБ</button>
+									</form>
+									{% if host.plans %}
+									<form action="{{ url_for('copy_plan_lte_packages_to_host_route') }}" method="post" class="form-inline mt-2" data-confirm="Скопировать LTE-пакеты тарифа в пакеты хоста? Дубликаты по размеру и цене будут пропущены, пакеты тарифа останутся.">
+										<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+										<input type="hidden" name="host_name" value="{{ host.host_name }}" />
+										<select class="form-select pill" name="source_plan_id" style="width:auto;">
+											{% for p in host.plans %}
+											<option value="{{ p.plan_id }}">{{ p.plan_name }}</option>
+											{% endfor %}
+										</select>
+										<button type="submit" class="btn btn-outline-secondary btn-sm pill">Взять пакеты из тарифа…</button>
+									</form>
+									{% endif %}
+								</div>
+							  </div>
+							</details>
+
 							<details class="rw-drawer nested-drawer" style="margin: 8px 0;">
 							  <summary class="rw-drawer-summary">
 								<span><i class="ti ti-tags me-1"></i> Тарифы</span>
@@ -863,6 +943,7 @@
 									{% for plan in host.plans %}
 									{% set traffic_gb = (plan.traffic_limit_bytes / 1073741824) if plan.traffic_limit_bytes else 0 %}
 									{% set lte_gb = (plan.lte_limit_bytes / 1073741824) if plan.lte_limit_bytes else 0 %}
+									{% set eff_lte_gb = (plan.effective_lte_limit_bytes / 1073741824) if plan.effective_lte_limit_bytes else lte_gb %}
 									<li class="plan-card {{ 'is-inactive' if plan.is_active is defined and not plan.is_active else '' }}">
 										<div class="plan-card-top">
 											<div class="plan-card-title">
@@ -898,8 +979,8 @@
 											{% if plan.hwid_device_limit %}
 											<span class="plan-badge badge-devices"><i class="ti ti-devices"></i> {{ plan.hwid_device_limit }} устр.</span>
 											{% endif %}
-											{% if lte_gb > 0 %}
-											<span class="plan-badge badge-lte">💰 {{ host.lte_label or 'LTE' }} {{ lte_gb|round(1) }} ГБ</span>
+											{% if eff_lte_gb > 0 %}
+											<span class="plan-badge badge-lte">💰 {{ host.lte_label or 'LTE' }} {{ eff_lte_gb|round(1) }} ГБ{{ '' if lte_gb > 0 else ' (хост)' }}</span>
 											{% endif %}
 											{% if plan.main_reset_price_rub and plan.main_reset_price_rub > 0 %}
 											<span class="plan-badge badge-reset"><i class="ti ti-refresh"></i> Сброс: {{ plan.main_reset_price_rub|round(0) }} RUB</span>
@@ -940,7 +1021,7 @@
 														</div>
 														<div>
 															<label>{{ host.lte_label or 'LTE' }} пул, ГБ 💰</label>
-															<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" value="{{ lte_gb|round(2) if lte_gb > 0 else '' }}" placeholder="0 = нет {{ host.lte_label or 'LTE' }}" />
+															<input type="number" step="0.01" class="form-control pill" name="lte_limit_gb" value="{{ lte_gb|round(2) if lte_gb > 0 else '' }}" placeholder="{{ ('наследуется от хоста: ' ~ (host.lte_default_limit_bytes / 1073741824)|round(2) ~ ' ГБ') if host.lte_default_limit_bytes else ('0 = нет ' ~ (host.lte_label or 'LTE')) }}" />
 														</div>
 														<div>
 															<label>Цена сброса, RUB</label>
@@ -998,7 +1079,12 @@
 
 												<div class="traffic-packages-section">
 													<h5><i class="ti ti-package"></i> Пакеты докупки ГБ — пул {{ host.lte_label or 'LTE' }} (💰 premium-ноды):</h5>
-													{% if lte_gb > 0 %}
+													{% if eff_lte_gb > 0 %}
+													{% if plan.lte_packages_source == 'host' %}
+													<p class="plans-empty-hint">Используются пакеты хоста ({{ plan.effective_lte_packages|length }} шт.). Добавьте свой пакет ниже, чтобы переопределить их для этого тарифа.</p>
+													{% elif plan.lte_packages_source == 'plan' %}
+													<p class="plans-empty-hint">Пакеты тарифа (переопределяют хост).</p>
+													{% endif %}
 													{% if plan.lte_traffic_packages %}
 													<ul class="pkg-list">
 														{% for pkg in plan.lte_traffic_packages %}
@@ -1025,18 +1111,21 @@
 														{% endfor %}
 													</ul>
 													{% else %}
+													{% if plan.lte_packages_source != 'host' %}
 													<p class="plans-empty-hint">Пакеты {{ host.lte_label or 'LTE' }} не добавлены — кнопка «💰 Докупить {{ host.lte_label or 'LTE' }}» в боте ответит, что пакеты не настроены.</p>
+													{% endif %}
 													{% endif %}
 													<form action="{{ url_for('add_traffic_package_route') }}" method="post" class="form-inline">
 														<input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
 														<input type="hidden" name="plan_id" value="{{ plan.plan_id }}" />
 														<input type="hidden" name="pool" value="lte" />
+														{% if plan.lte_packages_source == 'host' %}<span class="text-secondary small me-2">Первый собственный пакет полностью заменит список хоста для этого тарифа.</span>{% endif %}
 														<input type="number" step="0.01" class="form-control pill" name="size_gb" placeholder="ГБ" required style="width:90px;" />
 														<input type="number" step="0.01" class="form-control pill" name="price" placeholder="Цена" required style="width:110px;" />
 														<button type="submit" class="btn btn-warning btn-sm pill">+ пакет {{ host.lte_label or 'LTE' }} ГБ</button>
 													</form>
 													{% else %}
-													<p class="plans-empty-hint">Сначала задайте «{{ host.lte_label or 'LTE' }} пул, ГБ 💰» выше — без лимита тарифа докупка {{ host.lte_label or 'LTE' }} недоступна.</p>
+													<p class="plans-empty-hint">Сначала задайте «{{ host.lte_label or 'LTE' }} пул, ГБ 💰» выше (или LTE пул хоста) — без лимита докупка {{ host.lte_label or 'LTE' }} недоступна.</p>
 													{% endif %}
 												</div>
 											</div>

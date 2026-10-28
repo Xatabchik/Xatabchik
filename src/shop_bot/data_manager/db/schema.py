@@ -706,6 +706,9 @@ def _ensure_hosts_columns(cursor: sqlite3.Cursor) -> None:
         "squad_uuid": "TEXT",
         "description": "TEXT",
         "default_traffic_limit_bytes": "INTEGER",
+        # Базовый LTE-лимит хоста: наследуется тарифами с plans.lte_limit_bytes = 0.
+        # 0/NULL — «не задан», поведение тарифов не меняется.
+        "lte_default_limit_bytes": "INTEGER DEFAULT 0",
         "default_traffic_strategy": "TEXT DEFAULT 'NO_RESET'",
         "is_active": "INTEGER DEFAULT 1",
         "sort_order": "INTEGER DEFAULT 0",
@@ -766,6 +769,11 @@ def _ensure_traffic_packages_table(cursor: sqlite3.Cursor) -> None:
     _ensure_table_column(cursor, "vpn_keys", "next_traffic_reset_at", "TIMESTAMP")
     _ensure_table_column(cursor, "vpn_keys", "comment_key", "TEXT")
     _ensure_table_column(cursor, "traffic_packages", "pool", "TEXT DEFAULT 'main'")
+    # Пакеты уровня хоста: host_name = <хост>, plan_id = 0 (см. docstring create_traffic_package).
+    _ensure_table_column(cursor, "traffic_packages", "host_name", "TEXT")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_traffic_packages_host_pool ON traffic_packages(host_name, pool)"
+    )
     # Идемпотентность enable/disable воркера двух пулов трафика:
     # 'enabled' | 'disabled_main' | 'disabled_premium' (legacy, host-level disable)
     # | 'disabled_premium_squad' (точечное отключение только LTE-сквада через host_squads)

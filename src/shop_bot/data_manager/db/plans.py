@@ -22,6 +22,7 @@ __all__ = (
     "get_all_plans",
     "update_plan_metadata",
     "create_traffic_package",
+    "create_host_traffic_package",
     "get_traffic_packages_for_plan",
     "get_traffic_package_by_id",
     "update_traffic_package",
@@ -220,13 +221,13 @@ def update_plan_metadata(plan_id: int, metadata: dict | None) -> bool:
 def create_traffic_package(plan_id: int, size_gb: float, price: float, pool: str = 'main') -> int | None:
     """Пакет докупки ГБ для тарифа. `pool`: 'main' (основной трафик) или 'lte' (premium-ноды).
 
-    TODO (известное ограничение, причина F диагностики): пакеты привязаны к `plan_id`, а
-    LTE-пул расходуется на пользователя (`subscription_lte`). Поэтому при нескольких
-    активных тарифах на одном хосте пакеты одного тарифа недоступны владельцам ключей
-    другого — пакеты нужно заводить для каждого тарифа. Перевод привязки на
-    host_name/squad_uuid потребует миграции существующих строк с неоднозначным выбором
-    целевого хоста (у тарифа он один, но пакеты могли создаваться до его смены), поэтому
-    сознательно вынесен за рамки этого фикса.
+    Модель привязки пакетов (LTE):
+    - пакет тарифа — строка с `plan_id` тарифа и `host_name IS NULL`; такой пакет работает
+      как override и полностью заменяет список хоста для этого тарифа;
+    - пакет хоста — строка с `host_name = <хост>`, `pool = 'lte'` и `plan_id = 0`
+      (см. `create_host_traffic_package`); его видят все тарифы хоста без своих LTE-пакетов.
+    Разрешение «override → хост → ничего» живёт в `get_lte_packages_for_plan` (db/lte.py).
+    Пул 'main' по-прежнему привязан только к тарифам.
     """
     pool = 'lte' if str(pool).strip().lower() == 'lte' else 'main'
     try:
@@ -248,9 +249,59 @@ def create_traffic_package(plan_id: int, size_gb: float, price: float, pool: str
         return None
 
 
+def create_host_traffic_package(host_name: str, size_gb: float, price: float, pool: str = 'lte') -> int | None:
+    """Пакет докупки уровня хоста (сейчас только пул 'lte'); возвращает `package_id`.
+
+    Хранится в той же таблице `traffic_packages`, что и пакеты тарифов, с sentinel
+    `plan_id = 0` и `host_name = <хост>`. Отдельная таблица `host_traffic_packages` не
+    нужна по двум причинам:
+    - `package_id` уезжает в metadata платежа и читается через `get_traffic_package_by_id`;
+      общая таблица гарантирует, что id пакета хоста не пересечётся с id пакета тарифа
+      и ни платёжный, ни fulfillment-код не придётся учить двум источникам;
+    - FK `traffic_packages.plan_id -> plans` формально нарушается значением 0, но на
+      рантайме не действует: `PRAGMA foreign_keys` в SQLite включается на каждое
+      соединение отдельно, проект его нигде не включает перед записью (в `run_migration`
+      он выставляется в конце на соединении, которое закрывается без записей).
+    Модель оставлена общей (`pool` в строке), чтобы позже распространить на 'main', но
+    логика и UI сейчас допускают только 'lte'.
+    """
+    if str(pool).strip().lower() != 'lte':
+        logging.warning("create_host_traffic_package: пул '%s' для хоста пока не поддерживается", pool)
+        return None
+    host_name_n = normalize_host_name(host_name)
+    if not host_name_n:
+        return None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) FROM traffic_packages "
+                "WHERE plan_id = 0 AND TRIM(host_name) = TRIM(?) COLLATE NOCASE AND COALESCE(pool, 'main') = 'lte'",
+                (host_name_n,),
+            )
+            next_sort = (cursor.fetchone()[0] or 0) + 1
+            cursor.execute(
+                "INSERT INTO traffic_packages (plan_id, host_name, size_gb, price, sort_order, pool) "
+                "VALUES (0, ?, ?, ?, ?, 'lte')",
+                (host_name_n, float(size_gb), float(price), next_sort),
+            )
+            conn.commit()
+            return cursor.lastrowid
+    except sqlite3.Error as e:
+        logging.error(f"Failed to create host traffic package for host '{host_name_n}': {e}")
+        return None
+
+
 def get_traffic_packages_for_plan(plan_id: int, only_active: bool = False, pool: str = 'main') -> list[dict]:
+    """Собственные пакеты тарифа (без наследования от хоста).
+
+    `plan_id <= 0` — это sentinel пакетов хоста, а не тариф: возвращаем пусто, иначе запрос
+    по `plan_id = 0` подмешал бы host-пакеты всех хостов.
+    """
     pool = 'lte' if str(pool).strip().lower() == 'lte' else 'main'
     try:
+        if int(plan_id) <= 0:
+            return []
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -260,7 +311,7 @@ def get_traffic_packages_for_plan(plan_id: int, only_active: bool = False, pool:
             query += " ORDER BY sort_order, size_gb"
             cursor.execute(query, (int(plan_id), pool))
             return [dict(row) for row in cursor.fetchall()]
-    except sqlite3.Error as e:
+    except (sqlite3.Error, TypeError, ValueError) as e:
         logging.error(f"Failed to get traffic packages for plan {plan_id}: {e}")
         return []
 
@@ -317,7 +368,9 @@ def delete_plan(plan_id: int) -> None:
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM traffic_packages WHERE plan_id = ?", (plan_id,))
+            # plan_id = 0 — sentinel пакетов хоста; удаление «тарифа 0» не должно их задеть.
+            if int(plan_id) > 0:
+                cursor.execute("DELETE FROM traffic_packages WHERE plan_id = ?", (plan_id,))
             cursor.execute("DELETE FROM plans WHERE plan_id = ?", (plan_id,))
             conn.commit()
             logging.info(f"Deleted plan with id {plan_id}.")

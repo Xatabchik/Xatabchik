@@ -10,7 +10,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from shop_bot.data_manager.remnawave_repository import get_setting
-from shop_bot.data_manager.database import get_button_configs
+from shop_bot.data_manager.database import get_button_configs, resolve_plan_lte_limit_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +418,7 @@ def create_admin_hosts_menu_keyboard(hosts: list[dict]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def create_admin_host_manage_keyboard(host_digest: str, node_class: str = 'unlim') -> InlineKeyboardMarkup:
+def create_admin_host_manage_keyboard(host_digest: str, node_class: str = 'unlim', lte_default_limit_bytes: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Переименовать", callback_data=f"admin_hosts_rename:{host_digest}")
     builder.button(text="🌐 URL панели", callback_data=f"admin_hosts_set_url:{host_digest}")
@@ -428,6 +428,9 @@ def create_admin_host_manage_keyboard(host_digest: str, node_class: str = 'unlim
     builder.button(text="🔐 Remnawave (Token)", callback_data=f"admin_hosts_set_rmw_token:{host_digest}")
     builder.button(text="🧩 Squad UUID", callback_data=f"admin_hosts_set_squad:{host_digest}")
     builder.button(text="🧬 Сквады (base/lte)", callback_data=f"admin_hosts_squads:{host_digest}")
+    lte_limit_txt = f"{int(lte_default_limit_bytes) // (1024 ** 3)} ГБ" if int(lte_default_limit_bytes or 0) > 0 else "не задан"
+    builder.button(text=f"💰 LTE-лимит хоста: {lte_limit_txt}", callback_data=f"admin_hosts_lte_limit:{host_digest}")
+    builder.button(text="💰 LTE-пакеты хоста", callback_data=f"admin_hosts_lte_packages:{host_digest}")
 
     builder.button(text="🔌 SSH (speedtest)", callback_data=f"admin_hosts_set_ssh:{host_digest}")
     builder.button(text="🧾 Тарифы", callback_data=f"admin_hosts_to_plans:{host_digest}")
@@ -438,7 +441,7 @@ def create_admin_host_manage_keyboard(host_digest: str, node_class: str = 'unlim
     builder.button(text="🗑 Удалить хост", callback_data=f"admin_hosts_delete:{host_digest}")
     builder.button(text="⬅️ К списку хостов", callback_data="admin_hosts_menu")
 
-    builder.adjust(2, 2, 1, 1, 1, 1, 1)
+    builder.adjust(2, 2, 1, 1, 1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -659,10 +662,17 @@ def create_admin_plan_manage_keyboard(plan: dict) -> InlineKeyboardMarkup:
 
     lte_limit = 0
     try:
-        lte_limit = int(plan.get("lte_limit_bytes") or 0)
+        lte_limit = resolve_plan_lte_limit_bytes(plan)
+        own_lte_limit = int(plan.get("lte_limit_bytes") or 0)
     except Exception:
         lte_limit = 0
-    lte_label = f"💰 LTE-лимит: {lte_limit // (1024**3)} ГБ" if lte_limit > 0 else "💰 LTE-лимит: не задан"
+        own_lte_limit = 0
+    if lte_limit > 0:
+        # Унаследованный от хоста лимит помечается, чтобы админ не искал его в форме тарифа.
+        suffix = "" if own_lte_limit > 0 else " (хост)"
+        lte_label = f"💰 LTE-лимит: {lte_limit // (1024**3)} ГБ{suffix}"
+    else:
+        lte_label = "💰 LTE-лимит: не задан"
     builder.button(text=lte_label, callback_data="admin_plan_edit_lte_limit")
     builder.button(text="💰 LTE-пакеты (докупка)", callback_data=f"admin_lte_packages_{plan_id}")
 
@@ -674,7 +684,8 @@ def create_admin_plan_manage_keyboard(plan: dict) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def create_admin_traffic_packages_keyboard(plan_id: int, packages: list[dict], pool: str = 'main') -> InlineKeyboardMarkup:
+def create_admin_traffic_packages_keyboard(plan_id: int | None, packages: list[dict], pool: str = 'main', *, host_digest: str | None = None) -> InlineKeyboardMarkup:
+    """Список пакетов докупки. Область — тариф (`plan_id`) либо хост (`host_digest`, пакеты LTE хоста)."""
     builder = InlineKeyboardBuilder()
     for pkg in packages:
         pkg_id = pkg.get("package_id")
@@ -694,20 +705,25 @@ def create_admin_traffic_packages_keyboard(plan_id: int, packages: list[dict], p
             callback_data=f"admin_pkg_open_{pkg_id}"
         )
     builder.adjust(1)
-    builder.button(text="➕ Добавить пакет", callback_data=f"admin_pkg_add_{plan_id}_{pool}")
-    builder.button(text="⬅️ Назад к тарифу", callback_data=f"admin_plans_open_{plan_id}")
+    if host_digest:
+        builder.button(text="➕ Добавить пакет хоста", callback_data="admin_pkg_add_host_lte")
+        builder.button(text="⬅️ Назад к хосту", callback_data=f"admin_hosts_open:{host_digest}")
+    else:
+        builder.button(text="➕ Добавить пакет", callback_data=f"admin_pkg_add_{plan_id}_{pool}")
+        builder.button(text="⬅️ Назад к тарифу", callback_data=f"admin_plans_open_{plan_id}")
     builder.adjust(*( [1] * len(packages) + [1, 1] ))
     return builder.as_markup()
 
 
-def create_admin_traffic_package_manage_keyboard(package_id: int, plan_id: int, is_active: bool) -> InlineKeyboardMarkup:
+def create_admin_traffic_package_manage_keyboard(package_id: int, plan_id: int | None, is_active: bool, *, host_scope: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     toggle_text = "🚫 Скрыть" if is_active else "✅ Активировать"
     builder.button(text="📶 Изменить размер (ГБ)", callback_data=f"admin_pkg_edit_size_{package_id}")
     builder.button(text="💰 Изменить цену", callback_data=f"admin_pkg_edit_price_{package_id}")
     builder.button(text=toggle_text, callback_data=f"admin_pkg_toggle_{package_id}")
     builder.button(text="🗑 Удалить", callback_data=f"admin_pkg_delete_{package_id}")
-    builder.button(text="⬅️ Назад", callback_data=f"admin_plan_packages_{plan_id}")
+    # У пакета хоста нет тарифа, поэтому «назад» ведёт на общий экран пакетов хоста.
+    builder.button(text="⬅️ Назад", callback_data="admin_pkg_back_host" if host_scope else f"admin_plan_packages_{plan_id}")
     builder.adjust(2, 2, 1)
     return builder.as_markup()
 

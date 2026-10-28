@@ -504,6 +504,7 @@ _LEGACY_FORWARDERS = (
     "get_squad_by_class",
     "set_host_squad_overlap",
     "get_host_squad_overlap",
+    "resolve_plan_lte_limit_bytes",
     "adjust_user_balance",
     "adjust_user_referral_balance",
     "ban_user",

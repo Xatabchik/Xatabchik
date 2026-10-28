@@ -388,7 +388,7 @@ def list_hosts_by_class(node_class: str) -> list[dict]:
 
 
 def update_host_name(old_name: str, new_name: str) -> bool:
-    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys, host_squads)."""
+    """Переименовать хост во всех связанных таблицах (xui_hosts, plans, vpn_keys, host_squads, traffic_packages)."""
     try:
         old_name_n = normalize_host_name(old_name)
         new_name_n = normalize_host_name(new_name)
@@ -425,6 +425,13 @@ def update_host_name(old_name: str, new_name: str) -> bool:
                 "UPDATE host_squads SET host_name = TRIM(?) WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
                 (new_name_n, old_name_n)
             )
+            # LTE-пакеты хоста (plan_id = 0) привязаны к имени хоста: без переименования
+            # они осиротеют, и тарифы хоста молча потеряют докупку.
+            cursor.execute(
+                "UPDATE traffic_packages SET host_name = TRIM(?) "
+                "WHERE host_name IS NOT NULL AND TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (new_name_n, old_name_n)
+            )
             conn.commit()
             return True
     except sqlite3.Error as e:
@@ -442,6 +449,13 @@ def delete_host(host_name: str):
             # хостом, созданным позже с тем же именем.
             cursor.execute(
                 "DELETE FROM host_squads WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE",
+                (host_name,),
+            )
+            # Пакеты хоста (plan_id = 0) не принадлежат ни одному тарифу и сами не удалятся;
+            # пакеты тарифов остаются как раньше (их чистит delete_plan).
+            cursor.execute(
+                "DELETE FROM traffic_packages WHERE plan_id = 0 AND host_name IS NOT NULL "
+                "AND TRIM(host_name) = TRIM(?) COLLATE NOCASE",
                 (host_name,),
             )
             conn.commit()

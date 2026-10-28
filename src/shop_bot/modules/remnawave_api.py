@@ -2375,8 +2375,8 @@ async def create_or_update_key_on_host(
 
     Двухпуловая схема (host_squads): помимо базового `squad_uuid` хоста (legacy-поле на xui_hosts),
     пользователь также добавляется в активный сквад класса 'lte' этого хоста (если он настроен),
-    когда это уместно — то есть когда `include_lte_squad=True` ЛИБО у переданного `plan_id` задан
-    `lte_limit_bytes > 0`. Если явной информации нет (plan_id не передан и include_lte_squad не задан),
+    когда это уместно — то есть когда `include_lte_squad=True` ЛИБО у переданного `plan_id`
+    эффективный LTE-лимит > 0 (свой `lte_limit_bytes` или дефолт хоста). Если явной информации нет (plan_id не передан и include_lte_squad не задан),
     поведение как раньше — только базовый сквад (без регрессии для старых вызовов).
     """
     try:
@@ -2402,7 +2402,7 @@ async def create_or_update_key_on_host(
             if plan_id is not None:
                 try:
                     plan = rw_repo.get_plan_by_id(int(plan_id))
-                    want_lte = bool(plan) and int(plan.get('lte_limit_bytes') or 0) > 0
+                    want_lte = bool(plan) and int(rw_repo.resolve_plan_lte_limit_bytes(plan) or 0) > 0
                 except Exception:
                     want_lte = False
 
