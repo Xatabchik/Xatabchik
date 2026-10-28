@@ -2360,26 +2360,49 @@ async def _write_key_on_host(
 _LTE_SQUAD_SUPPRESSED_STATES = frozenset({"disabled_premium_squad", "disabled_premium"})
 
 
+def _existing_key_on_host(host_name: str, email: str) -> dict | None:
+    """Локальная запись ключа по email, если она числится на этом же хосте (иначе None)."""
+    key = rw_repo.get_key_by_email(email)
+    if not key:
+        return None
+    key_host = str(key.get("host_name") or "").strip().lower()
+    if not key_host or key_host != str(host_name or "").strip().lower():
+        return None
+    return key
+
+
+def _lte_squad_suppressed(key: dict | None) -> bool:
+    """LTE-сквад снят осознанно: лимит LTE исчерпан (`disabled_premium_squad` / `disabled_premium`)."""
+    return str((key or {}).get("remote_access_state") or "").strip() in _LTE_SQUAD_SUPPRESSED_STATES
+
+
 def _lte_squad_wanted_for_existing_key(host_name: str, email: str) -> bool:
     """Нужен ли LTE-сквад существующему ключу, когда вызов не знает ни `plan_id`, ни `include_lte_squad`.
 
     Тариф берётся только из description ключа (`allow_host_fallback=False`): так же, как в
     планировщике, который учитывает LTE лишь у ключей с `plan_id`. Ключ без тарифа не получает
-    сквад, который никто не будет учитывать. Один запрос ключа и один запрос тарифа за вызов.
+    сквад, который никто не будет учитывать. Ключ в `disabled_premium_squad` /
+    `disabled_premium` сквад не получает: продление не должно обходить исчерпанный LTE-лимит
+    (ту же проверку `create_or_update_key_on_host` применяет и к явному `plan_id`). Один запрос
+    ключа и один запрос тарифа за вызов.
     """
     try:
-        key = rw_repo.get_key_by_email(email)
-        if not key:
-            return False
-        key_host = str(key.get("host_name") or "").strip().lower()
-        if not key_host or key_host != str(host_name or "").strip().lower():
-            return False
-        if str(key.get("remote_access_state") or "").strip() in _LTE_SQUAD_SUPPRESSED_STATES:
+        key = _existing_key_on_host(host_name, email)
+        if not key or _lte_squad_suppressed(key):
             return False
         plan = rw_repo.resolve_plan_for_key(key, allow_host_fallback=False)
         return bool(plan) and int(rw_repo.resolve_plan_lte_limit_bytes(plan) or 0) > 0
     except Exception as exc:
         logger.warning("Remnawave: не удалось определить LTE-сквад по ключу %s/%s: %s", host_name, email, exc)
+        return False
+
+
+def _lte_squad_blocked_by_exhausted_limit(host_name: str, email: str) -> bool:
+    """True, если ключ найден и сейчас в `disabled_premium_squad` / `disabled_premium`."""
+    try:
+        return _lte_squad_suppressed(_existing_key_on_host(host_name, email))
+    except Exception as exc:
+        logger.warning("Remnawave: не удалось прочитать состояние ключа %s/%s: %s", host_name, email, exc)
         return False
 
 
@@ -2410,8 +2433,15 @@ async def create_or_update_key_on_host(
     ключу (`_lte_squad_wanted_for_existing_key`): панель перезаписывает `activeInternalSquads`
     целиком, и без этого любое продление «без тарифа» снимало бы LTE-сквад. Явные аргументы
     приоритетнее вывода по ключу. Новый ключ, ключ вне локальной БД, триал, подарок и бонусный
-    ключ без `plan_id` в description, а также ключ в `disabled_premium_squad`
-    остаются только с базовым сквадом.
+    ключ без `plan_id` в description остаются только с базовым сквадом.
+
+    Ключ в `disabled_premium_squad` / `disabled_premium` (LTE исчерпан) не получает сквад ни при
+    выводе по ключу, ни при явном `plan_id`: продление не обходит лимит даже до следующего прохода
+    планировщика. Порядок в fulfillment это допускает: ни продление, ни смена тарифа, ни покупка
+    не сбрасывают `remote_access_state` и baseline LTE (доступ возвращают планировщик после
+    ежемесячного сброса или нового лимита, докупка LTE и сброс основного пула), поэтому проверка
+    не блокирует легитимный возврат. Явный `include_lte_squad=True` приоритетнее проверки
+    (по коду src/ его не передаёт ни один вызов).
 
     Что становится с вызовами без `plan_id` (все вызовы в src/):
       * существующий ключ с тарифом, LTE-лимит > 0 — LTE-сквад сохраняется (раньше снимался):
@@ -2427,8 +2457,9 @@ async def create_or_update_key_on_host(
       * перенос ключа на другой хост (`key_view.py`, `plan_id` может быть None): ключ в БД
         числится на старом хосте, вывод не применяется — как раньше.
     Вызовы с явным `plan_id` (`fulfillment.py`, `scheduler.py` автопродление, `app.py` смена
-    тарифа, `key_view.py` перенос с тарифом) работают как прежде, в том числе для ключа в
-    `disabled_premium_squad`: планировщик снимет сквад на следующем проходе.
+    тарифа, `key_view.py` перенос с тарифом) работают как прежде, кроме ключа в
+    `disabled_premium_squad` / `disabled_premium`: ему сквад не возвращается, его вернёт
+    планировщик, когда расход станет ниже лимита (в том числе после смены тарифа на больший лимит).
     """
     try:
         squad = rw_repo.get_squad(host_name)
@@ -2455,6 +2486,11 @@ async def create_or_update_key_on_host(
                     plan = rw_repo.get_plan_by_id(int(plan_id))
                     want_lte = bool(plan) and int(rw_repo.resolve_plan_lte_limit_bytes(plan) or 0) > 0
                 except Exception:
+                    want_lte = False
+                # Оплаченное продление не обходит исчерпанный LTE-лимит: ключу в
+                # disabled_premium_squad сквад возвращает только планировщик (или докупка).
+                # Явный include_lte_squad=True эту проверку не проходит; по коду его никто не передаёт.
+                if want_lte and _lte_squad_blocked_by_exhausted_limit(host_name, email):
                     want_lte = False
             else:
                 want_lte = _lte_squad_wanted_for_existing_key(host_name, email)
