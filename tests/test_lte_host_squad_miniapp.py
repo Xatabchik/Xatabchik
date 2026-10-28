@@ -180,6 +180,44 @@ def test_default_back_to_zero_returns_squad_to_key_disabled_for_exhausted_limit(
     assert fake.added_squads[-1] == ("u-1", SQUAD), "лимита больше нет: доступ возвращается"
 
 
+# --- Пробел: ключ без сквада при возврате наследуемого лимита ----------------------------
+
+
+def test_squad_is_readded_when_inherited_limit_returns_after_zero(temp_db):
+    """50 -> 0 -> 50: между ними продление с `want_lte=False` перезаписывает activeInternalSquads
+    и снимает LTE-сквад. Состояние ключа не должно считать сквад уже выданным."""
+    database = temp_db
+    _, (key_id,) = _setup(database, default_gb=50)
+    fake = _fake()
+    _run_worker(database, fake)
+    assert fake.added_squads == [("u-1", SQUAD)]
+    database.add_key_lte_boost_bytes(key_id, 5 * GB)
+
+    database.set_host_lte_default_limit_bytes("Lte", 0)
+    _run_worker(database, fake)
+    database.set_host_lte_default_limit_bytes("Lte", 50 * GB)
+    _run_worker(database, fake)
+
+    assert fake.added_squads == [("u-1", SQUAD), ("u-1", SQUAD)]
+    lte = database.get_key_lte_state(key_id)
+    assert lte["lte_limit_bytes"] == 50 * GB
+    assert lte["lte_boost_bytes"] == 5 * GB, "докупленный буст сброс состояния не трогает"
+
+
+def test_default_back_to_zero_does_not_reset_state_of_key_with_own_limit(temp_db):
+    database = temp_db
+    _, (key_id,) = _setup(database, default_gb=50)
+    own_plan = _make_plan(database, "Lte", "own", lte_gb=10)
+    own = _insert_key(database, user_id=3, host_name="Lte", user_uuid="u-3", plan_id=own_plan)
+    fake = _fake(uuids=("u-1", "u-3"))
+    _run_worker(database, fake)
+    assert database.get_key_lte_state(own)["lte_limit_bytes"] == 10 * GB
+
+    database.set_host_lte_default_limit_bytes("Lte", 0)
+    assert database.get_key_lte_state(own)["lte_limit_bytes"] == 10 * GB
+    assert database.get_key_lte_state(key_id)["lte_limit_bytes"] == 0
+
+
 # --- Mini App: /api/lte-packages и /api/create-lte-topup-payment -------------------------
 
 

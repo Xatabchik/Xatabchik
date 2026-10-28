@@ -94,7 +94,8 @@ def set_host_lte_default_limit_bytes(host_name: str | None, limit_bytes: int | N
     значения не зависят; остальные подхватывают его на следующем проходе воркера.
     При переходе с «не задан» на >0 идемпотентно проставляет `next_traffic_reset_at`
     ключам этого хоста (см. `backfill_monthly_traffic_reset_for_host`); обратный переход
-    уже стоящие даты не трогает.
+    уже стоящие даты не трогает, а у ключей с унаследованным лимитом сбрасывает
+    сохранённый в `key_lte_state` лимит, чтобы при возврате дефолта воркер снова выдал им сквад.
     """
     host_name_n = normalize_host_name(host_name)
     if not host_name_n:
@@ -128,7 +129,43 @@ def set_host_lte_default_limit_bytes(host_name: str | None, limit_bytes: int | N
             logging.warning(
                 f"Backfill monthly traffic reset for host '{host_name_n}' failed", exc_info=True
             )
+    if updated and previous > 0 >= value:
+        try:
+            _forget_inherited_lte_limit_for_host(host_name_n)
+        except Exception:
+            logging.warning(
+                f"Reset of inherited LTE limit in key state for host '{host_name_n}' failed", exc_info=True
+            )
     return updated
+
+
+def _forget_inherited_lte_limit_for_host(host_name: str) -> int:
+    """Обнулить `key_lte_state.lte_limit_bytes` у ключей хоста, чей лимит был только унаследованным.
+
+    Воркер добавляет LTE-сквад ключу ровно тогда, когда лимит впервые попадает в состояние
+    ключа (`lte_limit_bytes` было 0). Если дефолт хоста вернули в 0, а потом снова подняли,
+    старое значение осталось бы в состоянии, и ключ, потерявший сквад при продлении без
+    LTE, не получил бы его обратно: учёт идёт, доступа к premium-нодам нет. Буст и baseline
+    не трогаем, ключи со своим лимитом тарифа не затрагиваем.
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM vpn_keys WHERE TRIM(host_name) = TRIM(?) COLLATE NOCASE", (host_name,)
+        ).fetchall()
+        key_ids = []
+        for row in rows:
+            key = dict(row)
+            plan = resolve_plan_for_key(key)
+            if plan and _as_limit_bytes(plan.get("lte_limit_bytes")) <= 0:
+                key_ids.append(int(key["key_id"]))
+        for key_id in key_ids:
+            conn.execute(
+                "UPDATE key_lte_state SET lte_limit_bytes = 0 WHERE key_id = ? AND COALESCE(lte_limit_bytes, 0) > 0",
+                (key_id,),
+            )
+        conn.commit()
+    return len(key_ids)
 
 
 def resolve_plan_lte_limit_bytes(plan: dict | None) -> int:
