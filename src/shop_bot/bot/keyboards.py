@@ -1667,6 +1667,7 @@ def create_main_reset_payment_method_keyboard(payment_methods: dict) -> InlineKe
     return builder.as_markup()
 
 
+def create_search_keys_cancel_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для отмены поиска ключей пользователя."""
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="cancel_search_keys")

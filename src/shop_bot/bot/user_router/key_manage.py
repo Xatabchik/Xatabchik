@@ -17,6 +17,17 @@ from shop_bot.modules import remnawave_api
 
 __all__: list[str] = []
 
+_GIFT_KEY_TAGS = ('user_gift', 'gift')
+
+
+def _split_gift_keys(all_user_keys: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Делит ключи пользователя на свои и отправленные подарки."""
+    user_keys, gift_keys = [], []
+    for key in all_user_keys:
+        is_gift = str(key.get('tag') or '').strip().lower() in _GIFT_KEY_TAGS
+        (gift_keys if is_gift else user_keys).append(key)
+    return user_keys, gift_keys
+
 
 def register_key_manage(user_router: Router) -> None:
     """Регистрирует хендлеры блока в порядке исходного файла."""
@@ -36,9 +47,7 @@ def register_key_manage(user_router: Router) -> None:
             except Exception:
                 pass
 
-        all_user_keys = get_user_keys(user_id)
-        user_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() not in ('user_gift', 'gift')]
-        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+        user_keys, gift_keys = _split_gift_keys(get_user_keys(user_id))
 
         has_any = bool(user_keys or gift_keys)
         await callback.message.edit_text(
@@ -55,8 +64,7 @@ def register_key_manage(user_router: Router) -> None:
         if callback.data.startswith("gift_keys_page_"):
             page = int(callback.data.split("_")[-1])
 
-        all_user_keys = get_user_keys(user_id)
-        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+        _, gift_keys = _split_gift_keys(get_user_keys(user_id))
 
         await callback.message.edit_text(
             "🎁 Отправленные подарки:" if gift_keys else "У вас нет отправленных подарков.",
@@ -77,10 +85,20 @@ def register_key_manage(user_router: Router) -> None:
     @registration_required
     async def search_keys_input_handler(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        search_query = message.text.strip()
+        search_query = (message.text or "").strip()
         
         if not search_query:
-            await message.answer("❌ Пожалуйста, введите email для поиска")
+            await message.answer(
+                "❌ Пожалуйста, отправьте текстом название или email ключа",
+                reply_markup=keyboards.create_search_keys_cancel_keyboard()
+            )
+            return
+
+        if len(search_query) < 2:
+            await message.answer(
+                "❌ Минимум 2 символа для поиска",
+                reply_markup=keyboards.create_search_keys_cancel_keyboard()
+            )
             return
         
         # Импортируем функцию поиска
@@ -95,8 +113,11 @@ def register_key_manage(user_router: Router) -> None:
             )
             return
         
-        # Сохраняем результаты в state
-        await state.update_data(search_results=found_keys)
+        # Выходим из режима ввода, но оставляем результаты для пагинации:
+        # set_state(None) не трогает данные FSM, в отличие от clear().
+        # Отдельный ключ, чтобы не смешиваться с search_results админского поиска.
+        await state.update_data(user_key_search_results=found_keys)
+        await state.set_state(None)
         
         await message.answer(
             f"🔍 Найдено {len(found_keys)} ключ(ей):",
@@ -117,7 +138,7 @@ def register_key_manage(user_router: Router) -> None:
         
         # Получаем результаты из state
         data = await state.get_data()
-        search_results = data.get('search_results', [])
+        search_results = data.get('user_key_search_results', [])
         
         if not search_results:
             await callback.answer("❌ Результаты поиска потеряны. Попробуйте снова.", show_alert=True)
@@ -134,11 +155,11 @@ def register_key_manage(user_router: Router) -> None:
         await state.clear()
         
         user_id = callback.from_user.id
-        user_keys = get_user_keys(user_id)
+        user_keys, gift_keys = _split_gift_keys(get_user_keys(user_id))
         
         await callback.message.edit_text(
-            "Ваши ключи:" if user_keys else "У вас пока нет ключей.",
-            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=0)
+            "Ваши ключи:" if (user_keys or gift_keys) else "У вас пока нет ключей.",
+            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=0, gift_keys=gift_keys)
         )
 
     # =============================
