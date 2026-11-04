@@ -84,6 +84,35 @@ def _record_attempt(payment_id: str) -> None:
     guard._retry(_work)
 
 
+def _claimed_sql(pid_expr: str) -> str:
+    return f"EXISTS(SELECT 1 FROM processed_payments c WHERE c.payment_id = {pid_expr})"
+
+
+def _tx_paid_sql(pid_expr: str) -> str:
+    placeholders = ",".join("?" * len(_PAID_STATUSES))
+    return (
+        f"EXISTS(SELECT 1 FROM transactions t WHERE t.payment_id = {pid_expr} "
+        f"AND LOWER(TRIM(COALESCE(t.status, ''))) IN ({placeholders}))"
+    )
+
+
+def _payment_delivery_confirmed(payment_id: str) -> bool:
+    """Выдача подтверждена: есть claim и итоговая paid-запись (критерий find_stuck_paid_payments).
+
+    Ошибки БД пробрасываются: вызывающий решает сам, что делать без ответа.
+    """
+
+    def _work():
+        with guard._conn() as conn:
+            row = conn.execute(
+                f"SELECT {_claimed_sql('?')} AND {_tx_paid_sql('?')}",
+                (payment_id, payment_id, *_PAID_STATUSES),
+            ).fetchone()
+            return bool(row[0])
+
+    return bool(guard._retry(_work))
+
+
 def find_stuck_paid_payments(
     *, min_age: float = PAID_STUCK_AFTER_SECONDS, max_age: float = MAX_AGE_SECONDS
 ) -> list[dict]:
@@ -95,7 +124,6 @@ def find_stuck_paid_payments(
 
     def _work():
         with guard._conn() as conn:
-            placeholders = ",".join("?" * len(_PAID_STATUSES))
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS processed_payments "
                 "(payment_id TEXT PRIMARY KEY, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
@@ -105,13 +133,11 @@ def find_stuck_paid_payments(
                     f"""
                     SELECT p.payment_id, p.user_id, p.metadata, p.updated_at,
                            CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', p.updated_at) AS INTEGER) AS age_s,
-                           EXISTS(SELECT 1 FROM processed_payments c WHERE c.payment_id = p.payment_id) AS claimed,
+                           {_claimed_sql("p.payment_id")} AS claimed,
                            CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', (
                                SELECT c.processed_at FROM processed_payments c WHERE c.payment_id = p.payment_id
                            )) AS INTEGER) AS claim_age_s,
-                           EXISTS(SELECT 1 FROM transactions t
-                                   WHERE t.payment_id = p.payment_id
-                                     AND LOWER(TRIM(COALESCE(t.status, ''))) IN ({placeholders})) AS tx_paid
+                           {_tx_paid_sql("p.payment_id")} AS tx_paid
                       FROM pending_transactions p
                      WHERE LOWER(TRIM(COALESCE(p.status, ''))) = 'paid'
                        AND p.updated_at IS NOT NULL
@@ -186,6 +212,7 @@ async def reconcile_payment_row(bot: Any, row: dict, *, mode: str, force: bool =
                 "payment_stuck",
                 f"Платёж {pid} (action={action}) оплачен, но выдача не начиналась ({int(age // 60)} мин). Режим сверки: {mode}.",
                 dedupe_seconds=6 * 3600,
+                payment_id=pid,
             )
             return "alert: выдача не начиналась"
         attempts, last = await asyncio.to_thread(_attempts, pid)
@@ -223,6 +250,7 @@ async def reconcile_payment_row(bot: Any, row: dict, *, mode: str, force: bool =
             f"проверьте вручную: /recheck_payment {pid}"
         ),
         dedupe_seconds=6 * 3600,
+        payment_id=pid,
     )
     return "alert: выдача не завершена"
 
@@ -320,7 +348,22 @@ async def send_pending_alerts(bot: Any) -> int:
     if not admin_ids:
         return 0
     sent_ids = []
+    suppressed_ids = []
     for alert in alerts:
+        alert_pid = alert.get("payment_id")
+        if alert.get("kind") == "payment_stuck" and alert_pid:
+            # Между записью алерта и отправкой выдача могла завершиться. Проверка до
+            # отправки в отдельном соединении. Это только фильтр шума: при любой ошибке
+            # проверки алерт отправляется как раньше.
+            try:
+                confirmed = await asyncio.to_thread(_payment_delivery_confirmed, alert_pid)
+            except Exception as exc:
+                logger.warning("ops_alerts: не удалось проверить выдачу по платежу %s, алерт %s отправляется: %s", alert_pid, alert["id"], exc)
+                confirmed = False
+            if confirmed:
+                logger.info("ops_alerts: алерт %s (payment_stuck) подавлен: выдача по платежу %s уже подтверждена", alert["id"], alert_pid)
+                suppressed_ids.append(alert["id"])
+                continue
         delivered = False
         for admin_id in admin_ids:
             try:
@@ -330,7 +373,7 @@ async def send_pending_alerts(bot: Any) -> int:
                 logger.warning("ops_alerts: не удалось отправить админу %s: %s", admin_id, exc)
         if delivered:
             sent_ids.append(alert["id"])
-    await asyncio.to_thread(guard.mark_alerts_sent, sent_ids)
+    await asyncio.to_thread(guard.mark_alerts_sent, sent_ids + suppressed_ids)
     return len(sent_ids)
 
 

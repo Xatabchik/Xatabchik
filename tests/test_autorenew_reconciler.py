@@ -710,3 +710,271 @@ def test_extend_retry_uses_claim_age_not_payment_age(temp_db, monkeypatch):
     _enable_extend_retry(temp_db)
     assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: skip: выдача могла ещё идти"]
     assert not calls
+
+
+# --- payment_id в ops_alerts: дедупликация и подавление устаревшего payment_stuck ----
+
+ADMIN_IDS = {111}
+
+
+def _admins(monkeypatch):
+    monkeypatch.setattr("shop_bot.data_manager.remnawave_repository.get_admin_ids", lambda: set(ADMIN_IDS))
+
+
+def _shift(database, sql, payment_id, seconds):
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute(sql, (f"-{int(seconds)} seconds", payment_id))
+        conn.commit()
+
+
+def _all_alerts(database):
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT id, kind, text, sent FROM ops_alerts ORDER BY id")]
+
+
+def test_claimed_stuck_alert_dedupes_by_payment_across_minutes(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, action="gift")
+    _stub_fulfillment(monkeypatch)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    _shift(temp_db, "UPDATE processed_payments SET processed_at = datetime('now', ?) WHERE payment_id = ?", "p1", 1500)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    alerts = [a for a in _all_alerts(temp_db) if a["kind"] == "payment_stuck"]
+    assert len(alerts) == 1, [a["text"] for a in alerts]
+    assert "20 мин назад" in alerts[0]["text"]
+
+
+def test_not_started_alert_dedupes_by_payment_across_minutes(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=600, action="gift")
+    _stub_fulfillment(monkeypatch)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    _shift(temp_db, "UPDATE pending_transactions SET updated_at = datetime('now', ?) WHERE payment_id = ?", "p1", 900)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    alerts = [a for a in _all_alerts(temp_db) if a["kind"] == "payment_stuck"]
+    assert len(alerts) == 1, [a["text"] for a in alerts]
+
+
+def test_stuck_alerts_of_different_payments_are_not_merged(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=600, action="gift")
+    _pending(temp_db, "p2", age=600, action="gift")
+    _stub_fulfillment(monkeypatch)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    assert sorted(a["payment_id"] for a in guard.fetch_unsent_alerts(10)) == ["p1", "p2"]
+
+
+def test_alert_without_payment_id_keeps_text_dedupe(temp_db):
+    assert guard.add_ops_alert("k", "same", dedupe_seconds=60) is not None
+    assert guard.add_ops_alert("k", "same", dedupe_seconds=60) is None
+    assert guard.add_ops_alert("k", "other", dedupe_seconds=60) is not None
+    assert [a["payment_id"] for a in guard.fetch_unsent_alerts(10)] == [None, None]
+
+
+def test_stale_stuck_alert_is_suppressed_when_delivery_completed(temp_db, monkeypatch, caplog):
+    _user(temp_db)
+    _admins(monkeypatch)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, action="gift")
+    _stub_fulfillment(monkeypatch)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    assert [a["payment_id"] for a in guard.fetch_unsent_alerts(10)] == ["p1"]
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        conn.execute("INSERT INTO transactions (payment_id, user_id, status, amount_rub) VALUES ('p1', ?, 'paid', 100)", (USER_ID,))
+        conn.commit()
+    bot = _Bot()
+    with caplog.at_level("INFO", logger="shop_bot.data_manager.reconciler"):
+        assert asyncio.run(reconciler.send_pending_alerts(bot)) == 0
+    assert bot.sent == []
+    assert guard.fetch_unsent_alerts(10) == []
+    assert [a["sent"] for a in _all_alerts(temp_db)] == [1]
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "подавлен" in logged and "p1" in logged
+    assert "Платёж p1 (action=" not in logged, "текст алерта в лог не пишем"
+
+
+def test_stuck_alert_is_sent_when_delivery_not_completed(temp_db, monkeypatch):
+    _user(temp_db)
+    _admins(monkeypatch)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, action="gift")
+    _stub_fulfillment(monkeypatch)
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    bot = _Bot()
+    assert asyncio.run(reconciler.send_pending_alerts(bot)) == 1
+    assert len(bot.sent) == 1 and "p1" in bot.sent[0][1]
+    assert guard.fetch_unsent_alerts(10) == []
+
+
+def test_stuck_alert_is_sent_when_delivery_check_fails(temp_db, monkeypatch, caplog):
+    _user(temp_db)
+    _admins(monkeypatch)
+    guard.add_ops_alert("payment_stuck", "Платёж p1 завис", payment_id="p1")
+
+    def _broken(payment_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(reconciler, "_payment_delivery_confirmed", _broken)
+    bot = _Bot()
+    with caplog.at_level("WARNING", logger="shop_bot.data_manager.reconciler"):
+        assert asyncio.run(reconciler.send_pending_alerts(bot)) == 1
+    assert [text for _, text in bot.sent] == ["⚠️ Платёж p1 завис"]
+    assert any("p1" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+def test_other_alert_kinds_and_legacy_rows_are_sent_unchanged(temp_db, monkeypatch):
+    _user(temp_db)
+    _admins(monkeypatch)
+    _pending(temp_db, "p1", claimed=True, tx_paid=True)
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        conn.execute(
+            "INSERT INTO ops_alerts (kind, text, created_at, sent) VALUES ('payment_stuck', 'старый алерт p1', ?, 0)",
+            (time.time(),),
+        )
+        conn.commit()
+    guard.add_ops_alert("payment_reconcile_retry", "повтор p1")
+    guard.add_ops_alert("autorenew_refunded", "возврат")
+    guard.add_ops_alert("key_write_lock_timeout", "замок")
+    bot = _Bot()
+    assert asyncio.run(reconciler.send_pending_alerts(bot)) == 4
+    assert [text for _, text in bot.sent] == ["⚠️ старый алерт p1", "⚠️ повтор p1", "⚠️ возврат", "⚠️ замок"]
+
+
+def test_delivery_confirmed_uses_claim_and_paid_transaction(temp_db):
+    _user(temp_db)
+    _pending(temp_db, "claim_only", claimed=True)
+    _pending(temp_db, "tx_only", tx_paid=True)
+    _pending(temp_db, "done", claimed=True, tx_paid=True)
+    assert reconciler._payment_delivery_confirmed("claim_only") is False
+    assert reconciler._payment_delivery_confirmed("tx_only") is False
+    assert reconciler._payment_delivery_confirmed("done") is True
+    assert reconciler._payment_delivery_confirmed("missing") is False
+
+
+# --- миграция ops_alerts.payment_id ----------------------------------------------
+
+def _legacy_ops_alerts(database):
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute("DROP TABLE ops_alerts")
+        conn.execute("CREATE TABLE ops_alerts (id INTEGER PRIMARY KEY, kind TEXT, text TEXT, created_at REAL, sent INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO ops_alerts (kind, text, created_at, sent) VALUES ('payment_stuck', 'до миграции', ?, 0)", (time.time(),))
+        conn.commit()
+
+
+def _columns(database):
+    with sqlite3.connect(database.DB_FILE) as conn:
+        return [r[1] for r in conn.execute("PRAGMA table_info(ops_alerts)")]
+
+
+def test_migration_adds_payment_id_and_keeps_legacy_rows(temp_db, monkeypatch):
+    _legacy_ops_alerts(temp_db)
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    assert guard.fetch_unsent_alerts(10)[0]["payment_id"] is None
+    assert _columns(temp_db).count("payment_id") == 1
+    alerts = guard.fetch_unsent_alerts(10)
+    assert [(a["kind"], a["text"], a["payment_id"]) for a in alerts] == [("payment_stuck", "до миграции", None)]
+
+
+def test_migration_is_idempotent_and_checks_schema_once(temp_db, monkeypatch):
+    _legacy_ops_alerts(temp_db)
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    pragmas = []
+    for _ in range(3):
+        with sqlite3.connect(temp_db.DB_FILE) as conn:
+            conn.set_trace_callback(lambda sql: pragmas.append(sql) if "table_info" in sql else None)
+            guard.ensure_tables(conn.cursor())
+    assert _columns(temp_db).count("payment_id") == 1
+    assert len(pragmas) == 1, "PRAGMA только при первой проверке"
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        guard.ensure_tables(conn.cursor())
+    assert _columns(temp_db).count("payment_id") == 1
+
+
+def test_migration_rolled_back_in_transaction_is_redone(temp_db, monkeypatch):
+    """initialize_db вызывает ensure_tables внутри транзакции: при откате колонка
+    исчезает, и флаг «проверено» не должен остаться, иначе INSERT падают до рестарта."""
+    _legacy_ops_alerts(temp_db)
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    conn = sqlite3.connect(temp_db.DB_FILE, isolation_level=None)
+    try:
+        conn.execute("BEGIN")
+        guard.ensure_tables(conn.cursor())
+        assert conn.in_transaction
+        conn.execute("ROLLBACK")
+    finally:
+        conn.close()
+    assert "payment_id" not in _columns(temp_db)
+    assert guard._ops_alerts_migrated_dbs == set()
+
+    with sqlite3.connect(temp_db.DB_FILE, isolation_level=None) as conn2:
+        guard.ensure_tables(conn2.cursor())
+    assert _columns(temp_db).count("payment_id") == 1
+    assert guard.add_ops_alert("payment_stuck", "после отката", payment_id="p10") is not None
+
+
+def test_migration_flag_set_in_autocommit_and_skips_pragma(temp_db, monkeypatch):
+    _legacy_ops_alerts(temp_db)
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    with sqlite3.connect(temp_db.DB_FILE, isolation_level=None) as conn:
+        guard.ensure_tables(conn.cursor())
+    assert str(temp_db.DB_FILE) in guard._ops_alerts_migrated_dbs
+    pragmas = []
+    with sqlite3.connect(temp_db.DB_FILE, isolation_level=None) as conn:
+        conn.set_trace_callback(lambda sql: pragmas.append(sql) if "table_info" in sql else None)
+        guard.ensure_tables(conn.cursor())
+    assert pragmas == []
+
+
+def test_migration_tolerates_concurrent_add_column(temp_db, monkeypatch):
+    _legacy_ops_alerts(temp_db)
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    real = guard._ops_alerts_has_payment_id
+    answers = iter([False])
+
+    def _racy(cursor):
+        # Первый ответ «колонки нет», хотя её уже добавил другой контейнер.
+        try:
+            return next(answers)
+        except StopIteration:
+            return real(cursor)
+
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        conn.execute("ALTER TABLE ops_alerts ADD COLUMN payment_id TEXT")
+        conn.commit()
+    monkeypatch.setattr(guard, "_ops_alerts_has_payment_id", _racy)
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        guard.ensure_tables(conn.cursor())
+    assert _columns(temp_db).count("payment_id") == 1
+    assert guard.add_ops_alert("payment_stuck", "после гонки", payment_id="p9") is not None
+
+
+def test_migration_propagates_other_operational_errors(temp_db, monkeypatch):
+    monkeypatch.setattr(guard, "_ops_alerts_migrated_dbs", set())
+    conn = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            guard._ensure_ops_alerts_payment_id(conn.cursor())
+    finally:
+        conn.close()
+    assert guard._ops_alerts_migrated_dbs == set()
+
+
+def test_non_sqlite_error_in_delivery_check_does_not_block_alerts(temp_db, monkeypatch, caplog):
+    _user(temp_db)
+    _admins(monkeypatch)
+    guard.add_ops_alert("payment_stuck", "Платёж p1 завис", payment_id="p1")
+    guard.add_ops_alert("payment_stuck", "Платёж p2 завис", payment_id="p2")
+    guard.add_ops_alert("autorenew_refunded", "возврат")
+
+    def _broken(payment_id):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(reconciler, "_payment_delivery_confirmed", _broken)
+    bot = _Bot()
+    with caplog.at_level("WARNING", logger="shop_bot.data_manager.reconciler"):
+        assert asyncio.run(reconciler.send_pending_alerts(bot)) == 3
+    assert [text for _, text in bot.sent] == ["⚠️ Платёж p1 завис", "⚠️ Платёж p2 завис", "⚠️ возврат"]
+    assert guard.fetch_unsent_alerts(10) == []
+    bot2 = _Bot()
+    assert asyncio.run(reconciler.send_pending_alerts(bot2)) == 0
+    assert bot2.sent == [], "повторной отправки быть не должно"

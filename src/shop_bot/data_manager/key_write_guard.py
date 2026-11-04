@@ -154,6 +154,37 @@ def ensure_tables(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
+    _ensure_ops_alerts_payment_id(cursor)
+
+
+# Файлы БД, где колонка ops_alerts.payment_id уже проверена. ensure_tables вызывается
+# на каждом соединении (в том числе в цикле захвата замка), поэтому PRAGMA — один раз.
+_ops_alerts_migrated_dbs: set[str] = set()
+
+
+def _ops_alerts_has_payment_id(cursor: sqlite3.Cursor) -> bool:
+    return any(row[1] == "payment_id" for row in cursor.execute("PRAGMA table_info(ops_alerts)").fetchall())
+
+
+def _ensure_ops_alerts_payment_id(cursor: sqlite3.Cursor) -> None:
+    """Добавить ops_alerts.payment_id в старую БД. Идемпотентно.
+
+    Бот и webapp стартуют с одной БД и могут выполнить ALTER одновременно: проигравший
+    получает "duplicate column name" и только перепроверяет, что колонка есть.
+    """
+    db_key = str(_database().DB_FILE)
+    if db_key in _ops_alerts_migrated_dbs:
+        return
+    if not _ops_alerts_has_payment_id(cursor):
+        try:
+            cursor.execute("ALTER TABLE ops_alerts ADD COLUMN payment_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower() or not _ops_alerts_has_payment_id(cursor):
+                raise
+    # initialize_db вызывает ensure_tables внутри транзакции: её откат уберёт колонку,
+    # поэтому «проверено» запоминаем только вне открытой транзакции.
+    if not cursor.connection.in_transaction:
+        _ops_alerts_migrated_dbs.add(db_key)
 
 
 def _retry(work):
@@ -392,21 +423,32 @@ def label_transaction_extension(payment_id: str, info: dict) -> None:
 
 # --- ops_alerts ------------------------------------------------------------------
 
-def add_ops_alert(kind: str, text: str, *, dedupe_seconds: float = 0.0) -> int | None:
-    """Добавить оповещение. С `dedupe_seconds` не дублирует такой же текст за окно."""
+def add_ops_alert(kind: str, text: str, *, dedupe_seconds: float = 0.0, payment_id: str | None = None) -> int | None:
+    """Добавить оповещение. С `dedupe_seconds` не дублирует его за окно.
+
+    С `payment_id` дубль ищется по (kind, payment_id): в тексте payment_stuck есть
+    минуты, и сравнение по тексту каждую минуту давало новый алерт. Без
+    `payment_id` — прежнее сравнение по тексту.
+    """
 
     def _work():
         with _conn() as conn:
             if dedupe_seconds > 0:
-                row = conn.execute(
-                    "SELECT 1 FROM ops_alerts WHERE kind = ? AND text = ? AND created_at > ? LIMIT 1",
-                    (kind, text, time.time() - dedupe_seconds),
-                ).fetchone()
+                if payment_id:
+                    row = conn.execute(
+                        "SELECT 1 FROM ops_alerts WHERE kind = ? AND payment_id = ? AND created_at > ? LIMIT 1",
+                        (kind, payment_id, time.time() - dedupe_seconds),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT 1 FROM ops_alerts WHERE kind = ? AND text = ? AND created_at > ? LIMIT 1",
+                        (kind, text, time.time() - dedupe_seconds),
+                    ).fetchone()
                 if row:
                     return None
             cur = conn.execute(
-                "INSERT INTO ops_alerts (kind, text, created_at, sent) VALUES (?, ?, ?, 0)",
-                (kind, text, time.time()),
+                "INSERT INTO ops_alerts (kind, text, created_at, sent, payment_id) VALUES (?, ?, ?, 0, ?)",
+                (kind, text, time.time(), payment_id or None),
             )
             return cur.lastrowid
 
@@ -417,7 +459,7 @@ def fetch_unsent_alerts(limit: int = 20) -> list[dict]:
     def _work():
         with _conn() as conn:
             rows = conn.execute(
-                "SELECT id, kind, text, created_at FROM ops_alerts WHERE sent = 0 ORDER BY id LIMIT ?",
+                "SELECT id, kind, text, created_at, payment_id FROM ops_alerts WHERE sent = 0 ORDER BY id LIMIT ?",
                 (int(limit),),
             ).fetchall()
             return [dict(r) for r in rows]
