@@ -174,6 +174,74 @@ def test_sticker_in_search_state_asks_for_text_and_keeps_search(temp_db):
     assert callbacks == ["cancel_search_keys"]
 
 
+def _result_callbacks(markup) -> list[str]:
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+def test_search_with_results_leaves_input_mode_but_keeps_pagination(temp_db):
+    from aiogram.methods import EditMessageReplyMarkup
+
+    h = _setup(temp_db)
+    key_ids = [_insert_key(temp_db.DB_FILE, user_id=USER_ID, email=f"office-{i}@example.com") for i in range(7)]
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        await h.feed_message(_text_message("office"))
+        state_after_search = await h.ctx.get_state()
+        h.session.methods.clear()
+        await h.feed_message(_text_message("office", message_id=2))
+        texts_after_second_message = h.sent_texts()
+        await h.feed_callback("search_keys_page_1")
+        return state_after_search, texts_after_second_message
+
+    state_after_search, texts_after_second_message = asyncio.run(_go())
+
+    assert state_after_search is None
+    assert not any(t.startswith("🔍 Найдено") for t in texts_after_second_message)
+    edits = [m for m in h.session.methods if isinstance(m, EditMessageReplyMarkup)]
+    assert len(edits) == 1
+    page_two = [c for c in _result_callbacks(edits[0].reply_markup) if c.startswith("show_key_")]
+    assert len(page_two) == 2
+    assert set(page_two) <= {f"show_key_{kid}" for kid in key_ids}
+
+
+def test_search_pagination_ignores_admin_search_results(temp_db):
+    from aiogram.methods import EditMessageReplyMarkup
+
+    h = _setup(temp_db)
+    own_key = _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+    foreign_key = _insert_key(temp_db.DB_FILE, user_id=OTHER_USER_ID, email="foreign@example.com")
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        await h.feed_message(_text_message("mine"))
+        foreign = temp_db.get_key_by_id(foreign_key)
+        await h.ctx.update_data(search_results=[foreign])
+        h.session.methods.clear()
+        await h.feed_callback("search_keys_page_0")
+
+    asyncio.run(_go())
+
+    edits = [m for m in h.session.methods if isinstance(m, EditMessageReplyMarkup)]
+    assert len(edits) == 1
+    callbacks = _result_callbacks(edits[0].reply_markup)
+    assert f"show_key_{own_key}" in callbacks
+    assert f"show_key_{foreign_key}" not in callbacks
+
+
+def test_search_without_results_stays_in_input_mode(temp_db):
+    h = _setup(temp_db)
+    _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        await h.feed_message(_text_message("nothing-like-this"))
+        return await h.ctx.get_state()
+
+    assert asyncio.run(_go()) == "search_keys_state"
+    assert any(t.startswith("❌ Ключи не найдены") for t in h.sent_texts())
+
+
 def test_blank_text_in_search_state_asks_for_text(temp_db):
     h = _setup(temp_db)
 

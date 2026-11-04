@@ -98,8 +98,11 @@ def register_key_manage(user_router: Router) -> None:
             )
             return
         
-        # Сохраняем результаты в state
-        await state.update_data(search_results=found_keys)
+        # Выходим из режима ввода, но оставляем результаты для пагинации:
+        # set_state(None) не трогает данные FSM, в отличие от clear().
+        # Отдельный ключ, чтобы не смешиваться с search_results админского поиска.
+        await state.update_data(user_key_search_results=found_keys)
+        await state.set_state(None)
         
         await message.answer(
             f"🔍 Найдено {len(found_keys)} ключ(ей):",
@@ -120,7 +123,7 @@ def register_key_manage(user_router: Router) -> None:
         
         # Получаем результаты из state
         data = await state.get_data()
-        search_results = data.get('search_results', [])
+        search_results = data.get('user_key_search_results', [])
         
         if not search_results:
             await callback.answer("❌ Результаты поиска потеряны. Попробуйте снова.", show_alert=True)
