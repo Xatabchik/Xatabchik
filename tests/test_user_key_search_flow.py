@@ -269,6 +269,60 @@ def test_two_character_query_searches(temp_db):
     assert any(t.startswith("🔍 Найдено 1") for t in h.sent_texts())
 
 
+def test_cancel_search_lists_gifts_separately_like_my_keys(temp_db):
+    from aiogram.methods import EditMessageText
+
+    h = _setup(temp_db)
+    own_key = _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+    gift_key = _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="gift@example.com", tag="user_gift")
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        h.session.methods.clear()
+        await h.feed_callback("cancel_search_keys")
+        return await h.ctx.get_state(), await h.ctx.get_data()
+
+    state, data = asyncio.run(_go())
+
+    assert state is None
+    assert data == {}
+    edits = [m for m in h.session.methods if isinstance(m, EditMessageText)]
+    assert len(edits) == 1
+    assert edits[0].text == "Ваши ключи:"
+    callbacks = _result_callbacks(edits[0].reply_markup)
+    assert f"show_key_{own_key}" in callbacks
+    assert f"show_key_{gift_key}" not in callbacks
+    assert "sent_gifts" in callbacks
+
+
+def test_cancel_search_with_only_gifts_still_shows_list(temp_db):
+    from aiogram.methods import EditMessageText
+
+    h = _setup(temp_db)
+    _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="gift@example.com", tag="gift")
+
+    asyncio.run(h.feed_callback("cancel_search_keys"))
+
+    edits = [m for m in h.session.methods if isinstance(m, EditMessageText)]
+    assert edits[0].text == "Ваши ключи:"
+    assert "sent_gifts" in _result_callbacks(edits[0].reply_markup)
+
+
+def test_sent_gifts_lists_only_gift_keys(temp_db):
+    from aiogram.methods import EditMessageText
+
+    h = _setup(temp_db)
+    own_key = _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+    gift_key = _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="gift@example.com", tag=" User_Gift ")
+
+    asyncio.run(h.feed_callback("sent_gifts"))
+
+    edits = [m for m in h.session.methods if isinstance(m, EditMessageText)]
+    shown = [c for c in _result_callbacks(edits[0].reply_markup) if c.startswith("show_key_")]
+    assert shown == [f"show_key_{gift_key}"]
+    assert f"show_key_{own_key}" not in shown
+
+
 def test_blank_text_in_search_state_asks_for_text(temp_db):
     h = _setup(temp_db)
 

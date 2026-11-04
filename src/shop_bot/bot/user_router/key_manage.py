@@ -17,6 +17,17 @@ from shop_bot.modules import remnawave_api
 
 __all__: list[str] = []
 
+_GIFT_KEY_TAGS = ('user_gift', 'gift')
+
+
+def _split_gift_keys(all_user_keys: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Делит ключи пользователя на свои и отправленные подарки."""
+    user_keys, gift_keys = [], []
+    for key in all_user_keys:
+        is_gift = str(key.get('tag') or '').strip().lower() in _GIFT_KEY_TAGS
+        (gift_keys if is_gift else user_keys).append(key)
+    return user_keys, gift_keys
+
 
 def register_key_manage(user_router: Router) -> None:
     """Регистрирует хендлеры блока в порядке исходного файла."""
@@ -36,9 +47,7 @@ def register_key_manage(user_router: Router) -> None:
             except Exception:
                 pass
 
-        all_user_keys = get_user_keys(user_id)
-        user_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() not in ('user_gift', 'gift')]
-        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+        user_keys, gift_keys = _split_gift_keys(get_user_keys(user_id))
 
         has_any = bool(user_keys or gift_keys)
         await callback.message.edit_text(
@@ -55,8 +64,7 @@ def register_key_manage(user_router: Router) -> None:
         if callback.data.startswith("gift_keys_page_"):
             page = int(callback.data.split("_")[-1])
 
-        all_user_keys = get_user_keys(user_id)
-        gift_keys = [key for key in all_user_keys if str(key.get('tag') or '').strip().lower() in ('user_gift', 'gift')]
+        _, gift_keys = _split_gift_keys(get_user_keys(user_id))
 
         await callback.message.edit_text(
             "🎁 Отправленные подарки:" if gift_keys else "У вас нет отправленных подарков.",
@@ -147,11 +155,11 @@ def register_key_manage(user_router: Router) -> None:
         await state.clear()
         
         user_id = callback.from_user.id
-        user_keys = get_user_keys(user_id)
+        user_keys, gift_keys = _split_gift_keys(get_user_keys(user_id))
         
         await callback.message.edit_text(
-            "Ваши ключи:" if user_keys else "У вас пока нет ключей.",
-            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=0)
+            "Ваши ключи:" if (user_keys or gift_keys) else "У вас пока нет ключей.",
+            reply_markup=keyboards.create_keys_management_keyboard(user_keys, page=0, gift_keys=gift_keys)
         )
 
     # =============================
