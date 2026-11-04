@@ -49,6 +49,7 @@ from shop_bot.support_bot_controller import SupportBotController
 from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import backup_manager
+from shop_bot.data_manager.payment_flow_log import log_dispatch_done, log_payment_stage
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.data_manager.remnawave_repository import (
     get_all_settings, update_setting, get_all_hosts, get_plans_for_host, get_all_plans,
@@ -224,8 +225,18 @@ def _dispatch_payment_processing(metadata: dict) -> None:
     except Exception:
         live_bot = None
 
+    flow_meta = metadata if isinstance(metadata, dict) else {}
+    flow_pid = flow_meta.get("payment_id")
+    flow_prov = flow_meta.get("yookassa_payment_id")
+
     if live_bot and loop and getattr(loop, "is_running", lambda: False)():
-        asyncio.run_coroutine_threadsafe(payment_processor(live_bot, metadata), loop)
+        log_payment_stage("dispatch_scheduled", flow_pid, flow_prov, mode="loop")
+        fut = asyncio.run_coroutine_threadsafe(payment_processor(live_bot, metadata), loop)
+        # Только диагностика исхода: результат не ждём, callback ничего не повторяет.
+        try:
+            fut.add_done_callback(lambda f: log_dispatch_done(f, flow_pid, flow_prov))
+        except Exception:
+            pass
         return
 
     token = (get_setting("telegram_bot_token") or "").strip()
@@ -249,6 +260,7 @@ def _dispatch_payment_processing(metadata: dict) -> None:
         except Exception as e:
             logger.error(f"Payment processing: background fulfillment failed: {e}", exc_info=True)
 
+    log_payment_stage("dispatch_scheduled", flow_pid, flow_prov, mode="thread")
     threading.Thread(target=_worker, name="shopbot-payment-fulfillment", daemon=True).start()
 
 
@@ -6244,6 +6256,7 @@ def create_webhook_app(bot_controller_instance):
             if not provider_payment_id:
                 logger.warning("YooKassa webhook: missing provider payment id")
                 return 'Bad Request', 400
+            log_payment_stage("webhook_received", None, provider_payment_id)
 
             shop_id = (get_setting('yookassa_shop_id') or '').strip()
             secret_key = (get_setting('yookassa_secret_key') or '').strip()
@@ -6288,6 +6301,7 @@ def create_webhook_app(bot_controller_instance):
             if not internal_payment_id:
                 logger.warning(f"YooKassa webhook: payment {provider_payment_id} has no internal payment_id in metadata")
                 return 'OK', 200
+            log_payment_stage("api_verified", internal_payment_id, provider_payment_id)
 
             # Сверка ожидаемой суммы/валюты с pending (если есть pending)
             pending_meta = None
@@ -6316,11 +6330,14 @@ def create_webhook_app(bot_controller_instance):
                     logger.warning(f"YooKassa webhook: amount mismatch for {internal_payment_id}: got={got_amount}, expected={expected_amount}")
                     return 'OK', 200
 
+            log_payment_stage("amount_verified", internal_payment_id, provider_payment_id, checked=1 if pending_meta else 0)
             # Atomically mark pending paid and get metadata (idempotency)
             metadata = find_and_complete_pending_transaction(internal_payment_id)
             if not metadata:
                 # already processed / unknown
+                log_payment_stage("webhook_duplicate", internal_payment_id, provider_payment_id)
                 return 'OK', 200
+            log_payment_stage("paid_saved", internal_payment_id, provider_payment_id)
 
             # Ensure payment_method present
             metadata.setdefault('payment_method', 'YooKassa')
