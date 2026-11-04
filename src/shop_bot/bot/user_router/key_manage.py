@@ -85,6 +85,13 @@ def register_key_manage(user_router: Router) -> None:
                 reply_markup=keyboards.create_search_keys_cancel_keyboard()
             )
             return
+
+        if len(search_query) < 2:
+            await message.answer(
+                "❌ Минимум 2 символа для поиска",
+                reply_markup=keyboards.create_search_keys_cancel_keyboard()
+            )
+            return
         
         # Импортируем функцию поиска
         from shop_bot.data_manager.remnawave_repository import search_user_keys_by_email

@@ -242,6 +242,33 @@ def test_search_without_results_stays_in_input_mode(temp_db):
     assert any(t.startswith("❌ Ключи не найдены") for t in h.sent_texts())
 
 
+def test_single_character_query_is_rejected_and_stays_in_input_mode(temp_db):
+    h = _setup(temp_db)
+    _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        h.session.methods.clear()
+        await h.feed_message(_text_message(" m "))
+        return await h.ctx.get_state()
+
+    assert asyncio.run(_go()) == "search_keys_state"
+    texts = h.sent_texts()
+    assert texts == ["❌ Минимум 2 символа для поиска"]
+
+
+def test_two_character_query_searches(temp_db):
+    h = _setup(temp_db)
+    _insert_key(temp_db.DB_FILE, user_id=USER_ID, email="mine@example.com")
+
+    async def _go():
+        await h.feed_callback("search_my_keys")
+        await h.feed_message(_text_message("mi"))
+
+    asyncio.run(_go())
+    assert any(t.startswith("🔍 Найдено 1") for t in h.sent_texts())
+
+
 def test_blank_text_in_search_state_asks_for_text(temp_db):
     h = _setup(temp_db)
 
