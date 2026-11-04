@@ -106,6 +106,9 @@ def find_stuck_paid_payments(
                     SELECT p.payment_id, p.user_id, p.metadata, p.updated_at,
                            CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', p.updated_at) AS INTEGER) AS age_s,
                            EXISTS(SELECT 1 FROM processed_payments c WHERE c.payment_id = p.payment_id) AS claimed,
+                           CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', (
+                               SELECT c.processed_at FROM processed_payments c WHERE c.payment_id = p.payment_id
+                           )) AS INTEGER) AS claim_age_s,
                            EXISTS(SELECT 1 FROM transactions t
                                    WHERE t.payment_id = p.payment_id
                                      AND LOWER(TRIM(COALESCE(t.status, ''))) IN ({placeholders})) AS tx_paid
@@ -191,11 +194,16 @@ async def reconcile_payment_row(bot: Any, row: dict, *, mode: str, force: bool =
         ok = await _retry_fulfillment(bot, row, meta, reason="claim не взят")
         return "retry: ok" if ok else "retry: не удалось"
 
-    if age < CLAIMED_STUCK_AFTER_SECONDS and not force:
+    # Порог зависшей выдачи считается от claim, а не от оплаты: свежий claim у давно
+    # оплаченного заказа ещё может работать. Пустое, нечитаемое или будущее
+    # processed_at — время начала неизвестно: только алерт, без автоповтора.
+    claim_age_raw = row.get("claim_age_s")
+    claim_age = float(claim_age_raw) if claim_age_raw is not None and float(claim_age_raw) >= 0 else None
+    if claim_age is not None and claim_age < CLAIMED_STUCK_AFTER_SECONDS and not force:
         return "skip: выдача могла ещё идти"
 
     delta_on = guard.get_delta_scope() == "payments"
-    can_retry = action == "extend" and delta_on
+    can_retry = action == "extend" and delta_on and (claim_age is not None or force)
     if can_retry and (mode == "retry" or force):
         attempts, last = await asyncio.to_thread(_attempts, pid)
         if not force and (attempts >= MAX_RETRIES or time.time() - last < RETRY_SPACING_SECONDS):
@@ -203,12 +211,13 @@ async def reconcile_payment_row(bot: Any, row: dict, *, mode: str, force: bool =
         ok = await _retry_fulfillment(bot, row, meta, reason="claim взят, продление идемпотентно")
         return "retry: ok" if ok else "retry: не удалось"
 
+    started = f"{int(claim_age // 60)} мин назад" if claim_age is not None else "время начала неизвестно"
     recorded = await asyncio.to_thread(_extension_recorded, pid)
     await asyncio.to_thread(
         guard.add_ops_alert,
         "payment_stuck",
         (
-            f"Платёж {pid} (action={action}) оплачен, выдача начата ({int(age // 60)} мин назад), но не завершена. "
+            f"Платёж {pid} (action={action}) оплачен, выдача начата ({started}), но не завершена. "
             f"Запись продления: {'есть' if recorded else 'нет'}. "
             f"Автоповтор {'не включён' if mode != 'retry' else 'возможен только для extend при key_extension_delta_scope=payments'}; "
             f"проверьте вручную: /recheck_payment {pid}"

@@ -368,7 +368,9 @@ class _Bot:
         self.sent.append((chat_id, text))
 
 
-def _pending(database, payment_id, *, status="paid", age=600, action="extend", claimed=False, tx_paid=False):
+def _pending(database, payment_id, *, status="paid", age=600, action="extend", claimed=False, tx_paid=False, claim_age=None):
+    if claim_age is None:
+        claim_age = age
     meta = {"action": action, "user_id": USER_ID, "payment_id": payment_id}
     with sqlite3.connect(database.DB_FILE) as conn:
         conn.execute(
@@ -381,7 +383,10 @@ def _pending(database, payment_id, *, status="paid", age=600, action="extend", c
                 "CREATE TABLE IF NOT EXISTS processed_payments "
                 "(payment_id TEXT PRIMARY KEY, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
-            conn.execute("INSERT OR IGNORE INTO processed_payments (payment_id) VALUES (?)", (payment_id,))
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_payments (payment_id, processed_at) VALUES (?, datetime('now', ?))",
+                (payment_id, f"-{int(claim_age)} seconds"),
+            )
         if tx_paid:
             conn.execute(
                 "INSERT INTO transactions (payment_id, user_id, status, amount_rub) VALUES (?, ?, 'paid', 100)",
@@ -606,3 +611,102 @@ def test_initialize_db_creates_pr_a_tables_and_safe_defaults(temp_db):
     assert guard.get_lock_scope() == "off"
     assert guard.get_delta_scope() == "off"
     assert reconciler.get_mode() == "alert"
+
+
+# --- возраст claim отдельно от возраста оплаты -------------------------------------
+
+def _set_processed_at(database, payment_id, raw):
+    with sqlite3.connect(database.DB_FILE) as conn:
+        conn.execute("UPDATE processed_payments SET processed_at = ? WHERE payment_id = ?", (raw, payment_id))
+        conn.commit()
+
+
+def _enable_extend_retry(database):
+    database.update_setting("payment_reconciler_mode", "retry")
+    database.update_setting("key_write_lock_scope", "payments")
+    database.update_setting("key_extension_delta_scope", "payments")
+
+
+def test_old_paid_without_claim_still_alerts_not_started(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=3600, action="gift")
+    calls = _stub_fulfillment(monkeypatch)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: alert: выдача не начиналась"]
+    assert not calls
+    alerts = guard.fetch_unsent_alerts(10)
+    assert len(alerts) == 1 and "выдача не начиналась (60 мин)" in alerts[0]["text"]
+
+
+@pytest.mark.parametrize("mode", ["alert", "retry"])
+def test_old_paid_with_fresh_claim_is_not_reported_stuck(temp_db, monkeypatch, mode):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=3600, claimed=True, claim_age=30, action="gift")
+    calls = _stub_fulfillment(monkeypatch)
+    temp_db.update_setting("payment_reconciler_mode", mode)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: skip: выдача могла ещё идти"]
+    assert not calls
+    assert guard.fetch_unsent_alerts(10) == []
+
+
+def test_old_claim_without_final_transaction_alerts_with_claim_age(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, action="gift")
+    calls = _stub_fulfillment(monkeypatch)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: alert: выдача не завершена"]
+    assert not calls
+    alerts = guard.fetch_unsent_alerts(10)
+    assert len(alerts) == 1
+    assert "выдача начата (20 мин назад)" in alerts[0]["text"]
+
+
+def test_claim_with_paid_transaction_is_not_reported(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, tx_paid=True, action="gift")
+    calls = _stub_fulfillment(monkeypatch)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == []
+    assert not calls
+    assert guard.fetch_unsent_alerts(10) == []
+
+
+@pytest.mark.parametrize("raw", [None, "", "not-a-date", "future"])
+@pytest.mark.parametrize("action", ["extend", "gift", "new"])
+def test_unknown_claim_time_alerts_without_retry(temp_db, monkeypatch, raw, action):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=3600, claimed=True, action=action)
+    if raw == "future":
+        with sqlite3.connect(temp_db.DB_FILE) as conn:
+            conn.execute("UPDATE processed_payments SET processed_at = datetime('now', '+1 hour') WHERE payment_id = 'p1'")
+            conn.commit()
+    else:
+        _set_processed_at(temp_db, "p1", raw)
+    calls = _stub_fulfillment(monkeypatch)
+    _enable_extend_retry(temp_db)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: alert: выдача не завершена"]
+    assert not calls, "при неизвестном времени claim автоповтор запрещён"
+    with sqlite3.connect(temp_db.DB_FILE) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM processed_payments WHERE payment_id = 'p1'").fetchone()[0] == 1
+    alerts = guard.fetch_unsent_alerts(10)
+    assert len(alerts) == 1
+    assert "время начала неизвестно" in alerts[0]["text"]
+    assert "мин назад" not in alerts[0]["text"]
+    asyncio.run(reconciler.reconcile_stuck_payments(_Bot()))
+    assert len(guard.fetch_unsent_alerts(10)) == 1, "dedupe должен сработать"
+
+
+@pytest.mark.parametrize("action", ["gift", "new"])
+def test_gift_and_new_with_old_claim_are_never_retried(temp_db, monkeypatch, action):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=1200, action=action)
+    calls = _stub_fulfillment(monkeypatch)
+    _enable_extend_retry(temp_db)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: alert: выдача не завершена"]
+    assert not calls
+
+
+def test_extend_retry_uses_claim_age_not_payment_age(temp_db, monkeypatch):
+    _user(temp_db)
+    _pending(temp_db, "p1", age=7200, claimed=True, claim_age=60, action="extend")
+    calls = _stub_fulfillment(monkeypatch)
+    _enable_extend_retry(temp_db)
+    assert asyncio.run(reconciler.reconcile_stuck_payments(_Bot())) == ["p1: skip: выдача могла ещё идти"]
+    assert not calls
