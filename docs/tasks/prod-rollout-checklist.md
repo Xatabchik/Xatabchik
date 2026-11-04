@@ -3,6 +3,18 @@
 Выполняются владельцем: у агента нет доступа к проду. Каждый шаг начинается с резервной
 копии. `$APP` каталог проекта на проде (на стенде `/root/xatabchik`).
 
+Общие правила:
+
+- Поэтапный выкат делается по коммитам `main`, а не `git pull`: PR-0 `0fc610c`, PR-IP `a922f68`, остальное
+  `728d31d` (или более поздний коммит `main`). Переход: `git merge --ff-only <коммит>`, прод остаётся на ветке `main`.
+  Откат: `git reset --hard $(cat /root/backups/<шаг>-prev-commit)` и перезапуск.
+- Резервная копия считается годной только после `PRAGMA integrity_check` = `ok`. Если проверка не прошла, выкат
+  останавливается: копия с той же поломкой не откат. Разбор поломки и сборка чистой копии: раздел
+  «Если `integrity_check` не вернул `ok`» ниже.
+- Локальные правки `docker-compose.yml` на проде (например, подключение к внешней docker-сети) держать в
+  `docker-compose.override.yml`, а не в tracked-файле: иначе `git merge` на шагах, меняющих compose, даёт конфликт.
+  Проверка, что конфигурация не изменилась: `docker compose config` до и после совпадает.
+
 ## PR-0: проверка владельца, хоста и тарифа в /api/create-payment (PR #174)
 
 Порядок:
@@ -15,8 +27,9 @@
    `SELECT host_name, is_active FROM xui_hosts WHERE COALESCE(is_active,1)=0;`
    PR-0 флаг `is_active` не проверяет, результат нужен только для сведения.
 4. Получить код: `git fetch origin && git checkout <ветка/тег с PR #174>` (или merge в main и `git pull`).
-5. Применить: `docker compose up -d --no-build xatabchik-webapp && docker restart xatabchik`
-   (код подключён bind-mount `.:/app/project`, пересборка образа не нужна).
+5. Применить: `docker restart xatabchik-webapp xatabchik`. PR-0 не меняет `docker-compose.yml`, поэтому
+   `docker compose up -d` ничего не пересоздаст, и webapp продолжит работать на старом коде в памяти.
+   Код подключён bind-mount `.:/app/project`, пересборка образа не нужна.
 6. Подождать 10-15 секунд, `docker ps` оба контейнера `Up`.
 
 Проверки после выката:
@@ -100,6 +113,29 @@ docker compose up -d --no-build xatabchik-webapp && docker restart xatabchik
 БД PR-IP не меняет. Переменные окружения: `WEBAPP_FORWARDED_ALLOW_IPS` (webapp, через compose)
 и `SHOPBOT_TRUSTED_PROXIES` (панель Flask) позволяют сузить список доверенных прокси.
 
+## PR-IP при Caddy в docker и Cloudflare (вариант прода)
+
+Если вместо nginx на хосте стоит Caddy в контейнере в общей docker-сети, а перед ним Cloudflare, шаги про nginx
+заменяются на следующие. Проверка, что CDN есть: DNS домена ведёт на адреса Cloudflare, в ответе `server: cloudflare`, `cf-ray`.
+
+1. webapp должен быть в одной сети с Caddy. Локальную правку compose держать в `docker-compose.override.yml`
+   (`networks: [default, <сеть Caddy>]`, сеть `external: true`).
+2. Доверенные адреса для uvicorn: подсеть сети Caddy и диапазоны Cloudflare, значение берётся у Cloudflare
+   (`https://www.cloudflare.com/ips-v4`, `/ips-v6`) и пишется в `.env` рядом с `docker-compose.yml`:
+   `WEBAPP_FORWARDED_ALLOW_IPS=127.0.0.1,::1,<подсеть сети Caddy>,<диапазоны Cloudflare через запятую>`.
+   Диапазоны периодически обновлять.
+3. Caddy: в блоке сайта приложения `reverse_proxy <апстрим> { trusted_proxies <диапазоны Cloudflare через пробел> }`.
+   Без этого Caddy затирает `X-Forwarded-For` адресом узла Cloudflare, и клиенты сливаются в один адрес.
+   Директива действует только для этого сайта. Проверка: `caddy validate`, затем `caddy reload` (без простоя).
+   Файл Caddyfile при bind-mount перезаписывать через `cat новый > файл`, не `mv`.
+4. Пересоздать webapp (`docker compose up -d --no-build <webapp>`) и перезапустить бота.
+
+Проверки: `docker logs <webapp>` показывает в access-логе реальные адреса клиентов (не адрес Caddy и не диапазоны Cloudflare);
+лимит на маршруте без параметра пути (`POST /api/auth/token` с неверными данными, 30/мин) даёт 429 после 30-го запроса с одного адреса,
+а запросы с другой сети в это время проходят; поддельный `X-Forwarded-For` нового лимита не создаёт.
+Маршрут `/api/auth/check-token/{token}` до #178 лимитом по адресу не защищён (корзина на каждый токен), проверять его после #178.
+Остаточный риск: лимит считается по полному IPv6-адресу, клиент с блоком `/64` может менять адреса.
+
 ## PR-A: замок записи ключа, идемпотентное продление, журнал автопродления, сверка (PR #180)
 
 Только после того, как PR-0 и PR-IP стоят на проде. PR-B не начинается без отдельного подтверждения владельца.
@@ -151,3 +187,19 @@ sqlite3 $APP/users.db "UPDATE bot_settings SET value='payments' WHERE key IN ('k
 Откат без перезапуска: `UPDATE bot_settings SET value='off' WHERE key IN ('key_write_lock_scope','key_extension_delta_scope');`
 и при необходимости `payment_reconciler_mode='off'`. Таблицы остаются и ничему не мешают.
 Откат кода: `git checkout $(cat /root/backups/pra-prev-commit) && docker compose up -d --no-build`.
+
+## Если `integrity_check` не вернул `ok`
+
+Резервная копия по `.backup` повторяет поломку исходной БД. Не запускать `VACUUM`, `REINDEX` и не удалять строки
+на живой БД. Порядок:
+
+1. Определить объект: `sqlite3 -readonly users.db "SELECT type,name FROM sqlite_master WHERE rootpage=<номер дерева из отчёта>;"`.
+2. Проверить чтение остальных таблиц по копии: цикл `sqlite3 -readonly <копия> ".dump <таблица>" >/dev/null 2>err`
+   по всем таблицам, кроме повреждённой; непустой файл `err` означает поломку и в этой таблице.
+3. Если повреждена только вспомогательная таблица (например, `resource_metrics`, метрики мониторинга), собрать новую БД
+   из копии: схема из `.schema --nosys`, `INSERT INTO main.<t> SELECT * FROM old.<t>` для остальных таблиц,
+   перенос `sqlite_sequence`. Проверить `PRAGMA integrity_check` = `ok` и совпадение `count(*)` по каждой таблице.
+   Триггеры перед сборкой проверить (`SELECT count(*) FROM sqlite_master WHERE type='trigger'`): с триггерами сборку
+   перестроить, иначе они сработают на вставках.
+4. Такая пересобранная копия годится как резервная. Саму живую БД заменять отдельным окном обслуживания
+   (остановить бота и webapp, пересобрать из свежей копии, проверить, подменить файл).
