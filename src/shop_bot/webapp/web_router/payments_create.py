@@ -32,6 +32,7 @@ import shop_bot.data_manager.remnawave_repository as rw_repo
 from shop_bot.data_manager.database import (
     get_device_tiers,
     get_host,
+    link_pending_yookassa_payment_id,
 )
 from shop_bot.modules import remnawave_api
 from decimal import Decimal
@@ -394,6 +395,12 @@ async def api_create_payment(req: CreatePaymentRequest, request: Request):
                 payload["receipt"] = receipt
             try:
                 pay_obj = YookassaPayment.create(payload, pid)
+                try:
+                    link_result, _ = link_pending_yookassa_payment_id(pid, getattr(pay_obj, "id", None))
+                    if link_result not in ("written", "same"):
+                        logger.warning(f"YooKassa: ID платежа не привязан к заказу {pid}: {link_result}")
+                except Exception as e:
+                    logger.warning(f"YooKassa: ошибка привязки ID платежа к заказу {pid}: {type(e).__name__}")
                 pay_url = pay_obj.confirmation.confirmation_url
                 
                 kb = create_payment_keyboard(pay_url)

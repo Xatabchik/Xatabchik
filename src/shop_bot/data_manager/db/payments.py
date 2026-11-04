@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import logging
 import json
+import re
 import secrets
 
 __all__ = (
@@ -28,6 +29,8 @@ __all__ = (
     "_mirror_pending_to_ledger",
     "create_payload_pending",
     "patch_pending_metadata",
+    "is_valid_yookassa_payment_id",
+    "link_pending_yookassa_payment_id",
     "_get_pending_metadata",
     "get_pending_metadata",
     "get_pending_record",
@@ -469,6 +472,78 @@ def patch_pending_metadata(payment_id: str, extra: dict) -> bool:
     except sqlite3.Error as e:
         logging.error(f"Failed to patch pending metadata {pid}: {e}")
         return False
+
+
+_YOOKASSA_PAYMENT_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_PENDING_META_EXPR = "COALESCE(NULLIF(metadata, ''), '{}')"
+
+
+def is_valid_yookassa_payment_id(value) -> bool:
+    """ID платежа ЮKassa: строго UUID (36 символов, hex и дефисы)."""
+    return isinstance(value, str) and _YOOKASSA_PAYMENT_ID_RE.fullmatch(value) is not None
+
+
+def link_pending_yookassa_payment_id(payment_id, provider_id) -> tuple[str, str | None]:
+    """Однократно привязать ID платежа ЮKassa к локальному заказу.
+
+    Один атомарный UPDATE дописывает `yookassa_payment_id` в metadata
+    pending_transactions, только если ключа там ещё нет. status, updated_at,
+    amount_rub и остальные ключи не меняются; статус заказа не проверяется.
+    Уже сохранённый ID никогда не перезаписывается.
+
+    Возвращает (исход, сохранённый ID): written | same | conflict | no_record |
+    invalid | error. Исключения наружу не бросает, сетевых вызовов нет.
+    """
+    pid = payment_id.strip() if isinstance(payment_id, str) else ""
+    if not pid or not is_valid_yookassa_payment_id(provider_id):
+        return "invalid", None
+    prov = provider_id
+
+    def _work():
+        with _connect_pending_db() as conn:
+            cursor = conn.cursor()
+            _ensure_pending_tables(cursor)
+            # json_type(...) = 'object': на массиве json_set молча ничего не меняет,
+            # и UPDATE отчитался бы о записи, которой нет.
+            cursor.execute(
+                f"""
+                UPDATE pending_transactions
+                   SET metadata = json_set({_PENDING_META_EXPR}, '$.yookassa_payment_id', ?)
+                 WHERE payment_id = ?
+                   AND json_type({_PENDING_META_EXPR}) = 'object'
+                   AND json_type({_PENDING_META_EXPR}, '$.yookassa_payment_id') IS NULL
+                """,
+                (prov, pid),
+            )
+            if cursor.rowcount == 1:
+                return "written", prov
+            cursor.execute("SELECT metadata FROM pending_transactions WHERE payment_id = ?", (pid,))
+            row = cursor.fetchone()
+            if not row:
+                return "no_record", None
+            try:
+                meta = json.loads(row[0] or "{}")
+            except ValueError:
+                meta = None
+            if not isinstance(meta, dict):
+                return "error", None
+            stored = meta.get("yookassa_payment_id")
+            if stored == prov:
+                return "same", prov
+            return "conflict", None if stored is None else str(stored)
+
+    try:
+        result, stored = _retry_sqlite(_work)
+    except Exception as exc:
+        logging.warning("YooKassa id link failed payment_id=%r provider_id=%s: %s", pid, prov, type(exc).__name__)
+        return "error", None
+    if result == "written":
+        logging.info("YooKassa id linked payment_id=%r provider_id=%s", pid, prov)
+    elif result == "conflict":
+        logging.warning("YooKassa id conflict payment_id=%r provider_id=%s", pid, prov)
+    elif result == "error":
+        logging.warning("YooKassa id link skipped: metadata is not an object payment_id=%r provider_id=%s", pid, prov)
+    return result, stored
 
 
 def _get_pending_metadata(payment_id: str) -> dict | None:
