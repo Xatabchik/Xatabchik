@@ -77,10 +77,13 @@ def register_key_manage(user_router: Router) -> None:
     @registration_required
     async def search_keys_input_handler(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        search_query = message.text.strip()
+        search_query = (message.text or "").strip()
         
         if not search_query:
-            await message.answer("❌ Пожалуйста, введите email для поиска")
+            await message.answer(
+                "❌ Пожалуйста, отправьте текстом название или email ключа",
+                reply_markup=keyboards.create_search_keys_cancel_keyboard()
+            )
             return
         
         # Импортируем функцию поиска
