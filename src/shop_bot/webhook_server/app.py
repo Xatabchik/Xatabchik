@@ -50,6 +50,7 @@ from shop_bot.data_manager import speedtest_runner
 from shop_bot.data_manager import resource_monitor
 from shop_bot.data_manager import backup_manager
 from shop_bot.data_manager.payment_flow_log import log_dispatch_done, log_payment_stage
+from shop_bot.data_manager.yookassa_link import decide_yookassa_link
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.data_manager.remnawave_repository import (
     get_all_settings, update_setting, get_all_hosts, get_plans_for_host, get_all_plans,
@@ -6331,6 +6332,13 @@ def create_webhook_app(bot_controller_instance):
                     return 'OK', 200
 
             log_payment_stage("amount_verified", internal_payment_id, provider_payment_id, checked=1 if pending_meta else 0)
+            yk_link = decide_yookassa_link(internal_payment_id, provider_payment_id, data.get('id'), bool(pending_meta))
+            if yk_link.action == "block":
+                log_payment_stage("provider_id_conflict", internal_payment_id, provider_payment_id, action="block")
+                return 'OK', 200
+            if yk_link.action == "retry":
+                log_payment_stage("provider_id_conflict", internal_payment_id, provider_payment_id, action="retry")
+                return 'Error', 500
             # Atomically mark pending paid and get metadata (idempotency)
             metadata = find_and_complete_pending_transaction(internal_payment_id)
             if not metadata:
@@ -6338,6 +6346,8 @@ def create_webhook_app(bot_controller_instance):
                 log_payment_stage("webhook_duplicate", internal_payment_id, provider_payment_id)
                 return 'OK', 200
             log_payment_stage("paid_saved", internal_payment_id, provider_payment_id)
+            if yk_link.set_provider_id:
+                metadata.setdefault("yookassa_payment_id", yk_link.set_provider_id)
 
             # Ensure payment_method present
             metadata.setdefault('payment_method', 'YooKassa')
