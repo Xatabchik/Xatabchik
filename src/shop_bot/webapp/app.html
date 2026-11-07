@@ -83,6 +83,15 @@
                 url.searchParams.delete('pending_token');
                 changed = true;
             }
+            // Токен живёт в sessionStorage, пока сервер не ответит окончательно:
+            // сетевой сбой или перезагрузка вкладки не должны терять подарок.
+            try {
+                if (window._pendingActionToken) {
+                    sessionStorage.setItem('pending_action_token', window._pendingActionToken);
+                } else {
+                    window._pendingActionToken = sessionStorage.getItem('pending_action_token') || null;
+                }
+            } catch (e) { }
             if (changed) {
                 window.history.replaceState(null, '', url.toString() || window.location.pathname);
             }
