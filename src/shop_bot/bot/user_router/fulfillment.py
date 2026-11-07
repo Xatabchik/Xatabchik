@@ -17,6 +17,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from shop_bot.bot import keyboards
+from shop_bot.data_manager.payment_flow_log import log_payment_stage
 from shop_bot.data_manager.remnawave_repository import (
     add_to_balance,
     get_setting,
@@ -314,13 +315,16 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
         if not payment_id:
             logger.error(f"process_successful_payment: missing payment_id in metadata; refusing to process: {metadata}")
             return False
+        log_payment_stage("handler_start", payment_id, metadata.get("yookassa_payment_id"), action=action)
         try:
             if not claim_processed_payment(payment_id):
                 logger.info(f"process_successful_payment: duplicate payment ignored: {payment_id}")
+                log_payment_stage("claim_duplicate", payment_id, metadata.get("yookassa_payment_id"))
                 return True
         except Exception as e:
             logger.error(f"process_successful_payment: idempotency check failed for {payment_id}: {e}", exc_info=True)
             return False
+        log_payment_stage("claim_taken", payment_id, metadata.get("yookassa_payment_id"))
 
         promo_code_early = ""
         try:
@@ -1396,7 +1400,8 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
 
         payment_id_for_log = metadata.get('payment_id') or str(uuid.uuid4())
 
-        log_transaction(
+        log_payment_stage("delivered", payment_id_for_log, metadata.get("yookassa_payment_id"))
+        payment_flow_tx_ok = log_transaction(
             username=log_username,
             transaction_id=None,
             payment_id=payment_id_for_log,
@@ -1408,6 +1413,7 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
             payment_method=log_method,
             metadata=log_metadata
         )
+        log_payment_stage("tx_logged", payment_id_for_log, metadata.get("yookassa_payment_id"), ok=bool(payment_flow_tx_ok))
         
         try:
             promo_code_val = (metadata.get('promo_code') or '').strip()

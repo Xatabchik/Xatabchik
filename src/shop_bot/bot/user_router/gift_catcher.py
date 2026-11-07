@@ -29,7 +29,8 @@ def register_gift_catcher(user_router: Router) -> None:
 
 
     
-    @user_router.message(StateFilter(None), F.text)
+    # Команды не матчим: иначе aiogram остановится здесь и не дойдёт до admin_router.
+    @user_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
     @registration_required
     async def _gift_username_catcher(message: types.Message):
         logger.info(f"Gift catcher: incoming text from {message.from_user.id}: {message.text}")
