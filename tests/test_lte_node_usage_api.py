@@ -532,6 +532,17 @@ def test_remove_squad_uses_uuid_identity_on_281(temp_db):
     _squad_router(api, calls)
 
     uuid_ident = "c0ffee00-1111-2222-3333-444444444444"
+
+    async def transport(host_name, method, path, *, json_payload=None, params=None,
+                        expected_status=(200,)):
+        calls.append((method, path, json_payload))
+        # 2.8.1: у пользователя есть uuid и нет числового id.
+        return _Resp({"response": {
+            "uuid": uuid_ident,
+            "activeInternalSquads": [{"uuid": u, "name": u[:4]} for u in (BASE_SQUAD, LTE_SQUAD)],
+        }})
+
+    api._request_for_host = transport
     asyncio.run(api.remove_squad_from_user(uuid_ident, LTE_SQUAD, host_name="H"))
 
     body = [c for c in calls if c[0] == "PATCH"][0][2]
@@ -744,3 +755,83 @@ def test_legacy_wrapper_is_probed_once_per_instance(temp_db):
 
     legacy_calls = [c for c in calls if "nodes/users" in c or "usage/range" in c]
     assert len(legacy_calls) <= 2, f"исторический путь опрошен повторно: {legacy_calls}"
+
+
+# --- ключи со старым UUID в базе на панели 3.x ----------------------------------------
+
+LEGACY_UUID = "ec645a89-4f0f-480e-b339-e96c8b7ab859"
+LEGACY_EMAIL = "175654617-20@bot.local"
+
+
+def _legacy_uuid_panel(api, calls, *, user_exists=True, squads=(BASE_SQUAD, LTE_SQUAD)):
+    """Панель 3.4.x: GET по UUID -> 400 NaN, by-email снят, пользователь живёт под id=174."""
+    async def transport(host_name, method, path, *, json_payload=None, params=None,
+                        expected_status=(200,)):
+        calls.append((method, path, json_payload))
+        if method == "GET" and path == f"/api/users/{LEGACY_UUID}":
+            return _Resp({"message": "Validation failed"}, 400)
+        if method == "GET" and path.startswith("/api/users/by-email/"):
+            return _Resp({"message": "Not found"}, 404)
+        if method == "GET" and path == "/api/users/by-username/175654617-20":
+            if not user_exists:
+                return _Resp({"message": "Not found"}, 404)
+            payload = _user_response(squads=squads, numeric_id=174)
+            payload["response"]["username"] = "175654617-20"
+            return _Resp(payload)
+        return _Resp({"response": {}})
+
+    api._request_for_host = transport
+
+
+def test_remove_squad_from_legacy_uuid_key_uses_email_lookup_and_numeric_id(temp_db):
+    """Регрессия: для ключа с UUID в базе GET возвращал пусто, функция считала сквад
+    «уже снятым», в базу писалось отключение, а на панели LTE-сквад оставался."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _legacy_uuid_panel(api, calls)
+
+    ok = asyncio.run(api.remove_squad_from_user(LEGACY_UUID, LTE_SQUAD, host_name="H", email=LEGACY_EMAIL))
+
+    assert ok is True
+    patches = [c for c in calls if c[0] == "PATCH"]
+    assert len(patches) == 1, "сквад должен реально сниматься на панели"
+    assert patches[0][2] == {"id": 174, "activeInternalSquads": [BASE_SQUAD]}
+
+
+def test_remove_squad_legacy_uuid_without_email_is_not_false_success(temp_db):
+    """Нечем найти пользователя -> не «успех»: иначе база покажет отключение, которого нет."""
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _legacy_uuid_panel(api, calls)
+
+    ok = asyncio.run(api.remove_squad_from_user(LEGACY_UUID, LTE_SQUAD, host_name="H"))
+
+    assert ok is False
+    assert [c for c in calls if c[0] == "PATCH"] == []
+
+
+def test_remove_squad_user_confirmed_absent_is_success_without_patch(temp_db):
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _legacy_uuid_panel(api, calls, user_exists=False)
+
+    ok = asyncio.run(api.remove_squad_from_user(LEGACY_UUID, LTE_SQUAD, host_name="H", email=LEGACY_EMAIL))
+
+    assert ok is True
+    assert [c for c in calls if c[0] == "PATCH"] == []
+
+
+def test_add_squad_to_legacy_uuid_key_restores_lte_with_numeric_id(temp_db):
+    database, api = temp_db, _api()
+    _host(database, "H", squads={"lte": LTE_SQUAD})
+    calls: list[tuple] = []
+    _legacy_uuid_panel(api, calls, squads=(BASE_SQUAD,))
+
+    ok = asyncio.run(api.add_squad_to_user(LEGACY_UUID, LTE_SQUAD, host_name="H", email=LEGACY_EMAIL))
+
+    assert ok is True
+    patch = [c for c in calls if c[0] == "PATCH"][0][2]
+    assert patch == {"id": 174, "activeInternalSquads": [BASE_SQUAD, LTE_SQUAD]}

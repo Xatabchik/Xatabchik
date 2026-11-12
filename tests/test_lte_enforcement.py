@@ -70,11 +70,11 @@ class _FakeRemnawave:
         }
         return NodeUsage(per_node, self.usage_path)
 
-    async def remove_squad_from_user(self, user_uuid, squad_uuid, *, host_name):
+    async def remove_squad_from_user(self, user_uuid, squad_uuid, *, host_name, email=None):
         self.removed_squads.append((str(user_uuid), str(squad_uuid)))
         return True
 
-    async def add_squad_to_user(self, user_uuid, squad_uuid, *, host_name):
+    async def add_squad_to_user(self, user_uuid, squad_uuid, *, host_name, email=None):
         self.added_squads.append((str(user_uuid), str(squad_uuid)))
         return True
 

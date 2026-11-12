@@ -610,7 +610,8 @@ async def process_successful_payment(bot: Bot, metadata: dict) -> bool:
                 ):
                     if state_uk == 'disabled_premium_squad' and lte_squad_uk:
                         ok = await remnawave_api.add_squad_to_user(
-                            uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk
+                            uuid_uk, lte_squad_uk['squad_uuid'], host_name=host_name_uk,
+                            email=key_data.get('key_email'),
                         )
                     else:
                         ok = await remnawave_api.enable_user(uuid_uk, host_name=host_name_uk)

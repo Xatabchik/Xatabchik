@@ -488,6 +488,40 @@ def _user_patch_identifier(user_ref: str) -> dict[str, Any]:
     return {"uuid": stored}
 
 
+def _patch_identifier_for_user(user_payload: dict[str, Any] | None, fallback_ref: str) -> dict[str, Any]:
+    """Идентификатор для `PATCH /api/users` по пользователю, найденному на панели.
+
+    Контракт 3.3.2+ принимает только `id` или `username`. В базе у старых ключей может
+    лежать UUID времён 2.x: по нему панель пользователя не отдаёт и PATCH отклоняет
+    (400 'At least one of username, id must be provided'). Поэтому, если пользователь
+    найден (по email/username), берём идентификатор из его актуального payload.
+    """
+    numeric = _panel_numeric_user_id(user_payload)
+    if numeric:
+        return {"id": int(numeric)}
+    if isinstance(user_payload, dict):
+        uuid_val = str(user_payload.get("uuid") or "").strip()
+        if uuid_val:
+            return {"uuid": uuid_val}
+        username = str(user_payload.get("username") or "").strip()
+        if username:
+            return {"username": username}
+    return _user_patch_identifier(fallback_ref)
+
+
+def _user_absence_is_confirmed(user_ref: str, email: str | None) -> bool:
+    """Можно ли считать пользователя отсутствующим после неудачного поиска.
+
+    Числовой id / shortUuid и username из email — поддерживаемые lookup'ы, их 404 значит
+    «нет такого пользователя». Старый UUID без email проверить на 3.x нечем (GET даёт 400):
+    это «неизвестно», а не «нет».
+    """
+    kind = _classify_panel_user_ref(user_ref)
+    if kind in ("id", "short"):
+        return True
+    return bool(_username_from_email(email))
+
+
 def _panel_hwid_devices_path(user_ref: str) -> tuple[str, tuple[int, ...]]:
     """GET /api/hwid/devices/{userId}: 3.x ждёт число, UUID даёт 400 NaN."""
     stored = (user_ref or "").strip()
@@ -1294,17 +1328,33 @@ async def enable_user(user_uuid: str, *, host_name: str) -> bool:
         return False
 
 
-async def set_user_active_squads(user_uuid: str, squad_uuids: list[str], *, host_name: str) -> bool:
+async def set_user_active_squads(
+    user_uuid: str,
+    squad_uuids: list[str],
+    *,
+    host_name: str,
+    email: str | None = None,
+    panel_user: dict[str, Any] | None = None,
+) -> bool:
     """PATCH /api/users — установить полный список activeInternalSquads пользователя.
 
     В отличие от enable_user/disable_user (которые полностью открывают/закрывают доступ на хосте),
     это позволяет точечно управлять членством в конкретном сквада (например, отключить только
     LTE-сквад, оставив Base-сквад активным — двухпуловая схема).
+
+    Для ключей со старым UUID (хранится в базе с времён 2.x) идентификатор берётся из
+    payload пользователя, найденного по email/username: `panel_user` можно передать, если
+    он уже получен, иначе поиск выполняется здесь.
     """
     if not user_uuid:
         return False
     try:
-        payload: dict[str, Any] = _user_patch_identifier(user_uuid)
+        if panel_user is None and _classify_panel_user_ref(user_uuid) != "id" and email:
+            panel_user = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
+        if panel_user is not None:
+            payload: dict[str, Any] = _patch_identifier_for_user(panel_user, user_uuid)
+        else:
+            payload = _user_patch_identifier(user_uuid)
         payload["activeInternalSquads"] = list(dict.fromkeys(squad_uuids or []))
         await _request_for_host(host_name, "PATCH", "/api/users", json_payload=payload, expected_status=(200, 201))
         logger.info(
@@ -1344,12 +1394,32 @@ def extract_active_squad_uuids(user_payload: dict[str, Any] | None) -> list[str]
     return result
 
 
-async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
-    """Убрать конкретный сквад из activeInternalSquads пользователя, не трогая остальные сквады."""
+async def remove_squad_from_user(
+    user_uuid: str, squad_uuid: str, *, host_name: str, email: str | None = None
+) -> bool:
+    """Убрать конкретный сквад из activeInternalSquads пользователя, не трогая остальные сквады.
+
+    `email` нужен ключам со старым UUID: по UUID панель 3.x пользователя не отдаёт, и без
+    поиска по email/username функция раньше принимала «пользователь не найден» за «сквад уже
+    снят», возвращала успех, а в базе фиксировалось отключение, которого на панели не было.
+    """
     if not user_uuid or not squad_uuid:
         return False
     try:
-        current = await get_user_by_uuid(user_uuid, host_name=host_name)
+        current = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
+        if current is None:
+            if _user_absence_is_confirmed(user_uuid, email):
+                logger.warning(
+                    "Remnawave[%s]: пользователь %s не найден на панели — снимать сквад %s не с кого",
+                    host_name, user_uuid, squad_uuid,
+                )
+                return True
+            logger.error(
+                "Remnawave[%s]: не удалось найти пользователя %s (UUID без email) — "
+                "сквад %s не снят, состояние не меняем",
+                host_name, user_uuid, squad_uuid,
+            )
+            return False
         current_squads = extract_active_squad_uuids(current)
         if squad_uuid not in current_squads:
             logger.info(
@@ -1358,7 +1428,9 @@ async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: 
             )
             return True  # уже отсутствует — идемпотентно
         new_squads = [s for s in current_squads if s != squad_uuid]
-        return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
+        return await set_user_active_squads(
+            user_uuid, new_squads, host_name=host_name, email=email, panel_user=current
+        )
     except Exception as e:
         logger.error(
             "Remnawave[%s]: не удалось убрать сквад %s у пользователя %s: %s",
@@ -1367,17 +1439,27 @@ async def remove_squad_from_user(user_uuid: str, squad_uuid: str, *, host_name: 
         return False
 
 
-async def add_squad_to_user(user_uuid: str, squad_uuid: str, *, host_name: str) -> bool:
+async def add_squad_to_user(
+    user_uuid: str, squad_uuid: str, *, host_name: str, email: str | None = None
+) -> bool:
     """Добавить конкретный сквад в activeInternalSquads пользователя, не трогая остальные сквады."""
     if not user_uuid or not squad_uuid:
         return False
     try:
-        current = await get_user_by_uuid(user_uuid, host_name=host_name)
+        current = await lookup_panel_user(user_uuid, email=email, host_name=host_name)
+        if current is None:
+            logger.error(
+                "Remnawave[%s]: не удалось найти пользователя %s — сквад %s не добавлен",
+                host_name, user_uuid, squad_uuid,
+            )
+            return False
         current_squads = extract_active_squad_uuids(current)
         if squad_uuid in current_squads:
             return True  # уже присутствует — идемпотентно
         new_squads = current_squads + [squad_uuid]
-        return await set_user_active_squads(user_uuid, new_squads, host_name=host_name)
+        return await set_user_active_squads(
+            user_uuid, new_squads, host_name=host_name, email=email, panel_user=current
+        )
     except Exception as e:
         logger.error(
             "Remnawave[%s]: не удалось добавить сквад %s пользователю %s: %s",
