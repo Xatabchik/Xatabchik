@@ -135,7 +135,7 @@ def test_squad_add_failure_is_retried_next_pass_and_limit_not_recorded(temp_db):
     results = iter([False, True])
     original = fake.add_squad_to_user
 
-    async def flaky(user_uuid, squad_uuid, *, host_name):
+    async def flaky(user_uuid, squad_uuid, *, host_name, email=None):
         await original(user_uuid, squad_uuid, host_name=host_name)
         return next(results)
 

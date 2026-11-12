@@ -3199,7 +3199,8 @@ def create_webhook_app(bot_controller_instance):
                 if state == 'disabled_premium_squad' and lte_squad:
                     ok_restore = asyncio.run(
                         remnawave_api.add_squad_to_user(
-                            user_uuid, lte_squad['squad_uuid'], host_name=host_name
+                            user_uuid, lte_squad['squad_uuid'], host_name=host_name,
+                            email=key.get('key_email'),
                         )
                     )
                 else:

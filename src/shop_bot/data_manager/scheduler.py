@@ -560,7 +560,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         if (k.get("remote_access_state") or "enabled") == "enabled":
                             try:
                                 limit_synced = bool(await remnawave_api.add_squad_to_user(
-                                    str(user_uuid), str(lte_squad.get("squad_uuid") or ""), host_name=host_name
+                                    str(user_uuid), str(lte_squad.get("squad_uuid") or ""), host_name=host_name,
+                                    email=key_email,
                                 ))
                             except Exception as e:
                                 limit_synced = False
@@ -631,6 +632,7 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                     lte_squad = database.get_squad_by_class(host_name, "lte")
                 except Exception:
                     lte_squad = None
+                key_email_state = k.get("key_email") or k.get("email") or None
                 current_state = k.get("remote_access_state") or "enabled"
                 was_lte_disabled = current_state in ("disabled_premium_squad", "disabled_premium")
 
@@ -658,7 +660,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         # ничего не делает, если сквад уже снят, и чинит расхождение, если нет.
                         try:
                             await remnawave_api.remove_squad_from_user(
-                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name
+                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name,
+                                email=key_email_state,
                             )
                         except Exception as e:
                             logger.warning(
@@ -671,7 +674,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                     if desired_state == "disabled_premium_squad":
                         # Точечное отключение LTE-сквада — Base-сквад (безлимит) остаётся активным.
                         ok = await remnawave_api.remove_squad_from_user(
-                            str(user_uuid), lte_squad["squad_uuid"], host_name=host_name
+                            str(user_uuid), lte_squad["squad_uuid"], host_name=host_name,
+                            email=key_email_state,
                         )
                     elif desired_state == "disabled_main" or desired_state == "disabled_premium":
                         ok = await remnawave_api.disable_user(str(user_uuid), host_name=host_name)
@@ -679,7 +683,8 @@ async def enforce_dual_traffic_limits(bot: Bot | None = None):
                         # desired_state == "enabled": восстанавливаем доступ.
                         if current_state == "disabled_premium_squad" and lte_squad:
                             ok = await remnawave_api.add_squad_to_user(
-                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name
+                                str(user_uuid), lte_squad["squad_uuid"], host_name=host_name,
+                                email=key_email_state,
                             )
                         else:
                             ok = await remnawave_api.enable_user(str(user_uuid), host_name=host_name)
