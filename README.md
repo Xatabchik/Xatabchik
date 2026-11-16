@@ -139,11 +139,21 @@
 
 1) Подключитесь по SSH.
 
-2) Выполните:
+2) Скачайте `install.sh` **конкретного GitHub release tag** (не ветку `main`), сверьте checksum и запустите **локально** — не через `curl | bash`:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Xatabchik/Xatabchik/main/install.sh | bash
+# Tag и SHA256 tarball — со страницы GitHub Releases / своей записи:
+export XATABCHIK_INSTALL_TAG=1.9
+export XATABCHIK_TARBALL_SHA256='<sha256 archive/refs/tags/${XATABCHIK_INSTALL_TAG}.tar.gz>'
+
+curl -fsSL -o install.sh \
+  "https://raw.githubusercontent.com/Xatabchik/Xatabchik/${XATABCHIK_INSTALL_TAG}/install.sh"
+# Сверьте SHA256 самого install.sh со своей записью, затем:
+# echo '<sha256 install.sh>  install.sh' | sha256sum -c -
+bash install.sh
 ```
+
+Установщик скачает tarball этого тега в `./xatabchik` и сверит `XATABCHIK_TARBALL_SHA256`. Без переменной checksum будет только напечатан — задайте её для обязательной проверки.
 
 3) Следуйте инструкциям установщика:
 - Введите домен (например, `shop.example.com`).
@@ -330,11 +340,14 @@ docker-compose down
 docker-compose up -d
 ```
 
-**Обновить до последней версии:**
+**Обновить до опубликованного релиза** (не до движущейся ветки `main`):
+
 ```bash
-cd ~/xatabchik
-git pull origin main
-docker compose up -d --build
+export XATABCHIK_INSTALL_TAG=1.9
+export XATABCHIK_TARBALL_SHA256='<sha256 tarball этого тега>'
+# Запустите локальную копию install.sh того же тега — режим обновления
+# снимет исходники с release tag / проверит SHA256 tarball.
+bash install.sh
 ```
 
 ---
