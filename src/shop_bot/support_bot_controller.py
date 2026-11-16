@@ -5,6 +5,7 @@ import threading
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramForbiddenError, TelegramUnauthorizedError
 
 from shop_bot.data_manager import remnawave_repository as rw_repo
 from shop_bot.data_manager.remnawave_repository import get_admin_ids
@@ -64,6 +65,12 @@ class SupportBotController:
             await self._dp.start_polling(self._bot, handle_signals=False)
         except asyncio.CancelledError:
             logger.info("Опрос остановлен (задача отменена).")
+        except (TelegramUnauthorizedError, TelegramForbiddenError):
+            # Неверный/отозванный токен: ретраи бессмысленны, токен в лог не пишем.
+            logger.error(
+                "Support-бот остановлен: неверный или отозванный токен. "
+                "Проверьте support_bot_token в настройках."
+            )
         except Exception as e:
             logger.error(f"Ошибка во время опроса: {e}", exc_info=True)
         finally:
@@ -71,7 +78,13 @@ class SupportBotController:
             self._is_running = False
             self._task = None
             if self._bot:
-                await self._bot.close()
+                try:
+                    await self._bot.session.close()
+                except Exception:
+                    try:
+                        await self._bot.close()
+                    except Exception:
+                        pass
             self._bot = None
             self._dp = None
 
