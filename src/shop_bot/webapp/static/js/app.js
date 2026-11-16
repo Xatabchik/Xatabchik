@@ -4430,10 +4430,13 @@ window.addEventListener('appReady', async () => {
             body: JSON.stringify({ pending_token: pendingToken, token: authToken })
         });
         const d = await r.json();
+        if (!d.retryable && d.error !== 'unauthorized') {
+            try { sessionStorage.removeItem('pending_action_token'); } catch (e) { }
+        }
         if (d.message) {
             showNotification(d.message, d.ok ? 'success' : 'error');
         }
-        if (d.ok && d.action_type === 'gift' && d.status === 'activated') {
+        if (d.ok && d.action_type === 'gift' && (d.status === 'activated' || d.status === 'recovered')) {
             if (typeof refreshAfterGiftActivation === 'function') {
                 await refreshAfterGiftActivation({ giftCode: d.gift_code || '' });
             }

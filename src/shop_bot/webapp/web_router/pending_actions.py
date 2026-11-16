@@ -143,6 +143,9 @@ async def api_pending_action_complete(req: PendingActionCompleteRequest, request
 
     action_type = pending.get("action_type")
 
+    if action_type == "gift":
+        return _complete_pending_gift(req.pending_token, pending, user_id)
+
     # Уже использован именно этим пользователем ранее — идемпотентно возвращаем
     # тот же результат, не выполняя бизнес-логику повторно.
     if pending.get("consumed_at"):
@@ -181,9 +184,7 @@ async def api_pending_action_complete(req: PendingActionCompleteRequest, request
             }
         return {"ok": False, "error": "expired", "message": "Ссылка недействительна или уже использована."}
 
-    if action_type == "gift":
-        result = _activate_gift_for_user(user_id, pending.get("gift_code") or "")
-    elif action_type == "referral":
+    if action_type == "referral":
         try:
             referrer_id = int(pending.get("referrer_id") or 0)
         except (TypeError, ValueError):
@@ -205,6 +206,53 @@ async def api_pending_action_complete(req: PendingActionCompleteRequest, request
     }
 
 
+def _complete_pending_gift(pending_token: str, pending: dict, user_id: int) -> dict:
+    """Завершение pending action подарка.
+
+    Ссылка расходуется только окончательным результатом передачи, а не до неё:
+    при временной ошибке (`retryable=True`) тот же pending_token можно
+    повторить без повторного открытия ссылки. Сама передача идемпотентна и
+    защищена от гонки (database.transfer_user_gift), поэтому параллельные и
+    повторные запросы того же пользователя получают already_completed, а не
+    второй ключ. Запись, израсходованная этим же пользователем по старой
+    логике (claim до передачи), перепроверяется по фактическому состоянию.
+    """
+    from shop_bot.data_manager import database
+
+    consumed_by = int(pending.get("consumed_by_user_id") or 0)
+    if pending.get("consumed_at") and consumed_by != user_id:
+        return {"ok": False, "error": "already_used", "message": "Эта ссылка уже была использована."}
+    if not pending.get("consumed_at"):
+        try:
+            expires_at = datetime.strptime(str(pending["expires_at"]), "%Y-%m-%d %H:%M:%S")
+            if expires_at < datetime.utcnow():
+                return {"ok": False, "error": "expired", "message": "Срок действия ссылки истёк."}
+        except Exception:
+            pass
+
+    result = _activate_gift_for_user(user_id, pending.get("gift_code") or "", channel="webapp_pending")
+    status = result.get("status")
+    already_completed = status == "already_activated" and bool(result.get("ok"))
+    if result.get("final") and not pending.get("consumed_at"):
+        if not database.resolve_pending_action(pending_token, user_id, status or "error"):
+            fresh = database.get_pending_action(pending_token) or {}
+            if int(fresh.get("consumed_by_user_id") or 0) != user_id:
+                logger.warning("gift_claim channel=webapp_pending user_id=%s result=token_taken_concurrently", user_id)
+    elif result.get("final") and pending.get("result_status") != status:
+        database.set_pending_action_result(pending_token, status or "error")
+
+    body = {
+        "ok": bool(result.get("ok")),
+        "action_type": "gift",
+        "status": status,
+        "message": result.get("message"),
+        "retryable": not result.get("final"),
+    }
+    if already_completed:
+        body["already_completed"] = True
+    return body
+
+
 # __all__ — имена, которые пакет раскладывает по остальным модулям, чтобы
 # обращение по имени внутри функций разрешалось как до разделения
 # (см. __init__.py). Значение берётся из текущей привязки модуля, поэтому
@@ -214,4 +262,5 @@ __all__ = [
     "_pending_action_public_info",
     "api_pending_action_info",
     "api_pending_action_complete",
+    "_complete_pending_gift",
 ]

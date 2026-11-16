@@ -207,16 +207,22 @@ async def show_main_menu(message: types.Message, edit_message: bool = False):
         await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 async def process_successful_onboarding(callback: types.CallbackQuery, state: FSMContext):
-    """Завершает онбординг: ставит флаг согласия и открывает главное меню."""
+    """Завершает онбординг: ставит флаг согласия, выдаёт сохранённые подарки
+    и открывает главное меню."""
     user_id = callback.from_user.id
+    agreed = False
     try:
         set_terms_agreed(user_id)
+        agreed = True
     except Exception as e:
         logger.error(f"Не удалось установить согласие с условиями для пользователя {user_id}: {e}")
     try:
         await callback.answer()
     except Exception:
         pass
+    if agreed:
+        # Получатель — callback.from_user; callback.message отправлено ботом.
+        await _resume_pending_gift_claims(callback.message, callback.bot, user_id)
     try:
         await show_main_menu(callback.message, edit_message=True)
     except Exception:

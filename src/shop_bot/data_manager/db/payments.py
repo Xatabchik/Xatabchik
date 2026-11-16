@@ -16,6 +16,9 @@ __all__ = (
     "get_pending_action",
     "claim_pending_action",
     "set_pending_action_result",
+    "remember_pending_gift_for_user",
+    "get_open_pending_gift_actions",
+    "resolve_pending_action",
     "cleanup_expired_pending_actions",
     "get_payment_methods_analytics",
     "get_users_without_real_payment_with_keys",
@@ -167,6 +170,94 @@ def set_pending_action_result(token: str, result_status: str) -> bool:
             return cursor.rowcount > 0
     except sqlite3.Error as e:
         logging.error("Failed to set pending action result: %s", e)
+        return False
+
+
+def remember_pending_gift_for_user(
+    user_id: int,
+    gift_code: str,
+    *,
+    is_new_user: bool,
+    ttl_hours: int = PENDING_ACTION_DEFAULT_TTL_HOURS,
+) -> str | None:
+    """Запомнить, что пользователь бота открыл ссылку подарка, до завершения
+    капчи/согласия/подписки. Повторное открытие той же ссылки не создаёт
+    дубль и не перезаписывает `owner_is_new`, вычисленный при первом входе."""
+    code = str(gift_code or "").strip()[:64]
+    if not code:
+        return None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT token FROM auth_pending_actions
+                WHERE action_type = 'gift' AND owner_user_id = ? AND gift_code = ?
+                  AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                ORDER BY id DESC LIMIT 1
+                """,
+                (int(user_id), code),
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            token = secrets.token_urlsafe(32)
+            cursor.execute(
+                """
+                INSERT INTO auth_pending_actions
+                    (token, action_type, gift_code, owner_user_id, owner_is_new, expires_at)
+                VALUES (?, 'gift', ?, ?, ?, datetime('now', ?))
+                """,
+                (token, code, int(user_id), 1 if is_new_user else 0, f"+{int(ttl_hours)} hours"),
+            )
+            conn.commit()
+            return token
+    except sqlite3.Error as e:
+        logging.error("Failed to remember pending gift for user %s: %s", user_id, e)
+        return None
+
+
+def get_open_pending_gift_actions(user_id: int) -> list[dict]:
+    """Незавершённые и не истёкшие получения подарков пользователя бота, старые первыми."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM auth_pending_actions
+                WHERE action_type = 'gift' AND owner_user_id = ?
+                  AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                ORDER BY id ASC LIMIT 10
+                """,
+                (int(user_id),),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error("Failed to get pending gifts for user %s: %s", user_id, e)
+        return []
+
+
+def resolve_pending_action(token: str, user_id: int, result_status: str) -> bool:
+    """Закрыть pending action окончательным результатом (успех или отказ,
+    который повтором не исправить). Временные ошибки сюда не попадают —
+    действие остаётся открытым и повторяется. Срок не проверяется: результат
+    уже получен, и его нужно зафиксировать даже на границе TTL."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE auth_pending_actions
+                SET consumed_at = CURRENT_TIMESTAMP, consumed_by_user_id = ?, result_status = ?
+                WHERE token = ? AND consumed_at IS NULL
+                """,
+                (int(user_id), str(result_status), str(token)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error("Failed to resolve pending action: %s", e)
         return False
 
 

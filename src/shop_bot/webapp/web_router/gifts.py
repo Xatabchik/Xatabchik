@@ -181,75 +181,40 @@ async def api_user_gifts(request: Request):
     return {"ok": True, "gifts": result, "share_text": gift_share_text}
 
 
-def _activate_gift_for_user(user_id: int, gift_code: str) -> dict:
+def _activate_gift_for_user(user_id: int, gift_code: str, *, channel: str = "webapp") -> dict:
     """Активировать подарок `gift_code` для пользователя `user_id`.
 
     Возвращает структурированный результат:
-        {"ok": bool, "status": str, "message": str}
+        {"ok": bool, "status": str, "message": str, "final": bool}
 
-    status ∈ {"activated", "already_activated", "not_found", "expired", "error"}.
+    status ∈ {"activated", "recovered", "already_activated", "not_found",
+    "expired", "key_missing", "key_unavailable", "inconsistent", "error"}.
 
-    Идемпотентность: если ЭТОТ ЖЕ пользователь уже успешно активировал именно
-    этот подарок ранее (например, повторный вызов после сетевого сбоя), метод
-    возвращает ok=True/status="already_activated" без создания второго ключа
-    и без повторного назначения реферала. Если подарок был активирован ДРУГИМ
-    пользователем (обычная гонка/чужой подарок) — ok=False.
+    ok=True только когда ключ фактически у пользователя: новая передача,
+    довершение старой зависшей активации (recovered) или повтор тем же
+    пользователем (already_activated). Подарок другого пользователя — тоже
+    status="already_activated", но ok=False. final=False только для временной
+    ошибки: её можно повторить тем же запросом.
 
-    Атомарность/защита от гонки обеспечивается на уровне
-    database.activate_user_gift (условный UPDATE + проверка rowcount).
+    Передача ключа и запись активации — одна транзакция
+    (database.transfer_user_gift, см. shop_bot.data_manager.gift_claim).
     """
-    from shop_bot.data_manager import database
-    from shop_bot.data_manager import remnawave_repository as rw_repo
+    from shop_bot.data_manager import gift_claim
 
     try:
-        gift = database.get_gift_by_code(gift_code)
-        if not gift:
-            return {"ok": False, "status": "not_found", "message": "Подарок не найден или код неверный"}
-
-        if gift.get("is_activated"):
-            if int(gift.get("activated_by_user_id") or 0) == int(user_id):
-                # Тот же пользователь уже активировал этот подарок — идемпотентный успех.
-                return {"ok": True, "status": "already_activated", "message": "Подарок уже активирован на ваш аккаунт."}
-            return {"ok": False, "status": "already_activated", "message": "Этот подарок уже был активирован"}
-
-        expires_at = gift.get("expires_at")
-        if expires_at:
-            try:
-                if datetime.fromisoformat(str(expires_at)) < datetime.utcnow():
-                    return {"ok": False, "status": "expired", "message": "Срок действия подарка истёк"}
-            except Exception:
-                pass
-
-        success, activated_gift = database.activate_user_gift(gift_code, user_id)
-        if not success:
-            # Либо гонка (кто-то другой успел активировать первым), либо подарок
-            # истёк/удалён между проверкой и попыткой активации — перечитываем
-            # текущее состояние, чтобы дать пользователю точный ответ.
-            fresh = database.get_gift_by_code(gift_code) or gift
-            if fresh.get("is_activated") and int(fresh.get("activated_by_user_id") or 0) == int(user_id):
-                return {"ok": True, "status": "already_activated", "message": "Подарок уже активирован на ваш аккаунт."}
-            return {"ok": False, "status": "already_activated" if fresh.get("is_activated") else "error", "message": "Не удалось активировать подарок"}
-
-        # Переназначаем ключ активирующему пользователю (используем существующий сервис,
-        # не создаём новый ключ).
-        key_id = gift.get("key_id")
-        if key_id:
-            new_email = rw_repo.generate_key_email_for_user(user_id)
-            rw_repo.update_key(key_id, user_id=user_id, email=new_email, tag="")
-
-        # Привязываем реферала от дарителя (если применимо) — используя существующую
-        # бизнес-логику/условия (см. set_referred_by_from_gift).
-        try:
-            from_user_id = int((activated_gift or gift or {}).get("from_user_id") or 0)
-            if from_user_id > 0:
-                database.set_referred_by_from_gift(user_id, from_user_id)
-        except Exception:
-            pass
-
-        return {"ok": True, "status": "activated", "message": "Подарок успешно активирован! Ключ добавлен в ваш профиль."}
-    except Exception as e:
-        logger.error(f"Gift activate error for user {user_id}, gift {gift_code}: {e}")
-        return {"ok": False, "status": "error", "message": str(e)}
+        result = gift_claim.claim_gift(int(user_id), gift_code, channel=channel, bind_referral=True)
+    except Exception:
+        logger.error("gift_claim channel=%s user_id=%s result=error", channel, user_id, exc_info=True)
+        return {"ok": False, "status": "error", "message": gift_claim.MESSAGES["error"], "final": False}
+    status = result["status"]
+    if status == "already_activated_by_other":
+        status = "already_activated"
+    return {
+        "ok": bool(result["ok"]),
+        "status": status,
+        "message": result["message"],
+        "final": bool(result["final"]),
+    }
 
 
 @app.post("/api/gift/activate")

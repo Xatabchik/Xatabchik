@@ -71,29 +71,13 @@ def register_onboarding(user_router: Router) -> None:
                 await message.answer("⚠️ Не удалось выполнить вход. Попробуйте ещё раз.")
             return
 
-        # Обрабатываем активацию подарка
+        # Подарок: действие сохраняется в БД (FSM бота живёт в памяти) и
+        # выполняется после капчи, регистрации и согласия/подписки — обычным
+        # путём онбординга ниже. Голый /start это действие не затирает.
         if command.args and command.args.startswith('gift_'):
-            gift_code = command.args[5:]  # Убираем "gift_"
+            # «Новый» — до первой регистрации; повторное открытие ссылки признак не меняет.
+            _remember_pending_gift(user_id, command.args[5:], is_new_user=(get_user(user_id) is None))
 
-            # Запоминаем ДО регистрации — нужно для определения нового пользователя
-            _gift_user_is_new = (get_user(user_id) is None)
-
-            # Пользователь должен быть зарегистрирован или зарегистрируется
-            register_user_if_not_exists(user_id, username, None)
-
-            # Проверяем, нужна ли капча для активации подарка
-            captcha_enabled = get_setting("captcha_enabled") == "true"
-
-            if captcha_enabled and not has_passed_captcha(user_id):
-                # Сохраняем gift_code и флаг нового пользователя в FSM
-                await state.update_data(gift_code=gift_code, is_gift_activation=True, gift_user_is_new=_gift_user_is_new)
-                await show_captcha(message, state, user_id)
-                return
-            else:
-                # Капча отключена или уже пройдена, активируем подарок
-                await _activate_gift_directly(message, bot, user_id, gift_code, is_new_user=_gift_user_is_new)
-                return
-        
         # Обрабатываем реферальную ссылку
         if command.args and command.args.startswith('ref_'):
             try:
@@ -144,6 +128,15 @@ def register_onboarding(user_router: Router) -> None:
             # Если капча была пройдена ранее, продолжаем регистрацию
             # Зарегистрируем пользователя сейчас
             register_user_if_not_exists(user_id, username, referrer_id)
+        elif (
+            captcha_enabled
+            and not has_passed_captcha(user_id)
+            and rw_repo.get_open_pending_gift_actions(user_id)
+        ):
+            # Получение подарка требует капчу и от уже зарегистрированного,
+            # но её не проходившего пользователя.
+            await show_captcha(message, state, user_id)
+            return
         else:
             # Капча отключена или пользователь уже существует
             register_user_if_not_exists(user_id, username, referrer_id)
@@ -157,10 +150,11 @@ def register_onboarding(user_router: Router) -> None:
         await _maybe_pay_referral_start_bonus(bot, user_id, referrer_id)
 
         if user_data and user_data.get('agreed_to_terms'):
-            await message.answer(
-                f"👋 Снова здравствуйте, <b>{html_escape(str(message.from_user.full_name or 'Пользователь'))}</b>!",
-                reply_markup=keyboards.main_reply_keyboard
-            )
+            if not await _resume_pending_gift_claims(message, bot, user_id):
+                await message.answer(
+                    f"👋 Снова здравствуйте, <b>{html_escape(str(message.from_user.full_name or 'Пользователь'))}</b>!",
+                    reply_markup=keyboards.main_reply_keyboard
+                )
             await show_main_menu(message)
             return
 
@@ -170,6 +164,7 @@ def register_onboarding(user_router: Router) -> None:
 
         if not channel_url and (not terms_url or not privacy_url):
             set_terms_agreed(user_id)
+            await _resume_pending_gift_claims(message, bot, user_id)
             await show_main_menu(message)
             return
 
@@ -179,6 +174,7 @@ def register_onboarding(user_router: Router) -> None:
 
         if not show_welcome_screen:
             set_terms_agreed(user_id)
+            await _resume_pending_gift_claims(message, bot, user_id)
             await show_main_menu(message)
             return
 
@@ -274,17 +270,8 @@ def register_onboarding(user_router: Router) -> None:
                 # Тот же фиксированный бонус рефереру, что и в прямом /start без капчи
                 # (см. _maybe_pay_referral_start_bonus) — раньше здесь не начислялся вообще.
                 await _maybe_pay_referral_start_bonus(message.bot, user_id, referred_by)
-        
-                # Проверяем, активируем ли мы подарок
-                gift_code = data.get("gift_code")
-                if gift_code:
-                    # Captcha is only shown to new users — default True, but honour FSM flag if stored
-                    _is_new = data.get("gift_user_is_new", True)
-                    await state.clear()
-                    await _activate_gift_directly(message, message.bot, user_id, gift_code, is_new_user=_is_new)
-                    return
 
-                # Продолжаем onboarding
+                # Продолжаем onboarding; сохранённый подарок выдаётся в его конце.
                 await state.clear()
 
                 # Выполняем логику регистрации с согласием
@@ -292,8 +279,12 @@ def register_onboarding(user_router: Router) -> None:
                 privacy_url = get_setting("privacy_url")
                 channel_url = get_setting("channel_url")
 
-                if not channel_url and (not terms_url or not privacy_url):
+                if (get_user(user_id) or {}).get("agreed_to_terms"):
+                    await _resume_pending_gift_claims(message, message.bot, user_id)
+                    await show_main_menu(message)
+                elif not channel_url and (not terms_url or not privacy_url):
                     set_terms_agreed(user_id)
+                    await _resume_pending_gift_claims(message, message.bot, user_id)
                     # Переходим прямо в главное меню
                     await show_main_menu(message)
                 else:
@@ -303,6 +294,7 @@ def register_onboarding(user_router: Router) -> None:
                     
                     if not show_welcome_screen:
                         set_terms_agreed(user_id)
+                        await _resume_pending_gift_claims(message, message.bot, user_id)
                         await show_main_menu(message)
                     else:
                         welcome_parts = ["<b>Добро пожаловать!</b>\n"]
@@ -359,16 +351,9 @@ def register_onboarding(user_router: Router) -> None:
                 # Тот же фиксированный бонус рефереру, что и в прямом /start без капчи
                 # (см. _maybe_pay_referral_start_bonus) — раньше здесь не начислялся вообще.
                 await _maybe_pay_referral_start_bonus(callback.bot, user_id, referred_by)
-                
-                # Проверяем, активируем ли мы подарок
-                gift_code = data.get("gift_code")
-                if gift_code:
-                    _is_new = data.get("gift_user_is_new", True)
-                    await state.clear()
-                    await _activate_gift_directly(callback.message, callback.bot, user_id, gift_code, is_new_user=_is_new)
-                    return
 
-                # Продолжаем onboarding
+                # Продолжаем onboarding; сохранённый подарок выдаётся в его конце.
+                # Получатель — callback.from_user: callback.message отправлен ботом.
                 await state.clear()
 
                 # Выполняем логику регистрации с согласием
@@ -376,8 +361,11 @@ def register_onboarding(user_router: Router) -> None:
                 privacy_url = get_setting("privacy_url")
                 channel_url = get_setting("channel_url")
 
-                if not channel_url and (not terms_url or not privacy_url):
+                if (get_user(user_id) or {}).get("agreed_to_terms") or (
+                    not channel_url and (not terms_url or not privacy_url)
+                ):
                     set_terms_agreed(user_id)
+                    await _resume_pending_gift_claims(callback.message, callback.bot, user_id)
                     # Редактируем или отправляем главное меню
                     try:
                         await show_main_menu(callback.message, edit_message=True)
@@ -390,6 +378,7 @@ def register_onboarding(user_router: Router) -> None:
                     
                     if not show_welcome_screen:
                         set_terms_agreed(user_id)
+                        await _resume_pending_gift_claims(callback.message, callback.bot, user_id)
                         try:
                             await show_main_menu(callback.message, edit_message=True)
                         except Exception:

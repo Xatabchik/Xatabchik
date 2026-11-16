@@ -1401,7 +1401,12 @@ def _ensure_auth_pending_actions_table(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
+    # Владелец известен заранее, когда ссылку открыли в боте (`/start gift_<code>`):
+    # действие ждёт капчу/согласие/подписку и переживает перезапуск бота (FSM в памяти).
+    _ensure_table_column(cursor, "auth_pending_actions", "owner_user_id", "INTEGER")
+    _ensure_table_column(cursor, "auth_pending_actions", "owner_is_new", "INTEGER DEFAULT 0")
     _ensure_unique_index(cursor, "idx_auth_pending_actions_token", "auth_pending_actions", "token")
+    _ensure_index(cursor, "idx_auth_pending_actions_owner", "auth_pending_actions", "owner_user_id")
     _ensure_index(cursor, "idx_auth_pending_actions_expires_at", "auth_pending_actions", "expires_at")
     _ensure_index(cursor, "idx_auth_pending_actions_gift_code", "auth_pending_actions", "gift_code")
     _ensure_index(cursor, "idx_auth_pending_actions_referrer_id", "auth_pending_actions", "referrer_id")
