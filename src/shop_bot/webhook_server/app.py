@@ -22,6 +22,7 @@ from math import ceil
 from flask import Flask, request, render_template, redirect, url_for, flash, session, current_app, jsonify, send_file, Response, abort
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 import secrets
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -6250,15 +6251,23 @@ def create_webhook_app(bot_controller_instance):
 
             # provider payment id приходит в payload['object']['id']
             provider_payment_id = None
+            event = ''
             if isinstance(payload, dict):
+                event = str(payload.get('event') or '').strip().lower()
                 obj = payload.get('object') or {}
                 if isinstance(obj, dict):
                     provider_payment_id = obj.get('id') or payload.get('payment_id')
 
+            # refund.*, payout.*, deal.* и т.п. содержат в object.id не id платежа:
+            # запрос /v3/payments/{id} по ним всегда даёт 404.
+            if event and not event.startswith('payment.'):
+                logger.info(f"YooKassa webhook: event={event} object_id={provider_payment_id} (ignored)")
+                return 'OK', 200
+
             if not provider_payment_id:
                 logger.warning("YooKassa webhook: missing provider payment id")
                 return 'Bad Request', 400
-            log_payment_stage("webhook_received", None, provider_payment_id)
+            log_payment_stage("webhook_received", None, provider_payment_id, event=event or '-')
 
             shop_id = (get_setting('yookassa_shop_id') or '').strip()
             secret_key = (get_setting('yookassa_secret_key') or '').strip()
@@ -6271,6 +6280,18 @@ def create_webhook_app(bot_controller_instance):
             url = f"https://api.yookassa.ru/v3/payments/{provider_payment_id}"
             try:
                 data = _http_json(url, headers={"Authorization": f"Basic {auth}"}, timeout=20)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    # Платёж не принадлежит текущему магазину (другой shop_id, тестовый магазин,
+                    # чужой бот с тем же URL). Повтор не поможет, а не-2xx ответ заставит ЮKassa
+                    # слать уведомление повторно в течение суток.
+                    logger.warning(
+                        f"YooKassa webhook: payment {provider_payment_id} not found in shop {shop_id} "
+                        f"(event={event or '-'}); acknowledging without processing"
+                    )
+                    return 'OK', 200
+                logger.error(f"YooKassa webhook: failed to fetch payment {provider_payment_id}: HTTP {e.code}")
+                return 'Error', 502
             except Exception as e:
                 logger.error(f"YooKassa webhook: failed to fetch payment {provider_payment_id}: {e}", exc_info=True)
                 return 'Error', 502
